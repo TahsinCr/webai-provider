@@ -1,0 +1,176 @@
+[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
+[![Sürüm: v1.0-beta][version-shield]](CHANGELOG.md)
+[![GPL-3.0-only][license-shield]](LICENSE)
+
+[English](README.md) | **Türkçe** | [Русский](README-RU.md)
+
+# webai-provider
+
+### ChatGPT, Gemini ve Claude web oturumları için bağımsız Python istemcileri.
+
+Sağlayıcıların web oturumlarını ortak bir asenkron Python arayüzü üzerinden
+kullanın. Bu resmî olmayan istemciler geliştirici API anahtarı, Codex veya
+Claude Code kullanmaz. Model erişimi ve kullanım sınırları oturum açılan hesaba
+bağlıdır; sağlayıcı sitelerindeki değişiklikler uyumluluğu etkileyebilir.
+
+<p align="center">
+  <a href="#kurulum"><strong>Kurulum</strong></a> &nbsp; | &nbsp;
+  <a href="#hızlı-başlangıç"><strong>Hızlı başlangıç</strong></a> &nbsp; | &nbsp;
+  <a href="#api-davranışı"><strong>API</strong></a> &nbsp; | &nbsp;
+  <a href="#geliştirme"><strong>Geliştirme</strong></a>
+</p>
+
+## Kurulum
+
+ChatGPT ve Claude için Python 3.10+, Gemini web taşıması için Python 3.11+
+gerekir.
+
+```sh
+git clone https://github.com/TahsinCr/webai-provider.git
+cd webai-provider
+python -m pip install .
+```
+
+Geliştirme araçlarını da kurmak için:
+
+```sh
+python -m pip install -e ".[dev]"
+```
+
+## Çalışma zamanı
+
+ChatGPT'nin parmak izi ve kanıt üretimi ile desteklenen Turnstile yolu saf
+Python'da çalışır; Node.js veya başka bir JavaScript motoru gerekmez. Gerekli bir
+kontrol desteklenmiyorsa mesaj gönderilmeden hata verilir. Tarayıcı profili ve
+CDP erişimi açıkça çağrılmadıkça başlamaz; paketi içe aktarmak tarayıcı açmaz ve
+ağ isteği yapmaz. Gemini kendi HTTPS taşımasını kullanır.
+
+## Sağlayıcı özellikleri
+
+| Sağlayıcı | Web oturumu özellikleri |
+| --- | --- |
+| ChatGPT | Sohbetler, projeler, model keşfi, akış, desteklenen mesaj işlemleri, kaynaklar ve oluşturulan dosyalar |
+| Gemini | Sohbetler, not defterleri, model ve efor keşfi, akış, desteklenen mesaj işlemleri, kaynaklar ve oluşturulan medya |
+| Claude | Sohbetler, çalışma alanları ve projeler, model keşfi, akış, kaynaklar ve oluşturulan dosyalar |
+
+Hesabın güncel kataloğu ve sağlayıcı yetenekleri belirleyicidir. Boş bir sonuç,
+işlemin desteklenmediği anlamına gelmez.
+
+## Hızlı başlangıç
+
+```python
+import asyncio
+
+from providers import ProviderClient, SendRequest, TextDelta, ReplaceText
+
+
+async def main():
+    async with ProviderClient() as client:
+        account = client.connect(
+            "claude", "personal", credential_file="/private/claude-session.json"
+        )
+        await account.authenticate()
+        catalog = await account.models()
+        model = catalog.default_chat_model
+        request = SendRequest(
+            provider_id="claude",
+            account_id="personal",
+            chat_id="yerel-sohbet-kimligi",
+            prompt="Merhaba",
+            model=model.id if model else None,
+        )
+        async for event in client.stream(request):
+            if isinstance(event, (TextDelta, ReplaceText)):
+                print(event.channel, event.text)
+
+
+asyncio.run(main())
+```
+
+## Hesaplar ve güvenlik
+
+Kimlik bilgilerini çağıran uygulama yönetir. Bir dosya yolu verebilir veya
+`providers.session.CredentialStore` içindeki `load`, `save`, `exists` ve
+`delete` arayüzünü uygulayabilirsiniz. Paket içe aktarılırken tarayıcı açılmaz
+ve ağa bağlanılmaz; profil okuma ve CDP işlemleri açıkça çağrılır.
+
+Her hesabın adaptörü, bağlantıları ve eşzamanlılık sınırları ayrıdır. Dosya
+tanımlayıcıları ve kaynaklar ileti metaverisinde taşınır; indirme için
+sağlayıcının kendi kimlik doğrulamalı çözümleyicisi kullanılır. İptal edilen
+veya sonucu belirsiz istekler otomatik olarak yeniden gönderilmez.
+İlk etkileşimli işlemden önce `await account.prepare()` çağrılabilir. Model
+katalogları hesap başına beş dakika önbelleğe alınır; yenilemek için
+`await account.models(force=True)` kullanın.
+
+## API davranışı
+
+`ProviderClient` hesapları, akışları ve bağlantıların kapanışını yönetir;
+`client.account(provider_id, account_id)` ise o hesaba ait `Backend` arayüzünü
+verir. Bu arayüz oturum doğrulama, model kataloğu, sayfalı sohbet ve proje
+listeleri, sohbet geçmişi, ad değiştirme/silme, proje kaynakları, dosya yükleme
+ve indirme çözümleme işlemlerini sunar. `describe()` ve `project_options()` ile
+sağlayıcının desteklediği işlemleri öğrenebilirsiniz; boş liste, özelliğin
+desteklenmediği anlamına gelmez.
+
+Akışlar metin parçaları, metnin yerini alan güncellemeler, sohbet kimliği ve yanıt
+metaverisi üretir. Kaynaklar ve oluşturulan dosyalar metaveride yer alır; dosya
+içeriği akışa eklenmez. `resolve_download` indirme bağlantısını hesabın
+kimlik bilgileriyle çözer. Yayınlanmış kaynaklar, analiz metninden ve yanıt
+metnindeki sıradan bağlantılardan ayrı değerlendirilir.
+
+Düzenleme ve yeniden deneme işlemleri listedeki sıra numarasıyla değil, sağlayıcı
+mesaj kimliğiyle yapılır. Dallanma ChatGPT ve Gemini'de desteklenir; Claude bu
+pakette dallanma sunmaz. İptal edilen veya gönderim sonucu belirsiz kalan bir
+istek otomatik yinelenmez. `ProviderError.code` kararlı bir hata kodudur;
+`message_submitted` değerinin `False` olması mesajın sağlayıcıya ulaşmadığını
+garanti eder, `None` ise sonucun kanıtlanamadığını belirtir.
+
+Kalıcı depolama ve senkronizasyon çağıran uygulamanın sorumluluğundadır.
+`get_chat()` sağlayıcıdan erişilebilen geçmişi döndürür; taşımanın sunmadığı
+uzak sayfalamayı kendiliğinden oluşturmaz.
+
+## SiopeChat ile kullanım
+
+SiopeChat bu depoyu sabit bir commit'e bağlı Git submodule olarak kullanır.
+Uygulama deposunu klonlarken `--recurse-submodules` seçeneğini kullanın; güncelleme
+sonrasında da `git submodule update --init --recursive` komutuyla SiopeChat'in
+kaydettiği sağlayıcı commit'ini eşitleyin. Ayrıntılar için
+[SiopeChat README](https://github.com/TahsinCr/siopechat/blob/main/README-TR.md)
+dosyasına bakın.
+
+SiopeChat wheel'i de `providers` Python paketini içerir. Bu nedenle bağımsız
+`webai-provider` dağıtımını SiopeChat'in kullandığı ortama ayrıca kurmayın;
+aynı dosyalar iki dağıtım tarafından yönetilir.
+
+Bağımsız provider kopyasını güncellemek için kendi depo dizininde
+`git pull --ff-only` çalıştırıp `python -m pip install --upgrade .` komutunu
+yeniden yürütün. SiopeChat içindeki submodule'de `git pull` çalıştırmayın;
+hangi provider commit'inin kullanılacağını uygulama deposu belirler.
+
+## Geliştirme
+
+Çalışma zamanı bağımlılıkları `pyproject.toml` içinde, geliştirme araçları isteğe
+bağlı tanımlanır. Kontroller:
+
+```sh
+ruff check .
+ruff format --check .
+python -m unittest discover -s tests -t . -p 'test_*.py'
+python -m build --sdist --wheel
+python -m twine check dist/*
+```
+
+## Değişiklikler
+
+`v1.0-beta` sürümünde provider geçmişindeki değişiklikler
+[CHANGELOG.md](CHANGELOG.md) dosyasında toplandı. Bu tag'den sonraki
+değişiklikler **Unreleased** altında yer alır.
+
+## Lisans
+
+Telif hakkı © TahsinCr. Paket [GPL-3.0-only](LICENSE) ile lisanslanmıştır.
+[COPYRIGHT](COPYRIGHT) proje bildirimini içerir.
+
+[version-shield]: https://img.shields.io/badge/s%C3%BCr%C3%BCm-v1.0--beta-b7a3e3.svg?style=for-the-badge
+[python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
+[license-shield]: https://img.shields.io/badge/Lisans-GPL--3.0--only-2F6F4E.svg?style=for-the-badge

@@ -3,14 +3,24 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "siopechat-providers"
-version = "1.5.4b0"
-description = "Independent Python clients for ChatGPT, Gemini and Claude web accounts"
+name = "webai-provider"
+version = "1.0.0b0"
+description = "Independent Python clients for ChatGPT, Gemini and Claude web sessions"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "COPYRIGHT"]
 readme = "README.md"
 authors = [{name = "TahsinCr"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "httpx>=0.27,<1",
     "websocket-client>=1.8,<2",
@@ -18,6 +28,14 @@ dependencies = [
     "lz4>=4.4.5,<5",
     "curl-cffi>=0.16,<1",
 ]
+
+[project.urls]
+Repository = "https://github.com/TahsinCr/webai-provider"
+Changelog = "https://github.com/TahsinCr/webai-provider/blob/v1.0-beta/CHANGELOG.md"
+Issues = "https://github.com/TahsinCr/webai-provider/issues"
+
+[project.optional-dependencies]
+dev = ["build>=1,<2", "ruff>=0.11,<1", "twine>=6,<7"]
 
 [tool.setuptools]
 package-dir = {"providers" = "."}

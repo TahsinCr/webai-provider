@@ -1,0 +1,6 @@
+include CHANGELOG.md
+include COPYRIGHT
+include LICENSE
+include README.md
+include README-TR.md
+include README-RU.md

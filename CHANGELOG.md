@@ -1,0 +1,83 @@
+# Changelog
+
+The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+## [1.0-beta] - 2026-11-03
+
+### Added
+
+- Add an asynchronous `ProviderClient` and account-scoped `Backend` for ChatGPT,
+  Gemini and Claude web sessions, with model and effort discovery.
+- Add browser-profile session import for Chromium, Firefox and Zen profiles,
+  plus Safari cookie reading on macOS and local CDP session capture.
+- Add provider-owned conversation history, projects and workspaces, including
+  Gemini notebooks and their instructions, sources and media.
+- Add message edit, retry and branch operations where each provider supports
+  them, plus ChatGPT response versions and stream events for text, replacement
+  text, citations, files, published thinking and response metadata.
+- Add Claude incognito conversations.
+- Add authenticated upload and download resolution for provider files,
+  generated media and sandbox outputs.
+- Add caller-owned credential stores, account isolation and explicit
+  authentication checks.
+
+### Changed
+
+- Keep credentials, connection pools, catalogs, conversations and concurrent
+  work scoped to the owning provider account.
+- Reuse HTTP sessions and validated conversation state where safe; cache model
+  catalogs and provider continuation metadata to avoid duplicate work.
+- Prepare eligible ChatGPT send validation and Gemini continuation state ahead
+  of the next request, with bounded cache lifetimes and explicit invalidation.
+- Deliver streamed responses incrementally with bounded buffers and provider
+  event parsing; keep cancellation and ambiguous-send behavior explicit.
+- Use Gemini's bundled HTTPS transport and a native Python ChatGPT Sentinel
+  runtime. Browser discovery, profile reads and local CDP access also run in
+  Python.
+- Keep provider dependencies in the standalone distribution and development
+  tools optional; SiopeChat declares the runtime dependencies it needs while
+  its wheel still bundles the provider import package.
+- Expose provider capabilities and machine-readable errors through shared
+  contracts while retaining provider-specific request and response behavior.
+
+### Fixed
+
+- Correct ChatGPT conversation routes, active-branch history, stream boundaries
+  and reconciliation when response metadata is incomplete.
+- Correct Gemini history and stream parsing, turn identity, model routing,
+  notebook context, effort identifiers, continuation expiry and retries of
+  earlier responses.
+- Recover Claude workspace and model discovery when the saved workspace is
+  stale, while preserving unambiguous account selection.
+- Preserve account and conversation identity during concurrent reads, retries,
+  cancellation, uploads and downloads; do not replay an ambiguous send.
+- Resolve protected provider files with the owning account and keep credentials
+  scoped to approved origins.
+- Bound browser-profile, CDP and streaming input; report compatibility failures
+  without exposing cookie values, tokens or raw sensitive responses.
+
+### Security
+
+- Validate imported sessions before replacing saved credentials and keep
+  provider cookies scoped to the selected account and origin.
+- Validate download destinations and redirects, enforce response size limits,
+  and avoid forwarding credentials across origins.
+- Bound profile, CDP and challenge inputs and fail explicitly when a required
+  provider challenge is unsupported.
+
+### Removed
+
+- Remove the Node.js and QuickJS runtime paths, obsolete Sentinel wrappers and
+  cache plumbing, and retired browser-based conversation transports.
+- Remove compatibility entry points that are no longer part of the standalone
+  provider API.
+
+### Maintenance
+
+- Expand provider contract, streaming, history, profile, upload and packaging
+  regression coverage, including installed wheel and source-archive smoke
+  checks on Python 3.10 and 3.14; run source checks on Linux, macOS and Windows.
+- Keep the provider build, lint, package metadata and test checks in a
+  standalone GitHub Actions workflow.
