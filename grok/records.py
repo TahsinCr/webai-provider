@@ -1,5 +1,7 @@
 """Grok conversation and workspace records mapped to the shared contract."""
 
+import re
+
 from ..api import MessageAction
 from ..messages import sources_from
 from ..models import Content, Conversation, Message, Origin, Project, Resource
@@ -17,6 +19,76 @@ def _text(value):
             if isinstance(part, str)
         )
     return ""
+
+
+class GrokTextFilter:
+    _TOOL_OPEN = "<xai:tool_usage_card"
+    _TOOL_CLOSE = "</xai:tool_usage_card>"
+    _RENDER_OPEN = "<grok:render"
+    _RENDER_CLOSE = "</grok:render>"
+    _MARKERS = (_TOOL_OPEN, _RENDER_OPEN, _RENDER_CLOSE)
+    _MARKUP = re.compile(r"<xai:tool_usage_card\b|</?grok:render\b")
+
+    def __init__(self):
+        self._pending = ""
+        self._inside_tool_card = False
+        self._started = False
+
+    def _visible(self, text):
+        if not self._started:
+            text = text.lstrip()
+            self._started = bool(text)
+        return text
+
+    @classmethod
+    def _safe_end(cls, text):
+        markers = (*cls._MARKERS, cls._TOOL_CLOSE)
+        for size in range(min(len(text), max(map(len, markers))), 0, -1):
+            if any(marker.startswith(text[-size:]) for marker in markers):
+                return len(text) - size
+        return len(text)
+
+    def feed(self, text="", *, final=False):
+        self._pending += text
+        output = []
+        while self._pending:
+            if self._inside_tool_card:
+                end = self._pending.find(self._TOOL_CLOSE)
+                if end < 0:
+                    safe_end = self._safe_end(self._pending)
+                    self._pending = "" if final else self._pending[safe_end:]
+                    break
+                self._pending = self._pending[end + len(self._TOOL_CLOSE) :]
+                self._inside_tool_card = False
+                continue
+
+            match = self._MARKUP.search(self._pending)
+            if match is None:
+                safe_end = self._safe_end(self._pending)
+                output.append(self._visible(self._pending[:safe_end]))
+                self._pending = "" if final else self._pending[safe_end:]
+                break
+
+            index = match.start()
+            output.append(self._visible(self._pending[:index]))
+            self._pending = self._pending[index:]
+            end = self._pending.find(">")
+            if end < 0:
+                if final:
+                    self._pending = ""
+                elif len(self._pending) > 4096:
+                    output.append(self._visible(self._pending[:1]))
+                    self._pending = self._pending[1:]
+                    continue
+                break
+            marker = self._pending[:end]
+            self._pending = self._pending[end + 1 :]
+            self._inside_tool_card = marker.startswith(self._TOOL_OPEN)
+        return "".join(output)
+
+
+def clean_text(value):
+    return GrokTextFilter().feed(_text(value), final=True)
 
 
 def active_responses(history):
@@ -63,7 +135,7 @@ def _messages(history):
             continue
         if sender not in ("assistant", "model", "grok"):
             continue
-        thinking = _text(row.get("thinkingTrace"))
+        thinking = clean_text(row.get("thinkingTrace"))
         if thinking:
             messages.append(
                 Message(
@@ -74,9 +146,7 @@ def _messages(history):
                     {"native_response_id": response_id},
                 )
             )
-        answer = row.get("message") or ""
-        if not isinstance(answer, str):
-            answer = _text(answer)
+        answer = clean_text(row.get("message"))
         sources = sources_from({"sources": row.get("webSearchResults", [])})
         messages.append(
             Message(

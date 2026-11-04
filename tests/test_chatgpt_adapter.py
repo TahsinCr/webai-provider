@@ -111,9 +111,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([message.id for message in chat.messages], ["user", "answer"])
         self.assertNotIn("mapping", chat.metadata)
-        self.assertEqual(
-            chat.metadata["generation"], {"active": True, "started_at": 1_800_000_000}
-        )
+        self.assertEqual(chat.metadata["generation"], {"active": True, "started_at": 1_800_000_000})
 
     async def test_discovery_creation_and_deletion_are_available(self):
         description = await self.provider.describe()

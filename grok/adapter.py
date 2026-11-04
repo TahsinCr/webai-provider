@@ -33,7 +33,7 @@ from ..models import (
 )
 from ..projects import ProjectEditing
 from ..session import delete_session, session_exists
-from .records import _text, active_responses, conversation, project
+from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id
 
 _CATALOG_TTL = 300
@@ -202,7 +202,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     model_mode = _MODEL_MODES.get(model_id.casefold())
                 if isinstance(model_mode, str) and model_mode:
                     metadata["modelMode"] = model_mode
-                models.append(Model(model_id, title, metadata=metadata))
+                chat_title = (
+                    title
+                    if model_id.casefold().startswith("grok-")
+                    or title.casefold().startswith("grok")
+                    else f"Grok · {title}"
+                )
+                models.append(Model(model_id, title, metadata=metadata, chat_title=chat_title))
 
             self._catalog = ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)
             self._catalog_at = time.monotonic()
@@ -505,6 +511,20 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             completion_notified = False
             bound = False
             has_text = False
+            text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
+            filters_finalized = False
+
+            def flush_text_filters():
+                nonlocal filters_finalized
+                for cleaner, output, channel in (
+                    (text_filter, streamed_text, None),
+                    (analysis_filter, streamed_analysis, "analysis"),
+                ):
+                    remainder = cleaner.feed(final=True)
+                    if remainder:
+                        output.write(remainder)
+                        yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
+                filters_finalized = True
 
             async for chunk in self.transport.events(path, body):
                 result = chunk.get("result")
@@ -542,23 +562,26 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     if isinstance(native.get("webSearchResults"), list):
                         sources = sources_from({"sources": [*sources, *native["webSearchResults"]]})
                     if isinstance(native.get("message"), str):
-                        native_text = native["message"]
+                        native_text = clean_text(native["message"])
                     if native.get("thinkingTrace"):
-                        native_analysis = _text(native["thinkingTrace"])
+                        native_analysis = clean_text(native["thinkingTrace"])
                     if native.get("partial") is False:
                         complete = True
                 token = response.get("token")
                 if isinstance(token, str) and token:
-                    if response.get("isThinking") or response.get("messageTag") in (
+                    analysis = response.get("isThinking") or response.get("messageTag") in (
                         "header",
                         "summary",
-                    ):
-                        streamed_analysis.write(token)
-                        yield TextDelta(token, "analysis")
-                    else:
-                        streamed_text.write(token)
-                        has_text = True
-                        yield TextDelta(token)
+                    )
+                    if filters_finalized:
+                        filters_finalized = False
+                    cleaner = analysis_filter if analysis else text_filter
+                    visible = cleaner.feed(token)
+                    if visible:
+                        (streamed_analysis if analysis else streamed_text).write(visible)
+                        if not analysis:
+                            has_text = True
+                        yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
                 if response.get("responseId") and not response_id:
                     response_id = response["responseId"]
                 if response.get("done") is True or response.get("finished") is True:
@@ -568,6 +591,8 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     and not completion_notified
                     and (request.conversation_id or conversation_id)
                 ):
+                    for event in flush_text_filters():
+                        yield event
                     if native_analysis and native_analysis != streamed_analysis.getvalue():
                         yield ReplaceText(native_analysis, "analysis")
                         streamed_analysis = StringIO(native_analysis)
@@ -577,6 +602,9 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                         has_text = True
                     yield ResponseComplete()
                     completion_notified = True
+            if not filters_finalized:
+                for event in flush_text_filters():
+                    yield event
             if not conversation_id:
                 raise ProviderError("Grok did not return a conversation ID")
             if not complete:

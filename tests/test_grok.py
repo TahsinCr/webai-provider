@@ -18,6 +18,7 @@ from providers.api import (
 )
 from providers.errors import AccountPaused
 from providers.grok import GrokProvider
+from providers.grok.records import GrokTextFilter
 from providers.grok.transport import GrokProjectEditor, GrokTransport
 from providers.profiles import select_cookies
 
@@ -201,11 +202,95 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(catalog.default_model, "fast")
         self.assertEqual(catalog.chat_model("fast").title, "Fast")
+        self.assertEqual(catalog.chat_model("fast").chat_title, "Grok · Fast")
         self.assertEqual(catalog.chat_model("fast").metadata["modelMode"], "MODEL_MODE_FAST")
         self.assertEqual(catalog.chat_model("fast").metadata["tags"], ["TAG_PRIMARY"])
         self.assertIsNone(catalog.chat_model("auto"))
         self.assertIsNone(catalog.chat_model("expert"))
         self.assertIsNone(catalog.chat_model("unknown"))
+
+    async def test_stream_cleans_provider_markup_and_initial_whitespace(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+
+        async def events(_path, _body):
+            yield {
+                "result": {
+                    "conversation": {"conversationId": "chat"},
+                    "response": {
+                        "userResponse": {"responseId": "user-1"},
+                        "token": " \tAnswer <grok:ren",
+                    },
+                }
+            }
+            yield {
+                "result": {
+                    "response": {
+                        "token": 'der card_id="citation" type="render_inline_citation">1</grok:render>'
+                    }
+                }
+            }
+            yield {
+                "result": {
+                    "response": {
+                        "token": "  Thinking <xai:tool_usage_card>private</xai:tool_usage_card> done",
+                        "isThinking": True,
+                    }
+                }
+            }
+            yield {
+                "result": {
+                    "response": {
+                        "modelResponse": {
+                            "responseId": "answer-1",
+                            "model": "grok-4-1-thinking-1129",
+                            "message": ' \tAnswer <grok:render card_id="citation" type="render_inline_citation">1</grok:render>',
+                            "thinkingTrace": "  Thinking <xai:tool_usage_card>private</xai:tool_usage_card> done",
+                            "partial": False,
+                        }
+                    }
+                }
+            }
+
+        transport.events = events
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Question",
+            model="fast",
+        )
+        try:
+            stream = [event async for event in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        deltas = [event for event in stream if isinstance(event, TextDelta)]
+        self.assertEqual(
+            "".join(event.text for event in deltas if event.channel is None), "Answer 1"
+        )
+        self.assertEqual(
+            "".join(event.text for event in deltas if event.channel == "analysis"),
+            "Thinking  done",
+        )
+        self.assertFalse(any("<grok:render" in event.text for event in deltas))
+        self.assertFalse(any("tool_usage_card" in event.text for event in deltas))
+        metadata = next(event for event in stream if isinstance(event, MessageMetadata))
+        self.assertEqual(metadata.model, "grok-4-1-thinking-1129")
+
+    def test_text_filter_holds_split_protocol_tags_until_they_are_complete(self):
+        cleaner = GrokTextFilter()
+        value = "".join(
+            (
+                cleaner.feed("  Answer <grok:ren"),
+                cleaner.feed('der type="render_inline_citation">2</grok:render> <xai:tool_'),
+                cleaner.feed("usage_card>ignored"),
+                cleaner.feed("</xai:tool_usage_card> end"),
+                cleaner.feed(final=True),
+            )
+        )
+        self.assertEqual(value, "Answer 2  end")
 
     async def test_history_exposes_only_the_remote_generation_state(self):
         provider = GrokProvider(Path("unused"), "test")
