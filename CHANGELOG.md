@@ -8,6 +8,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Add Grok web-session support with server-validated authentication, account-specific model discovery, conversation history and streaming, retry, workspace instructions and resources, chat membership operations, published thinking summaries, and web-search citations. Workspace source uploads are limited to 3 MiB; unsupported actions remain outside its declared capabilities.
 
+- Support Grok document attachments through the web upload endpoint, with bounded file and prompt sizes.
+
 ### Changed
 
 - Verify Grok sessions through its authenticated user-settings resource instead of assuming private auth-status payload fields.

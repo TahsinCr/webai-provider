@@ -74,7 +74,34 @@ CLAUDE_ATTACHMENTS = AttachmentPolicy(
 )
 
 
+GROK_ATTACHMENTS = AttachmentPolicy(
+    max_files=10,
+    max_bytes=3 * _MIB,
+    max_total_bytes=10 * _MIB,
+    allowed_extensions=(
+        ".pdf",
+        ".txt",
+        ".md",
+        ".csv",
+        ".json",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+        ".xlsm",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".rtf",
+    ),
+    source="Grok chat file-upload endpoint with a conservative local size cap",
+)
+
+
 POLICIES = {
+    "grok": GROK_ATTACHMENTS,
     "chatgpt": CHATGPT_ATTACHMENTS,
     "gemini": GEMINI_ATTACHMENTS,
     "claude": CLAUDE_ATTACHMENTS,

@@ -15,6 +15,7 @@ from ..api import (
     TextDelta,
     validate_request,
 )
+from ..attachments import GROK_ATTACHMENTS
 from ..contracts import OptionalFeatures
 from ..errors import FeatureUnavailable, ProviderError
 from ..messages import sources_from
@@ -46,6 +47,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             Capability.CHAT,
             Capability.TEMPORARY,
             Capability.AUTH,
+            Capability.ATTACHMENTS,
             Capability.HISTORY,
             Capability.RENAME,
             Capability.DELETE,
@@ -139,6 +141,14 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 for capability in Capability
             ),
         )
+
+    def attachment_policy(self):
+        from ..attachments import policy_for
+
+        return policy_for(self.id).as_dict()
+
+    async def upload_file(self, path):
+        return await self.transport.upload_file(path)
 
     async def models(self, *, force=False):
         now = time.monotonic()
@@ -404,10 +414,30 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         validate_request(self, request)
         if request.effort is not None:
             raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
-        if request.attachments:
-            raise FeatureUnavailable(
-                Capability.ATTACHMENTS, "Grok chat attachments are not implemented"
-            )
+        if len(request.attachments) > GROK_ATTACHMENTS.max_files:
+            raise ValueError("Too many Grok chat attachments")
+        file_attachments = []
+        total_attachment_bytes = 0
+        for attachment in request.attachments:
+            metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
+            asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
+            size = attachment.get("size_bytes") if isinstance(attachment, dict) else None
+            if (
+                not isinstance(asset_id, str)
+                or not asset_id
+                or asset_id != attachment.get("id")
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or not 0 < size <= GROK_ATTACHMENTS.max_bytes
+            ):
+                raise ValueError("Grok chat attachment metadata is invalid")
+            total_attachment_bytes += size
+            file_attachments.append(metadata)
+        if (
+            GROK_ATTACHMENTS.max_total_bytes
+            and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
+        ):
+            raise ValueError("Grok chat attachments exceed the total size limit")
         if request.branch:
             raise FeatureUnavailable(
                 Capability.CHAT_BRANCH, "Grok native chat branching is unavailable"
@@ -487,6 +517,8 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             body = {
                 "message": "" if is_retry else request.prompt,
                 "parentResponseId": parent_response_id,
+                "fileAttachments": file_attachments,
+                "imageAttachments": [],
                 "disableSearch": False,
                 "isReasoning": False,
                 "temporary": request.temporary,

@@ -6,6 +6,7 @@ import json
 import mimetypes
 from urllib.parse import quote
 
+from ..attachments import GROK_ATTACHMENTS
 from ..errors import AccountPaused, ProviderError
 from ..projects import ProjectOptions, source_file
 from ..session import WebSession
@@ -65,6 +66,46 @@ class GrokTransport:
         except AccountPaused:
             self.session.authenticated = False
             raise
+
+    async def upload_file(self, path):
+        file = source_file(path, error="Grok chat dosyası en fazla 3 MiB olabilir")
+        if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
+            raise ValueError("Grok chat dosya türü desteklenmiyor")
+        if not 0 < file.stat().st_size <= GROK_ATTACHMENTS.max_bytes:
+            raise ValueError("Grok chat dosyası boş veya 3 MiB sınırını aşıyor")
+        content = await asyncio.to_thread(_read_limited, file)
+        if not content or len(content) > GROK_ATTACHMENTS.max_bytes:
+            raise ValueError("Grok chat dosyası boş veya 3 MiB sınırını aşıyor")
+
+        mime_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+        result = await self.request(
+            "POST",
+            "/rest/app-chat/upload-file-v2/complete",
+            json={
+                "directUpload": {
+                    "fileData": base64.b64encode(content).decode("ascii"),
+                    "fileName": file.name,
+                    "fileMimeType": mime_type,
+                    "fileSource": "SELF_UPLOAD_FILE_SOURCE",
+                }
+            },
+        )
+        metadata = result.get("fileMetadata") if isinstance(result, dict) else None
+        asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
+        if (
+            not isinstance(metadata, dict)
+            or result.get("terminalError")
+            or not isinstance(asset_id, str)
+            or not asset_id
+        ):
+            raise ProviderError("Grok chat dosya yüklemesi başarısız")
+        return {
+            "id": asset_id,
+            "name": metadata.get("name") or file.name,
+            "mime_type": metadata.get("mimeType") or mime_type,
+            "size_bytes": len(content),
+            "grok_file": metadata,
+        }
 
     async def events(self, path, body):
         await self._ensure_authenticated()
@@ -146,7 +187,11 @@ class GrokProjectEditor:
                 "conversationStarters": current.get("conversationStarters"),
                 "isPublic": current.get("isPublic"),
             }
-            return await self.transport.request("PUT", project_path, json=body)
+            return await self.transport.request(
+                "PUT",
+                project_path,
+                json={key: value for key, value in body.items() if value is not None},
+            )
         if operation == "add_source":
             if values.get("kind") not in ("text", "file"):
                 raise ValueError("Grok yalnızca metin ve dosya kaynaklarını destekler")

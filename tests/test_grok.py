@@ -1,11 +1,14 @@
 """Grok continuation and browser-cookie contracts."""
 
+import base64
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from providers.api import (
+    Capability,
     MessageAction,
     MessageMetadata,
     ProviderError,
@@ -15,7 +18,7 @@ from providers.api import (
 )
 from providers.errors import AccountPaused
 from providers.grok import GrokProvider
-from providers.grok.transport import GrokTransport
+from providers.grok.transport import GrokProjectEditor, GrokTransport
 from providers.profiles import select_cookies
 
 
@@ -242,6 +245,143 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(transport.bodies, [])
         self.assertEqual(len(transport.requests), 2)
+
+    def test_grok_exposes_bounded_document_attachment_policy(self):
+        provider = GrokProvider(Path("unused"), "test")
+
+        policy = provider.attachment_policy()
+
+        self.assertIn(Capability.ATTACHMENTS, provider.capabilities)
+        self.assertEqual(policy["max_bytes"], 3 * 1024 * 1024)
+        self.assertEqual(policy["max_total_bytes"], 10 * 1024 * 1024)
+        self.assertNotIn(".png", policy["allowed_extensions"])
+
+    async def test_grok_chat_upload_returns_metadata_for_file_attachment(self):
+        content = b"%PDF-1.7 test"
+        metadata = {
+            "assetId": "asset-1",
+            "name": "brief.pdf",
+            "mimeType": "application/pdf",
+            "sizeBytes": len(content),
+            "fileSource": "SELF_UPLOAD_FILE_SOURCE",
+        }
+        transport = GrokTransport(Path("unused"))
+        transport.request = AsyncMock(return_value={"fileMetadata": metadata})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "brief.pdf"
+            path.write_bytes(content)
+            try:
+                uploaded = await transport.upload_file(path)
+            finally:
+                await transport.close()
+
+        self.assertEqual(
+            uploaded,
+            {
+                "id": "asset-1",
+                "name": "brief.pdf",
+                "mime_type": "application/pdf",
+                "size_bytes": len(content),
+                "grok_file": metadata,
+            },
+        )
+        call = transport.request.await_args
+        self.assertEqual(call.args, ("POST", "/rest/app-chat/upload-file-v2/complete"))
+        self.assertEqual(
+            call.kwargs["json"],
+            {
+                "directUpload": {
+                    "fileData": base64.b64encode(content).decode("ascii"),
+                    "fileName": "brief.pdf",
+                    "fileMimeType": "application/pdf",
+                    "fileSource": "SELF_UPLOAD_FILE_SOURCE",
+                }
+            },
+        )
+
+    async def test_grok_send_forwards_uploaded_metadata_as_file_attachments(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        metadata = {
+            "assetId": "asset-1",
+            "name": "brief.pdf",
+            "mimeType": "application/pdf",
+        }
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Summarize this file",
+            conversation_id="chat",
+            model="grok-test",
+            attachments=({"id": "asset-1", "size_bytes": 13, "grok_file": metadata},),
+        )
+        try:
+            [event async for event in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
+        self.assertEqual(transport.bodies[0]["imageAttachments"], [])
+
+    async def test_project_instruction_update_preserves_values_and_omits_null_fields(self):
+        current = {
+            "name": "Old",
+            "icon": None,
+            "customPersonality": "Old instructions",
+            "preferredModel": None,
+            "conversationStarters": {"starters": []},
+            "isPublic": False,
+        }
+        transport = SimpleNamespace(request=AsyncMock(side_effect=[current, {"updated": True}]))
+        editor = GrokProjectEditor(transport)
+
+        result = await editor.write(
+            "update",
+            "workspace",
+            name="Updated",
+            instructions="New instructions",
+        )
+
+        self.assertEqual(result, {"updated": True})
+        put = transport.request.await_args_list[1]
+        self.assertEqual(put.args, ("PUT", "/rest/workspaces/workspace"))
+        self.assertEqual(
+            put.kwargs["json"],
+            {
+                "name": "Updated",
+                "customPersonality": "New instructions",
+                "conversationStarters": {"starters": []},
+                "isPublic": False,
+            },
+        )
+
+    async def test_project_text_source_uses_grok_workspace_upload(self):
+        transport = SimpleNamespace(request=AsyncMock(return_value={"assetId": "source-1"}))
+        editor = GrokProjectEditor(transport)
+
+        await editor.write(
+            "add_source",
+            "workspace",
+            kind="text",
+            name="Instructions",
+            text="Use verified sources",
+        )
+
+        call = transport.request.await_args
+        self.assertEqual(
+            call.args,
+            ("POST", "/rest/workspaces/workspace/files/upload"),
+        )
+        self.assertEqual(
+            call.kwargs["json"],
+            {
+                "fileName": "Instructions",
+                "mimeType": "text/plain",
+                "content": base64.b64encode(b"Use verified sources").decode("ascii"),
+            },
+        )
 
     def test_grok_cookie_selection_keeps_secure_session_and_ignores_noise(self):
         cookies = [
