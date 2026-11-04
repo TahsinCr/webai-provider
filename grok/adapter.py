@@ -38,6 +38,12 @@ from .transport import GrokProjectEditor, GrokTransport, remote_id
 _CATALOG_TTL = 300
 _CONTINUATION_TTL = 60
 _CONTINUATION_LIMIT = 8
+_MODEL_MODES = {
+    "auto": "MODEL_MODE_AUTO",
+    "fast": "MODEL_MODE_FAST",
+    "expert": "MODEL_MODE_EXPERT",
+    "heavy": "MODEL_MODE_HEAVY",
+}
 
 
 class GrokProvider(ProjectEditing, OptionalFeatures):
@@ -158,96 +164,43 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             now = time.monotonic()
             if not force and self._catalog and now - self._catalog_at < _CATALOG_TTL:
                 return self._catalog
-            data = await self.transport.request("POST", "/rest/models", json={"locale": "en"})
-            if not isinstance(data, dict) or not isinstance(data.get("models", []), list):
+            data = await self.transport.request("POST", "/rest/modes", json={"locale": "en"})
+            if not isinstance(data, dict) or not isinstance(data.get("modes"), list):
                 raise ProviderError("Grok model catalog response contract changed")
 
             available = []
-            for item in data.get("models", []):
+            for item in data["modes"]:
                 if not isinstance(item, dict):
                     continue
-                model_id = item.get("modelId")
+                model_id = item.get("id")
                 if not isinstance(model_id, str) or not model_id:
                     continue
-                model_key = model_id.casefold()
-                model_mode = item.get("modelMode")
-                labels = " ".join(
-                    str(item.get(key) or "").casefold() for key in ("name", "modeName")
-                )
-                if (
-                    (
-                        isinstance(model_mode, str)
-                        and model_mode
-                        in {
-                            "MODEL_MODE_IMAGINE",
-                            "MODEL_MODE_BUILD",
-                            "MODEL_MODE_VOICE",
-                        }
-                    )
-                    or model_key == "build"
-                    or any(
-                        marker in model_key
-                        for marker in (
-                            "imagine-agent",
-                            "imagine-video",
-                            "grok-plugins-",
-                            "companion",
-                        )
-                    )
-                    or any(
-                        marker in labels for marker in ("imagine agent", "imagine prompt enhancer")
-                    )
+                availability = item.get("availability")
+                if not isinstance(availability, dict) or not isinstance(
+                    availability.get("available"), dict
                 ):
                     continue
                 available.append((model_id, item))
 
             available_ids = {model_id for model_id, _ in available}
-            defaults = (
-                ("defaultProModel", "defaultProMode"),
-                ("defaultFreeModel", "defaultFreeMode"),
-                ("defaultHeavyModel", "defaultHeavyMode"),
-                ("defaultAnonModel", "defaultAnonMode"),
-            )
-            default_pair = next(
-                (
-                    (model_key, mode_key)
-                    for model_key, mode_key in defaults
-                    if data.get(model_key) in available_ids
-                ),
-                None,
-            )
-            default = data.get(default_pair[0]) if default_pair else None
-            default_mode = data.get(default_pair[1]) if default_pair else None
+            default = data.get("defaultModeId")
+            if not isinstance(default, str) or default not in available_ids:
+                default = available[0][0] if available else None
 
             models = []
             for model_id, item in available:
-                raw_title = item.get("modeName") or item.get("name")
-                title = (
-                    raw_title.strip()
-                    if isinstance(raw_title, str) and raw_title.strip().casefold() != "model"
-                    else " ".join(
-                        part.capitalize() for part in model_id.replace("_", "-").split("-")
-                    )
-                )
+                title = item.get("title")
+                title = title.strip() if isinstance(title, str) and title.strip() else model_id
                 metadata = {
                     key: item[key]
-                    for key in (
-                        "description",
-                        "modeName",
-                        "modeDescription",
-                        "modelMode",
-                        "promptingBackend",
-                        "badgeText",
-                        "tags",
-                    )
+                    for key in ("description", "badgeText", "iconHint", "tags")
                     if item.get(key) is not None
                 }
-                if (
-                    model_id == default
-                    and not metadata.get("modelMode")
-                    and isinstance(default_mode, str)
-                ):
-                    metadata["defaultMode"] = default_mode
+                model_mode = item.get("modelMode")
+                if not isinstance(model_mode, str) or not model_mode:
+                    model_mode = _MODEL_MODES.get(model_id.casefold())
+                if isinstance(model_mode, str) and model_mode:
+                    metadata["modelMode"] = model_mode
                 models.append(Model(model_id, title, metadata=metadata))
 
             self._catalog = ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)

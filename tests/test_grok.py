@@ -36,45 +36,33 @@ class GrokTransportFixture:
 
     async def request(self, method, path, **options):
         self.requests.append((method, path, options))
-        if path == "/rest/models":
+        if path == "/rest/modes":
             return {
-                "models": [
+                "modes": [
                     {
-                        "modelId": "grok-test",
-                        "name": "Model",
-                        "modeName": "Grok Test",
-                        "modelMode": "MODEL_MODE_AUTO",
-                        "tags": [],
+                        "id": "fast",
+                        "title": "Fast",
+                        "description": "Quick responses",
+                        "availability": {"available": {}},
+                        "tags": ["TAG_PRIMARY"],
                     },
                     {
-                        "modelId": "grok-420",
-                        "name": "Model",
-                        "modeName": "Grok 420",
-                        "modelMode": "MODEL_MODE_GROK_420",
-                    },
-                    {"modelId": "grok-default", "name": "Model"},
-                    {
-                        "modelId": "imagine-agent-mode",
-                        "name": "Imagine Agent",
-                        "modelMode": "MODEL_MODE_IMAGINE",
+                        "id": "auto",
+                        "title": "Auto",
+                        "availability": {"requiresUpgrade": {"message": "Upgrade"}},
                     },
                     {
-                        "modelId": "grok-plugins-4p5-excel",
-                        "name": "Model",
-                        "modelMode": "MODEL_MODE_AUTO",
+                        "id": "expert",
+                        "title": "Expert",
+                        "availability": {"requiresUpgrade": {"message": "Upgrade"}},
                     },
                     {
-                        "modelId": "grok-companion",
-                        "name": "Model",
-                        "modelMode": "MODEL_MODE_AUTO",
+                        "id": "unknown",
+                        "title": "Unknown availability",
+                        "availability": {},
                     },
-                    {"modelId": "build", "name": "Model", "modelMode": "MODEL_MODE_BUILD"},
                 ],
-                "unavailableModels": [
-                    {"modelId": "grok-unavailable", "name": "Model", "modelMode": "MODEL_MODE_AUTO"}
-                ],
-                "defaultProModel": "grok-default",
-                "defaultProMode": "MODEL_MODE_FAST",
+                "defaultModeId": "expert",
             }
         if path.endswith("/response-node"):
             if self.response_node_payload is not None:
@@ -149,7 +137,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         transport = GrokTransportFixture()
         provider.transport = transport
 
-        async def send(prompt="Question", *, action=None, message_id=None, model="grok-test"):
+        async def send(prompt="Question", *, action=None, message_id=None, model="fast"):
             request = SendRequest(
                 provider_id="grok",
                 account_id="test",
@@ -182,7 +170,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(retry["isRegenRequest"])
         self.assertNotIn("requestType", retry)
         for body in transport.bodies:
-            self.assertEqual(body["modelMode"], "MODEL_MODE_AUTO")
+            self.assertEqual(body["modelMode"], "MODEL_MODE_FAST")
             self.assertNotIn("modelName", body)
         history_paths = [
             path.rsplit("/", 1)[-1]
@@ -198,7 +186,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(metadata.actions, (MessageAction.RETRY.value,))
             self.assertEqual(metadata.sources[0]["url"], "https://example.com")
 
-    async def test_model_catalog_only_exposes_account_chat_models_with_clear_names(self):
+    async def test_model_catalog_only_exposes_account_available_modes(self):
         provider = GrokProvider(Path("unused"), "test")
         transport = GrokTransportFixture()
         provider.transport = transport
@@ -209,17 +197,15 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             {model.id for model in catalog.chat_models},
-            {"grok-test", "grok-420", "grok-default"},
+            {"fast"},
         )
-        self.assertEqual(catalog.default_model, "grok-default")
-        self.assertEqual(catalog.chat_model("grok-test").title, "Grok Test")
-        default = catalog.chat_model("grok-default")
-        self.assertEqual(default.title, "Grok Default")
-        self.assertEqual(default.metadata["defaultMode"], "MODEL_MODE_FAST")
-        self.assertEqual(
-            catalog.chat_model("grok-420").metadata["modelMode"],
-            "MODEL_MODE_GROK_420",
-        )
+        self.assertEqual(catalog.default_model, "fast")
+        self.assertEqual(catalog.chat_model("fast").title, "Fast")
+        self.assertEqual(catalog.chat_model("fast").metadata["modelMode"], "MODEL_MODE_FAST")
+        self.assertEqual(catalog.chat_model("fast").metadata["tags"], ["TAG_PRIMARY"])
+        self.assertIsNone(catalog.chat_model("auto"))
+        self.assertIsNone(catalog.chat_model("expert"))
+        self.assertIsNone(catalog.chat_model("unknown"))
 
     async def test_unknown_model_refreshes_catalog_and_fails_before_send(self):
         provider = GrokProvider(Path("unused"), "test")
@@ -240,7 +226,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
         self.assertEqual(
-            sum(path == "/rest/models" for _, path, _ in transport.requests),
+            sum(path == "/rest/modes" for _, path, _ in transport.requests),
             2,
         )
         self.assertEqual(transport.bodies, [])
@@ -314,7 +300,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             chat_id="local",
             prompt="Summarize this file",
             conversation_id="chat",
-            model="grok-test",
+            model="fast",
             attachments=({"id": "asset-1", "size_bytes": 13, "grok_file": metadata},),
         )
         try:
