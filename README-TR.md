@@ -51,7 +51,7 @@ ağ isteği yapmaz. Gemini kendi HTTPS taşımasını kullanır.
 | ChatGPT | Sohbetler, projeler, model keşfi, akış, desteklenen mesaj işlemleri, kaynaklar ve oluşturulan dosyalar |
 | Gemini | Sohbetler, not defterleri, model ve efor keşfi, akış, desteklenen mesaj işlemleri, kaynaklar ve oluşturulan medya |
 | Claude | Sohbetler, çalışma alanları ve projeler, model keşfi, akış, kaynaklar ve oluşturulan dosyalar |
-| Grok | Sohbetler, çalışma alanları, hesaba göre model keşfi, akış, yeniden deneme, proje talimatları ve kaynakları, yayımlanan düşünme özetleri ve web arama kaynakları |
+| Grok | Sohbetler, çalışma alanları, hesaba özel model keşfi, akış ve yeniden deneme; yayımlanan düşünme özetleri, web arama kaynakları, talimatlar, 3 MiB’a kadar proje kaynakları ve sohbet üyeliği |
 
 Hesabın güncel kataloğu ve sağlayıcı yetenekleri belirleyicidir. Boş bir sonuç,
 işlemin desteklenmediği anlamına gelmez.

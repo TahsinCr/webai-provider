@@ -54,7 +54,7 @@ native HTTPS implementation.
 | ChatGPT | Conversations, projects, model discovery, streaming, supported message actions, sources and generated files |
 | Gemini | Conversations, notebooks, model and effort discovery, streaming, supported message actions, sources and generated media |
 | Claude | Conversations, workspaces and projects, model discovery, streaming, sources and generated files |
-| Grok | Conversations, workspaces, account model discovery, streaming, retry, project instructions and resources, published thinking summaries and web-search citations |
+| Grok | Conversations, workspaces, account-specific model discovery, streaming and retry, published thinking summaries and web-search citations; project instructions, resources up to 3 MiB and conversation membership |
 
 The account's live catalog and provider capability declarations are authoritative.
 An empty result means no items were returned; it does not mean the operation is
