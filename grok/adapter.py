@@ -151,53 +151,95 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             data = await self.transport.request("POST", "/rest/models", json={"locale": "en"})
             if not isinstance(data, dict) or not isinstance(data.get("models", []), list):
                 raise ProviderError("Grok model catalog response contract changed")
-            models = []
-            for available, selectable in (
-                (data.get("models", []), True),
-                (data.get("unavailableModels", []), False),
-            ):
-                if not isinstance(available, list):
+
+            available = []
+            for item in data.get("models", []):
+                if not isinstance(item, dict):
                     continue
-                for item in available:
-                    if not isinstance(item, dict):
-                        continue
-                    model_id = item.get("modelId")
-                    title = item.get("name")
-                    if not isinstance(model_id, str) or not model_id or not isinstance(title, str):
-                        continue
-                    models.append(
-                        Model(
-                            model_id,
-                            title,
-                            metadata={
-                                key: item[key]
-                                for key in (
-                                    "description",
-                                    "modeName",
-                                    "modeDescription",
-                                    "modelMode",
-                                    "promptingBackend",
-                                    "badgeText",
-                                )
-                                if item.get(key) is not None
-                            },
-                            chat_selectable=selectable,
+                model_id = item.get("modelId")
+                if not isinstance(model_id, str) or not model_id:
+                    continue
+                model_key = model_id.casefold()
+                model_mode = item.get("modelMode")
+                labels = " ".join(
+                    str(item.get(key) or "").casefold() for key in ("name", "modeName")
+                )
+                if (
+                    (
+                        isinstance(model_mode, str)
+                        and model_mode
+                        in {
+                            "MODEL_MODE_IMAGINE",
+                            "MODEL_MODE_BUILD",
+                            "MODEL_MODE_VOICE",
+                        }
+                    )
+                    or model_key == "build"
+                    or any(
+                        marker in model_key
+                        for marker in (
+                            "imagine-agent",
+                            "imagine-video",
+                            "grok-plugins-",
+                            "companion",
                         )
                     )
-            ids = {item.id for item in models if item.chat_selectable}
-            default = next(
-                (
-                    data.get(key)
-                    for key in (
-                        "defaultProModel",
-                        "defaultFreeModel",
-                        "defaultHeavyModel",
-                        "defaultAnonModel",
+                    or any(
+                        marker in labels for marker in ("imagine agent", "imagine prompt enhancer")
                     )
-                    if data.get(key) in ids
+                ):
+                    continue
+                available.append((model_id, item))
+
+            available_ids = {model_id for model_id, _ in available}
+            defaults = (
+                ("defaultProModel", "defaultProMode"),
+                ("defaultFreeModel", "defaultFreeMode"),
+                ("defaultHeavyModel", "defaultHeavyMode"),
+                ("defaultAnonModel", "defaultAnonMode"),
+            )
+            default_pair = next(
+                (
+                    (model_key, mode_key)
+                    for model_key, mode_key in defaults
+                    if data.get(model_key) in available_ids
                 ),
                 None,
             )
+            default = data.get(default_pair[0]) if default_pair else None
+            default_mode = data.get(default_pair[1]) if default_pair else None
+
+            models = []
+            for model_id, item in available:
+                raw_title = item.get("modeName") or item.get("name")
+                title = (
+                    raw_title.strip()
+                    if isinstance(raw_title, str) and raw_title.strip().casefold() != "model"
+                    else " ".join(
+                        part.capitalize() for part in model_id.replace("_", "-").split("-")
+                    )
+                )
+                metadata = {
+                    key: item[key]
+                    for key in (
+                        "description",
+                        "modeName",
+                        "modeDescription",
+                        "modelMode",
+                        "promptingBackend",
+                        "badgeText",
+                        "tags",
+                    )
+                    if item.get(key) is not None
+                }
+                if (
+                    model_id == default
+                    and not metadata.get("modelMode")
+                    and isinstance(default_mode, str)
+                ):
+                    metadata["defaultMode"] = default_mode
+                models.append(Model(model_id, title, metadata=metadata))
+
             self._catalog = ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)
             self._catalog_at = time.monotonic()
             return self._catalog
@@ -381,11 +423,19 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         if request.action == MessageAction.RETRY and not request.message_id:
             raise ValueError("Grok retry requires the selected assistant response")
 
-        model = request.model
-        if not model:
-            model = (await self.models()).default_model
-        if not model:
-            raise ProviderError("Grok did not provide a selectable default model")
+        catalog = await self.models()
+        selected = catalog.chat_model(request.model) if request.model else None
+        if selected is None and request.model:
+            catalog = await self.models(force=True)
+            selected = catalog.chat_model(request.model)
+        if selected is None and not request.model:
+            selected = catalog.chat_model(catalog.default_model)
+        if selected is None:
+            raise ProviderError("Selected Grok model is unavailable for this account")
+        model = selected.id
+        model_mode = selected.metadata.get("modelMode") or selected.metadata.get("defaultMode")
+        if not isinstance(model_mode, str) or not model_mode:
+            model_mode = None
 
         async with self._gate:
             conversation_id = request.conversation_id
@@ -436,15 +486,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
 
             body = {
                 "message": "" if is_retry else request.prompt,
-                "modelName": model,
                 "parentResponseId": parent_response_id,
                 "disableSearch": False,
                 "isReasoning": False,
                 "temporary": request.temporary,
                 "isRegenRequest": is_retry,
             }
-            if is_retry:
-                body["requestType"] = "regenerate"
+            body["modelMode" if model_mode else "modelName"] = model_mode or model
             if request.project_id:
                 body["workspaceIds"] = [request.project_id]
             path = (

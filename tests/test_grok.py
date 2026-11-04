@@ -33,6 +33,46 @@ class GrokTransportFixture:
 
     async def request(self, method, path, **options):
         self.requests.append((method, path, options))
+        if path == "/rest/models":
+            return {
+                "models": [
+                    {
+                        "modelId": "grok-test",
+                        "name": "Model",
+                        "modeName": "Grok Test",
+                        "modelMode": "MODEL_MODE_AUTO",
+                        "tags": [],
+                    },
+                    {
+                        "modelId": "grok-420",
+                        "name": "Model",
+                        "modeName": "Grok 420",
+                        "modelMode": "MODEL_MODE_GROK_420",
+                    },
+                    {"modelId": "grok-default", "name": "Model"},
+                    {
+                        "modelId": "imagine-agent-mode",
+                        "name": "Imagine Agent",
+                        "modelMode": "MODEL_MODE_IMAGINE",
+                    },
+                    {
+                        "modelId": "grok-plugins-4p5-excel",
+                        "name": "Model",
+                        "modelMode": "MODEL_MODE_AUTO",
+                    },
+                    {
+                        "modelId": "grok-companion",
+                        "name": "Model",
+                        "modelMode": "MODEL_MODE_AUTO",
+                    },
+                    {"modelId": "build", "name": "Model", "modelMode": "MODEL_MODE_BUILD"},
+                ],
+                "unavailableModels": [
+                    {"modelId": "grok-unavailable", "name": "Model", "modelMode": "MODEL_MODE_AUTO"}
+                ],
+                "defaultProModel": "grok-default",
+                "defaultProMode": "MODEL_MODE_FAST",
+            }
         if path.endswith("/response-node"):
             if self.response_node_payload is not None:
                 return self.response_node_payload
@@ -50,7 +90,7 @@ class GrokTransportFixture:
         user_id = f"user-{self.turn}"
         answer_id = f"answer-{self.turn}"
         parent_id = body["parentResponseId"]
-        if body.get("requestType") != "regenerate":
+        if body.get("isRegenRequest") is not True:
             self.responses.append(
                 {"responseId": user_id, "sender": "human", "parentResponseId": parent_id}
             )
@@ -106,14 +146,14 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         transport = GrokTransportFixture()
         provider.transport = transport
 
-        async def send(prompt="Question", *, action=None, message_id=None):
+        async def send(prompt="Question", *, action=None, message_id=None, model="grok-test"):
             request = SendRequest(
                 provider_id="grok",
                 account_id="test",
                 chat_id="local",
                 prompt=prompt,
                 conversation_id="chat",
-                model="grok-test",
+                model=model,
                 action=action,
                 message_id=message_id,
             )
@@ -134,12 +174,19 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             [body["parentResponseId"] for body in transport.bodies],
             ["answer-0", "answer-1", "user-2"],
         )
-        self.assertEqual(transport.bodies[2]["message"], "")
-        self.assertEqual(transport.bodies[2]["requestType"], "regenerate")
-        self.assertEqual(
-            [path.rsplit("/", 1)[-1] for _, path, _ in transport.requests],
-            ["response-node", "responses", "response-node"],
-        )
+        retry = transport.bodies[2]
+        self.assertEqual(retry["message"], "")
+        self.assertTrue(retry["isRegenRequest"])
+        self.assertNotIn("requestType", retry)
+        for body in transport.bodies:
+            self.assertEqual(body["modelMode"], "MODEL_MODE_AUTO")
+            self.assertNotIn("modelName", body)
+        history_paths = [
+            path.rsplit("/", 1)[-1]
+            for _, path, _ in transport.requests
+            if path.endswith(("/response-node", "/responses"))
+        ]
+        self.assertEqual(history_paths, ["response-node", "responses", "response-node"])
         self.assertEqual(len(transport.bodies), 3)
         for events in (first, second, retried):
             self.assertIn(TextDelta("Answer"), events)
@@ -147,6 +194,54 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             metadata = next(event for event in events if isinstance(event, MessageMetadata))
             self.assertEqual(metadata.actions, (MessageAction.RETRY.value,))
             self.assertEqual(metadata.sources[0]["url"], "https://example.com")
+
+    async def test_model_catalog_only_exposes_account_chat_models_with_clear_names(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        try:
+            catalog = await provider.models()
+        finally:
+            await provider.close()
+
+        self.assertEqual(
+            {model.id for model in catalog.chat_models},
+            {"grok-test", "grok-420", "grok-default"},
+        )
+        self.assertEqual(catalog.default_model, "grok-default")
+        self.assertEqual(catalog.chat_model("grok-test").title, "Grok Test")
+        default = catalog.chat_model("grok-default")
+        self.assertEqual(default.title, "Grok Default")
+        self.assertEqual(default.metadata["defaultMode"], "MODEL_MODE_FAST")
+        self.assertEqual(
+            catalog.chat_model("grok-420").metadata["modelMode"],
+            "MODEL_MODE_GROK_420",
+        )
+
+    async def test_unknown_model_refreshes_catalog_and_fails_before_send(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Question",
+            conversation_id="chat",
+            model="not-in-this-account",
+        )
+        try:
+            with self.assertRaisesRegex(ProviderError, "unavailable"):
+                [event async for event in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        self.assertEqual(
+            sum(path == "/rest/models" for _, path, _ in transport.requests),
+            2,
+        )
+        self.assertEqual(transport.bodies, [])
+        self.assertEqual(len(transport.requests), 2)
 
     def test_grok_cookie_selection_keeps_secure_session_and_ignores_noise(self):
         cookies = [

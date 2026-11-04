@@ -17,6 +17,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Start the existing ChatGPT Sentinel prewarm in the background for the selected account before its first send. Add provider-gate wait to opt-in send timings; validation behavior is unchanged.
 - Measure Gemini and Claude catalog, preparation, history, SSE and first-text stages in the content-free opt-in send timing context.
 
+### Fixed
+
+- Limit Grok model selection to the authenticated account's chat models and send its catalog-provided model mode. Use the supported regeneration flag for retries.
+
 ### Removed
 
 - Remove unused CDP and readiness options from the Claude provider constructor.
