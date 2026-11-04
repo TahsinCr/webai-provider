@@ -1,6 +1,7 @@
 """Independent Claude adapter using a saved web session over HTTPS."""
 
 import asyncio
+import time
 
 from ..api import (
     Capability,
@@ -27,6 +28,7 @@ from ..models import (
 )
 from ..projects import ProjectEditing
 from ..session import delete_session, session_exists
+from ..timing import current_send_timing
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .transport import ClaudeProjectEditor, ClaudeTransport
@@ -301,7 +303,11 @@ class ClaudeProvider(ProjectEditing, OptionalFeatures):
             )
         if not session_exists(self.credential_file) and not self.transport.authenticated:
             raise AccountPaused("Claude hesabını Hesaplar bölümünden doğrulayın")
+        timing = current_send_timing()
+        gate_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:
+            if gate_started is not None:
+                timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
             completed = False
             async for event in self.transport.events(
                 "send",

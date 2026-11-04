@@ -31,6 +31,7 @@ from ..models import (
 )
 from ..projects import ProjectEditing
 from ..session import delete_session, session_exists
+from ..timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 
 _CHAT_METADATA_TTL_SECONDS = 60.0
@@ -403,14 +404,29 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
         from .notebooks import field
         from .transport import generate
 
+        timing = current_send_timing()
+        gate_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:
+            if gate_started is not None:
+                timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
+            client_started = time.perf_counter_ns() if timing is not None else None
             client = await self._connect()
+            if client_started is not None:
+                timing.record("provider_client_ready_ms", time.perf_counter_ns() - client_started)
+            catalog_started = time.perf_counter_ns() if timing is not None else None
             if not client.models:
                 await self.models()
+            if catalog_started is not None:
+                timing.record("model_catalog_ms", time.perf_counter_ns() - catalog_started)
             context = None
             action_files = None
             if project:
+                project_started = time.perf_counter_ns() if timing is not None else None
                 notebook = await self.notebooks.get(project)
+                if project_started is not None:
+                    timing.record(
+                        "pre_send_project_context_ms", time.perf_counter_ns() - project_started
+                    )
                 value = field(field(notebook.metadata.get("native"), 1), 12)
                 if not isinstance(value, list) or not value or value[0] not in (1, 2):
                     raise ProviderError("Gemini defter bağlamı okunamadı")
@@ -426,7 +442,11 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                 )
                 if self._usable_chat_metadata(cached, request.conversation_id):
                     metadata = list(cached)
+                    if timing is not None:
+                        timing.increment("pre_send_conversation_cache_hit")
                 else:
+                    if timing is not None and request.conversation_id:
+                        timing.increment("pre_send_conversation_cache_miss")
                     metadata = [
                         request.conversation_id or "",
                         "",
@@ -440,20 +460,28 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                         "",
                     ]
                     if request.conversation_id:
-                        parts = await self.rpc.call(
-                            "hNvQHb",
-                            [
-                                request.conversation_id,
-                                1000 if request.action else 1,
-                                None,
-                                1,
-                                [1],
-                                [4],
-                                None,
-                                1,
-                            ],
-                            "/app",
-                        )
+                        history_started = time.perf_counter_ns() if timing is not None else None
+                        try:
+                            parts = await self.rpc.call(
+                                "hNvQHb",
+                                [
+                                    request.conversation_id,
+                                    1000 if request.action else 1,
+                                    None,
+                                    1,
+                                    [1],
+                                    [4],
+                                    None,
+                                    1,
+                                ],
+                                "/app",
+                            )
+                        finally:
+                            if history_started is not None:
+                                timing.record(
+                                    "pre_send_get_conversation_ms",
+                                    time.perf_counter_ns() - history_started,
+                                )
                         from .session import nested
 
                         turns = nested(parts[0], 0, default=[])
@@ -501,7 +529,12 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
             bound, visible, cid = False, False, request.conversation_id
             final_metadata = None
             output_files, published_sources = (), ()
+            activity_started = time.perf_counter_ns() if timing is not None else None
             await client.sync_activity()
+            if activity_started is not None:
+                timing.record(
+                    "provider_activity_sync_ms", time.perf_counter_ns() - activity_started
+                )
             async for chunk in generate(
                 client,
                 request,

@@ -5,11 +5,13 @@ import codecs
 import json
 import mimetypes
 import re
+import time
 import uuid
 from pathlib import Path
 
 from ..api import MessageAction
 from ..session import WebSession
+from ..timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
 from .session import BASE, HEADERS, nested
@@ -235,6 +237,12 @@ async def generate(
     frames = Frames()
     completed = False
     last_text = last_thoughts = ""
+    timing = current_send_timing()
+    sse_connect_started = time.perf_counter_ns() if timing is not None else None
+    response_opened = None
+    first_event = False
+    first_assistant_text = False
+    last_event_at = None
     try:
         response = await session.http.request(
             "POST",
@@ -246,6 +254,9 @@ async def generate(
             timeout=request_timeout,
             stream=True,
         )
+        response_opened = time.perf_counter_ns() if timing is not None else None
+        if sse_connect_started is not None:
+            timing.record("sse_connect_ms", response_opened - sse_connect_started)
         try:
             WebSession.check(response)
 
@@ -257,6 +268,13 @@ async def generate(
                     yield frame
 
             async for frame in parts():
+                event_at = time.perf_counter_ns() if timing is not None else None
+                if timing is not None:
+                    last_event_at = event_at
+                    if not first_event:
+                        first_event = True
+                        timing.record("sse_first_event_ms", event_at - response_opened)
+                        timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
                 if nested(frame, 5, 2, 0, 1, 0):
                     raise GeminiError(
                         "Gemini isteği reddetti; kota veya model uygunluğunu kontrol edin"
@@ -297,6 +315,19 @@ async def generate(
                         )
                     ):
                         text = nested(candidate, 22, 0) or text
+                    if (
+                        timing is not None
+                        and not first_assistant_text
+                        and isinstance(text, str)
+                        and text.strip()
+                    ):
+                        first_assistant_text = True
+                        timing.record(
+                            "sse_first_assistant_text_ms", event_at - response_opened
+                        )
+                        timing.record(
+                            "button_to_first_assistant_text_ms", event_at - timing.started_ns
+                        )
                     last_text = text or last_text
                     activity = published_activity(candidate)
                     last_thoughts = published_thoughts(candidate, activity[0], last_thoughts)
@@ -328,6 +359,9 @@ async def generate(
             "Gemini isteği ağ zaman aşımına uğradı; gönderim otomatik tekrarlanmadı "
             "ve sohbet geçmişi korundu."
         ) from None
+    if completed and last_event_at is not None and response_opened is not None:
+        timing.record("sse_last_event_ms", last_event_at - response_opened)
+        timing.record("button_to_last_sse_event_ms", last_event_at - timing.started_ns)
     if not completed:
         raise GeminiStreamError("Gemini akışı tamamlanmadan kesildi; yeniden gönderilmedi")
     await session.persist()

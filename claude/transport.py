@@ -13,6 +13,7 @@ from ..contracts import confirm_deleted
 from ..errors import AccountPaused, ProviderError, RemoteNotFound
 from ..projects import ProjectOptions, source_file
 from ..session import WebSession, read_session
+from ..timing import current_send_timing
 from .catalog import selector_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 
@@ -113,12 +114,16 @@ class ClaudeTransport:
         return catalog
 
     async def discover(self, *, force=False):
+        timing = current_send_timing()
+        started = time.perf_counter_ns() if timing is not None else None
         if (
             not force
             and self.organization
             and self.catalog is not None
             and time.monotonic() - self._discovered_at < 300
         ):
+            if started is not None:
+                timing.record("model_catalog_ms", time.perf_counter_ns() - started)
             return self.catalog
         task = self._discover_task
         if task is None or task.done():
@@ -128,6 +133,8 @@ class ClaudeTransport:
         try:
             return await asyncio.shield(task)
         finally:
+            if started is not None:
+                timing.record("model_catalog_ms", time.perf_counter_ns() - started)
             if task.done() and self._discover_task is task:
                 self._discover_task = None
 
@@ -280,7 +287,11 @@ class ClaudeTransport:
     async def events(self, mode, **v):
         if mode != "send":
             raise ValueError("Unsupported stream operation")
+        timing = current_send_timing()
+        client_started = time.perf_counter_ns() if timing is not None else None
         base = await self.base()
+        if client_started is not None:
+            timing.record("provider_client_ready_ms", time.perf_counter_ns() - client_started)
         model = v.get("model") or self.catalog["default_model"]
         choice = next((x for x in self.catalog["models"] if x["id"] == model), None)
         if choice is None or (
@@ -291,11 +302,19 @@ class ClaudeTransport:
         cid = remote_id(v["conversation_id"]) if v.get("conversation_id") else str(uuid.uuid4())
         path = base + "/chat_conversations/" + cid
         if v.get("conversation_id"):
-            history = (
-                await self.request("history", conversation_id=cid)
-                if v.get("action")
-                else await self.session.request("GET", path)
-            )
+            history_started = time.perf_counter_ns() if timing is not None else None
+            try:
+                history = (
+                    await self.request("history", conversation_id=cid)
+                    if v.get("action")
+                    else await self.session.request("GET", path)
+                )
+            finally:
+                if history_started is not None:
+                    timing.record(
+                        "pre_send_get_conversation_ms",
+                        time.perf_counter_ns() - history_started,
+                    )
             if v.get("temporary") and history.get("is_temporary") is not True:
                 raise ClaudeRequestNotSent("Claude temporary conversation could not be verified")
             parent = history.get("current_leaf_message_uuid")
@@ -371,6 +390,22 @@ class ClaudeTransport:
         response_id, parent_id, final_index, sources, files = None, None, 0, (), ()
         response_model = None
         presented_inputs = {}
+        first_event = False
+        first_assistant_text = False
+        last_event_at = None
+        sse_started = time.perf_counter_ns() if timing is not None else None
+        response_opened = None
+
+        def record_first_assistant_text():
+            nonlocal first_assistant_text
+            if timing is None or first_assistant_text:
+                return
+            first_assistant_text = True
+            now = time.perf_counter_ns()
+            if response_opened is not None:
+                timing.record("sse_first_assistant_text_ms", now - response_opened)
+            timing.record("button_to_first_assistant_text_ms", now - timing.started_ns)
+
         suffix = "/retry_completion" if v.get("action") == MessageAction.RETRY else "/completion"
         async with self.session.connect().stream(
             "POST",
@@ -380,6 +415,9 @@ class ClaudeTransport:
             allow_redirects=False,
             timeout=600,
         ) as response:
+            response_opened = time.perf_counter_ns() if timing is not None else None
+            if sse_started is not None:
+                timing.record("sse_connect_ms", response_opened - sse_started)
             self.session.check(response)
             payload = []
             payload_size = 0
@@ -399,6 +437,13 @@ class ClaudeTransport:
                 if raw == "[DONE]":
                     continue
                 event = json.loads(raw)
+                event_at = time.perf_counter_ns() if timing is not None else None
+                if timing is not None:
+                    last_event_at = event_at
+                    if not first_event:
+                        first_event = True
+                        timing.record("sse_first_event_ms", event_at - response_opened)
+                        timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
                 kind, delta = event.get("type"), event.get("delta", {})
                 if kind == "message_start":
                     native = event.get("message") or {}
@@ -424,6 +469,8 @@ class ClaudeTransport:
                         final_index = event.get("index", 0)
                         sources = sources_from({"sources": list(sources)}, block)
                     if block.get("type") == "text" and block.get("text"):
+                        if block["text"].strip():
+                            record_first_assistant_text()
                         yield {"type": "delta", "text": block["text"]}
                     elif block.get("type") == "thinking" and block.get("thinking"):
                         yield {"type": "delta", "channel": "analysis", "text": block["thinking"]}
@@ -449,7 +496,10 @@ class ClaudeTransport:
                             "text": delta.get("thinking", ""),
                         }
                     elif delta.get("type") == "text_delta" and channel == "text":
-                        yield {"type": "delta", "text": delta.get("text", "")}
+                        text = delta.get("text", "")
+                        if text.strip():
+                            record_first_assistant_text()
+                        yield {"type": "delta", "text": text}
                 if kind == "content_block_stop":
                     value = presented_inputs.pop(event.get("index", 0), "")
                     if value:
@@ -473,13 +523,19 @@ class ClaudeTransport:
                                 }
                             )
                 elif "completion" in event:
-                    yield {"type": "delta", "text": event.get("completion") or ""}
+                    text = event.get("completion") or ""
+                    if text.strip():
+                        record_first_assistant_text()
+                    yield {"type": "delta", "text": text}
                     completed = bool(event.get("stop_reason"))
                 if kind == "message_stop" or (kind == "message_delta" and delta.get("stop_reason")):
                     completed = True
                 if completed and not completion_notified:
                     yield {"type": "response_complete"}
                     completion_notified = True
+        if last_event_at is not None and response_opened is not None:
+            timing.record("sse_last_event_ms", last_event_at - response_opened)
+            timing.record("button_to_last_sse_event_ms", last_event_at - timing.started_ns)
         if not completed:
             raise ClaudeStreamError("Claude response ended before completion; it was not resent")
         if response_id:

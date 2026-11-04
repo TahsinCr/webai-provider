@@ -443,6 +443,8 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fetch.call_count, 3)
 
     async def test_http_stream_preserves_published_thinking_and_end_marker(self):
+        from providers.timing import SendTiming, use_send_timing
+
         cid = "11111111-1111-1111-1111-111111111111"
         events = [
             {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}},
@@ -492,8 +494,13 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             "default_model": "model",
             "models": [{"id": "model", "efforts": [], "native": {}}],
         }
+        timing = SendTiming("claude")
         with patch("asyncio.create_subprocess_exec", side_effect=AssertionError("browser")):
-            result = [e async for e in transport.events("send", prompt="Question", model="model")]
+            with use_send_timing(timing):
+                result = [
+                    e
+                    async for e in transport.events("send", prompt="Question", model="model")
+                ]
         self.assertTrue(any(e.get("channel") == "analysis" for e in result))
         final = [e for e in result if "text" in e and e.get("channel") != "analysis"]
         self.assertEqual("".join(e["text"] for e in final), "Answer")
@@ -502,6 +509,17 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(types.index("delta"), types.index("response_complete"))
         self.assertLess(types.index("response_complete"), types.index("done"))
         self.assertEqual(session.request.await_count, 1)
+        durations, _counts = timing.snapshot()
+        self.assertTrue(
+            {
+                "provider_client_ready_ms",
+                "sse_connect_ms",
+                "sse_first_event_ms",
+                "sse_first_assistant_text_ms",
+                "sse_last_event_ms",
+            }.issubset(durations)
+        )
+        self.assertGreaterEqual(durations["sse_last_event_ms"], durations["sse_first_event_ms"])
 
 
 class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):

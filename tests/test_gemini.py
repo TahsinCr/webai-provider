@@ -549,6 +549,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
         from providers.gemini.transport import generate
+        from providers.timing import SendTiming, use_send_timing
 
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[8] = "rcid", ["answer"], [2]
@@ -572,10 +573,14 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         ).encode()
         response = self.response([wire[:20], wire[20:]])
         session = self.session(response)
-        result = [
-            c
-            async for c in generate(session, SendRequest("gemini", "test", "local", "question"), [])
-        ]
+        timing = SendTiming("gemini")
+        with use_send_timing(timing):
+            result = [
+                c
+                async for c in generate(
+                    session, SendRequest("gemini", "test", "local", "question"), []
+                )
+            ]
         self.assertEqual(
             (result[1]["cid"], result[1]["text"], result[1]["thoughts"]),
             ("c_new", "answer", "thought\nSearching the web"),
@@ -589,6 +594,16 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["cid"], "c_new")
         self.assertTrue(response.closed)
         session.persist.assert_awaited_once()
+        durations, _counts = timing.snapshot()
+        self.assertTrue(
+            {
+                "sse_connect_ms",
+                "sse_first_event_ms",
+                "sse_first_assistant_text_ms",
+                "sse_last_event_ms",
+            }.issubset(durations)
+        )
+        self.assertGreaterEqual(durations["sse_last_event_ms"], durations["sse_first_event_ms"])
 
     async def test_cancellation_aborts_an_actual_stalled_http_transfer(self):
         from curl_cffi.requests import AsyncSession

@@ -1,4 +1,4 @@
-"""Opt-in, content-free ChatGPT send timing collection."""
+"""Opt-in, content-free provider send timing collection."""
 
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ def timing_enabled() -> bool:
 class SendTiming:
     """Keep only monotonic timestamps and named durations for one send."""
 
-    def __init__(self) -> None:
+    def __init__(self, provider_id: str = "unknown") -> None:
+        self.provider_id = provider_id
         self.started_ns = time.perf_counter_ns()
         self._durations: dict[str, float] = {}
         self._counts: dict[str, int] = {}
@@ -78,27 +79,35 @@ def collect_send_timing(timing: SendTiming | None) -> None:
 
 def send_timing_report(*, clear: bool = True) -> str:
     with _samples_lock:
-        samples = [sample.snapshot() for sample in _samples]
+        samples = [(sample.provider_id, sample.snapshot()) for sample in _samples]
         if clear:
             _samples.clear()
     if not samples:
         return ""
 
-    durations = [sample[0] for sample in samples]
-    counts = [sample[1] for sample in samples]
-    names = sorted({name for sample in durations for name in sample})
-    rows = [f"SiopeChat ChatGPT send timings; sends={len(samples)}; milliseconds"]
-    rows.append("stage | samples | median | p95")
-    for name in names:
-        values = sorted(sample[name] for sample in durations if name in sample)
-        if not values:
-            continue
-        p95 = values[max(0, math.ceil(0.95 * len(values)) - 1)]
-        rows.append(f"{name} | {len(values)} | {statistics.median(values):.3f} | {p95:.3f}")
-    count_names = sorted({name for sample in counts for name in sample})
-    if count_names:
-        rows.extend(("", "path counts | total"))
-        rows.extend(
-            f"{name} | {sum(sample.get(name, 0) for sample in counts)}" for name in count_names
-        )
+    providers = sorted({provider_id for provider_id, _ in samples})
+    rows = [f"SiopeChat provider send timings; sends={len(samples)}; milliseconds"]
+    rows.append("provider | stage | samples | median | p95")
+    for provider_id in providers:
+        durations = [sample[0] for name, sample in samples if name == provider_id]
+        names = sorted({name for sample in durations for name in sample})
+        for name in names:
+            values = sorted(sample[name] for sample in durations if name in sample)
+            p95 = values[max(0, math.ceil(0.95 * len(values)) - 1)]
+            rows.append(
+                f"{provider_id} | {name} | {len(values)} | "
+                f"{statistics.median(values):.3f} | {p95:.3f}"
+            )
+    counts_by_provider: dict[str, dict[str, int]] = {}
+    for provider_id, (_, counts) in samples:
+        totals = counts_by_provider.setdefault(provider_id, {})
+        for name, value in counts.items():
+            totals[name] = totals.get(name, 0) + value
+    if any(counts_by_provider.values()):
+        rows.extend(("", "provider | path count | total"))
+        for provider_id, counts in sorted(counts_by_provider.items()):
+            rows.extend(
+                f"{provider_id} | {name} | {value}"
+                for name, value in sorted(counts.items())
+            )
     return "\n".join(rows)
