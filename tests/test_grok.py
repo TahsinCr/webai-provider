@@ -424,12 +424,10 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
         self.assertEqual(transport.bodies[0]["imageAttachments"], [])
 
-    async def test_project_instruction_update_preserves_values_and_omits_null_fields(self):
+    async def test_project_instruction_update_sends_only_supported_fields(self):
         current = {
             "name": "Old",
-            "icon": None,
             "customPersonality": "Old instructions",
-            "preferredModel": None,
             "conversationStarters": {"starters": []},
             "isPublic": False,
         }
@@ -451,9 +449,24 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "Updated",
                 "customPersonality": "New instructions",
-                "conversationStarters": {"starters": []},
-                "isPublic": False,
             },
+        )
+
+    async def test_project_rename_preserves_instructions_and_can_clear_them(self):
+        current = {"name": "Old", "customPersonality": "Keep these"}
+        transport = SimpleNamespace(request=AsyncMock(side_effect=[current, {}, current, {}]))
+        editor = GrokProjectEditor(transport)
+
+        await editor.write("update", "workspace", name="Renamed")
+        await editor.write("update", "workspace", instructions="")
+
+        self.assertEqual(
+            transport.request.await_args_list[1].kwargs["json"],
+            {"name": "Renamed", "customPersonality": "Keep these"},
+        )
+        self.assertEqual(
+            transport.request.await_args_list[3].kwargs["json"],
+            {"name": "Old", "customPersonality": ""},
         )
 
     async def test_project_text_source_uses_grok_workspace_upload(self):
@@ -481,6 +494,88 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "content": base64.b64encode(b"Use verified sources").decode("ascii"),
             },
         )
+
+    async def test_project_file_source_uses_bounded_workspace_upload(self):
+        transport = SimpleNamespace(request=AsyncMock(return_value={"assetId": "source-1"}))
+        editor = GrokProjectEditor(transport)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "notes.md"
+            path.write_bytes(b"# Project notes\n")
+
+            await editor.write("add_source", "workspace", kind="file", path=path)
+
+        call = transport.request.await_args
+        self.assertEqual(call.args, ("POST", "/rest/workspaces/workspace/files/upload"))
+        self.assertEqual(call.kwargs["json"]["fileName"], "notes.md")
+        self.assertEqual(call.kwargs["json"]["mimeType"], "text/markdown")
+        self.assertEqual(base64.b64decode(call.kwargs["json"]["content"]), b"# Project notes\n")
+
+    async def test_project_source_removal_handles_asset_and_path_ids(self):
+        for resource_id, source, expected in (
+            (
+                "asset-1",
+                {"assetId": "asset-1", "name": "notes.md"},
+                (("DELETE", "/rest/workspaces/workspace/assets/asset-1"), {}),
+            ),
+            (
+                "docs/notes.md",
+                {"path": "docs/notes.md", "name": "notes.md"},
+                (
+                    ("DELETE", "/rest/workspaces/workspace/files"),
+                    {"params": {"path": "docs/notes.md"}},
+                ),
+            ),
+        ):
+            transport = SimpleNamespace(
+                request=AsyncMock(side_effect=[{"files": [source]}, {"deleted": True}])
+            )
+            editor = GrokProjectEditor(transport)
+
+            result = await editor.write("remove_source", "workspace", resource_id=resource_id)
+
+            self.assertEqual(result, {"deleted": True})
+            delete = transport.request.await_args_list[1]
+            self.assertEqual(delete.args, expected[0])
+            self.assertEqual(delete.kwargs, expected[1])
+
+    async def test_project_create_delete_and_chat_move_use_workspace_contracts(self):
+        provider = GrokProvider(Path("unused"), "test")
+        provider.transport.request = AsyncMock(
+            side_effect=[
+                {"workspaceId": "new", "name": "Project", "customPersonality": "Instructions"},
+                None,
+                {"conversationId": "chat", "title": "Chat", "workspaceId": "old"},
+                None,
+                None,
+                {"conversationId": "chat", "title": "Chat", "workspaceId": "new"},
+            ]
+        )
+
+        try:
+            project = await provider.create_project(" Project ", "Instructions")
+            await provider.delete_project("new")
+            await provider.move_chat("chat", "new")
+        finally:
+            await provider.close()
+
+        self.assertEqual((project.name, project.instructions), ("Project", "Instructions"))
+        calls = provider.transport.request.await_args_list
+        self.assertEqual(calls[0].args, ("POST", "/rest/workspaces"))
+        self.assertEqual(
+            calls[0].kwargs["json"],
+            {"name": "Project", "customPersonality": "Instructions"},
+        )
+        self.assertEqual(calls[1].args, ("DELETE", "/rest/workspaces/new"))
+        self.assertEqual(
+            [call.args[:2] for call in calls[2:]],
+            [
+                ("GET", "/rest/app-chat/conversations/chat"),
+                ("POST", "/rest/workspaces/new/conversations"),
+                ("DELETE", "/rest/workspaces/old/conversations/chat"),
+                ("GET", "/rest/app-chat/conversations/chat"),
+            ],
+        )
+        self.assertEqual(calls[3].kwargs["json"], {"conversationId": "chat"})
 
     def test_grok_cookie_selection_keeps_secure_session_and_ignores_noise(self):
         cookies = [

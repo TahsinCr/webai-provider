@@ -177,20 +177,16 @@ class GrokProjectEditor:
             current = await self.transport.request("GET", project_path)
             if not isinstance(current, dict):
                 raise ProviderError("Grok proje yanıtının biçimi değişmiş")
-            body = {
-                "name": values.get("name", current.get("name", "")),
-                "icon": current.get("icon"),
-                "customPersonality": values.get(
-                    "instructions", current.get("customPersonality", "")
-                ),
-                "preferredModel": current.get("preferredModel"),
-                "conversationStarters": current.get("conversationStarters"),
-                "isPublic": current.get("isPublic"),
-            }
+            name = values.get("name", current.get("name", ""))
+            instructions = values.get("instructions", current.get("customPersonality", ""))
+            if not isinstance(name, str) or not name.strip() or len(name) > 200:
+                raise ValueError("Proje adı 1–200 karakter olmalıdır")
+            if not isinstance(instructions, str):
+                raise ValueError("Proje talimatları metin olmalıdır")
             return await self.transport.request(
                 "PUT",
                 project_path,
-                json={key: value for key, value in body.items() if value is not None},
+                json={"name": name, "customPersonality": instructions},
             )
         if operation == "add_source":
             if values.get("kind") not in ("text", "file"):
