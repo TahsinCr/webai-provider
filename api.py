@@ -104,6 +104,7 @@ ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound |
 
 class Provider(Protocol):
     id: str
+    account_id: str
     capabilities: frozenset[Capability]
 
     async def prepare(self) -> None:

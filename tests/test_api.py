@@ -26,7 +26,11 @@ class FakeBackend:
         self.account_id, self.wait = account_id, wait
         self.started, self.stopped = asyncio.Event(), asyncio.Event()
         self.closed = 0
+        self.prepared = 0
         self.requests = []
+
+    async def prepare(self):
+        self.prepared += 1
 
     async def stream(self, request):
         self.requests.append(request)
@@ -113,6 +117,26 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((first.closed, second.closed), (1, 1))
         await client.close()
         self.assertEqual(second.closed, 1)
+
+    async def test_explicit_prepare_warms_only_the_requested_account(self):
+        client = ProviderClient()
+        backend = client.add(FakeBackend("personal"))
+        send_preparations = 0
+
+        async def prepare_for_send():
+            nonlocal send_preparations
+            send_preparations += 1
+
+        backend.prepare_for_send = prepare_for_send
+        prepared = await client.prepare("claude", "personal")
+        self.assertIs(prepared, backend)
+        self.assertEqual(backend.prepared, 1)
+        self.assertEqual(send_preparations, 0)
+
+        await client.prepare("claude", "personal", for_send=True)
+        self.assertEqual(backend.prepared, 2)
+        self.assertEqual(send_preparations, 1)
+        await client.close()
 
     async def test_close_cancels_stream_before_closing_backend(self):
         client = ProviderClient()

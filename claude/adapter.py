@@ -60,9 +60,6 @@ class ClaudeProvider(ProjectEditing, OptionalFeatures):
         self,
         credential_file,
         account_id="default",
-        *,
-        cdp_url="http://127.0.0.1:9232",
-        ensure_ready=None,
     ):
         self.credential_file = credential_file
         self.account_id = account_id

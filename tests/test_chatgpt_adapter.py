@@ -9,7 +9,7 @@ from providers import Capability, ProviderRegistry, ReplaceText, SendRequest, Te
 from providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
 from providers.chatgpt.client import ChatGPTClient
 from providers.chatgpt.errors import SentinelCompatibilityError
-from providers.errors import RateLimited, RemoteNotFound
+from providers.errors import ProviderError, RateLimited, RemoteNotFound
 from providers.models import Choice, FeatureState, Model, ModelCatalog, SessionState
 from providers.timing import SendTiming, use_send_timing
 
@@ -330,6 +330,20 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             ):
                 pass
         self.assertEqual(raised.exception.retry_after, 30)
+
+    async def test_unexpected_transport_failure_uses_safe_provider_error(self):
+        self.client.closed.set()
+        self.client.failure = ValueError("secret transport detail")
+
+        with self.assertRaises(ProviderError) as raised:
+            async for _ in self.provider.stream(
+                SendRequest("chatgpt", "default", "local", "hello")
+            ):
+                pass
+
+        self.assertEqual(raised.exception.code, "chatgpt_error")
+        self.assertIsNone(raised.exception.message_submitted)
+        self.assertNotIn("secret transport detail", str(raised.exception))
 
     async def test_sentinel_compatibility_error_keeps_its_type_and_submission_state(self):
         self.client.closed.set()

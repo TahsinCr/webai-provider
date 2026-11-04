@@ -46,6 +46,7 @@ from ..session import delete_session, session_exists
 from ..timing import current_send_timing
 from .client import ChatGPTClient
 from .discovery import project_id
+from .errors import ChatGPTWebError
 from .formats import message_files, message_parts
 from .projects import ChatGPTProjectEditor
 from .session import BrowserSession
@@ -816,7 +817,14 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
                     publish(("error", error))
             except Exception:
                 if not stopped.is_set():
-                    publish(("error", RuntimeError("provider_send_failed")))
+                    publish(
+                        (
+                            "error",
+                            ChatGPTWebError(
+                                "ChatGPT request failed; remote outcome is unknown and the request was not retried"
+                            ),
+                        )
+                    )
             finally:
                 if not stopped.is_set():
                     publish(("done", None))

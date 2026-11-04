@@ -50,6 +50,18 @@ class ProviderClient:
             raise RuntimeError("provider client is closed")
         return self._accounts[provider_id, account_id]
 
+    async def prepare(
+        self, provider_id: str, account_id: str = "default", *, for_send: bool = False
+    ) -> Backend:
+        """Warm one account before use; opt in to provider-specific send preparation."""
+        backend = self.account(provider_id, account_id)
+        await backend.prepare()
+        if for_send:
+            prepare_for_send = getattr(backend, "prepare_for_send", None)
+            if callable(prepare_for_send):
+                await prepare_for_send()
+        return backend
+
     @property
     def accounts(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._accounts)
