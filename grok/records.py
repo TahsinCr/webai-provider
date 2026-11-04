@@ -27,7 +27,8 @@ class GrokTextFilter:
     _TOOL_CLOSE = "</xai:tool_usage_card>"
     _RENDER_OPEN = "<grok:render"
     _RENDER_CLOSE = "</grok:render>"
-    _MARKERS = (_TOOL_OPEN, _RENDER_OPEN, _RENDER_CLOSE)
+    _MARKERS = (_TOOL_OPEN, _TOOL_CLOSE, _RENDER_OPEN, _RENDER_CLOSE)
+    _MAX_MARKER_LENGTH = max(map(len, _MARKERS))
     _MARKUP = re.compile(r"<xai:tool_usage_card\b|</?grok:render\b")
 
     def __init__(self):
@@ -43,10 +44,9 @@ class GrokTextFilter:
 
     @classmethod
     def _safe_end(cls, text):
-        markers = (*cls._MARKERS, cls._TOOL_CLOSE)
-        for size in range(min(len(text), max(map(len, markers))), 0, -1):
-            if any(marker.startswith(text[-size:]) for marker in markers):
-                return len(text) - size
+        index = text.rfind("<", max(0, len(text) - cls._MAX_MARKER_LENGTH))
+        if index >= 0 and any(marker.startswith(text[index:]) for marker in cls._MARKERS):
+            return index
         return len(text)
 
     def feed(self, text="", *, final=False):

@@ -13,6 +13,7 @@ from providers.api import (
     MessageAction,
     MessageMetadata,
     ProviderError,
+    ReplaceText,
     ResponseComplete,
     SendRequest,
     TextDelta,
@@ -391,18 +392,100 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         metadata = next(event for event in stream if isinstance(event, MessageMetadata))
         self.assertEqual(metadata.model, "grok-4-1-thinking-1129")
 
-    def test_text_filter_holds_split_protocol_tags_until_they_are_complete(self):
-        cleaner = GrokTextFilter()
-        value = "".join(
-            (
-                cleaner.feed("  Answer <grok:ren"),
-                cleaner.feed('der type="render_inline_citation">2</grok:render> <xai:tool_'),
-                cleaner.feed("usage_card>ignored"),
-                cleaner.feed("</xai:tool_usage_card> end"),
-                cleaner.feed(final=True),
-            )
+    def test_text_filter_preserves_every_protocol_tag_split(self):
+        text = (
+            '  Answer <grok:render type="render_inline_citation">2</grok:render> '
+            "<xai:tool_usage_card>ignored</xai:tool_usage_card> end"
         )
-        self.assertEqual(value, "Answer 2  end")
+        for chunks in [list(text), *([text[:i], text[i:]] for i in range(len(text) + 1))]:
+            cleaner = GrokTextFilter()
+            value = "".join([cleaner.feed(chunk) for chunk in chunks] + [cleaner.feed(final=True)])
+            self.assertEqual(value, "Answer 2  end")
+
+    async def test_stream_reconciles_late_final_snapshots_and_completes_once(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+
+        async def events(_path, _body):
+            yield {"result": {"conversationId": "chat", "response": {"token": "Draft"}}}
+            for snapshot in ("Final", "Authoritative final"):
+                yield {
+                    "result": {
+                        "response": {
+                            "modelResponse": {
+                                "responseId": "answer",
+                                "model": "grok-3",
+                                "message": snapshot,
+                                "partial": False,
+                            }
+                        }
+                    }
+                }
+
+        transport.events = events
+        try:
+            received = [
+                event
+                async for event in provider.stream(
+                    SendRequest(
+                        provider_id="grok",
+                        account_id="test",
+                        chat_id="local",
+                        prompt="Question",
+                    )
+                )
+            ]
+        finally:
+            await provider.close()
+        text = ""
+        for event in received:
+            if isinstance(event, TextDelta):
+                text += event.text
+            elif isinstance(event, ReplaceText):
+                text = event.text
+        self.assertEqual(text, "Authoritative final")
+        self.assertEqual(received.count(ResponseComplete()), 1)
+        metadata = next(event for event in received if isinstance(event, MessageMetadata))
+        self.assertEqual((metadata.model, metadata.message_id), ("grok-3", "answer"))
+
+    async def test_failed_stream_does_not_cache_replay_or_hide_auth_errors(self):
+        for code in (None, "AUTH_REQUIRED", "UNAUTHORIZED", "RATE_LIMITED"):
+            with self.subTest(code=code):
+                provider = GrokProvider(Path("unused"), "test")
+                transport = GrokTransportFixture()
+                provider.transport = transport
+
+                async def events(_path, body):
+                    transport.bodies.append(body)
+                    yield {"result": {"conversationId": "chat", "response": {"token": "Partial"}}}
+                    if code:
+                        yield {"result": {"response": {}, "error": {"code": code}}}
+
+                transport.events = events
+                try:
+                    error = (
+                        AccountPaused
+                        if code in ("AUTH_REQUIRED", "UNAUTHORIZED")
+                        else ProviderError
+                    )
+                    with self.assertRaises(error):
+                        [
+                            event
+                            async for event in provider.stream(
+                                SendRequest(
+                                    provider_id="grok",
+                                    account_id="test",
+                                    chat_id="local",
+                                    prompt="Question",
+                                )
+                            )
+                        ]
+                    self.assertEqual(provider._continuations, {})
+                    self.assertEqual(len(transport.bodies), 1)
+                    self.assertEqual(transport.session.authenticated, error is not AccountPaused)
+                finally:
+                    await provider.close()
 
     async def test_history_exposes_only_the_remote_generation_state(self):
         provider = GrokProvider(Path("unused"), "test")
