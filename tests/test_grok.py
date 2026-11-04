@@ -322,6 +322,56 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await provider.close()
 
+    async def test_server_defined_models_route_without_a_hardcoded_model_list(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        transport.request = AsyncMock(
+            side_effect=lambda _, path, **kw: (
+                {
+                    "models": [
+                        {
+                            "modelId": "grok-future",
+                            "name": "Grok Future",
+                            "modelMode": "MODEL_MODE_SERVER_NEW",
+                        }
+                    ]
+                }
+                if path == "/rest/models"
+                else {
+                    "modes": [
+                        {
+                            "id": "grok-future",
+                            "title": "Grok Future",
+                            "availability": {"available": {}},
+                        }
+                    ],
+                    "defaultModeId": "grok-future",
+                }
+            )
+        )
+        try:
+            catalog = await provider.models()
+            self.assertEqual(catalog.default_chat_model.chat_title, "Grok Future")
+            [
+                event
+                async for event in provider.stream(
+                    SendRequest(
+                        provider_id="grok",
+                        account_id="test",
+                        chat_id="local",
+                        prompt="Question",
+                        model="grok-future",
+                    )
+                )
+            ]
+            self.assertEqual(transport.bodies[0]["modelName"], "grok-future")
+            self.assertEqual(transport.bodies[0]["modelMode"], "MODEL_MODE_SERVER_NEW")
+            self.assertNotIn("isReasoning", transport.bodies[0])
+            self.assertEqual(transport.request.await_count, 2)
+        finally:
+            await provider.close()
+
     async def test_stream_cleans_provider_markup_and_initial_whitespace(self):
         provider = GrokProvider(Path("unused"), "test")
         transport = GrokTransportFixture()

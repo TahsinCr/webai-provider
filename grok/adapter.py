@@ -177,13 +177,14 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             ):
                 raise ProviderError("Grok model catalog response contract changed")
 
-            by_mode = {}
+            by_mode, by_id = {}, {}
             for item in details["models"]:
                 if not isinstance(item, dict):
                     continue
                 identifier, mode = item.get("modelId"), item.get("modelMode")
                 if isinstance(identifier, str) and identifier and isinstance(mode, str) and mode:
                     by_mode.setdefault(mode, {})[identifier] = item
+                    by_id[identifier] = item
 
             models = []
             for item in data["modes"]:
@@ -221,12 +222,16 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 advertised = advertised if advertised.casefold().startswith("grok ") else ""
                 model_mode = item.get("modelMode")
                 if not isinstance(model_mode, str) or not model_mode:
-                    model_mode = _MODEL_MODES.get(model_id.casefold())
+                    model_mode = _MODEL_MODES.get(model_id.casefold()) or by_id.get(
+                        model_id, {}
+                    ).get("modelMode")
                 if isinstance(model_mode, str) and model_mode:
                     metadata["modelMode"] = model_mode
                 matches = by_mode.get(model_mode, {})
-                if len(matches) == 1:
+                detail = matches.get(model_id)
+                if detail is None and len(matches) == 1:
                     detail = next(iter(matches.values()))
+                if detail is not None:
                     metadata["modelName"] = detail["modelId"]
                     name = detail.get("name")
                     title = (
@@ -535,7 +540,6 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 "fileAttachments": file_attachments,
                 "imageAttachments": [],
                 "disableSearch": False,
-                "isReasoning": False,
                 "temporary": request.temporary,
                 "isRegenRequest": is_retry,
             }
