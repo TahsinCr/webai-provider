@@ -16,6 +16,7 @@ from providers import (
 )
 from providers.gemini.adapter import GeminiProvider
 from providers.gemini.errors import GeminiStreamError
+from providers.registry import PROVIDERS
 
 
 class FakeBackend:
@@ -210,7 +211,7 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_all_bundled_factories_are_lazy_and_reject_wrong_account_send(self):
         with tempfile.TemporaryDirectory() as folder:
             async with ProviderClient() as client:
-                for provider in ("chatgpt", "gemini", "claude"):
+                for provider in PROVIDERS:
                     backend = client.add(
                         create_provider(
                             provider,
@@ -218,6 +219,7 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
                             credential_file=Path(folder) / provider / "session.json",
                         )
                     )
+                    self.assertEqual(backend.id, provider)
                     with self.assertRaises(ValueError):
                         await anext(
                             backend.stream(SendRequest(provider, "other", "local", "Hello"))

@@ -20,7 +20,11 @@ def _text(value):
 
 
 def active_responses(history):
-    rows = history.get("responses", []) if isinstance(history, dict) else []
+    rows = (
+        history.get("responses", history.get("responseNodes", []))
+        if isinstance(history, dict)
+        else []
+    )
     if not isinstance(rows, list):
         return ()
     rows = [row for row in rows if isinstance(row, dict) and row.get("responseId")]

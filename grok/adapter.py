@@ -2,6 +2,8 @@
 
 import asyncio
 import time
+from collections import OrderedDict
+from io import StringIO
 
 from ..api import (
     Capability,
@@ -33,6 +35,8 @@ from .records import _text, active_responses, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id
 
 _CATALOG_TTL = 300
+_CONTINUATION_TTL = 60
+_CONTINUATION_LIMIT = 8
 
 
 class GrokProvider(ProjectEditing, OptionalFeatures):
@@ -64,15 +68,36 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         self._gate = asyncio.Lock()
         self._catalog = None
         self._catalog_at = 0.0
+        self._continuations = OrderedDict()
 
     def _origin(self, remote):
         return Origin(self.id, self.account_id, remote)
+
+    def _take_continuation(self, conversation_id):
+        cached = self._continuations.pop(conversation_id, None)
+        if cached is None:
+            return None
+        response_id, verified_at = cached
+        return response_id if time.monotonic() - verified_at < _CONTINUATION_TTL else None
+
+    def _remember_continuation(self, conversation_id, response_id):
+        if (
+            not isinstance(conversation_id, str)
+            or not isinstance(response_id, str)
+            or not response_id
+        ):
+            return
+        self._continuations[conversation_id] = (response_id, time.monotonic())
+        self._continuations.move_to_end(conversation_id)
+        while len(self._continuations) > _CONTINUATION_LIMIT:
+            self._continuations.popitem(last=False)
 
     async def prepare(self):
         await self.authenticate()
 
     async def close(self):
         async with self._gate:
+            self._continuations.clear()
             await self.transport.close()
 
     async def authenticate(self):
@@ -97,6 +122,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             await self.transport.close()
             delete_session(self.credential_file)
             self._catalog = None
+            self._continuations.clear()
             self.transport.session.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
@@ -195,6 +221,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             params={"includeThreads": True},
         )
 
+    async def _response_nodes(self, conversation_id):
+        return await self.transport.request(
+            "GET",
+            "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/response-node",
+            params={"includeThreads": False},
+        )
+
     async def _conversation_metadata(self, conversation_id):
         return await self.transport.request(
             "GET",
@@ -227,6 +260,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         await self.transport.request(
             "DELETE", "/rest/app-chat/conversations/" + remote_id(conversation_id)
         )
+        self._continuations.pop(conversation_id, None)
 
     async def list_projects(self, cursor=None):
         query = {"pageSize": 50}
@@ -355,32 +389,50 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
 
         async with self._gate:
             conversation_id = request.conversation_id
-            history = None
             parent_response_id = ""
             is_retry = request.action == MessageAction.RETRY
             if conversation_id:
-                history = await self._history(conversation_id)
-                if not isinstance(history, dict):
-                    raise ProviderError("Grok conversation history response contract changed")
-                if history.get("inflightResponses"):
-                    raise ProviderError("Grok conversation already has a response in progress")
-                active = active_responses(history)
+                cached_parent = None
                 if is_retry:
-                    target = next(
-                        (item for item in active if item.get("responseId") == request.message_id),
-                        None,
+                    self._continuations.pop(conversation_id, None)
+                    history = await self._history(conversation_id)
+                else:
+                    cached_parent = self._take_continuation(conversation_id)
+                    history = (
+                        None
+                        if cached_parent is not None
+                        else await self._response_nodes(conversation_id)
                     )
-                    if target is None or str(target.get("sender", "")).lower() not in (
-                        "assistant",
-                        "model",
-                        "grok",
-                    ):
-                        raise ProviderError(
-                            "Grok retry target is no longer on the active conversation path"
+                if cached_parent is not None:
+                    parent_response_id = cached_parent
+                else:
+                    if not isinstance(history, dict):
+                        raise ProviderError("Grok conversation history response contract changed")
+                    if not is_retry and not isinstance(history.get("responseNodes"), list):
+                        raise ProviderError("Grok conversation node response contract changed")
+                    if history.get("inflightResponses"):
+                        raise ProviderError("Grok conversation already has a response in progress")
+                    active = active_responses(history)
+                    if is_retry:
+                        target = next(
+                            (
+                                item
+                                for item in active
+                                if item.get("responseId") == request.message_id
+                            ),
+                            None,
                         )
-                    parent_response_id = target.get("parentResponseId") or ""
-                elif active:
-                    parent_response_id = active[-1].get("responseId") or ""
+                        if target is None or str(target.get("sender", "")).lower() not in (
+                            "assistant",
+                            "model",
+                            "grok",
+                        ):
+                            raise ProviderError(
+                                "Grok retry target is no longer on the active conversation path"
+                            )
+                        parent_response_id = target.get("parentResponseId") or ""
+                    elif active:
+                        parent_response_id = active[-1].get("responseId") or ""
 
             body = {
                 "message": "" if is_retry else request.prompt,
@@ -401,12 +453,14 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 else "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses"
             )
             response_id = user_response_id = None
-            streamed_text = streamed_analysis = native_text = native_analysis = ""
+            streamed_text, streamed_analysis = StringIO(), StringIO()
+            native_text = native_analysis = ""
             sources = ()
             response_model = model
             complete = False
             completion_notified = False
             bound = False
+            has_text = False
 
             async for chunk in self.transport.events(path, body):
                 result = chunk.get("result")
@@ -441,9 +495,8 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 if isinstance(native, dict):
                     response_id = native.get("responseId") or response_id
                     response_model = native.get("model") or response_model
-                    sources = sources_from(
-                        {"sources": [*sources, *(native.get("webSearchResults") or [])]}
-                    )
+                    if isinstance(native.get("webSearchResults"), list):
+                        sources = sources_from({"sources": [*sources, *native["webSearchResults"]]})
                     if isinstance(native.get("message"), str):
                         native_text = native["message"]
                     if native.get("thinkingTrace"):
@@ -456,10 +509,11 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                         "header",
                         "summary",
                     ):
-                        streamed_analysis += token
+                        streamed_analysis.write(token)
                         yield TextDelta(token, "analysis")
                     else:
-                        streamed_text += token
+                        streamed_text.write(token)
+                        has_text = True
                         yield TextDelta(token)
                 if response.get("responseId") and not response_id:
                     response_id = response["responseId"]
@@ -470,11 +524,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     and not completion_notified
                     and (request.conversation_id or conversation_id)
                 ):
-                    if native_analysis and native_analysis != streamed_analysis:
+                    if native_analysis and native_analysis != streamed_analysis.getvalue():
                         yield ReplaceText(native_analysis, "analysis")
-                    if native_text and native_text != streamed_text:
+                        streamed_analysis = StringIO(native_analysis)
+                    if native_text and native_text != streamed_text.getvalue():
                         yield ReplaceText(native_text)
-                        streamed_text = native_text
+                        streamed_text = StringIO(native_text)
+                        has_text = True
                     yield ResponseComplete()
                     completion_notified = True
             if not conversation_id:
@@ -483,14 +539,21 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 raise ProviderError(
                     "Grok stream ended before response completion; it was not resent"
                 )
+            if response_id:
+                self._remember_continuation(conversation_id, response_id)
             if not bound and not request.conversation_id:
                 yield ConversationBound(conversation_id)
-            if not completion_notified and native_analysis and native_analysis != streamed_analysis:
+            if (
+                not completion_notified
+                and native_analysis
+                and native_analysis != streamed_analysis.getvalue()
+            ):
                 yield ReplaceText(native_analysis, "analysis")
-            if not completion_notified and native_text and native_text != streamed_text:
+            if not completion_notified and native_text and native_text != streamed_text.getvalue():
                 yield ReplaceText(native_text)
-                streamed_text = native_text
-            if response_id and streamed_text:
+                streamed_text = StringIO(native_text)
+                has_text = True
+            if response_id and has_text:
                 yield MessageMetadata(
                     message_id=response_id,
                     user_message_id=user_response_id,
