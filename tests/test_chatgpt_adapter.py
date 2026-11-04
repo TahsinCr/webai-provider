@@ -11,6 +11,7 @@ from providers.chatgpt.client import ChatGPTClient
 from providers.chatgpt.errors import SentinelCompatibilityError
 from providers.errors import RateLimited, RemoteNotFound
 from providers.models import Choice, FeatureState, Model, ModelCatalog, SessionState
+from providers.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient
 
@@ -258,15 +259,27 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_produces_common_events_and_releases_transport(self):
         self.client.closed.set()
-        events = [
-            event
-            async for event in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            )
-        ]
+
+        async def collect():
+            with use_send_timing(timing):
+                return [
+                    event
+                    async for event in self.provider.stream(
+                        SendRequest("chatgpt", "default", "local", "hello")
+                    )
+                ]
+
+        timing = SendTiming()
+        await self.provider._gate.acquire()
+        stream = asyncio.create_task(collect())
+        await asyncio.sleep(0.02)
+        self.assertFalse(stream.done())
+        self.provider._gate.release()
+        events = await stream
         self.assertEqual(events[0], TextDelta("partial"))
         self.assertEqual(events[-1].conversation_id, "remote")
         self.assertTrue(self.client.closed.is_set())
+        self.assertGreater(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
 
     async def test_upload_cancellation_signals_transport_and_waits_for_worker(self):
         import threading

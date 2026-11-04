@@ -6,7 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
-- Start the existing ChatGPT Sentinel prewarm in the background for the selected account before its first send. Validation behavior is unchanged.
+- Start the existing ChatGPT Sentinel prewarm in the background for the selected account before its first send. Add provider-gate wait to opt-in send timings; validation behavior is unchanged.
 
 ## [1.0-beta] - 2026-11-03
 

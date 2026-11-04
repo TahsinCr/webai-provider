@@ -821,7 +821,13 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
                 if not stopped.is_set():
                     publish(("done", None))
 
+        timing = current_send_timing()
+        gate_wait_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:
+            if gate_wait_started is not None:
+                timing.record(
+                    "provider_send_gate_wait_ms", time.perf_counter_ns() - gate_wait_started
+                )
             worker = asyncio.create_task(asyncio.to_thread(work))
             stream_finished = False
             try:
