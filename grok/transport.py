@@ -24,18 +24,6 @@ def remote_id(value):
     return quote(value, safe="")
 
 
-def _authenticated(value):
-    if not isinstance(value, dict):
-        return False
-    for key in ("isAuthenticated", "authenticated", "isLoggedIn"):
-        if key in value:
-            return value[key] is True
-    user = value.get("user") or value.get("userInfo") or value.get("account")
-    if isinstance(user, dict):
-        return any(user.get(key) for key in ("id", "userId", "email", "username"))
-    return any(value.get(key) for key in ("userId", "accountId", "email", "username"))
-
-
 def _read_limited(path):
     with path.open("rb") as stream:
         return stream.read(_MAX_WORKSPACE_FILE_BYTES + 1)
@@ -58,11 +46,11 @@ class GrokTransport:
 
     async def _check_authentication(self):
         try:
-            status = await self.session.request("GET", "/api/auth-status")
+            status = await self.session.request("GET", "/rest/user-settings")
         except AccountPaused:
             self.session.authenticated = False
             raise
-        if not _authenticated(status):
+        if not isinstance(status, dict):
             self.session.authenticated = False
             raise AccountPaused(
                 "Grok oturumu doğrulanamadı; Hesaplar bölümünden yeniden doğrulayın"

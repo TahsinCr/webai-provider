@@ -3,6 +3,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from providers.api import (
     MessageAction,
@@ -12,7 +13,9 @@ from providers.api import (
     SendRequest,
     TextDelta,
 )
+from providers.errors import AccountPaused
 from providers.grok import GrokProvider
+from providers.grok.transport import GrokTransport
 from providers.profiles import select_cookies
 
 
@@ -79,6 +82,25 @@ class GrokTransportFixture:
 
 
 class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authentication_uses_protected_user_settings_resource(self):
+        session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
+        with patch("providers.grok.transport.WebSession", return_value=session):
+            transport = GrokTransport(Path("unused"))
+            status = await transport.authenticate()
+
+        self.assertEqual(status, {})
+        self.assertTrue(session.authenticated)
+        session.request.assert_awaited_once_with("GET", "/rest/user-settings")
+
+    async def test_authentication_rejects_missing_resource_payload(self):
+        session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value=None))
+        with patch("providers.grok.transport.WebSession", return_value=session):
+            transport = GrokTransport(Path("unused"))
+            with self.assertRaises(AccountPaused):
+                await transport.authenticate()
+
+        self.assertFalse(session.authenticated)
+
     async def test_continuation_cache_skips_history_and_retry_keeps_user_parent(self):
         provider = GrokProvider(Path("unused"), "test")
         transport = GrokTransportFixture()
