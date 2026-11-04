@@ -81,7 +81,9 @@ class ProjectEditing:
         before = await self.get_project(project_id)
         ids = {r.id for r in before.resources}
         async with self._gate:
-            await self.editor.write("add_source", project_id, kind=kind, **values)
+            await self.editor.write(
+                "add_source", project_id, kind=kind, existing_resources=before.resources, **values
+            )
         return await self._project_after_write(
             project_id, lambda p: any(r.id not in ids for r in p.resources)
         )
@@ -93,7 +95,11 @@ class ProjectEditing:
             raise ValueError("Proje kaynağı bulunamadı")
         async with self._gate:
             await self.editor.write(
-                "remove_source", project_id, resource_id=resource_id, resource_name=source.name
+                "remove_source",
+                project_id,
+                resource_id=resource_id,
+                resource_name=source.name,
+                resource=source,
             )
         return await self._project_after_write(
             project_id, lambda p: all(r.id != resource_id for r in p.resources)

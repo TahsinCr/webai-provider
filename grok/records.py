@@ -3,6 +3,7 @@
 import re
 
 from ..api import MessageAction
+from ..errors import ProviderError
 from ..messages import sources_from
 from ..models import Content, Conversation, Message, Origin, Project, Resource
 
@@ -167,10 +168,10 @@ def _messages(history):
 
 def conversation(value, account_id, history=None):
     if not isinstance(value, dict):
-        raise ValueError("Grok conversation response contract changed")
+        raise ProviderError("Grok conversation response contract changed")
     identifier = value.get("conversationId") or value.get("id")
     if not isinstance(identifier, str) or not identifier:
-        raise ValueError("Grok conversation response contract changed")
+        raise ProviderError("Grok conversation response contract changed")
     workspaces = value.get("workspaces") or ()
     project_id = value.get("workspaceId")
     if not project_id and workspaces and isinstance(workspaces[0], dict):
@@ -190,13 +191,13 @@ def conversation(value, account_id, history=None):
 
 def project(value, account_id, files=()):
     if not isinstance(value, dict):
-        raise ValueError("Grok workspace response contract changed")
+        raise ProviderError("Grok workspace response contract changed")
     identifier = value.get("workspaceId") or value.get("id")
     if not isinstance(identifier, str) or not identifier:
-        raise ValueError("Grok workspace response contract changed")
+        raise ProviderError("Grok workspace response contract changed")
     resources = tuple(
         Resource(
-            str(item.get("assetId") or item.get("path") or item.get("name")),
+            str(item.get("path") or item.get("assetId")),
             str(item.get("name") or item.get("path") or "Source"),
             item.get("mimeType"),
             metadata={

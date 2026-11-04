@@ -183,7 +183,7 @@ class GrokProjectEditor:
 
     async def options(self, project_id=None):
         return ProjectOptions(
-            fields=("name", "instructions") if project_id else ("name",),
+            fields=("name", "instructions"),
             sources=(
                 {"id": "text", "title": "Metin"},
                 {"id": "file", "title": "Dosya", "accept": "*/*"},
@@ -196,27 +196,28 @@ class GrokProjectEditor:
     async def write(self, operation, project_id=None, **values):
         project_path = "/rest/workspaces/" + remote_id(project_id)
         if operation == "update":
-            current = await self.transport.request("GET", project_path)
-            if not isinstance(current, dict):
-                raise ProviderError("Grok proje yanıtının biçimi değişmiş")
-            name = values.get("name", current.get("name", ""))
-            instructions = values.get("instructions", current.get("customPersonality", ""))
-            if not isinstance(name, str) or not name.strip() or len(name) > 200:
-                raise ValueError("Proje adı 1–200 karakter olmalıdır")
-            if not isinstance(instructions, str):
-                raise ValueError("Proje talimatları metin olmalıdır")
-            return await self.transport.request(
-                "PUT",
-                project_path,
-                json={"name": name, "customPersonality": instructions},
-            )
+            body = {}
+            if "name" in values:
+                name = values["name"]
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
+                    raise ValueError("Proje adı 1–200 karakter olmalıdır")
+                body["name"] = name.strip()
+            if "instructions" in values:
+                if not isinstance(values["instructions"], str):
+                    raise ValueError("Proje talimatları metin olmalıdır")
+                body["customPersonality"] = values["instructions"]
+            if not body:
+                raise ValueError("Grok proje değişikliği gerekir")
+            return await self.transport.request("PUT", project_path, json=body)
         if operation == "add_source":
             if values.get("kind") not in ("text", "file"):
                 raise ValueError("Grok yalnızca metin ve dosya kaynaklarını destekler")
             if values["kind"] == "text":
                 name, content = values.get("name"), values.get("text")
-                if not isinstance(name, str) or not name.strip() or not isinstance(content, str):
+                if not isinstance(name, str) or not isinstance(content, str) or not content:
                     raise ValueError("Kaynak adı ve metin içeriği gerekir")
+                if len(content) > _MAX_WORKSPACE_FILE_BYTES:
+                    raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
                 mime_type = "text/plain"
                 content = content.encode("utf-8")
             else:
@@ -228,38 +229,39 @@ class GrokProjectEditor:
                 content = await asyncio.to_thread(_read_limited, file)
                 name = file.name
                 mime_type = mimetypes.guess_type(file.name)[0] or "text/plain"
-            if len(content) > _MAX_WORKSPACE_FILE_BYTES:
+            if not 0 < len(content) <= _MAX_WORKSPACE_FILE_BYTES:
                 raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
+            name = name.strip()
+            if not name or len(name) > 255 or any(char in name for char in "/\\\r\n\x00"):
+                raise ValueError("Grok kaynak adı geçersiz")
+            if any(
+                (source.metadata.get("path") or source.name).rsplit("/", 1)[-1] == name
+                for source in values.get("existing_resources", ())
+            ):
+                raise ValueError("Bu adla bir Grok proje kaynağı zaten var")
             return await self.transport.request(
                 "POST",
                 project_path + "/files/upload",
                 json={
-                    "fileName": name.strip(),
+                    "fileName": name,
                     "mimeType": mime_type,
                     "content": base64.b64encode(content).decode("ascii"),
                 },
             )
         if operation == "remove_source":
-            source = await self.transport.request(
-                "GET", project_path + "/files", params={"recursive": "true"}
-            )
-            files = source.get("files", []) if isinstance(source, dict) else []
-            item = next(
-                (
-                    entry
-                    for entry in files
-                    if isinstance(entry, dict)
-                    and (entry.get("assetId") or entry.get("path")) == values["resource_id"]
-                ),
-                None,
-            )
-            if item is None or item.get("isDirectory"):
+            source = values["resource"]
+            if source.id != values["resource_id"]:
                 raise ValueError("Grok proje kaynağı bulunamadı")
+            item = source.metadata
+            if item.get("path"):
+                return await self.transport.request(
+                    "DELETE",
+                    project_path + "/files",
+                    params={"path": item["path"], "recursive": "false"},
+                )
             if item.get("assetId"):
                 return await self.transport.request(
                     "DELETE", project_path + "/assets/" + remote_id(item["assetId"])
                 )
-            return await self.transport.request(
-                "DELETE", project_path + "/files", params={"path": item["path"]}
-            )
+            raise ValueError("Grok proje kaynağı bulunamadı")
         raise ValueError("Grok proje işlemi desteklenmiyor")

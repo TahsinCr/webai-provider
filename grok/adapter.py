@@ -296,8 +296,6 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             self._conversation_metadata(conversation_id),
             self._history(conversation_id),
         )
-        if not isinstance(metadata, dict):
-            metadata = {"conversationId": conversation_id}
         chat = conversation(metadata, self.account_id, history)
         inflight = history.get("inflightResponses") if isinstance(history, dict) else None
         if isinstance(inflight, list) and inflight:
@@ -346,8 +344,9 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             self.transport.request("GET", path),
             self.transport.request("GET", path + "/files", params={"recursive": "true"}),
         )
-        files = listing.get("files", []) if isinstance(listing, dict) else []
-        return project(workspace, self.account_id, files)
+        if not isinstance(listing, dict) or not isinstance(listing.get("files", []), list):
+            raise ProviderError("Grok workspace file response contract changed")
+        return project(workspace, self.account_id, listing.get("files", []))
 
     async def list_project_chats(self, project_id, cursor=None):
         query = {"pageSize": 50, "workspaceId": project_id}
@@ -379,6 +378,8 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             )
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Proje adı 1–200 karakter olmalıdır")
+        if not isinstance(instructions, str):
+            raise ValueError("Proje talimatları metin olmalıdır")
         data = await self.transport.request(
             "POST",
             "/rest/workspaces",

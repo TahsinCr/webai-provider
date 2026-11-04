@@ -25,7 +25,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Send only Grok's editable workspace fields when renaming a project or changing its instructions; cover create, delete, chat movement, text/file sources and both source-removal forms with request-contract tests.
+- Apply partial Grok workspace updates without a duplicate read, allow instructions on project creation, remove file resources by their path even when an asset ID is present, and reuse verified resource metadata for deletion. Reject empty, oversized or duplicate source uploads before mutation and validate file-list responses before reporting success.
 - Bound Grok stream lines before buffering them and clear verified-session state when a stream reports an expired login.
 - Limit Grok model selection to the authenticated account's chat models and send its catalog-provided model mode. Use the supported regeneration flag for retries.
 
