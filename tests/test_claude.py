@@ -1,13 +1,16 @@
 """Claude contracts, transport completion and account isolation."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from providers import Capability, ConversationBound, ReplaceText, SendRequest
 from providers.claude import ClaudeProvider
 from providers.claude.records import conversation, conversation_attachment_count, project
+from providers.claude.transport import ClaudeTransport
 from providers.errors import FeatureUnavailable, ProviderError
 from providers.models import FeatureState
 
@@ -44,6 +47,68 @@ class ClaudeRecordsTests(unittest.TestCase):
         self.assertEqual(value.messages[-2].channel, "analysis")
         self.assertEqual(value.messages[-1].content[0].text, "Answer")
         self.assertEqual(value.messages[1].content[0].resource.name, "reference.pdf")
+
+    def test_history_attaches_web_search_results_and_citations_to_final_answer(self):
+        data = {
+            "uuid": CHAT,
+            "name": "Research",
+            "chat_messages": [
+                {
+                    "uuid": "user",
+                    "sender": "human",
+                    "content": [{"type": "text", "text": "Find sources"}],
+                },
+                {
+                    "uuid": "assistant",
+                    "sender": "assistant",
+                    "content": [
+                        {
+                            "type": "server_tool_use",
+                            "name": "web_search",
+                            "input": {"query": "example"},
+                        },
+                        {
+                            "type": "web_search_tool_result",
+                            "content": [
+                                {
+                                    "type": "web_search_result",
+                                    "title": "Search result",
+                                    "url": "https://example.com/search",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "text",
+                            "text": "Answer",
+                            "citations": [
+                                {
+                                    "type": "web_search_result_location",
+                                    "title": "Cited source",
+                                    "url": "https://example.com/cited",
+                                    "cited_text": "A cited passage",
+                                },
+                                {
+                                    "type": "web_search_result_location",
+                                    "title": "Unsafe",
+                                    "url": "javascript:alert(1)",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+
+        result = conversation(data, "account")
+        answer = next(message for message in result.messages if message.content[0].text == "Answer")
+
+        self.assertEqual(
+            answer.metadata["sources"],
+            (
+                {"title": "Search result", "url": "https://example.com/search"},
+                {"title": "Cited source", "url": "https://example.com/cited"},
+            ),
+        )
 
     def test_unknown_content_blocks_survive_for_other_extensions(self):
         block = {"type": "future_tool", "payload": {"source": "document"}}
@@ -241,6 +306,101 @@ class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
                     SendRequest("claude", "account", "local", "Question")
                 )
             ]
+
+    async def test_transport_attaches_web_search_results_and_citations(self):
+        frames = [
+            {
+                "type": "message_start",
+                "message": {
+                    "uuid": "answer",
+                    "parent_uuid": "user",
+                    "model": "claude-test",
+                },
+            },
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "title": "Search result",
+                            "url": "https://example.com/search",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "text",
+                    "text": "Answer",
+                    "citations": [
+                        {
+                            "type": "web_search_result_location",
+                            "title": "Cited source",
+                            "url": "https://example.com/cited",
+                        }
+                    ],
+                },
+            },
+            {"type": "message_stop"},
+        ]
+
+        class Response:
+            async def aiter_lines(self):
+                for frame in frames:
+                    yield "data: " + json.dumps(frame)
+                    yield ""
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_):
+                return False
+
+        class Client:
+            def stream(self, *_args, **_kwargs):
+                return Stream()
+
+        session = SimpleNamespace(
+            path="/",
+            request=AsyncMock(return_value={}),
+            connect=lambda: Client(),
+            url=lambda path: path,
+            check=lambda _response: None,
+        )
+        transport = ClaudeTransport(Path("unused"), session=session)
+        transport.organization = PROJECT
+        transport.catalog = {
+            "default_model": "claude-test",
+            "models": [{"id": "claude-test", "efforts": []}],
+        }
+        result = [
+            event
+            async for event in transport.events(
+                "send",
+                prompt="Question",
+                model="claude-test",
+                conversation_id=CHAT,
+                temporary=False,
+                action=None,
+                project_id=None,
+                effort=None,
+            )
+        ]
+        metadata = next(event for event in result if event["type"] == "metadata")
+
+        self.assertEqual(
+            metadata["sources"],
+            (
+                {"title": "Search result", "url": "https://example.com/search"},
+                {"title": "Cited source", "url": "https://example.com/cited"},
+            ),
+        )
 
     async def test_stream_preserves_thinking_channels_and_remote_identity(self):
         async def events(*args, **kwargs):

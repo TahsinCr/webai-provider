@@ -463,11 +463,20 @@ class ClaudeTransport:
                         files = files_from({"files": files + presented_files(block)})
                         presented_inputs[event.get("index", 0)] = ""
                     blocks[event.get("index", 0)] = block.get("type")
-                    if block.get("type") == "text":
+                    if block.get("type") in ("text", "web_search_tool_result"):
                         from ..messages import sources_from
 
-                        final_index = event.get("index", 0)
-                        sources = sources_from({"sources": list(sources)}, block)
+                        if block.get("type") == "web_search_tool_result":
+                            results = block.get("content")
+                            if not isinstance(results, list):
+                                results = []
+                            sources = sources_from(
+                                {"sources": list(sources)},
+                                {"sources": results},
+                            )
+                        else:
+                            final_index = event.get("index", 0)
+                            sources = sources_from({"sources": list(sources)}, block)
                     if block.get("type") == "text" and block.get("text"):
                         if block["text"].strip():
                             record_first_assistant_text()

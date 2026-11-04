@@ -23,6 +23,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Limit Grok model selection to the authenticated account's chat models and send its catalog-provided model mode. Use the supported regeneration flag for retries.
 
+- Attach Claude web-search results to the answer sources during streaming and when loading saved conversations.
+
 ### Removed
 
 - Remove unused CDP and readiness options from the Claude provider constructor.

@@ -64,6 +64,7 @@ def conversation(value, account_id):
             leaf = item.get("parent_message_uuid")
         turns = list(reversed(branch))
     pending_files = ()
+    pending_sources = ()
     pending_id = ""
 
     def flush_files():
@@ -83,11 +84,26 @@ def conversation(value, account_id):
         if role == "user":
             flush_files()
             pending_files = ()
+            pending_sources = ()
         content = item.get("content") or (
             [{"type": "text", "text": item["text"]}] if item.get("text") else []
         )
         text_indices = [i for i, block in enumerate(content) if block.get("type") == "text"]
         if role == "assistant":
+            search_results = [
+                result
+                for block in content
+                if block.get("type") == "web_search_tool_result"
+                for result in (
+                    block.get("content")[:128] if isinstance(block.get("content"), list) else ()
+                )
+                if isinstance(result, dict)
+            ]
+            pending_sources = sources_from(
+                {"sources": list(pending_sources)},
+                {"sources": search_results},
+                *(block for block in content if block.get("type") == "text"),
+            )
             pending_files = files_from(
                 {"files": pending_files},
                 item,
@@ -113,7 +129,14 @@ def conversation(value, account_id):
                             {
                                 "native": block,
                                 "native_message": {k: v for k, v in item.items() if k != "content"},
-                                "sources": sources_from(block),
+                                "sources": (
+                                    pending_sources
+                                    if role == "assistant"
+                                    and text_indices
+                                    and index == text_indices[-1]
+                                    and kind == "text"
+                                    else sources_from(block)
+                                ),
                                 "files": pending_files
                                 if role == "assistant"
                                 and text_indices
@@ -156,6 +179,7 @@ def conversation(value, account_id):
             )
         if text_indices and role == "assistant":
             pending_files = ()
+            pending_sources = ()
     flush_files()
     return Conversation(
         Origin("claude", account_id, value["uuid"]),
