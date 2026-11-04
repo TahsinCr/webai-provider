@@ -30,6 +30,37 @@ def _read_limited(path):
         return stream.read(_MAX_WORKSPACE_FILE_BYTES + 1)
 
 
+async def _iter_bounded_lines(response):
+    buffer = bytearray()
+    total = 0
+    async for chunk in response.aiter_content():
+        total += len(chunk)
+        if total > _MAX_STREAM_BYTES:
+            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+        start = 0
+        while (end := chunk.find(b"\n", start)) >= 0:
+            if len(buffer) + end - start > _MAX_LINE_BYTES:
+                raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+            buffer.extend(chunk[start:end])
+            line = bytes(buffer)
+            buffer.clear()
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            try:
+                yield line.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+            start = end + 1
+        if len(buffer) + len(chunk) - start > _MAX_LINE_BYTES:
+            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+        buffer.extend(chunk[start:])
+    if buffer:
+        try:
+            yield bytes(buffer).decode("utf-8")
+        except UnicodeDecodeError:
+            raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+
+
 class GrokTransport:
     def __init__(self, credential_file, *, client_factory=None):
         self.session = WebSession(ORIGIN, credential_file, None, client_factory=client_factory)
@@ -109,9 +140,8 @@ class GrokTransport:
 
     async def events(self, path, body):
         await self._ensure_authenticated()
-        client = self.session.connect()
-        total = 0
         try:
+            client = self.session.connect()
             async with client.stream(
                 "POST",
                 self.session.url(path),
@@ -121,18 +151,7 @@ class GrokTransport:
                 timeout=600,
             ) as response:
                 self.session.check(response)
-                async for line in response.aiter_lines():
-                    if isinstance(line, bytes):
-                        size = len(line)
-                        total += size + 1
-                        if size > _MAX_LINE_BYTES or total > _MAX_STREAM_BYTES:
-                            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
-                        line = line.decode("utf-8")
-                    else:
-                        size = len(line.encode("utf-8"))
-                        total += size + 1
-                        if size > _MAX_LINE_BYTES or total > _MAX_STREAM_BYTES:
-                            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+                async for line in _iter_bounded_lines(response):
                     line = line.strip()
                     if not line or line == "[DONE]":
                         continue
@@ -147,6 +166,9 @@ class GrokTransport:
                     if not isinstance(event, dict):
                         raise ProviderError("Grok akış yanıtının biçimi değişmiş")
                     yield event
+        except AccountPaused:
+            self.session.authenticated = False
+            raise
         finally:
             await self.session.persist()
 

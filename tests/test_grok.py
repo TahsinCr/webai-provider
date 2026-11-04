@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from providers.api import (
     Capability,
@@ -19,7 +19,12 @@ from providers.api import (
 from providers.errors import AccountPaused
 from providers.grok import GrokProvider
 from providers.grok.records import GrokTextFilter
-from providers.grok.transport import GrokProjectEditor, GrokTransport
+from providers.grok.transport import (
+    _MAX_LINE_BYTES,
+    GrokProjectEditor,
+    GrokTransport,
+    _iter_bounded_lines,
+)
 from providers.profiles import select_cookies
 
 
@@ -114,6 +119,51 @@ class GrokTransportFixture:
 
 
 class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_grok_stream_lines_are_bounded_and_preserve_split_sse(self):
+        class Response:
+            def __init__(self, chunks):
+                self.chunks = iter(chunks)
+                self.read = 0
+
+            async def aiter_content(self):
+                for chunk in self.chunks:
+                    self.read += 1
+                    yield chunk
+
+        response = Response([b'data: {"answer":', b'"ok"}\r\n\n{"last": true}'])
+        lines = [line async for line in _iter_bounded_lines(response)]
+        self.assertEqual(lines, ['data: {"answer":"ok"}', "", '{"last": true}'])
+
+        response = Response([b"x" * _MAX_LINE_BYTES, b"x", b"must not be read"])
+        with self.assertRaises(ProviderError):
+            [line async for line in _iter_bounded_lines(response)]
+        self.assertEqual(response.read, 2)
+
+    async def test_grok_stream_marks_expired_session_unauthenticated(self):
+        class Stream:
+            async def __aenter__(self):
+                return SimpleNamespace(status_code=401)
+
+            async def __aexit__(self, *_args):
+                return False
+
+        client = SimpleNamespace(stream=Mock(return_value=Stream()))
+        session = SimpleNamespace(
+            authenticated=True,
+            connect=Mock(return_value=client),
+            url=Mock(return_value="https://grok.com/rest/app-chat/conversations/chat/responses"),
+            check=Mock(side_effect=AccountPaused("expired")),
+            persist=AsyncMock(),
+        )
+        with patch("providers.grok.transport.WebSession", return_value=session):
+            transport = GrokTransport(Path("unused"))
+
+        with self.assertRaises(AccountPaused):
+            await anext(transport.events("/rest/app-chat/conversations/chat/responses", {}))
+
+        self.assertFalse(session.authenticated)
+        session.persist.assert_awaited_once()
+
     async def test_authentication_uses_protected_user_settings_resource(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
         with patch("providers.grok.transport.WebSession", return_value=session):

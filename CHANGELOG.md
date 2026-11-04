@@ -25,6 +25,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Send only Grok's editable workspace fields when renaming a project or changing its instructions; cover create, delete, chat movement, text/file sources and both source-removal forms with request-contract tests.
+- Bound Grok stream lines before buffering them and clear verified-session state when a stream reports an expired login.
 - Limit Grok model selection to the authenticated account's chat models and send its catalog-provided model mode. Use the supported regeneration flag for retries.
 
 - Attach Claude web-search results to the answer sources during streaming and when loading saved conversations.
