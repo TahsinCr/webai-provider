@@ -20,6 +20,7 @@ from ..contracts import OptionalFeatures
 from ..errors import FeatureUnavailable, ProviderError
 from ..messages import sources_from
 from ..models import (
+    Conversation,
     Feature,
     FeatureState,
     Model,
@@ -247,7 +248,17 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         )
         if not isinstance(metadata, dict):
             metadata = {"conversationId": conversation_id}
-        return conversation(metadata, self.account_id, history)
+        chat = conversation(metadata, self.account_id, history)
+        inflight = history.get("inflightResponses") if isinstance(history, dict) else None
+        if isinstance(inflight, list) and inflight:
+            return Conversation(
+                chat.origin,
+                chat.title,
+                chat.messages,
+                chat.project_id,
+                {**chat.metadata, "generation": {"active": True}},
+            )
+        return chat
 
     async def conversation_attachment_count(self, conversation_id):
         return None

@@ -448,12 +448,27 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
             messages.append(message)
         # Mapping responses can be much larger than the active branch. Keep
         # only normalized messages in conversation metadata and the archive.
+        metadata = {key: value for key, value in raw.items() if key != "mapping"}
+        latest_assistant = next(
+            (message for message in reversed(messages) if message.role == "assistant"), None
+        )
+        if latest_assistant and latest_assistant.metadata.get("status") == "in_progress":
+            generation = {"active": True}
+            started_at = latest_assistant.metadata.get("create_time")
+            if (
+                isinstance(started_at, (int, float))
+                and not isinstance(started_at, bool)
+                and 0 < started_at < 4_102_444_800
+                and math.isfinite(started_at)
+            ):
+                generation["started_at"] = started_at
+            metadata["generation"] = generation
         return Conversation(
             Origin(self.id, self.account_id, remote_id),
             raw.get("title") or "Untitled",
             tuple(messages),
             project_id=project_id(raw),
-            metadata={key: value for key, value in raw.items() if key != "mapping"},
+            metadata=metadata,
         )
 
     async def list_chats(self, cursor: str | None = None, limit: int = 28) -> Page[Conversation]:

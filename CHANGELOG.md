@@ -9,6 +9,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Add Grok web-session support with server-validated authentication, account-specific model discovery, conversation history and streaming, retry, workspace instructions and resources, chat membership operations, published thinking summaries, and web-search citations. Workspace source uploads are limited to 3 MiB; unsupported actions remain outside its declared capabilities.
 
 - Support Grok document attachments through the web upload endpoint, with bounded file and prompt sizes.
+- Expose confirmed ChatGPT and Grok remote generation activity from conversation history; use a start time only when the provider returns one.
 
 ### Changed
 

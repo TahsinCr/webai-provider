@@ -207,6 +207,34 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(catalog.chat_model("expert"))
         self.assertIsNone(catalog.chat_model("unknown"))
 
+    async def test_history_exposes_only_the_remote_generation_state(self):
+        provider = GrokProvider(Path("unused"), "test")
+        provider.transport = GrokTransportFixture()
+        provider._conversation_metadata = AsyncMock(return_value={"conversationId": "chat"})
+        provider._history = AsyncMock(
+            side_effect=[
+                {"responses": [], "inflightResponses": [{"responseId": "private-id"}]},
+                {"responses": [], "inflightResponses": []},
+            ]
+        )
+        record = SimpleNamespace(
+            origin=None,
+            title="Chat",
+            messages=(),
+            project_id=None,
+            metadata={},
+        )
+
+        try:
+            with patch("providers.grok.adapter.conversation", return_value=record):
+                active = await provider.get_chat("chat")
+                idle = await provider.get_chat("chat")
+        finally:
+            await provider.close()
+        self.assertEqual(active.metadata["generation"], {"active": True})
+        self.assertNotIn("generation", idle.metadata)
+        self.assertNotIn("private-id", repr(active.metadata))
+
     async def test_unknown_model_refreshes_catalog_and_fails_before_send(self):
         provider = GrokProvider(Path("unused"), "test")
         transport = GrokTransportFixture()
