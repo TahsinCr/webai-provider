@@ -22,8 +22,7 @@ bağlıdır; sağlayıcı sitelerindeki değişiklikler uyumluluğu etkileyebili
 
 ## Kurulum
 
-ChatGPT ve Claude için Python 3.10+, Gemini web taşıması için Python 3.11+
-gerekir.
+ChatGPT, Gemini ve Claude istemcileri için Python 3.10+ gerekir.
 
 ```sh
 git clone https://github.com/TahsinCr/webai-provider.git

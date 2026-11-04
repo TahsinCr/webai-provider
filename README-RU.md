@@ -22,8 +22,7 @@ Claude Code. Доступ к моделям и лимиты зависят от 
 
 ## Установка
 
-Для ChatGPT и Claude требуется Python 3.10+, для веб-транспорта Gemini —
-Python 3.11+.
+Для клиентов ChatGPT, Gemini и Claude требуется Python 3.10+.
 
 ```sh
 git clone https://github.com/TahsinCr/webai-provider.git

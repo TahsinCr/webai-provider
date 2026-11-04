@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Document Python 3.10 as the minimum version for ChatGPT, Gemini and Claude clients.
 - Keep provider failures inside the shared typed error contract, expose account identity in the provider protocol, and add an explicit account preparation entry point.
 - Start the existing ChatGPT Sentinel prewarm in the background for the selected account before its first send. Add provider-gate wait to opt-in send timings; validation behavior is unchanged.
 - Measure Gemini and Claude catalog, preparation, history, SSE and first-text stages in the content-free opt-in send timing context.

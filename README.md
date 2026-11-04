@@ -22,8 +22,7 @@ changes can affect compatibility.
 
 ## Install
 
-Python 3.10+ is required for ChatGPT and Claude. Gemini's web transport requires
-Python 3.11+.
+Python 3.10+ is required for ChatGPT, Gemini and Claude.
 
 ```sh
 git clone https://github.com/TahsinCr/webai-provider.git
