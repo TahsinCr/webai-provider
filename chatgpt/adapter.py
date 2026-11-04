@@ -251,6 +251,16 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
         """Warm the saved session and retain its HTTP connection pool."""
         await self.models()
 
+    async def prepare_for_send(self) -> None:
+        """Start the existing Sentinel prewarm for the selected account."""
+
+        def prewarm():
+            with self._client_scope() as client:
+                client.trigger_sentinel_prewarm()
+
+        async with self._gate:
+            await asyncio.to_thread(prewarm)
+
     async def models(self, *, force: bool = False) -> ModelCatalog:
         def read():
             with self._client_scope() as client:

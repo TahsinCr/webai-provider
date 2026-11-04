@@ -176,9 +176,12 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
             patch.object(ChatGPTClient, "get_conversation", return_value=raw),
             patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
+            patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as sentinel_prewarm,
         ):
             provider = ChatGPTProvider(self.session)
             await provider.prepare()
+            await provider.prepare_for_send()
+            sentinel_prewarm.assert_called_once_with()
             await provider.models()
             await provider.models(force=True)
             await provider.list_chats(limit=1)
