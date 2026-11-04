@@ -107,7 +107,6 @@ def send_timing_report(*, clear: bool = True) -> str:
         rows.extend(("", "provider | path count | total"))
         for provider_id, counts in sorted(counts_by_provider.items()):
             rows.extend(
-                f"{provider_id} | {name} | {value}"
-                for name, value in sorted(counts.items())
+                f"{provider_id} | {name} | {value}" for name, value in sorted(counts.items())
             )
     return "\n".join(rows)

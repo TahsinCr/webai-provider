@@ -498,8 +498,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         with patch("asyncio.create_subprocess_exec", side_effect=AssertionError("browser")):
             with use_send_timing(timing):
                 result = [
-                    e
-                    async for e in transport.events("send", prompt="Question", model="model")
+                    e async for e in transport.events("send", prompt="Question", model="model")
                 ]
         self.assertTrue(any(e.get("channel") == "analysis" for e in result))
         final = [e for e in result if "text" in e and e.get("channel") != "analysis"]

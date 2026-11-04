@@ -322,9 +322,7 @@ async def generate(
                         and text.strip()
                     ):
                         first_assistant_text = True
-                        timing.record(
-                            "sse_first_assistant_text_ms", event_at - response_opened
-                        )
+                        timing.record("sse_first_assistant_text_ms", event_at - response_opened)
                         timing.record(
                             "button_to_first_assistant_text_ms", event_at - timing.started_ns
                         )
