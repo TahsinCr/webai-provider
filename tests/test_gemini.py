@@ -18,6 +18,11 @@ from providers.gemini.transport import Frames, generation_request, upload_files
 from providers.models import Choice, Model
 
 
+async def delayed_response(_request):
+    await asyncio.sleep(0.02)
+    yield ReplaceText("answer")
+
+
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_forget_conversation_releases_only_its_cached_context(self):
         provider = GeminiProvider(Path("unused"))
@@ -149,10 +154,6 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         provider.stream_idle_timeout = 0.005
         provider.stream_total_timeout = 0.5
 
-        async def delayed_response(_request):
-            await asyncio.sleep(0.02)
-            yield ReplaceText("answer")
-
         provider._stream = delayed_response
         events = [
             event
@@ -165,11 +166,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         provider = GeminiProvider(Path("unused"), "test")
         provider.stream_total_timeout = 0.005
 
-        async def stalled_response(_request):
-            await asyncio.sleep(0.02)
-            yield ReplaceText("answer")
-
-        provider._stream = stalled_response
+        provider._stream = delayed_response
         with self.assertRaisesRegex(ProviderError, "10 dakikalık süre sınırını"):
             _ = [
                 event
