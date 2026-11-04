@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "webai-provider"
 version = "1.0.0b0"
-description = "Independent Python clients for ChatGPT, Gemini and Claude web sessions"
+description = "Independent Python clients for ChatGPT, Gemini, Claude and Grok web sessions"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
 license-files = ["LICENSE", "COPYRIGHT"]
@@ -55,4 +55,5 @@ packages = [
     "providers.chatgpt.sentinel",
     "providers.gemini",
     "providers.claude",
+    "providers.grok",
 ]

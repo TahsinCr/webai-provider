@@ -116,7 +116,7 @@ class WebSession:
     """Reuse an authenticated HTTP connection; never launch processes or follow redirects."""
 
     def __init__(self, origin, credential_file, required_cookie, *, client_factory=None):
-        if origin not in ("https://claude.ai", "https://gemini.google.com"):
+        if origin not in ("https://claude.ai", "https://gemini.google.com", "https://grok.com"):
             raise ValueError("unsupported session origin")
         self.origin, self.path, self.required_cookie = (
             origin,
@@ -131,7 +131,11 @@ class WebSession:
         if self.client is None:
             values = read_session(self.path)
             cookies = values.get("cookies", values)
-            if not isinstance(cookies, dict) or not cookies.get(self.required_cookie):
+            if (
+                not isinstance(cookies, dict)
+                or not cookies
+                or (self.required_cookie is not None and not cookies.get(self.required_cookie))
+            ):
                 raise AccountPaused("Oturumunuzu Hesaplar bölümünden bir kez yeniden doğrulayın")
             if any(
                 not isinstance(k, str) or not isinstance(v, str) or "\n" in k + v or "\r" in k + v

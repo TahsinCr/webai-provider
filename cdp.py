@@ -16,6 +16,7 @@ _PROVIDER_ORIGINS = frozenset(
         "https://chatgpt.com",
         "https://gemini.google.com",
         "https://claude.ai",
+        "https://grok.com",
     }
 )
 _MAX_METADATA_BYTES = 2 * 1024 * 1024

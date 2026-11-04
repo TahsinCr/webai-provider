@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
@@ -137,7 +138,12 @@ _CHROMIUM_PROFILE_ROOTS = {
 
 
 # Host matching below is stricter than browser-cookie3's SQL substring filter.
-HOSTS = {"chatgpt": "chatgpt.com", "gemini": "gemini.google.com", "claude": "claude.ai"}
+HOSTS = {
+    "chatgpt": "chatgpt.com",
+    "gemini": "gemini.google.com",
+    "claude": "claude.ai",
+    "grok": "grok.com",
+}
 NAMES = {
     "chatgpt": {"oai-did", "cf_clearance", "__cf_bm", "__Host-next-auth.csrf-token"},
     "gemini": {
@@ -154,8 +160,11 @@ NAMES = {
         "__Secure-3PAPISID",
     },
     "claude": {"sessionKey", "lastActiveOrg", "anthropic-device-id", "__cf_bm", "cf_clearance"},
+    "grok": set(),
 }
 AUTH_COOKIE = re.compile(r"__Secure-(?:next-auth|authjs)\.session-token(?:\.\d+)?\Z")
+_GROK_AUTH_COOKIE = re.compile(r"(?:^|[_-])(?:auth|session|sso|token)(?:[_-]|$)", re.IGNORECASE)
+_GROK_NON_AUTH_COOKIES = {"grok_device_id", "__cf_bm", "cf_clearance"}
 
 
 def _read_json(path):
@@ -402,26 +411,49 @@ def _firefox_profile(root):
 def select_cookies(jar, provider):
     """Retain only the provider's authentication cookies for its exact host."""
     host, values = HOSTS[provider], {}
-    for cookie in sorted(jar, key=lambda c: len(c.domain or "")):
-        domain = (cookie.domain or "").lstrip(".").lower()
+
+    def value_of(cookie, key, default=None):
+        return (
+            cookie.get(key, default) if isinstance(cookie, dict) else getattr(cookie, key, default)
+        )
+
+    now = time.time()
+    for cookie in sorted(jar, key=lambda item: len(value_of(item, "domain", "") or "")):
+        domain = (value_of(cookie, "domain", "") or "").lstrip(".").lower()
         if not domain or not (host == domain or host.endswith("." + domain)):
             continue
-        if cookie.is_expired() or cookie.path != "/":
+        name, value = value_of(cookie, "name"), value_of(cookie, "value")
+        if not isinstance(name, str) or not name or not isinstance(value, str):
             continue
-        if cookie.name not in NAMES[provider] and not (
-            provider == "chatgpt" and AUTH_COOKIE.fullmatch(cookie.name)
+        expires = value_of(cookie, "expires")
+        expired = (
+            cookie.is_expired()
+            if hasattr(cookie, "is_expired")
+            else isinstance(expires, (int, float)) and expires > 0 and expires <= now
+        )
+        if expired or value_of(cookie, "path", "/") != "/":
+            continue
+        grok_auth_cookie = (
+            provider == "grok"
+            and name not in _GROK_NON_AUTH_COOKIES
+            and _GROK_AUTH_COOKIE.search(name)
+            and bool(value_of(cookie, "secure", False))
+        )
+        if (
+            name not in NAMES[provider]
+            and not (provider == "chatgpt" and AUTH_COOKIE.fullmatch(name))
+            and not grok_auth_cookie
         ):
             continue
-        if not isinstance(cookie.value, str) or any(
-            c in cookie.name + cookie.value for c in "\r\n\0"
-        ):
+        if any(c in name + value for c in "\r\n\0"):
             continue
-        values[cookie.name] = cookie.value
-    required = (
-        any(AUTH_COOKIE.fullmatch(name) for name in values)
-        if provider == "chatgpt"
-        else bool(values.get("__Secure-1PSID" if provider == "gemini" else "sessionKey"))
-    )
+        values[name] = value
+    if provider == "chatgpt":
+        required = any(AUTH_COOKIE.fullmatch(name) for name in values)
+    elif provider == "grok":
+        required = bool(values)
+    else:
+        required = bool(values.get("__Secure-1PSID" if provider == "gemini" else "sessionKey"))
     if not required:
         raise ProfileError("Bu profilde sağlayıcıya ait açık oturum bulunamadı")
     return values

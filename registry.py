@@ -10,6 +10,7 @@ PROVIDERS = {
     "chatgpt": ("ChatGPT", "https://chatgpt.com/"),
     "gemini": ("Gemini", "https://gemini.google.com/"),
     "claude": ("Claude", "https://claude.ai/"),
+    "grok": ("Grok", "https://grok.com/"),
 }
 
 
@@ -146,6 +147,10 @@ def create_provider(
         from .gemini import GeminiProvider
 
         return GeminiProvider(credential_file, account_id, **options)
+    if provider_id == "grok":
+        from .grok import GrokProvider
+
+        return GrokProvider(credential_file, account_id, **options)
     from .claude import ClaudeProvider
 
     return ClaudeProvider(credential_file, account_id, **options)

@@ -6,7 +6,7 @@
 
 # webai-provider
 
-### Independent Python clients for ChatGPT, Gemini and Claude web sessions.
+### Independent Python clients for ChatGPT, Gemini, Claude and Grok web sessions.
 
 Use provider web sessions through one asynchronous Python interface. These
 unofficial clients do not use developer API keys, Codex or Claude Code. Model
@@ -22,7 +22,7 @@ changes can affect compatibility.
 
 ## Install
 
-Python 3.10+ is required for ChatGPT, Gemini and Claude.
+Python 3.10+ is required for all providers.
 
 ```sh
 git clone https://github.com/TahsinCr/webai-provider.git
@@ -54,6 +54,7 @@ native HTTPS implementation.
 | ChatGPT | Conversations, projects, model discovery, streaming, supported message actions, sources and generated files |
 | Gemini | Conversations, notebooks, model and effort discovery, streaming, supported message actions, sources and generated media |
 | Claude | Conversations, workspaces and projects, model discovery, streaming, sources and generated files |
+| Grok | Conversations, workspaces, account model discovery, streaming, retry, project instructions and resources, published thinking summaries and web-search citations |
 
 The account's live catalog and provider capability declarations are authoritative.
 An empty result means no items were returned; it does not mean the operation is
