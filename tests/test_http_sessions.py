@@ -6,6 +6,8 @@ import os
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -101,6 +103,22 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         ]:
             with self.subTest(status=status), self.assertRaises(kind):
                 WebSession.check(httpx.Response(status, headers={"retry-after": "2"}))
+
+    def test_rate_limit_accepts_http_date_retry_after(self):
+        now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        retry_at = now + timedelta(seconds=30)
+        response = httpx.Response(
+            429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
+        )
+        with patch("providers.session.time.time", return_value=now.timestamp()):
+            with self.assertRaises(RateLimited) as error:
+                WebSession.check(response)
+        self.assertEqual(error.exception.retry_after, 30)
+
+        response = httpx.Response(429, headers={"retry-after": "not-a-date"})
+        with self.assertRaises(RateLimited) as error:
+            WebSession.check(response)
+        self.assertIsNone(error.exception.retry_after)
 
     def test_invalid_credentials_are_rejected(self):
         self.path.write_text("[]")

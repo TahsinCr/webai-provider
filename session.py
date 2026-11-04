@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import math
 import os
 import tempfile
 import threading
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
@@ -182,10 +185,19 @@ class WebSession:
         if code == 404:
             raise RemoteNotFound("Uzak kayıt bulunamadı")
         if code == 429:
+            value = response.headers.get("retry-after", "")
             try:
-                delay = float(response.headers.get("retry-after", ""))
-            except ValueError:
-                delay = None
+                delay = float(value)
+            except (TypeError, ValueError, OverflowError):
+                try:
+                    retry_at = parsedate_to_datetime(value)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    delay = retry_at.timestamp() - time.time()
+                except (TypeError, ValueError, OverflowError, OSError):
+                    delay = None
+            if delay is not None:
+                delay = max(0.0, delay) if math.isfinite(delay) else None
             raise RateLimited(delay)
         if not 200 <= code < 300:
             raise ProviderError(f"Sağlayıcı isteği tamamlanamadı (HTTP {code})")
