@@ -165,31 +165,47 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             now = time.monotonic()
             if not force and self._catalog and now - self._catalog_at < _CATALOG_TTL:
                 return self._catalog
-            data = await self.transport.request("POST", "/rest/modes", json={"locale": "en"})
-            if not isinstance(data, dict) or not isinstance(data.get("modes"), list):
+            data, details = await asyncio.gather(
+                self.transport.request("POST", "/rest/modes", json={"locale": "en"}),
+                self.transport.request("POST", "/rest/models", json={"locale": "en"}),
+            )
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("modes"), list)
+                or not isinstance(details, dict)
+                or not isinstance(details.get("models"), list)
+            ):
                 raise ProviderError("Grok model catalog response contract changed")
 
-            available = []
+            by_mode = {}
+            for item in details["models"]:
+                if not isinstance(item, dict):
+                    continue
+                identifier, mode = item.get("modelId"), item.get("modelMode")
+                if isinstance(identifier, str) and identifier and isinstance(mode, str) and mode:
+                    by_mode.setdefault(mode, {})[identifier] = item
+
+            models = []
             for item in data["modes"]:
                 if not isinstance(item, dict):
                     continue
                 model_id = item.get("id")
-                if not isinstance(model_id, str) or not model_id:
-                    continue
-                availability = item.get("availability")
-                if not isinstance(availability, dict) or not isinstance(
-                    availability.get("available"), dict
+                if (
+                    not isinstance(model_id, str)
+                    or not model_id
+                    or model_id in ("build", "imagine", "voice")
                 ):
                     continue
-                available.append((model_id, item))
-
-            available_ids = {model_id for model_id, _ in available}
-            default = data.get("defaultModeId")
-            if not isinstance(default, str) or default not in available_ids:
-                default = available[0][0] if available else None
-
-            models = []
-            for model_id, item in available:
+                availability = item.get("availability")
+                if (
+                    not isinstance(availability, dict)
+                    or not isinstance(availability.get("available"), dict)
+                    or any(
+                        availability.get(key) is not None
+                        for key in ("requiresUpgrade", "unavailable", "comingSoon")
+                    )
+                ):
+                    continue
                 title = item.get("title")
                 title = title.strip() if isinstance(title, str) and title.strip() else model_id
                 metadata = {
@@ -197,20 +213,48 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     for key in ("description", "badgeText", "iconHint", "tags")
                     if item.get(key) is not None
                 }
+                metadata["modeName"] = title
+                description = item.get("description")
+                advertised = (
+                    description.rsplit("·", 1)[-1].strip() if isinstance(description, str) else ""
+                )
+                advertised = advertised if advertised.casefold().startswith("grok ") else ""
                 model_mode = item.get("modelMode")
                 if not isinstance(model_mode, str) or not model_mode:
                     model_mode = _MODEL_MODES.get(model_id.casefold())
                 if isinstance(model_mode, str) and model_mode:
                     metadata["modelMode"] = model_mode
+                matches = by_mode.get(model_mode, {})
+                if len(matches) == 1:
+                    detail = next(iter(matches.values()))
+                    metadata["modelName"] = detail["modelId"]
+                    name = detail.get("name")
+                    title = (
+                        name.strip()
+                        if isinstance(name, str) and name.strip()
+                        else advertised
+                        or detail["modelId"].replace("-", " ").replace("_", " ").title()
+                    )
+                elif advertised:
+                    title = advertised
                 chat_title = (
                     title
                     if model_id.casefold().startswith("grok-")
                     or title.casefold().startswith("grok")
                     else f"Grok · {title}"
                 )
+                if metadata.get("modeName") and metadata["modeName"] != title:
+                    chat_title += " · " + metadata["modeName"]
                 models.append(Model(model_id, title, metadata=metadata, chat_title=chat_title))
 
-            self._catalog = ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)
+            default = data.get("defaultModeId")
+            if not any(model.id == default for model in models):
+                default = models[0].id if models else None
+            self._catalog = ModelCatalog(
+                FeatureState.AVAILABLE if models else FeatureState.UNAVAILABLE,
+                tuple(models),
+                default,
+            )
             self._catalog_at = time.monotonic()
             return self._catalog
 
@@ -432,8 +476,8 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             selected = catalog.chat_model(catalog.default_model)
         if selected is None:
             raise ProviderError("Selected Grok model is unavailable for this account")
-        model = selected.id
-        model_mode = selected.metadata.get("modelMode") or selected.metadata.get("defaultMode")
+        model = selected.metadata.get("modelName")
+        model_mode = selected.metadata.get("modelMode")
         if not isinstance(model_mode, str) or not model_mode:
             model_mode = None
 
@@ -494,7 +538,10 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 "temporary": request.temporary,
                 "isRegenRequest": is_retry,
             }
-            body["modelMode" if model_mode else "modelName"] = model_mode or model
+            if model_mode:
+                body["modelMode"] = model_mode
+            if model or not model_mode:
+                body["modelName"] = model or selected.id
             if request.project_id:
                 body["workspaceIds"] = [request.project_id]
             path = (

@@ -38,10 +38,16 @@ class GrokTransportFixture:
         self.requests = []
         self.bodies = []
         self.response_node_payload = None
+        self.model_details = [
+            {"modelId": "grok-3", "name": "", "modelMode": "MODEL_MODE_FAST"},
+            {"modelId": "grok-paid", "name": "Paid", "modelMode": "MODEL_MODE_EXPERT"},
+        ]
         self.turn = 0
 
     async def request(self, method, path, **options):
         self.requests.append((method, path, options))
+        if path == "/rest/models":
+            return {"models": self.model_details}
         if path == "/rest/modes":
             return {
                 "modes": [
@@ -51,6 +57,11 @@ class GrokTransportFixture:
                         "description": "Quick responses",
                         "availability": {"available": {}},
                         "tags": ["TAG_PRIMARY"],
+                    },
+                    {
+                        "id": "build",
+                        "title": "Build",
+                        "availability": {"available": {}},
                     },
                     {
                         "id": "auto",
@@ -222,7 +233,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("requestType", retry)
         for body in transport.bodies:
             self.assertEqual(body["modelMode"], "MODEL_MODE_FAST")
-            self.assertNotIn("modelName", body)
+            self.assertEqual(body["modelName"], "grok-3")
         history_paths = [
             path.rsplit("/", 1)[-1]
             for _, path, _ in transport.requests
@@ -251,13 +262,62 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             {"fast"},
         )
         self.assertEqual(catalog.default_model, "fast")
-        self.assertEqual(catalog.chat_model("fast").title, "Fast")
-        self.assertEqual(catalog.chat_model("fast").chat_title, "Grok · Fast")
+        self.assertEqual(catalog.chat_model("fast").title, "Grok 3")
+        self.assertEqual(catalog.chat_model("fast").chat_title, "Grok 3 · Fast")
         self.assertEqual(catalog.chat_model("fast").metadata["modelMode"], "MODEL_MODE_FAST")
         self.assertEqual(catalog.chat_model("fast").metadata["tags"], ["TAG_PRIMARY"])
         self.assertIsNone(catalog.chat_model("auto"))
         self.assertIsNone(catalog.chat_model("expert"))
         self.assertIsNone(catalog.chat_model("unknown"))
+        self.assertIsNone(catalog.chat_model("build"))
+        self.assertIsNone(catalog.chat_model("grok-paid"))
+        before = len(transport.requests)
+        self.assertIs(await provider.models(), catalog)
+        self.assertEqual(len(transport.requests), before)
+
+    async def test_catalog_keeps_paid_modes_dynamic_without_guessing_ambiguous_models(self):
+        for details, description, expected in (
+            (
+                [{"modelId": "grok-next", "name": "Grok Next", "modelMode": "MODEL_MODE_EXPERT"}],
+                "Thinks hard",
+                ("Grok Next · Expert", "grok-next"),
+            ),
+            (
+                [
+                    {"modelId": identifier, "modelMode": "MODEL_MODE_EXPERT"}
+                    for identifier in ("grok-a", "grok-b")
+                ],
+                "Thinks hard",
+                ("Grok · Expert", None),
+            ),
+            ([], "Thinks hard · Grok 4.7", ("Grok 4.7 · Expert", None)),
+        ):
+            with self.subTest(details=details):
+                provider = GrokProvider(Path("unused"), "test")
+                provider.transport.request = AsyncMock(
+                    side_effect=lambda _, path, **kw: (
+                        {"models": details}
+                        if path == "/rest/models"
+                        else {
+                            "modes": [
+                                {
+                                    "id": "expert",
+                                    "title": "Expert",
+                                    "description": description,
+                                    "availability": {"available": {}},
+                                }
+                            ],
+                            "defaultModeId": "expert",
+                        }
+                    )
+                )
+                try:
+                    catalog = await provider.models()
+                    model = catalog.chat_model("expert")
+                    self.assertEqual((model.chat_title, model.metadata.get("modelName")), expected)
+                    self.assertEqual(catalog.default_model, "expert")
+                finally:
+                    await provider.close()
 
     async def test_stream_cleans_provider_markup_and_initial_whitespace(self):
         provider = GrokProvider(Path("unused"), "test")
@@ -393,7 +453,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             2,
         )
         self.assertEqual(transport.bodies, [])
-        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(len(transport.requests), 4)
 
     def test_grok_exposes_bounded_document_attachment_policy(self):
         provider = GrokProvider(Path("unused"), "test")
