@@ -142,7 +142,7 @@ def active_responses(history):
     return tuple(rows)
 
 
-def _messages(history):
+def _messages(history, temporary=False):
     rows = active_responses(history)
     messages = []
     for row in rows:
@@ -150,11 +150,20 @@ def _messages(history):
         sender = str(row.get("sender", "")).lower()
         if sender in ("human", "user"):
             text = row.get("message") or row.get("query") or ""
-            files = (
+            seen_ids = set()
+            unique_files = []
+            for item in (
                 list(row.get("fileAttachments") or ())
                 + list(row.get("imageAttachments") or ())
                 + list(row.get("attachments") or ())
-            )
+            ):
+                if isinstance(item, dict):
+                    fid = str(item.get("assetId") or item.get("id") or "")
+                    if fid and fid not in seen_ids:
+                        seen_ids.add(fid)
+                        unique_files.append(item)
+                    elif not fid:
+                        unique_files.append(item)
             resources = tuple(
                 Content(
                     "resource",
@@ -164,15 +173,15 @@ def _messages(history):
                         item.get("mimeType") or item.get("fileMimeType"),
                     ),
                 )
-                for item in files
-                if isinstance(item, dict) and (item.get("assetId") or item.get("id"))
+                for item in unique_files
+                if item.get("assetId") or item.get("id")
             )
             messages.append(
                 Message(
                     response_id,
                     "user",
                     (Content("text", str(text)),) + resources,
-                    actions=(MessageAction.EDIT.value,),
+                    actions=() if temporary else (MessageAction.EDIT.value,),
                 )
             )
             continue
@@ -202,7 +211,7 @@ def _messages(history):
                     "sources": sources,
                     "native_response_id": response_id,
                 },
-                (MessageAction.RETRY.value,) if answer else (),
+                () if temporary else ((MessageAction.RETRY.value,) if answer else ()),
             )
         )
     return tuple(messages)
@@ -218,13 +227,14 @@ def conversation(value, account_id, history=None):
     project_id = value.get("workspaceId")
     if not project_id and workspaces and isinstance(workspaces[0], dict):
         project_id = workspaces[0].get("workspaceId") or workspaces[0].get("id")
+    is_temporary = bool(value.get("temporary"))
     return Conversation(
         Origin("grok", account_id, identifier),
         value.get("title") or "Grok conversation",
-        _messages(history) if history is not None else (),
+        _messages(history, temporary=is_temporary) if history is not None else (),
         project_id,
         {
-            "temporary": bool(value.get("temporary")),
+            "temporary": is_temporary,
             "created_at": value.get("createTime"),
             "modified_at": value.get("modifyTime"),
         },

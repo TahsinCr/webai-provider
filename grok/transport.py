@@ -124,7 +124,8 @@ class GrokTransport:
         metadata = result.get("fileMetadata") if isinstance(result, dict) else None
         asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
         if (
-            not isinstance(metadata, dict)
+            not isinstance(result, dict)
+            or not isinstance(metadata, dict)
             or result.get("terminalError")
             or not isinstance(asset_id, str)
             or not asset_id

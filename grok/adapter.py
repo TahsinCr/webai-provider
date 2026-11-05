@@ -469,7 +469,11 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             ):
                 raise ValueError("Grok chat attachment metadata is invalid")
             total_attachment_bytes += size
-            mime = str(attachment.get("mime_type") or metadata.get("mimeType") or "").lower()
+            mime = str(
+                attachment.get("mime_type")
+                or (metadata.get("mimeType") if isinstance(metadata, dict) else "")
+                or ""
+            ).lower()
             if mime.startswith("image/"):
                 image_attachments.append(metadata)
             else:
@@ -575,8 +579,16 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                             )
                         parent_response_id = target.get("parentResponseId") or ""
                         if not file_attachments and not image_attachments:
-                            for item in target.get("fileAttachments") or ():
+                            seen_assets = set()
+                            for item in list(target.get("fileAttachments") or ()) + list(
+                                target.get("imageAttachments") or ()
+                            ):
                                 if isinstance(item, dict):
+                                    aid = item.get("assetId") or item.get("id")
+                                    if aid and aid in seen_assets:
+                                        continue
+                                    if aid:
+                                        seen_assets.add(aid)
                                     mime = str(
                                         item.get("mimeType") or item.get("fileMimeType") or ""
                                     ).lower()
@@ -584,9 +596,6 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                                         image_attachments.append(item)
                                     else:
                                         file_attachments.append(item)
-                            for item in target.get("imageAttachments") or ():
-                                if isinstance(item, dict):
-                                    image_attachments.append(item)
                     elif active:
                         parent_response_id = active[-1].get("responseId") or ""
 
@@ -615,6 +624,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         raw_native_text = raw_native_analysis = None
         sources = ()
         raw_search_results = []
+        seen_search_keys = set()
         response_model = model
         complete = False
         completion_notified = False
@@ -699,8 +709,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 response_model = native.get("model") or response_model
                 if isinstance(native.get("webSearchResults"), list):
                     for item in native["webSearchResults"]:
-                        if isinstance(item, dict) and item not in raw_search_results:
-                            raw_search_results.append(item)
+                        if isinstance(item, dict):
+                            key = item.get("url") or item.get("title")
+                            if key and key not in seen_search_keys:
+                                seen_search_keys.add(key)
+                                raw_search_results.append(item)
+                            elif not key and item not in raw_search_results:
+                                raw_search_results.append(item)
                 if isinstance(native.get("message"), str):
                     raw_native_text = native["message"]
                 if native.get("thinkingTrace") is not None:
@@ -754,7 +769,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 model=response_model,
                 effort=None,
                 sources=sources,
-                actions=(MessageAction.RETRY.value,),
+                actions=() if request.temporary else (MessageAction.RETRY.value,),
             )
         if not completion_notified:
             yield ResponseComplete()

@@ -1284,3 +1284,53 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.bodies[0]["fileAttachments"], [doc_meta])
         self.assertEqual(transport.bodies[0]["imageAttachments"], [img_meta])
         self.assertEqual(transport.bodies[0]["message"], "New edited prompt")
+
+    async def test_stream_temporary_chat_omits_retry_action(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Temporary question",
+            temporary=True,
+            model="fast",
+        )
+        try:
+            events = [e async for e in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        metadata = next(e for e in events if isinstance(e, MessageMetadata))
+        self.assertEqual(metadata.actions, ())
+
+    def test_history_temporary_chat_and_duplicate_attachments(self):
+        item = {
+            "assetId": "file-dup",
+            "name": "report.pdf",
+            "mimeType": "application/pdf",
+        }
+        history = {
+            "conversation": {"conversationId": "chat", "title": "Chat"},
+            "responses": [
+                {
+                    "responseId": "u1",
+                    "sender": "human",
+                    "message": "Prompt",
+                    "fileAttachments": [item],
+                    "attachments": [item],
+                },
+                {
+                    "responseId": "a1",
+                    "sender": "assistant",
+                    "parentResponseId": "u1",
+                    "message": "Response",
+                },
+            ],
+        }
+        chat = conversation({"id": "chat", "temporary": True}, "account", history)
+        self.assertEqual(len(chat.messages), 2)
+        self.assertEqual(len(chat.messages[0].content), 2)
+        self.assertEqual(chat.messages[0].actions, ())
+        self.assertEqual(chat.messages[1].actions, ())
