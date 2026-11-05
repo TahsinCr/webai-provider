@@ -131,21 +131,18 @@ uzak sayfalamayı kendiliğinden oluşturmaz.
 
 ## SiopeChat ile kullanım
 
-SiopeChat bu depoyu sabit bir commit'e bağlı Git submodule olarak kullanır.
-Uygulama deposunu klonlarken `--recurse-submodules` seçeneğini kullanın; güncelleme
-sonrasında da `git submodule update --init --recursive` komutuyla SiopeChat'in
-kaydettiği sağlayıcı commit'ini eşitleyin. Ayrıntılar için
+SiopeChat bu dağıtımı sabitlenmiş bir PyPI bağımlılığı olarak kurar; uygulama
+wheel'i artık `providers` içe aktarma paketini ayrıca içermez. SiopeChat'i normal
+şekilde, Git submodule olmadan klonlayın. Sağlayıcı sürümünü uygulamanın bağımlılık
+sabitlemesi ve kilit dosyası belirler; uygulamayı güncelleyip kurulum betiğini
+çalıştırmak seçilmiş provider sürümünü de kurar. Kurulum ayrıntıları için
 [SiopeChat README](https://github.com/TahsinCr/siopechat/blob/main/README-TR.md)
 dosyasına bakın.
 
-SiopeChat wheel'i de `providers` Python paketini içerir. Bu nedenle bağımsız
-`webai-provider` dağıtımını SiopeChat'in kullandığı ortama ayrıca kurmayın;
-aynı dosyalar iki dağıtım tarafından yönetilir.
-
-Bağımsız provider kopyasını güncellemek için kendi depo dizininde
-`git pull --ff-only` çalıştırıp `python -m pip install --upgrade .` komutunu
-yeniden yürütün. SiopeChat içindeki submodule'de `git pull` çalıştırmayın;
-hangi provider commit'inin kullanılacağını uygulama deposu belirler.
+Provider değişikliklerini SiopeChat ile sınamak için belirli bir provider sürümü
+yayımlayın veya kurun; ardından uygulamanın bağımlılık sabitlemesini ve kilit
+dosyasını güncelleyin. İki proje kaynak kodunu, testlerini ve sürüm geçmişini ayrı
+tutar.
 
 ## Geliştirme
 

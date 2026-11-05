@@ -205,22 +205,16 @@ python -m twine check dist/*
 
 ## Use with SiopeChat
 
-SiopeChat includes this repository as a pinned submodule. Its checkout records
-the exact provider commit it uses. Clone SiopeChat with submodules enabled:
+SiopeChat installs this distribution from PyPI as a pinned runtime dependency;
+its wheel no longer bundles the `providers` import package. Clone SiopeChat
+normally, without Git submodules. Its dependency pin and lockfile select the
+provider version, so updating the application and rerunning its installer also
+installs the selected release. See the [SiopeChat README](https://github.com/TahsinCr/siopechat)
+for setup details.
 
-```sh
-git clone --recurse-submodules https://github.com/TahsinCr/siopechat.git
-```
-
-After updating SiopeChat, run `git pull --ff-only` in the application repository,
-then `git submodule update --init --recursive` to check out the provider commit
-selected by that application revision. Do not pull `webai-provider/main` from
-inside SiopeChat's submodule; the parent repository controls its pinned commit.
-See the [SiopeChat README](https://github.com/TahsinCr/siopechat) for details.
-
-SiopeChat's wheel also bundles the `providers` Python package. Do not install
-the standalone `webai-provider` distribution into SiopeChat's environment; both
-distributions would manage the same import files.
+To test provider changes with SiopeChat, publish or install a specific provider
+version and update the application's dependency pin and lockfile. The two
+projects keep separate source trees, package tests, and release histories.
 
 ### Update a standalone checkout
 
