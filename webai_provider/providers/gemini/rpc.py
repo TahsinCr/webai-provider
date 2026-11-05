@@ -4,7 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
-from ..errors import ProviderError
+from ...errors import ProviderError
 from .notebooks import notebook_id
 
 
@@ -76,7 +76,7 @@ class NotebookEditor:
         pass
 
     async def options(self, project_id=None):
-        from ..projects import ProjectOptions
+        from ...projects import ProjectOptions
 
         return ProjectOptions(
             fields=("name", "instructions") if project_id else ("name",),

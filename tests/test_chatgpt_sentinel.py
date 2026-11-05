@@ -7,9 +7,9 @@ from collections import OrderedDict
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-from providers.chatgpt.client import ChatGPTClient
-from providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
-from providers.chatgpt.sentinel import (
+from webai_provider.providers.chatgpt.client import ChatGPTClient
+from webai_provider.providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
+from webai_provider.providers.chatgpt.sentinel import (
     DEFAULT_SENTINEL_SPEC,
     SentinelRuntime,
     SentinelSpec,
@@ -346,7 +346,7 @@ class SentinelCompatibilityTests(unittest.TestCase):
             }
         }
         with patch(
-            "providers.chatgpt.sentinel.proof.time.perf_counter_ns",
+            "webai_provider.providers.chatgpt.sentinel.proof.time.perf_counter_ns",
             side_effect=[0] + [123_490_000] * 120,
         ):
             proof = generate_enforcement_proof(initial, requirements)

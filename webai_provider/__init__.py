@@ -57,11 +57,9 @@ from .registry import ProviderRegistry, create_provider
 from .session import CredentialStore
 
 __version__ = "1.2.0b0"
-__verison__ = __version__
 
 __all__ = [
     "__version__",
-    "__verison__",
     "AccountPaused",
     "BranchContext",
     "CredentialStore",

@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
-from providers.claude.errors import ClaudeRequestNotSent
-from providers.claude.transport import ClaudeTransport, organization_from_bootstrap
-from providers.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
-from providers.gemini.rpc import NotebookEditor, NotebookRPC
-from providers.session import WebSession, read_session, save_session, save_session_async
+from webai_provider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from webai_provider.providers.claude.errors import ClaudeRequestNotSent
+from webai_provider.providers.claude.transport import ClaudeTransport, organization_from_bootstrap
+from webai_provider.providers.gemini.rpc import NotebookEditor, NotebookRPC
+from webai_provider.session import WebSession, read_session, save_session, save_session_async
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
@@ -62,7 +62,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.client.request.assert_awaited_once()
 
     async def test_local_persistence_failure_does_not_reject_remote_success(self):
-        with patch("providers.session.save_session", side_effect=OSError("disk full")):
+        with patch("webai_provider.session.save_session", side_effect=OSError("disk full")):
             self.assertEqual(await self.session.request("POST", "/api/project"), {"ok": True})
         self.assertTrue(self.session.persistence_warning)
 
@@ -84,7 +84,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             if not release.wait(2):
                 raise TimeoutError("write not released")
 
-        with patch("providers.session.save_session", side_effect=write):
+        with patch("webai_provider.session.save_session", side_effect=write):
             task = asyncio.create_task(save_session_async(self.path, {}))
             self.assertTrue(await asyncio.to_thread(started.wait, 2))
             task.cancel()
@@ -110,7 +110,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
         )
-        with patch("providers.session.time.time", return_value=now.timestamp()):
+        with patch("webai_provider.session.time.time", return_value=now.timestamp()):
             with self.assertRaises(RateLimited) as error:
                 WebSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
@@ -461,7 +461,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fetch.call_count, 3)
 
     async def test_http_stream_preserves_published_thinking_and_end_marker(self):
-        from providers.timing import SendTiming, use_send_timing
+        from webai_provider.timing import SendTiming, use_send_timing
 
         cid = "11111111-1111-1111-1111-111111111111"
         events = [
@@ -541,7 +541,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
 class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_uploaded_files_use_native_file_uuid_and_documents_stay_separate(self):
-        from providers.claude.transport import ClaudeProjectEditor
+        from webai_provider.providers.claude.transport import ClaudeProjectEditor
 
         pid = "11111111-1111-1111-1111-111111111111"
         transport = SimpleNamespace(
@@ -569,7 +569,7 @@ class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_deleted_foreign_source_cannot_be_submitted(self):
-        from providers.claude.transport import ClaudeProjectEditor
+        from webai_provider.providers.claude.transport import ClaudeProjectEditor
 
         transport = SimpleNamespace(
             base=AsyncMock(return_value="/api/organizations/org"),

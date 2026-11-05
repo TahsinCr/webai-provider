@@ -4,7 +4,7 @@ import asyncio
 import time
 from io import StringIO
 
-from ..api import (
+from ...api import (
     Capability,
     ConversationBound,
     MessageAction,
@@ -14,12 +14,12 @@ from ..api import (
     TextDelta,
     validate_request,
 )
-from ..attachments import GROK_ATTACHMENTS
-from ..contracts import OptionalFeatures
-from ..core import MultiDimensionBoundedCache
-from ..errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
-from ..messages import sources_from
-from ..models import (
+from ...attachments import GROK_ATTACHMENTS
+from ...contracts import OptionalFeatures
+from ...core import MultiDimensionBoundedCache
+from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
+from ...messages import sources_from
+from ...models import (
     Conversation,
     FeatureState,
     Model,
@@ -28,8 +28,8 @@ from ..models import (
     SessionState,
     SessionStatus,
 )
-from ..projects import ProjectEditing
-from ..session import delete_session, session_exists
+from ...projects import ProjectEditing
+from ...session import delete_session, session_exists
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id
 

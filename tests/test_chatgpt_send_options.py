@@ -9,10 +9,10 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
-from providers.chatgpt.discovery import model_catalog
-from providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
-from providers.errors import RemoteNotFound
+from webai_provider.errors import RemoteNotFound
+from webai_provider.providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
+from webai_provider.providers.chatgpt.discovery import model_catalog
+from webai_provider.providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
 
 from .fixtures import CATALOG
 
@@ -195,11 +195,11 @@ class SendOptionsTests(unittest.TestCase):
             "current_node": "node",
             "messages": [{"id": "user", "content": {"parts": ["text"]}}],
         }
-        with patch("providers.chatgpt.client.time.monotonic", return_value=100.0):
+        with patch("webai_provider.providers.chatgpt.client.time.monotonic", return_value=100.0):
             self.client._remember_conversation(conversation)
-        with patch("providers.chatgpt.client.time.monotonic", return_value=159.0):
+        with patch("webai_provider.providers.chatgpt.client.time.monotonic", return_value=159.0):
             self.assertIs(self.client._cached_conversation("remote"), conversation)
-        with patch("providers.chatgpt.client.time.monotonic", return_value=160.0):
+        with patch("webai_provider.providers.chatgpt.client.time.monotonic", return_value=160.0):
             self.assertIsNone(self.client._cached_conversation("remote"))
 
     def test_cached_send_failure_does_not_resubmit_after_streamed_content(self):

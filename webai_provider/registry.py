@@ -123,7 +123,7 @@ def create_provider(
     if provider_id not in PROVIDERS:
         raise ValueError("unknown provider")
     if provider_id == "chatgpt":
-        from .chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
+        from .providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
 
         if session is None:
             if credential_file is None:
@@ -144,13 +144,13 @@ def create_provider(
     if credential_file is None:
         raise ValueError("credential_file is required")
     if provider_id == "gemini":
-        from .gemini import GeminiProvider
+        from .providers.gemini import GeminiProvider
 
         return GeminiProvider(credential_file, account_id, **options)
     if provider_id == "grok":
-        from .grok import GrokProvider
+        from .providers.grok import GrokProvider
 
         return GrokProvider(credential_file, account_id, **options)
-    from .claude import ClaudeProvider
+    from .providers.claude import ClaudeProvider
 
     return ClaudeProvider(credential_file, account_id, **options)

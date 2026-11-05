@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from providers import (
+from webai_provider import (
     Capability,
     ConversationBound,
     ProviderClient,
@@ -14,9 +14,9 @@ from providers import (
     SendRequest,
     create_provider,
 )
-from providers.gemini.adapter import GeminiProvider
-from providers.gemini.errors import GeminiStreamError
-from providers.registry import PROVIDERS
+from webai_provider.providers.gemini.adapter import GeminiProvider
+from webai_provider.providers.gemini.errors import GeminiStreamError
+from webai_provider.registry import PROVIDERS
 
 
 class FakeBackend:
@@ -203,7 +203,7 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_identity_is_rejected_before_constructing_an_account(self):
         async with ProviderClient() as client:
             client.add(FakeBackend("default"))
-            with patch("providers.client.create_provider") as factory:
+            with patch("webai_provider.client.create_provider") as factory:
                 with self.assertRaises(ValueError):
                     client.connect("claude")
                 factory.assert_not_called()
@@ -227,9 +227,9 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(Path(folder).rglob("session.json")), [])
 
     def test_package_exports_version_symbols(self):
-        import providers
+        import webai_provider
 
-        self.assertEqual(providers.__version__, "1.2.0b0")
-        self.assertEqual(providers.__verison__, "1.2.0b0")
-        self.assertIn("__version__", providers.__all__)
-        self.assertIn("__verison__", providers.__all__)
+        self.assertEqual(webai_provider.__version__, "1.2.0b0")
+        self.assertIn("__version__", webai_provider.__all__)
+        self.assertNotIn("__verison__", webai_provider.__all__)
+        self.assertFalse(hasattr(webai_provider, "__verison__"))

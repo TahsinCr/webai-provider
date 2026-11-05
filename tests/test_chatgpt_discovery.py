@@ -13,12 +13,17 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from providers.chatgpt import BrowserSession, ChatGPTClient, ChatGPTProvider, SessionPaths
-from providers.chatgpt.client import _sse_data
-from providers.chatgpt.discovery import model_catalog
-from providers.chatgpt.errors import ChatGPTWebError
-from providers.chatgpt.formats import normalize_conversation
-from providers.models import ModelCatalog
+from webai_provider.models import ModelCatalog
+from webai_provider.providers.chatgpt import (
+    BrowserSession,
+    ChatGPTClient,
+    ChatGPTProvider,
+    SessionPaths,
+)
+from webai_provider.providers.chatgpt.client import _sse_data
+from webai_provider.providers.chatgpt.discovery import model_catalog
+from webai_provider.providers.chatgpt.errors import ChatGPTWebError
+from webai_provider.providers.chatgpt.formats import normalize_conversation
 
 from .fixtures import CATALOG
 
@@ -215,7 +220,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_timezone_uses_a_real_iana_name_or_omits_the_optional_field(self):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-        from providers.chatgpt.client import system_timezone
+        from webai_provider.providers.chatgpt.client import system_timezone
 
         try:
             ZoneInfo("Asia/Tokyo")
@@ -225,7 +230,7 @@ class DiscoveryTests(unittest.TestCase):
         else:
             with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}):
                 self.assertEqual(system_timezone(), "Asia/Tokyo")
-        with patch("providers.chatgpt.client.system_timezone", return_value=None):
+        with patch("webai_provider.providers.chatgpt.client.system_timezone", return_value=None):
             body = self.client.create_conversation_body(None, "Question")
         self.assertNotIn("timezone", body)
         self.assertIsInstance(body["timezone_offset_min"], int)
@@ -290,7 +295,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result[3][0]["content"]["parts"], ["Answer"])
 
     def test_sse_parser_keeps_valid_json_data_lines_in_one_event(self):
-        from providers.chatgpt.client import _sse_data
+        from webai_provider.providers.chatgpt.client import _sse_data
 
         payload = b'data: {"a":1}\ndata: {"b":2}\n\n'
         self.assertEqual(list(_sse_data([payload])), ['{"a":1}\n{"b":2}'])
@@ -346,7 +351,7 @@ class DiscoveryTests(unittest.TestCase):
         chunks = (b"data:\n" * 4) + b"\n"
 
         with (
-            patch("providers.chatgpt.client._SSE_MAX_EVENT_DATA_LINES", 2),
+            patch("webai_provider.providers.chatgpt.client._SSE_MAX_EVENT_DATA_LINES", 2),
             self.assertRaisesRegex(ChatGPTWebError, "data line limit"),
         ):
             list(_sse_data((chunks,)))
@@ -394,7 +399,9 @@ class DiscoveryTests(unittest.TestCase):
             buffers.append(weakref.ref(value))
             return value
 
-        with patch("providers.chatgpt.client.OrderedDict", side_effect=create_buffer):
+        with patch(
+            "webai_provider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer
+        ):
             with (
                 patch.object(self.client, "create_sentinel_headers", return_value={}),
                 self.assertRaisesRegex(ChatGPTWebError, "stream failed"),

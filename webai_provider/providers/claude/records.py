@@ -1,7 +1,7 @@
 """Lossless Claude records mapped to the shared provider contract."""
 
-from ..messages import actions_for, files_from, sources_from
-from ..models import Content, Conversation, Message, Origin, Project, Resource
+from ...messages import actions_for, files_from, sources_from
+from ...models import Content, Conversation, Message, Origin, Project, Resource
 from .errors import ClaudeCompatibilityError
 
 

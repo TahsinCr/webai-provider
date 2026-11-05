@@ -153,7 +153,7 @@ flowchart TD
 
 ### 4.1. Высокоуровневый координатор: `ProviderClient`
 
-`providers.client.ProviderClient`
+`webai_provider.client.ProviderClient`
 
 Центральный координатор жизненного цикла для мультипровайдерных и мультиаккаунтных окружений. Рассчитан на запуск в одном экземпляре на событийный цикл `asyncio`.
 
@@ -185,7 +185,7 @@ flowchart TD
 
 ### 4.2. Создание провайдеров: `create_provider` и `ProviderRegistry`
 
-`providers.registry.create_provider`
+`webai_provider.registry.create_provider`
 
 Создает изолированный экземпляр бэкенда аккаунта без привязки к глобальному состоянию приложения.
 
@@ -226,7 +226,7 @@ def create_provider(
 
 ### 4.3. Базовый контракт: протокол `Backend`
 
-`providers.contracts.Backend`
+`webai_provider.contracts.Backend`
 
 Единый протокол, реализованный всеми четырьмя адаптерами провайдеров.
 
@@ -283,7 +283,7 @@ def create_provider(
 ### 4.4. Запросы и потоковые события: `SendRequest` и `ProviderEvent`
 
 #### Параметры `SendRequest`
-`providers.api.SendRequest(frozen=True)`
+`webai_provider.api.SendRequest(frozen=True)`
 
 | Поле | Тип | По умолчанию | Назначение |
 | :--- | :--- | :--- | :--- |
@@ -302,7 +302,7 @@ def create_provider(
 | **`branch`** | `BranchContext \| None` | `None` | Контекст продолжения диалога в новой ветке. |
 
 #### Валидация запроса: `validate_request`
-`providers.api.validate_request(provider, request: SendRequest)` проверяет:
+`webai_provider.api.validate_request(provider, request: SendRequest)` проверяет:
 - Соответствие запроса целевому провайдеру и аккаунту.
 - При наличии `action` (`EDIT` или `RETRY`) обязательное присутствие `conversation_id` и `message_id`.
 - При наличии контекста `branch` наличие исходных `conversation_id` и `message_id`, а также отсутствие конфликтующих параметров `action` и `temporary`.
@@ -336,7 +336,7 @@ def create_provider(
 
 ### 4.5. Модели предметной области: `ModelCatalog`, `Conversation`, `Project` и др.
 
-`providers.models`
+`webai_provider.models`
 
 - **`ModelCatalog`**:
   - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
@@ -385,7 +385,7 @@ def create_provider(
 
 ### 4.6. Политики вложений и загрузка файлов: `AttachmentPolicy` и `DownloadSource`
 
-`providers.attachments` & `providers.files`
+`webai_provider.attachments` & `webai_provider.files`
 
 #### `AttachmentPolicy`
 Определяет лимиты на загрузку файлов:
@@ -424,7 +424,7 @@ def create_provider(
 
 ### 4.7. Сессии, хранение учетных данных и синхронизация истории
 
-`providers.session` & `providers.history`
+`webai_provider.session` & `webai_provider.history`
 
 Учетные данные сессий сохраняются атомарно с использованием файловых блокировок и временных файлов с правами доступа `0o600`.
 
@@ -481,7 +481,7 @@ class CredentialStore(Protocol):
 ```
 
 #### Синхронизация истории: `merge_conversation`
-Функция `providers.history.merge_conversation(remote: dict, local: dict) -> dict` согласовывает локальные незавершенные реплики с подтвержденной сервером историей диалога с помощью `difflib.SequenceMatcher`:
+Функция `webai_provider.history.merge_conversation(remote: dict, local: dict) -> dict` согласовывает локальные незавершенные реплики с подтвержденной сервером историей диалога с помощью `difflib.SequenceMatcher`:
 - Сохраняет исходную подтвержденную историю сервера без изменений.
 - Заменяет временные локальные ID сообщений на подтвержденные постоянные ID сервера.
 - Сохраняет локальные неподтвержденные размышления и прикрепленные ресурсы.
@@ -493,7 +493,7 @@ class CredentialStore(Protocol):
 
 ### 4.8. Браузерные профили и инструменты CDP: `profiles` и `cdp`
 
-`providers.profiles` & `providers.cdp`
+`webai_provider.profiles` & `webai_provider.cdp`
 
 Позволяет осуществлять вход в учетные записи без ввода логина и пароля путем прямого импорта активных cookie из профилей установленных браузеров.
 
@@ -513,7 +513,7 @@ class CredentialStore(Protocol):
 
 ### 4.9. Телеметрия и профилирование задержек отправки: `timing`
 
-`providers.timing`
+`webai_provider.timing`
 
 Предоставляет подключаемое профилирование задержек транспортных этапов без записи содержимого сообщений.
 
@@ -530,7 +530,7 @@ class CredentialStore(Protocol):
 
 ### 4.10. Обработка ошибок и коды состояния: `ProviderError`
 
-`providers.errors`
+`webai_provider.errors`
 
 Все пользовательские исключения наследуются от базового класса `ProviderError`.
 
@@ -571,7 +571,7 @@ flowchart TD
 
 ```python
 import asyncio
-from providers import ProviderClient, ResponseComplete, SendRequest, TextDelta
+from webai_provider import ProviderClient, ResponseComplete, SendRequest, TextDelta
 
 
 async def main():
@@ -611,7 +611,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     ConversationBound,
     MessageMetadata,
     ProviderClient,
@@ -689,7 +689,7 @@ if __name__ == "__main__":
 ```python
 import asyncio
 from pathlib import Path
-from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
+from webai_provider import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -740,7 +740,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def query_provider(client, provider_id, cred_path, prompt):
@@ -796,7 +796,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -849,7 +849,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     BranchContext,
     ConversationBound,
     MessageAction,
@@ -924,7 +924,7 @@ if __name__ == "__main__":
 ```python
 import asyncio
 import json
-from providers import CredentialStore, ProviderClient
+from webai_provider import CredentialStore, ProviderClient
 
 
 class EncryptedMemoryStore(CredentialStore):

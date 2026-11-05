@@ -1,4 +1,4 @@
-from ..errors import ProviderError
+from ...errors import ProviderError
 
 
 class ChatGPTWebError(ProviderError):

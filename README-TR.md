@@ -153,7 +153,7 @@ flowchart TD
 
 ### 4.1. Üst Düzey Yönetici: `ProviderClient`
 
-`providers.client.ProviderClient`
+`webai_provider.client.ProviderClient`
 
 Çoklu sağlayıcı ve çoklu hesap yaşam döngülerini yöneten merkezi orkestratör. Her `asyncio` olay döngüsü için tek bir örnek çalıştırılacak biçimde tasarlanmıştır.
 
@@ -185,7 +185,7 @@ flowchart TD
 
 ### 4.2. Sağlayıcı İnşası: `create_provider` ve `ProviderRegistry`
 
-`providers.registry.create_provider`
+`webai_provider.registry.create_provider`
 
 Genel uygulama durumuna bağımlı olmaksızın yalıtılmış bir hesap arka ucu örneği inşa eder.
 
@@ -226,7 +226,7 @@ def create_provider(
 
 ### 4.3. Birleşik Backend Protokolü: `Backend` Sözleşmesi
 
-`providers.contracts.Backend`
+`webai_provider.contracts.Backend`
 
 Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protokol.
 
@@ -283,7 +283,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
 ### 4.4. İstekler ve Akış Olayları: `SendRequest` ve `ProviderEvent`
 
 #### `SendRequest` Parametreleri
-`providers.api.SendRequest(frozen=True)`
+`webai_provider.api.SendRequest(frozen=True)`
 
 | Alan | Tür | Varsayılan | Amacı |
 | :--- | :--- | :--- | :--- |
@@ -302,7 +302,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
 | **`branch`** | `BranchContext \| None` | `None` | Sohbet dalı devam üst verisi. |
 
 #### İstek Doğrulama: `validate_request`
-`providers.api.validate_request(provider, request: SendRequest)` şu kontrolleri yürütür:
+`webai_provider.api.validate_request(provider, request: SendRequest)` şu kontrolleri yürütür:
 - İsteğin hedef sağlayıcı ve hesap ile uyuşması.
 - `action` belirtilmişse (`EDIT` veya `RETRY`) hem `conversation_id` hem `message_id` değerlerinin bulunması.
 - `branch` devamında kaynak `conversation_id` ve `message_id` bulunması; çelişkili `action` veya `temporary` bayraklarının olmaması.
@@ -336,7 +336,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
 
 ### 4.5. Alan ve Durum Modelleri: `ModelCatalog`, `Conversation`, `Project` vb.
 
-`providers.models`
+`webai_provider.models`
 
 - **`ModelCatalog`**:
   - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
@@ -385,7 +385,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
 
 ### 4.6. Dosya Politikaları ve İndirme Tanımlayıcıları: `AttachmentPolicy` ve `DownloadSource`
 
-`providers.attachments` & `providers.files`
+`webai_provider.attachments` & `webai_provider.files`
 
 #### `AttachmentPolicy`
 Sağlayıcı yükleme sınırlarını tanımlar:
@@ -424,7 +424,7 @@ Sağlayıcı yükleme sınırlarını tanımlar:
 
 ### 4.7. Oturumlar, Kimlik Depolama ve Geçmiş Senkronizasyonu
 
-`providers.session` & `providers.history`
+`webai_provider.session` & `webai_provider.history`
 
 Oturum kimlik bilgileri, iş parçacığı kilitleri ve kısıtlı `0o600` dosya izinlerine sahip geçici dosyalar kullanılarak atomik biçimde diske yazılır.
 
@@ -481,7 +481,7 @@ class CredentialStore(Protocol):
 ```
 
 #### Geçmiş Senkronizasyonu: `merge_conversation`
-`providers.history.merge_conversation(remote: dict, local: dict) -> dict`, yerel bekleyen turları `difflib.SequenceMatcher` kullanarak doğrulanmış sunucu geçmişiyle güvenle hizalar:
+`webai_provider.history.merge_conversation(remote: dict, local: dict) -> dict`, yerel bekleyen turları `difflib.SequenceMatcher` kullanarak doğrulanmış sunucu geçmişiyle güvenle hizalar:
 - Önceki sağlayıcı geçmişini dokunulmadan korur.
 - Geçici yerel kimlikleri sunucunun onayladığı kalıcı kimliklerle değiştirir.
 - Yerel doğrulanmamış düşünme süreçlerini ve kaynak eklerini muhafaza eder.
@@ -493,7 +493,7 @@ class CredentialStore(Protocol):
 
 ### 4.8. Tarayıcı Profili İçe Aktarma ve CDP Araçları: `profiles` ve `cdp`
 
-`providers.profiles` & `providers.cdp`
+`webai_provider.profiles` & `webai_provider.cdp`
 
 Şifre girmeye gerek kalmadan, doğrudan varsayılan tarayıcı profillerindeki etkin çerezleri içe aktararak oturum açmayı sağlar.
 
@@ -513,7 +513,7 @@ class CredentialStore(Protocol):
 
 ### 4.9. Telemetri ve Gönderim Zamanlama Profillemesi: `timing`
 
-`providers.timing`
+`webai_provider.timing`
 
 İletim aşamaları boyunca içerikten bağımsız, isteğe bağlı performans takibi sağlar.
 
@@ -530,7 +530,7 @@ class CredentialStore(Protocol):
 
 ### 4.10. Hata Yönetimi ve Hata Kodları: `ProviderError`
 
-`providers.errors`
+`webai_provider.errors`
 
 Tüm özel istisnalar `ProviderError` temel sınıfından türetilmiştir.
 
@@ -571,7 +571,7 @@ Claude üzerinde bir istem çalıştırır ve dönen yanıt jetonlarını gerçe
 
 ```python
 import asyncio
-from providers import ProviderClient, ResponseComplete, SendRequest, TextDelta
+from webai_provider import ProviderClient, ResponseComplete, SendRequest, TextDelta
 
 
 async def main():
@@ -611,7 +611,7 @@ Canlı model kataloğunu inceler, yüksek akıl yürütme eforu seçer, ilk turd
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     ConversationBound,
     MessageMetadata,
     ProviderClient,
@@ -689,7 +689,7 @@ Yerel bir dosyayı `AttachmentPolicy` kurallarına göre doğrular, Gemini depol
 ```python
 import asyncio
 from pathlib import Path
-from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
+from webai_provider import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -740,7 +740,7 @@ Tek bir `ProviderClient` örneği içinde ChatGPT, Claude, Gemini ve Grok oturum
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def query_provider(client, provider_id, cred_path, prompt):
@@ -796,7 +796,7 @@ Yeni bir proje açar, sistem talimatlarını tanımlar, bir metin kaynağı ekle
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -849,7 +849,7 @@ Bir asistan yanıtını yeniden denemeyi, önceki bir istemi düzenlemeyi ve bel
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     BranchContext,
     ConversationBound,
     MessageAction,
@@ -924,7 +924,7 @@ Oturum çerezlerini düz metin JSON dosyaları yerine şifrelenmiş bellekte vey
 ```python
 import asyncio
 import json
-from providers import CredentialStore, ProviderClient
+from webai_provider import CredentialStore, ProviderClient
 
 
 class EncryptedMemoryStore(CredentialStore):

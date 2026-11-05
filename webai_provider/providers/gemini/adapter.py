@@ -6,7 +6,7 @@ from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
 
-from ..api import (
+from ...api import (
     Capability,
     ConversationBound,
     MessageAction,
@@ -16,10 +16,10 @@ from ..api import (
     SendRequest,
     validate_request,
 )
-from ..contracts import OptionalFeatures, confirm_deleted
-from ..errors import AccountPaused, FeatureUnavailable, ProviderError
-from ..messages import files_from, sources_from
-from ..models import (
+from ...contracts import OptionalFeatures, confirm_deleted
+from ...errors import AccountPaused, FeatureUnavailable, ProviderError
+from ...messages import files_from, sources_from
+from ...models import (
     FeatureState,
     ModelCatalog,
     Origin,
@@ -27,9 +27,9 @@ from ..models import (
     SessionState,
     SessionStatus,
 )
-from ..projects import ProjectEditing
-from ..session import delete_session, session_exists
-from ..timing import current_send_timing
+from ...projects import ProjectEditing
+from ...session import delete_session, session_exists
+from ...timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 
 _CHAT_METADATA_TTL_SECONDS = 60.0
@@ -257,7 +257,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
         return await asyncio.to_thread(history, parts[0], self._origin, conversation_id)
 
     async def branch_chat(self, conversation_id, message_id):
-        from ..messages import target_message
+        from ...messages import target_message
         from .session import nested
 
         current = await self.get_chat(conversation_id)
@@ -466,7 +466,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                         turns = nested(parts[0], 0, default=[])
                         turn = turns[0] if turns else None
                         if request.action:
-                            from ..messages import target_message
+                            from ...messages import target_message
                             from .history import history
 
                             current = history(parts[0], self._origin, request.conversation_id)
@@ -582,7 +582,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                     self._temporary.pop(oldest)
 
     async def resolve_download(self, url, conversation_id=None, message_id=None):
-        from ..files import DownloadSource, NativeDownloadClient, cookie_header
+        from ...files import DownloadSource, NativeDownloadClient, cookie_header
         from .media import PLACEHOLDER, valid_media_url
 
         stable_reference = bool(PLACEHOLDER.fullmatch(url) or url.startswith("gemini-media:"))
@@ -608,7 +608,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
         # Never attach Google cookies to arbitrary user-controlled CDN subdomains.
         host = urlsplit(target["url"]).hostname
         if host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}:
-            from ..session import read_session
+            from ...session import read_session
 
             client = self._client
             values = (

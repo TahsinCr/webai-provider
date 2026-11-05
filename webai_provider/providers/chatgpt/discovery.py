@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ..models import Choice, FeatureState, Model, ModelCatalog
+from ...models import Choice, FeatureState, Model, ModelCatalog
 from .errors import ChatGPTWebError
 
 

@@ -153,7 +153,7 @@ flowchart TD
 
 ### 4.1. High-Level Orchestrator: `ProviderClient`
 
-`providers.client.ProviderClient`
+`webai_provider.client.ProviderClient`
 
 The central manager for multi-provider and multi-account lifecycles. Designed to run one instance per `asyncio` event loop.
 
@@ -185,7 +185,7 @@ The central manager for multi-provider and multi-account lifecycles. Designed to
 
 ### 4.2. Provider Construction: `create_provider` & `ProviderRegistry`
 
-`providers.registry.create_provider`
+`webai_provider.registry.create_provider`
 
 Constructs an isolated account backend instance without global application state.
 
@@ -226,7 +226,7 @@ def create_provider(
 
 ### 4.3. Unified Backend Protocol: `Backend` Contract
 
-`providers.contracts.Backend`
+`webai_provider.contracts.Backend`
 
 The unified protocol implemented by all four adapters.
 
@@ -283,7 +283,7 @@ The unified protocol implemented by all four adapters.
 ### 4.4. Requests & Streaming Events: `SendRequest` & `ProviderEvent`
 
 #### `SendRequest` Dataclass
-`providers.api.SendRequest(frozen=True)`
+`webai_provider.api.SendRequest(frozen=True)`
 
 | Field | Type | Default | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -302,7 +302,7 @@ The unified protocol implemented by all four adapters.
 | **`branch`** | `BranchContext \| None` | `None` | Branch continuation metadata when continuing from a preview. |
 
 #### Request Validation: `validate_request`
-`providers.api.validate_request(provider, request: SendRequest)` validates:
+`webai_provider.api.validate_request(provider, request: SendRequest)` validates:
 - Request belongs to the matching provider and account.
 - `action` is supported (`EDIT` or `RETRY`) and has both `conversation_id` and `message_id`.
 - `branch` continuation has both source `conversation_id` and `message_id`, and has no conflicting `action` or `temporary` flags.
@@ -336,7 +336,7 @@ The unified protocol implemented by all four adapters.
 
 ### 4.5. Domain & Status Models: `ModelCatalog`, `Conversation`, `Project`, etc.
 
-`providers.models`
+`webai_provider.models`
 
 - **`ModelCatalog`**:
   - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
@@ -385,7 +385,7 @@ The unified protocol implemented by all four adapters.
 
 ### 4.6. File Policies & Download Descriptors: `AttachmentPolicy` & `DownloadSource`
 
-`providers.attachments` & `providers.files`
+`webai_provider.attachments` & `webai_provider.files`
 
 #### `AttachmentPolicy`
 Defines provider upload limits:
@@ -424,7 +424,7 @@ Context manager for streaming bytes using Chrome impersonation via `curl_cffi`:
 
 ### 4.7. Sessions, Credential Storage & History Synchronization
 
-`providers.session` & `providers.history`
+`webai_provider.session` & `webai_provider.history`
 
 Session credentials are saved atomically using thread locks and temporary file replacement with restricted `0o600` permissions.
 
@@ -481,7 +481,7 @@ class CredentialStore(Protocol):
 ```
 
 #### History Synchronization: `merge_conversation`
-`providers.history.merge_conversation(remote: dict, local: dict) -> dict` aligns the tail of local pending turns against confirmed provider history using `difflib.SequenceMatcher`:
+`webai_provider.history.merge_conversation(remote: dict, local: dict) -> dict` aligns the tail of local pending turns against confirmed provider history using `difflib.SequenceMatcher`:
 - Keeps earlier provider history intact.
 - Replaces provisional local IDs with confirmed server IDs.
 - Retains local unconfirmed thoughts and resource attachments.
@@ -493,7 +493,7 @@ class CredentialStore(Protocol):
 
 ### 4.8. Browser Profile Import & CDP Utilities: `profiles` & `cdp`
 
-`providers.profiles` & `providers.cdp`
+`webai_provider.profiles` & `webai_provider.cdp`
 
 Allows logging into accounts without typing passwords by importing live cookies directly from default browser profiles.
 
@@ -513,7 +513,7 @@ Allows logging into accounts without typing passwords by importing live cookies 
 
 ### 4.9. Telemetry & Send Timing Profiling: `timing`
 
-`providers.timing`
+`webai_provider.timing`
 
 Opt-in, content-free performance tracing across transport stages.
 
@@ -530,7 +530,7 @@ Opt-in, content-free performance tracing across transport stages.
 
 ### 4.10. Error Handling & Failure Codes: `ProviderError`
 
-`providers.errors`
+`webai_provider.errors`
 
 All exceptions derive from `ProviderError`.
 
@@ -571,7 +571,7 @@ Submits a prompt to Claude and streams tokens to stdout in real time.
 
 ```python
 import asyncio
-from providers import ProviderClient, ResponseComplete, SendRequest, TextDelta
+from webai_provider import ProviderClient, ResponseComplete, SendRequest, TextDelta
 
 
 async def main():
@@ -611,7 +611,7 @@ Inspects the account's live model catalog, selects an explicit reasoning effort,
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     ConversationBound,
     MessageMetadata,
     ProviderClient,
@@ -689,7 +689,7 @@ Validates local files against `AttachmentPolicy`, uploads them to Gemini storage
 ```python
 import asyncio
 from pathlib import Path
-from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
+from webai_provider import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -740,7 +740,7 @@ Demonstrates querying ChatGPT, Claude, Gemini, and Grok concurrently inside a si
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def query_provider(client, provider_id, cred_path, prompt):
@@ -796,7 +796,7 @@ Creates a project, provisions system instructions, attaches a document resource,
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta
+from webai_provider import ProviderClient, SendRequest, TextDelta
 
 
 async def main():
@@ -849,7 +849,7 @@ Demonstrates retrying an assistant response, editing an earlier prompt, and bran
 
 ```python
 import asyncio
-from providers import (
+from webai_provider import (
     BranchContext,
     ConversationBound,
     MessageAction,
@@ -924,7 +924,7 @@ Implements `CredentialStore` to store session cookies in encrypted memory or sec
 ```python
 import asyncio
 import json
-from providers import CredentialStore, ProviderClient
+from webai_provider import CredentialStore, ProviderClient
 
 
 class EncryptedMemoryStore(CredentialStore):

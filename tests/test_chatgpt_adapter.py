@@ -5,13 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from providers import Capability, ProviderRegistry, ReplaceText, SendRequest, TextDelta
-from providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
-from providers.chatgpt.client import ChatGPTClient
-from providers.chatgpt.errors import SentinelCompatibilityError
-from providers.errors import ProviderError, RateLimited, RemoteNotFound
-from providers.models import Choice, FeatureState, Model, ModelCatalog, SessionState
-from providers.timing import SendTiming, use_send_timing
+from webai_provider import Capability, ProviderRegistry, ReplaceText, SendRequest, TextDelta
+from webai_provider.errors import ProviderError, RateLimited, RemoteNotFound
+from webai_provider.models import Choice, FeatureState, Model, ModelCatalog, SessionState
+from webai_provider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
+from webai_provider.providers.chatgpt.client import ChatGPTClient
+from webai_provider.providers.chatgpt.errors import SentinelCompatibilityError
+from webai_provider.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient
 
@@ -175,7 +175,9 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.session.load = lambda: ("https://chatgpt.com/", {"authorization": "Bearer test"})
         real_http_client = httpx.Client
         with (
-            patch("providers.chatgpt.client.httpx.Client", wraps=real_http_client) as clients,
+            patch(
+                "webai_provider.providers.chatgpt.client.httpx.Client", wraps=real_http_client
+            ) as clients,
             patch.object(ChatGPTClient, "model_catalog", return_value=catalog) as model_catalog,
             patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
             patch.object(ChatGPTClient, "get_conversation", return_value=raw),
@@ -204,7 +206,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(provider._http_client)
 
     async def test_project_file_source_is_streamed_using_a_dedicated_client(self):
-        from providers.chatgpt.projects import ChatGPTProjectEditor
+        from webai_provider.providers.chatgpt.projects import ChatGPTProjectEditor
 
         path = Path(self.directory.name) / "source.txt"
         path.write_text("fixture")

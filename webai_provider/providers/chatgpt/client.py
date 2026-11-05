@@ -16,9 +16,9 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
-from ..core import MultiDimensionBoundedCache
-from ..errors import RateLimited
-from ..timing import SendTiming, current_send_timing
+from ...core import MultiDimensionBoundedCache
+from ...errors import RateLimited
+from ...timing import SendTiming, current_send_timing
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (
     model_catalog as parse_model_catalog,
@@ -348,7 +348,7 @@ class ChatGPTClient:
                 delay = None
             raise RateLimited(delay)
         if response.status_code == 404:
-            from ..errors import RemoteNotFound
+            from ...errors import RemoteNotFound
 
             raise RemoteNotFound("ChatGPT kaydı artık mevcut değil")
         if response.status_code >= 400:
@@ -502,7 +502,7 @@ class ChatGPTClient:
                 return conversations
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
-        from ..errors import RemoteNotFound
+        from ...errors import RemoteNotFound
 
         endpoint = self._conversation_endpoint
         alternate = "conversation" if endpoint == "conversations" else "conversations"
@@ -812,7 +812,7 @@ class ChatGPTClient:
             )
         submitted_message_id = body["messages"][0]["id"]
         if action:
-            from ..api import MessageAction
+            from ...api import MessageAction
 
             items = (conversation or {}).get("messages", [])
             target_index = next(

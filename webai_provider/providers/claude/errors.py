@@ -1,6 +1,6 @@
 """Claude web-session failures exposed through the provider contract."""
 
-from ..errors import ProviderError
+from ...errors import ProviderError
 
 
 class ClaudeError(ProviderError):

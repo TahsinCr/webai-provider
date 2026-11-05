@@ -4,14 +4,14 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-import providers
-from providers import ProviderClient, SendRequest
-from providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
+import webai_provider
+from webai_provider import ProviderClient, SendRequest
+from webai_provider.providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
 
 
 def main():
-    if providers.__version__ != "1.2.0b0" or providers.__verison__ != "1.2.0b0":
-        raise SystemExit(f"invalid providers version: {providers.__version__}")
+    if webai_provider.__version__ != "1.2.0b0":
+        raise SystemExit(f"invalid providers version: {webai_provider.__version__}")
     with SentinelRuntime(user_agent="Mozilla/5.0 (X11; Linux x86_64)") as runtime:
         initial = runtime.create_initial_proof()
         if not initial.startswith("gAAAAAC") or not initial.endswith("~S"):

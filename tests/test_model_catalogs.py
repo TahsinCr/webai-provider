@@ -3,9 +3,9 @@
 import copy
 import unittest
 
-from providers.chatgpt.discovery import model_catalog
-from providers.claude.catalog import selector_catalog
-from providers.errors import ProviderError
+from webai_provider.errors import ProviderError
+from webai_provider.providers.chatgpt.discovery import model_catalog
+from webai_provider.providers.claude.catalog import selector_catalog
 
 
 def selector():
@@ -92,7 +92,7 @@ class EntitlementTests(unittest.TestCase):
 
 class ChatModelLookupTests(unittest.TestCase):
     def test_lookup_keeps_chat_visibility_order_and_unknown_selection(self):
-        from providers.models import FeatureState, Model, ModelCatalog
+        from webai_provider.models import FeatureState, Model, ModelCatalog
 
         hidden = Model("shared", "Tool", chat_selectable=False)
         first = Model("shared", "First chat")

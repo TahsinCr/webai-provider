@@ -9,7 +9,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Callable
 
-from ..api import (
+from ...api import (
     Capability,
     ConversationBound,
     MessageMetadata,
@@ -19,14 +19,14 @@ from ..api import (
     TextDelta,
     validate_request,
 )
-from ..contracts import OptionalFeatures, confirm_deleted
-from ..errors import (
+from ...contracts import OptionalFeatures, confirm_deleted
+from ...errors import (
     FeatureUnavailable,
     ProviderError,
     RateLimited,
 )
-from ..messages import actions_for, sources_from
-from ..models import (
+from ...messages import actions_for, sources_from
+from ...models import (
     Content,
     Conversation,
     Feature,
@@ -41,9 +41,9 @@ from ..models import (
     SessionState,
     SessionStatus,
 )
-from ..projects import ProjectEditing
-from ..session import delete_session, session_exists
-from ..timing import current_send_timing
+from ...projects import ProjectEditing
+from ...session import delete_session, session_exists
+from ...timing import current_send_timing
 from .client import ChatGPTClient
 from .discovery import project_id
 from .errors import ChatGPTWebError
@@ -516,7 +516,7 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-        from ..files import DownloadSource
+        from ...files import DownloadSource
 
         parsed = urlsplit(url)
         if parsed.scheme == "file-service":
@@ -623,7 +623,7 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
     async def branch_chat(self, conversation_id: str, message_id: str) -> Conversation:
         from urllib.parse import quote
 
-        from ..messages import target_message
+        from ...messages import target_message
 
         def branch():
             with self._client_scope() as client:

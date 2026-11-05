@@ -7,8 +7,8 @@ import re
 import time
 import uuid
 
-from ..errors import AccountPaused, ProviderError, RateLimited
-from ..session import WebSession, read_session, save_session_async
+from ...errors import AccountPaused, ProviderError, RateLimited
+from ...session import WebSession, read_session, save_session_async
 from .errors import GeminiCompatibilityError, GeminiError
 
 ORIGIN = "https://gemini.google.com"
@@ -279,7 +279,7 @@ class GeminiSession:
         raise ProviderError("Gemini web sorgusu yanıtı eksik")
 
     async def discover_models(self):
-        from ..models import Choice, Model
+        from ...models import Choice, Model
         from .rpc import RPCPayload
 
         endpoint, _ = self.graphql_endpoints()

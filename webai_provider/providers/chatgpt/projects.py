@@ -4,8 +4,8 @@ import asyncio
 import mimetypes
 from urllib.parse import quote
 
-from ..models import Choice
-from ..projects import ProjectOptions, source_file
+from ...models import Choice
+from ...projects import ProjectOptions, source_file
 
 
 class ChatGPTProjectEditor:

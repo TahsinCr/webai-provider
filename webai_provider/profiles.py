@@ -474,7 +474,7 @@ def import_cookies(provider):
     profile = default_profile()
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "providers.profiles"],
+            [sys.executable, "-m", "webai_provider.profiles"],
             input=json.dumps(
                 {
                     "provider": provider,

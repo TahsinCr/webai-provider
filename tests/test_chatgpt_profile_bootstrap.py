@@ -12,7 +12,7 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
     def test_bootstrap_saves_provider_token_and_browser_headers_without_cdp(self):
         from unittest.mock import MagicMock
 
-        from providers.chatgpt import BrowserSession, SessionPaths
+        from webai_provider.providers.chatgpt import BrowserSession, SessionPaths
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -46,8 +46,8 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
     def test_bootstrap_rejection_retains_previous_snapshot_and_does_not_follow_redirect(self):
         from unittest.mock import MagicMock
 
-        from providers.chatgpt import BrowserSession, SessionPaths
-        from providers.errors import ProviderError
+        from webai_provider.errors import ProviderError
+        from webai_provider.providers.chatgpt import BrowserSession, SessionPaths
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

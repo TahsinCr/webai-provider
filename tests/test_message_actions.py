@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
-from providers import BranchContext, MessageAction, SendRequest
-from providers.chatgpt.client import ChatGPTClient
-from providers.claude.transport import ClaudeTransport
-from providers.gemini.history import history
-from providers.gemini.transport import generation_request
-from providers.messages import files_from, sources_from
-from providers.models import Model, Origin
+from webai_provider import BranchContext, MessageAction, SendRequest
+from webai_provider.messages import files_from, sources_from
+from webai_provider.models import Model, Origin
+from webai_provider.providers.chatgpt.client import ChatGPTClient
+from webai_provider.providers.claude.transport import ClaudeTransport
+from webai_provider.providers.gemini.history import history
+from webai_provider.providers.gemini.transport import generation_request
 
 
 class ChatGPTActionsTests(unittest.TestCase):
@@ -303,7 +303,7 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_chatgpt_asset_reference_gets_a_fresh_url_and_checks_conversation_membership(
         self,
     ):
-        from providers.chatgpt.adapter import ChatGPTProvider
+        from webai_provider.providers.chatgpt.adapter import ChatGPTProvider
 
         provider = ChatGPTProvider.__new__(ChatGPTProvider)
         client = Mock()
@@ -344,7 +344,7 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
 
 class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
     def test_presented_files_are_attached_to_the_following_answer_in_history(self):
-        from providers.claude.records import conversation
+        from webai_provider.providers.claude.records import conversation
 
         value = {
             "uuid": "chat",
