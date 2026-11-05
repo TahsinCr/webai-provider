@@ -95,7 +95,7 @@ Kütüphane, özellikleri `Capability` numaralandırmasıyla bildirir. Düşünm
 | `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Sohbetleri projeye taşıma veya çıkarma (Gemini Defter sohbetleri açılış anında sabitlenir). |
 | `MODELS` | ✅ | ✅ | ✅ | ✅ | Hesaba açık modelleri dinamik keşfetme. |
 | `EFFORT` | ✅ | ✅ | ✅ | ✅ | Modele bağlı düşünme eforu / bütçesi (`Model.efforts` üzerinden dinamik). |
-| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ❌ | Kullanıcı mesajını düzenleyip yeni yoldan devam etme (Grok asistan mesajı üzerinde retry kullanır). |
+| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Kullanıcı mesajını düzenleyip yeni yoldan devam etme. |
 | `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Asistan cevabını yeniden üretme (*Gemini bunu üst kullanıcı mesajını düzenleme biçiminde yürütür). |
 | `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Mesajdan bağımsız yeni bir sohbet dalı türetme (Claude ve Grok web arayüzünde dal türetme API'si bulunmaz). |
 

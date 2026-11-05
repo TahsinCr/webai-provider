@@ -66,6 +66,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             Capability.PROJECT_MEMBERSHIP,
             Capability.RESOURCES,
             Capability.MESSAGE_RETRY,
+            Capability.MESSAGE_EDIT,
         }
     )
 
@@ -469,12 +470,12 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             raise FeatureUnavailable(
                 Capability.TEMPORARY, "Temporary chats cannot belong to a project"
             )
-        if request.action not in (None, MessageAction.RETRY):
-            raise FeatureUnavailable(
-                Capability.MESSAGE_EDIT, "Grok does not support this message action"
-            )
+        if request.action not in (None, MessageAction.RETRY, MessageAction.EDIT):
+            raise FeatureUnavailable(request.action.capability)
         if request.action == MessageAction.RETRY and not request.message_id:
             raise ValueError("Grok retry requires the selected assistant response")
+        if request.action == MessageAction.EDIT and not request.message_id:
+            raise ValueError("Grok edit requires the selected user prompt")
 
         catalog = await self.models()
         selected = catalog.chat_model(request.model) if request.model else None
@@ -494,9 +495,10 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             conversation_id = request.conversation_id
             parent_response_id = ""
             is_retry = request.action == MessageAction.RETRY
+            is_edit = request.action == MessageAction.EDIT
             if conversation_id:
                 cached_parent = None
-                if is_retry:
+                if is_retry or is_edit:
                     self._continuations.pop(conversation_id, None)
                     history = await self._history(conversation_id)
                 else:
@@ -511,7 +513,11 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 else:
                     if not isinstance(history, dict):
                         raise ProviderError("Grok conversation history response contract changed")
-                    if not is_retry and not isinstance(history.get("responseNodes"), list):
+                    if (
+                        not is_retry
+                        and not is_edit
+                        and not isinstance(history.get("responseNodes"), list)
+                    ):
                         raise ProviderError("Grok conversation node response contract changed")
                     if history.get("inflightResponses"):
                         raise ProviderError("Grok conversation already has a response in progress")
@@ -534,6 +540,27 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                                 "Grok retry target is no longer on the active conversation path"
                             )
                         parent_response_id = target.get("parentResponseId") or ""
+                    elif is_edit:
+                        target = next(
+                            (
+                                item
+                                for item in active
+                                if item.get("responseId") == request.message_id
+                            ),
+                            None,
+                        )
+                        if target is None or str(target.get("sender", "")).lower() not in (
+                            "human",
+                            "user",
+                        ):
+                            raise ProviderError(
+                                "Grok edit target is no longer on the active conversation path"
+                            )
+                        parent_response_id = target.get("parentResponseId") or ""
+                        if not file_attachments and target.get("fileAttachments"):
+                            file_attachments = [
+                                item for item in target["fileAttachments"] if isinstance(item, dict)
+                            ]
                     elif active:
                         parent_response_id = active[-1].get("responseId") or ""
 

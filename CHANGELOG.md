@@ -4,6 +4,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Support user message editing on Grok through its parent-response tree branching contract.
+
 ### Changed
 
 - Update SiopeChat integration guidance for its pinned PyPI dependency; no provider submodule is required.

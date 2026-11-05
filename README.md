@@ -95,7 +95,7 @@ The library exposes capabilities through `Capability` enums. Because features li
 | `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Moving chats into or out of projects (Gemini Notebook chats are fixed at creation). |
 | `MODELS` | ✅ | ✅ | ✅ | ✅ | Discovering available models dynamically from the account. |
 | `EFFORT` | ✅ | ✅ | ✅ | ✅ | Reasoning effort / thinking budget (model-dependent; configured via `Model.efforts`). |
-| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ❌ | Editing an existing user prompt and branching (Grok uses retry on assistant turns). |
+| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Editing an existing user prompt and generating a new branch. |
 | `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Regenerating an assistant turn (*Gemini executes retry by editing the parent prompt turn). |
 | `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Forking an existing turn into an independent conversation (unsupported by Claude/Grok web APIs). |
 

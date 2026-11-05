@@ -252,6 +252,54 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(metadata.actions, (MessageAction.RETRY.value,))
             self.assertEqual(metadata.sources[0]["url"], "https://example.com")
 
+    async def test_stream_supports_message_edit(self):
+        provider = GrokProvider(Path("unused"), "test")
+        self.assertIn(Capability.MESSAGE_EDIT, provider.capabilities)
+        transport = GrokTransportFixture()
+        provider.transport = transport
+
+        async def send(prompt="Hello", action=None, message_id=None):
+            request = SendRequest(
+                provider_id="grok",
+                account_id="test",
+                chat_id="local",
+                prompt=prompt,
+                conversation_id="chat",
+                action=action,
+                message_id=message_id,
+            )
+            return [event async for event in provider.stream(request)]
+
+        try:
+            await send("First")
+            await send("Second")
+            edited = await send("Edited Second", action=MessageAction.EDIT, message_id="user-2")
+            edited_first = await send(
+                "Edited First", action=MessageAction.EDIT, message_id="user-1"
+            )
+            with self.assertRaises(ValueError):
+                await send("Missing id", action=MessageAction.EDIT)
+            with self.assertRaises(ProviderError):
+                await send("Assistant target", action=MessageAction.EDIT, message_id="answer-1")
+            with self.assertRaises(ProviderError):
+                await send("Unknown target", action=MessageAction.EDIT, message_id="unknown")
+        finally:
+            await provider.close()
+
+        self.assertEqual(
+            [body["parentResponseId"] for body in transport.bodies],
+            ["answer-0", "answer-1", "answer-1", "answer-0"],
+        )
+        self.assertEqual(transport.bodies[2]["message"], "Edited Second")
+        self.assertFalse(transport.bodies[2]["isRegenRequest"])
+        self.assertEqual(transport.bodies[3]["message"], "Edited First")
+        self.assertFalse(transport.bodies[3]["isRegenRequest"])
+        self.assertIn(TextDelta("Answer"), edited)
+        self.assertIn(TextDelta("Answer"), edited_first)
+        metadata = next(event for event in edited if isinstance(event, MessageMetadata))
+        self.assertEqual(metadata.user_message_id, "user-3")
+        self.assertEqual(metadata.message_id, "answer-3")
+
     async def test_model_catalog_only_exposes_account_available_modes(self):
         provider = GrokProvider(Path("unused"), "test")
         transport = GrokTransportFixture()
@@ -1001,6 +1049,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user_msg.content[1].resource.id, "file-1")
         self.assertEqual(user_msg.content[1].resource.name, "report.pdf")
         self.assertEqual(user_msg.content[1].resource.media_type, "application/pdf")
+        self.assertEqual(user_msg.actions, (MessageAction.EDIT.value,))
 
     async def test_stream_allows_concurrent_models_lookup_without_gate_contention(self):
         provider = GrokProvider(Path("unused"), "test")

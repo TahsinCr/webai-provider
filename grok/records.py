@@ -146,7 +146,14 @@ def _messages(history):
                 for item in files
                 if isinstance(item, dict) and (item.get("assetId") or item.get("id"))
             )
-            messages.append(Message(response_id, "user", (Content("text", str(text)),) + resources))
+            messages.append(
+                Message(
+                    response_id,
+                    "user",
+                    (Content("text", str(text)),) + resources,
+                    actions=(MessageAction.EDIT.value,),
+                )
+            )
             continue
         if sender not in ("assistant", "model", "grok"):
             continue
