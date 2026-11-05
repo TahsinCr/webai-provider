@@ -48,7 +48,6 @@ select = ["E4", "E7", "E9", "F", "I"]
 known-first-party = ["providers"]
 
 [tool.setuptools]
-package-dir = {"providers" = "."}
 packages = [
     "providers",
     "providers.chatgpt",
@@ -57,3 +56,11 @@ packages = [
     "providers.claude",
     "providers.grok",
 ]
+
+[tool.setuptools.package-dir]
+"providers" = "."
+"providers.chatgpt" = "providers/chatgpt"
+"providers.chatgpt.sentinel" = "providers/chatgpt/sentinel"
+"providers.gemini" = "providers/gemini"
+"providers.claude" = "providers/claude"
+"providers.grok" = "providers/grok"
