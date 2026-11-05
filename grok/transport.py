@@ -259,7 +259,11 @@ class GrokProjectEditor:
                     raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
                 content = await asyncio.to_thread(_read_limited, file)
                 name = file.name
-                mime_type = mimetypes.guess_type(file.name)[0] or "text/plain"
+                mime_type = (
+                    "text/markdown"
+                    if file.suffix.casefold() in {".md", ".markdown"}
+                    else mimetypes.guess_type(file.name)[0] or "text/plain"
+                )
             if not 0 < len(content) <= _MAX_WORKSPACE_FILE_BYTES:
                 raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
             name = name.strip()

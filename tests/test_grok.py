@@ -774,7 +774,11 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             path = Path(folder) / "notes.md"
             path.write_bytes(b"# Project notes\n")
 
-            await editor.write("add_source", "workspace", kind="file", path=path)
+            with patch(
+                "providers.grok.transport.mimetypes.guess_type",
+                return_value=("text/plain", None),
+            ):
+                await editor.write("add_source", "workspace", kind="file", path=path)
 
         call = transport.request.await_args
         self.assertEqual(call.args, ("POST", "/rest/workspaces/workspace/files/upload"))

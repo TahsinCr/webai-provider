@@ -6,3 +6,5 @@ dist/
 .venv/
 /session*.json
 /cookies*.json
+.ruff_cache/
+.serena/
