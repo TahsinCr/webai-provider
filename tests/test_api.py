@@ -225,3 +225,11 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
                             backend.stream(SendRequest(provider, "other", "local", "Hello"))
                         )
             self.assertEqual(list(Path(folder).rglob("session.json")), [])
+
+    def test_package_exports_version_symbols(self):
+        import providers
+
+        self.assertEqual(providers.__version__, "1.2.0b0")
+        self.assertEqual(providers.__verison__, "1.2.0b0")
+        self.assertIn("__version__", providers.__all__)
+        self.assertIn("__verison__", providers.__all__)

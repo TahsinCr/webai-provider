@@ -4,11 +4,14 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [1.2-beta] - 2026-11-05
+
 ### Added
 
 - Support user message editing on Grok through its parent-response tree branching contract.
 - Route image attachments to `imageAttachments` on Grok to enable multi-modal vision model analysis.
 - Preserve and deduplicate both file and image attachments when editing user prompts or loading conversation history on Grok.
+- Expose `__version__` and `__verison__` package version identifiers on the top-level `providers` namespace.
 
 ### Changed
 
