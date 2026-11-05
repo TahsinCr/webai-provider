@@ -60,3 +60,60 @@ class RemoteNotFound(ProviderError):
     """The provider confirmed that this remote record no longer exists."""
 
     code = "remote_not_found"
+
+
+class ProfileError(ProviderError):
+    """Safe diagnostic: never include decryption exceptions or cookie values."""
+
+    code = "profile_error"
+    default_message = "Profil okunamadı (beklenmeyen hata); Python bağımlılıklarını ve profil erişimini kontrol edin"
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or self.default_message)
+
+
+class ProfileNotFoundError(ProfileError):
+    code = "profile_not_found"
+    default_message = "Varsayılan tarayıcı profili bulunamadı"
+
+
+class ProfileSessionNotFoundError(ProfileError):
+    code = "profile_session_not_found"
+    default_message = "Bu profilde sağlayıcıya ait açık oturum bulunamadı"
+
+
+class ProfileDependencyError(ProfileError):
+    code = "profile_dependency_missing"
+    default_message = "Profil okuyucu bağımlılıkları eksik; uygulamanın Python ortamında bağımlılıkları güncelleyin"
+
+
+class ProfilePermissionError(ProfileError):
+    code = "profile_permission_denied"
+    default_message = "Profil dosyasına erişim reddedildi; uygulamayı profilin sahibi olan kullanıcıyla çalıştırın"
+
+
+class ProfileDatabaseError(ProfileError):
+    code = "profile_database_error"
+    default_message = "Çerez veritabanı okunamadı; tarayıcıyı kapatıp yeniden deneyin"
+
+
+class ProfileKeyringError(ProfileError):
+    code = "profile_keyring_error"
+    default_message = (
+        "Sistem anahtarlığına erişilemedi; masaüstü oturumunu ve anahtarlık kilidini kontrol edin"
+    )
+
+
+class ProfileDecryptionError(ProfileError):
+    code = "profile_decryption_error"
+    default_message = "Tarayıcı çerezleri çözülemedi; anahtarlık erişimi veya tarayıcı şifrelemesi uyumsuz olabilir"
+
+
+class ProfileTimeoutError(ProfileError):
+    code = "profile_timeout"
+    default_message = "Profil okuma zaman aşımına uğradı; sistem anahtarlığının kilidini açın"
+
+
+class ProfileInvalidResultError(ProfileError):
+    code = "profile_invalid_result"
+    default_message = "Profil okuma sonucu geçersiz"

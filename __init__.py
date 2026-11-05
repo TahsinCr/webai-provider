@@ -19,7 +19,21 @@ from .api import (
 from .attachments import AttachmentPolicy
 from .client import ProviderClient
 from .contracts import Backend
-from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
+from .errors import (
+    FeatureUnavailable,
+    ProfileDatabaseError,
+    ProfileDecryptionError,
+    ProfileDependencyError,
+    ProfileError,
+    ProfileInvalidResultError,
+    ProfileKeyringError,
+    ProfileNotFoundError,
+    ProfilePermissionError,
+    ProfileSessionNotFoundError,
+    ProfileTimeoutError,
+    ProviderError,
+    RemoteNotFound,
+)
 from .files import DownloadSource
 from .models import (
     Choice,
@@ -68,6 +82,16 @@ __all__ = [
     "ProjectOptions",
     "ProviderClient",
     "ProviderError",
+    "ProfileDatabaseError",
+    "ProfileDecryptionError",
+    "ProfileDependencyError",
+    "ProfileError",
+    "ProfileInvalidResultError",
+    "ProfileKeyringError",
+    "ProfileNotFoundError",
+    "ProfilePermissionError",
+    "ProfileSessionNotFoundError",
+    "ProfileTimeoutError",
     "ResponseComplete",
     "RemoteNotFound",
     "Resource",

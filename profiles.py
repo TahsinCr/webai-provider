@@ -22,18 +22,26 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import (
+    ProfileDatabaseError,
+    ProfileDecryptionError,
+    ProfileDependencyError,
+    ProfileError,
+    ProfileInvalidResultError,
+    ProfileKeyringError,
+    ProfileNotFoundError,
+    ProfilePermissionError,
+    ProfileSessionNotFoundError,
+    ProfileTimeoutError,
+)
 
-class ProfileError(RuntimeError):
-    """Safe diagnostic: never include decryption exceptions or cookie values."""
-
-
-PROFILE_FAILURES = {
-    1: "Profil okunamadı (beklenmeyen hata); Python bağımlılıklarını ve profil erişimini kontrol edin",
-    3: "Profil okuyucu bağımlılıkları eksik; uygulamanın Python ortamında bağımlılıkları güncelleyin",
-    4: "Profil dosyasına erişim reddedildi; uygulamayı profilin sahibi olan kullanıcıyla çalıştırın",
-    5: "Çerez veritabanı okunamadı; tarayıcıyı kapatıp yeniden deneyin",
-    6: "Sistem anahtarlığına erişilemedi; masaüstü oturumunu ve anahtarlık kilidini kontrol edin",
-    7: "Tarayıcı çerezleri çözülemedi; anahtarlık erişimi veya tarayıcı şifrelemesi uyumsuz olabilir",
+_PROFILE_ERROR_MAP = {
+    2: ProfileSessionNotFoundError,
+    3: ProfileDependencyError,
+    4: ProfilePermissionError,
+    5: ProfileDatabaseError,
+    6: ProfileKeyringError,
+    7: ProfileDecryptionError,
 }
 
 
@@ -233,11 +241,11 @@ def _safari_cookie_file(home):
         try:
             profile_id = str(uuid.UUID(active_profile)).lower()
         except ValueError:
-            raise ProfileError("Son kullanılan Safari profili belirlenemedi") from None
+            raise ProfileNotFoundError("Son kullanılan Safari profili belirlenemedi") from None
         cookies = library / "WebKit/WebsiteDataStore" / profile_id / "Cookies/Cookies.binarycookies"
         if cookies.is_file():
             return cookies
-        raise ProfileError("Son kullanılan Safari profilinin çerez dosyası bulunamadı")
+        raise ProfileNotFoundError("Son kullanılan Safari profilinin çerez dosyası bulunamadı")
 
     if not active_profile:
         profile_store = library / "WebKit/WebsiteDataStore"
@@ -262,7 +270,7 @@ def _safari_cookie_file(home):
     )
     cookies = next((path for path in cookie_files if path.is_file()), None)
     if cookies is None:
-        raise ProfileError("Varsayılan tarayıcı profili bulunamadı")
+        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
     return cookies
 
 
@@ -352,7 +360,7 @@ def default_profile():
         root = _chromium_root(source.location, name, home)
         state = _read_json(root / "Local State")
         if (root / "Local State").is_file() and not state:
-            raise ProfileError("Varsayılan tarayıcı profili bulunamadı")
+            raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
         profile = state.get("profile", {})
         selected = profile.get("last_used", "Default") if isinstance(profile, dict) else "Default"
         if (
@@ -361,14 +369,14 @@ def default_profile():
             or "/" in selected
             or "\\" in selected
         ):
-            raise ProfileError("Varsayılan tarayıcı profili bulunamadı")
+            raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
         directory = root / selected
         cookies = directory / "Network/Cookies"
         if not cookies.is_file():
             cookies = directory / "Cookies"
         key = root / "Local State"
     if not cookies.is_file():
-        raise ProfileError("Varsayılan tarayıcı profili bulunamadı")
+        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
     return BrowserProfile(source.family, source.cookie_backend, cookies, key)
 
 
@@ -405,7 +413,7 @@ def _firefox_profile(root):
             )
         return root / defaults.pop()
     except (OSError, configparser.Error, KeyError):
-        raise ProfileError("Varsayılan tarayıcı profili bulunamadı") from None
+        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı") from None
 
 
 def select_cookies(jar, provider):
@@ -455,7 +463,7 @@ def select_cookies(jar, provider):
     else:
         required = bool(values.get("__Secure-1PSID" if provider == "gemini" else "sessionKey"))
     if not required:
-        raise ProfileError("Bu profilde sağlayıcıya ait açık oturum bulunamadı")
+        raise ProfileSessionNotFoundError()
     return values
 
 
@@ -488,13 +496,12 @@ def import_cookies(provider):
             ),
         )
     except subprocess.TimeoutExpired:
-        raise ProfileError(
-            "Profil okuma zaman aşımına uğradı; sistem anahtarlığının kilidini açın"
-        ) from None
+        raise ProfileTimeoutError() from None
     if result.returncode == 2:
-        raise ProfileError("Bu profilde sağlayıcıya ait açık oturum bulunamadı")
+        raise ProfileSessionNotFoundError()
     if result.returncode:
-        raise ProfileError(PROFILE_FAILURES.get(result.returncode, PROFILE_FAILURES[1]))
+        error_cls = _PROFILE_ERROR_MAP.get(result.returncode, ProfileError)
+        raise error_cls()
     try:
         if len(result.stdout) > 1_048_576:
             raise ValueError("invalid result")
@@ -506,7 +513,7 @@ def import_cookies(provider):
         ):
             raise ValueError("invalid result")
     except ValueError:
-        raise ProfileError("Profil okuma sonucu geçersiz") from None
+        raise ProfileInvalidResultError() from None
     return profile.family, values
 
 
