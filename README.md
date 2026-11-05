@@ -6,234 +6,917 @@
 
 # webai-provider
 
-### Independent Python clients for ChatGPT, Gemini, Claude and Grok web sessions.
+### High-performance, contract-driven Python client for ChatGPT, Gemini, Claude, and Grok web sessions.
 
-Use provider web sessions through one asynchronous Python interface. These
-unofficial clients do not use developer API keys, Codex or Claude Code. Model
-access and usage limits come from the signed-in account, and provider website
-changes can affect compatibility.
+`webai-provider` connects your Python applications directly to the web sessions of major AI providers—ChatGPT, Gemini, Claude, and Grok—without requiring developer API keys, prepaid credit balances, or proxy middleware. It runs natively in pure Python, exposing full multi-turn chat, live token streaming, dynamic model and reasoning effort discovery, file attachments, project and workspace management, message edits, and branch continuations behind a unified, asynchronous interface.
 
-<p align="center">
-  <a href="#install"><strong>Install</strong></a> &nbsp; | &nbsp;
-  <a href="#quick-start"><strong>Quick start</strong></a> &nbsp; | &nbsp;
-  <a href="#backend-api"><strong>API</strong></a> &nbsp; | &nbsp;
-  <a href="#development"><strong>Development</strong></a>
-</p>
+---
 
-## Install
+## Table of Contents
 
-Python 3.10+ is required for all providers.
+- [1. Overview and Key Highlights](#1-overview-and-key-highlights)
+- [2. Installation and Requirements](#2-installation-and-requirements)
+- [3. Supported Providers and Capabilities Matrix](#3-supported-providers-and-capabilities-matrix)
+- [4. Full API Reference (General to Specific)](#4-full-api-reference-general-to-specific)
+  - [4.1. Client & Lifecycle: `ProviderClient`](#41-client--lifecycle-providerclient)
+  - [4.2. Provider Construction: `create_provider` & `ProviderRegistry`](#42-provider-construction-create_provider--providerregistry)
+  - [4.3. Core Backend Contract: `Backend` Protocol](#43-core-backend-contract-backend-protocol)
+  - [4.4. Requests & Streaming Events: `SendRequest` & `ProviderEvent`](#44-requests--streaming-events-sendrequest--providerevent)
+  - [4.5. Domain & Status Models: `ModelCatalog`, `Conversation`, `Project`, etc.](#45-domain--status-models-modelcatalog-conversation-project-etc)
+  - [4.6. File Policies & Download Descriptors: `AttachmentPolicy` & `DownloadSource`](#46-file-policies--download-descriptors-attachmentpolicy--downloadsource)
+  - [4.7. Sessions & Atomic Credential Storage: `CredentialStore`](#47-sessions--atomic-credential-storage-credentialstore)
+  - [4.8. Browser Profile Import & CDP Utilities: `profiles` & `cdp`](#48-browser-profile-import--cdp-utilities-profiles--cdp)
+  - [4.9. Error Handling & Failure Codes: `ProviderError`](#49-error-handling--failure-codes-providererror)
+- [5. Practical Examples (from Simple to Advanced)](#5-practical-examples-from-simple-to-advanced)
+  - [5.1. Example 1: Minimal Token Streaming](#51-example-1-minimal-token-streaming)
+  - [5.2. Example 2: Dynamic Model Discovery, Reasoning Effort & Multi-Turn Chat](#52-example-2-dynamic-model-discovery-reasoning-effort--multi-turn-chat)
+  - [5.3. Example 3: File Uploads & Attachment Analysis](#53-example-3-file-uploads--attachment-analysis)
+  - [5.4. Example 4: Multi-Provider Concurrent Comparison CLI](#54-example-4-multi-provider-concurrent-comparison-cli)
+  - [5.5. Example 5: Project & Workspace Resource Management](#55-example-5-project--workspace-resource-management)
+  - [5.6. Example 6: Message Editing, Retrying, and Conversation Branching](#56-example-6-message-editing-retrying-and-conversation-branching)
+  - [5.7. Example 7: Custom Encrypted Credential Storage](#57-example-7-custom-encrypted-credential-storage)
+- [6. Runtime Architecture & Security Guarantees](#6-runtime-architecture--security-guarantees)
+- [7. Development, Quality Assurance, and Testing](#7-development-quality-assurance-and-testing)
+- [8. Integration with SiopeChat](#8-integration-with-siopechat)
+- [9. Changelog and License](#9-changelog-and-license)
+
+---
+
+## 1. Overview and Key Highlights
+
+Modern web AI platforms run on distinct, undocumented transport protocols—ranging from HTTP/2 multiplexing and Server-Sent Events (SSE) to Google's internal `batchexecute` RPC format and custom anti-bot challenges. `webai-provider` abstracts these protocols into clean, type-safe Python contracts while guaranteeing:
+
+- **Zero Node.js / Headless Browser Dependencies:** The complete ChatGPT Sentinel runtime (fingerprinting, Proof of Work solving, and supported Turnstile validation) runs purely in native Python (`chatgpt/sentinel/`).
+- **Lazy Account Initialization:** Importing the package or configuring accounts performs zero network roundtrips and starts no background processes. Transports only open when work begins.
+- **Strict Cancellation & Connection Safety:** Cancelling a stream or exiting an `async for` loop cleanly terminates the transport socket immediately. Ambiguous POST failures never trigger automatic retries.
+- **Complete Account Isolation:** Every account maintains its own dedicated cookie jars, HTTP connection pools, and locks. No cross-account credential or cache leaks.
+- **Typed Multi-Channel Output:** Separates visible assistant responses (`None`), thinking/reasoning traces (`analysis`), live summary updates (`ReplaceText`), and citations (`MessageMetadata.sources`).
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+## 2. Installation and Requirements
+
+Python 3.10 or higher is required. Tested continuously on Python 3.10, 3.11, 3.12, 3.13, and 3.14 across Ubuntu, macOS, and Windows.
 
 ```sh
+# Clone and install
 git clone https://github.com/TahsinCr/webai-provider.git
 cd webai-provider
 python -m pip install .
-```
 
-For development and local checks, install the optional tools:
-
-```sh
+# Optional development tools (linting, testing, packaging)
 python -m pip install -e ".[dev]"
 ```
 
-## Runtime and browser access
+[↑ Back to Table of Contents](#table-of-contents)
 
-ChatGPT Sentinel fingerprint generation, proof-of-work solving and the
-supported Turnstile challenge path run natively in pure Python
-(`providers/chatgpt/sentinel/`) via a declarative `SentinelSpec` profile without
-any JavaScript engine dependency. Unsupported required challenges stop before
-the chat request is submitted. Browser page discovery, local CDP access
-and session capture run in Python. Importing the library or configuring an
-account does not open a browser or access the network. Gemini uses the bundled
-native HTTPS implementation.
+---
 
-## Provider capabilities
+## 3. Supported Providers and Capabilities Matrix
 
-| Provider | Web-session features |
-| --- | --- |
-| ChatGPT | Conversations, projects, model discovery, streaming, supported message actions, sources and generated files |
-| Gemini | Conversations, notebooks, model and effort discovery, streaming, supported message actions, sources and generated media |
-| Claude | Conversations, workspaces and projects, model discovery, streaming, sources and generated files |
-| Grok | Conversations, workspaces, account-specific model discovery, streaming and retry, published thinking summaries and web-search citations; project instructions, resources up to 3 MiB and conversation membership |
+The library exposes capabilities through `Capability` enums. Because features like reasoning effort or file uploads depend on the active model and account tier, the live catalog returned by `await account.models()` is always authoritative.
 
-The account's live catalog and provider capability declarations are authoritative.
-An empty result means no items were returned; it does not mean the operation is
-unsupported.
+| Capability (`Capability`) | ChatGPT | Gemini | Claude | Grok | Behavior & Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `CHAT` | ✅ | ✅ | ✅ | ✅ | Asynchronous prompt submission and SSE event streaming. |
+| `TEMPORARY` | ✅ | ✅ | ✅ | ✅ | Incognito / ephemeral mode (conversations are not saved in remote history). |
+| `HISTORY` | ✅ | ✅ | ✅ | ✅ | Paginated chat discovery and full conversation turn history retrieval. |
+| `RENAME` | ✅ | ✅ | ✅ | ✅ | Updating conversation titles on the remote server. |
+| `DELETE` | ✅ | ✅ | ✅ | ✅ | Permanently removing conversations from the server. |
+| `AUTH` | ✅ | ✅ | ✅ | ✅ | Verifying session validity and checking login state. |
+| `ATTACHMENTS` | ✅ | ✅ | ✅ | ✅ | Uploading documents, images, and audio/video files before prompt submission. |
+| `RESOURCES` | ✅ | ✅ | ✅ | ✅ | Managing documents and text resources bound to projects/workspaces. |
+| `PROJECTS` | ✅ | ✅ | ✅ | ✅ | Discovering and listing projects (Notebooks for Gemini, Workspaces for Grok). |
+| `PROJECT_CREATE` | ✅ | ✅ | ✅ | ✅ | Creating new projects or workspaces. |
+| `PROJECT_UPDATE` | ✅ | ✅ | ✅ | ✅ | Updating project titles, instructions, or configuration options. |
+| `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Deleting projects/workspaces on the remote server. |
+| `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Moving chats into or out of projects (Gemini Notebook chats are fixed at creation). |
+| `MODELS` | ✅ | ✅ | ✅ | ✅ | Discovering available models dynamically from the account. |
+| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Reasoning effort / thinking budget (model-dependent; configured via `Model.efforts`). |
+| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ❌ | Editing an existing user prompt and branching (Grok uses retry on assistant turns). |
+| `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Regenerating an assistant turn (*Gemini executes retry by editing the parent prompt turn). |
+| `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Forking an existing turn into an independent conversation (unsupported by Claude/Grok web APIs). |
 
-## Quick start
+> **Note:** An empty list from a retrieval method means zero records were returned by the remote server, not that the feature is unsupported. Unsupported actions raise `FeatureUnavailable`.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+## 4. Full API Reference (General to Specific)
+
+```mermaid
+flowchart TD
+    subgraph ClientLayer["1. Client Layer"]
+        PC["ProviderClient"]
+        PR["ProviderRegistry"]
+        CP["create_provider()"]
+    end
+
+    subgraph ContractLayer["2. Backend Contract"]
+        BE["Backend Protocol"]
+        OF["OptionalFeatures"]
+    end
+
+    subgraph MessagingLayer["3. Messaging & Streams"]
+        SR["SendRequest"]
+        PE["ProviderEvent"]
+        TD["TextDelta"]
+        RT["ReplaceText"]
+        CB["ConversationBound"]
+        MM["MessageMetadata"]
+    end
+
+    subgraph DomainLayer["4. Domain Models & Storage"]
+        MC["ModelCatalog & Model"]
+        CV["Conversation & Message"]
+        PJ["Project & Resource"]
+        AP["AttachmentPolicy"]
+        CS["CredentialStore"]
+    end
+
+    PC -->|connects / routes| BE
+    CP -->|instantiates| BE
+    PR -->|registers| BE
+    BE -->|executes| SR
+    BE -->|yields| PE
+    PE --> TD & RT & CB & MM
+    BE --> MC & CV & PJ
+    BE --> AP & CS
+```
+
+---
+
+### 4.1. Client & Lifecycle: `ProviderClient`
+
+`providers.client.ProviderClient`
+
+The central manager for multi-provider and multi-account lifecycles. Designed to run one instance per `asyncio` event loop.
+
+#### Methods
+- **`__init__() -> None`**  
+  Initializes internal registries for backends, active stream tasks, and closing shields.
+- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**  
+  Lazily builds a provider backend using `create_provider` and registers it. Does not perform network requests or open browser sessions.
+- **`add(backend: Backend) -> Backend`**  
+  Registers a pre-constructed backend directly. Enforces that `(backend.id, backend.account_id)` is non-empty and unique.
+- **`account(provider_id: str, account_id: str = "default") -> Backend`**  
+  Returns the active backend for the given identity tuple. Raises `KeyError` if not registered.
+- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**  
+  Initializes the account's transport state in the background. If `for_send=True`, invokes provider-specific pre-warm routines (such as pre-resolving tokens).
+- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**  
+  Routes `request` to the target backend, validates required capabilities, tracks the running task, and yields typed events. When the caller breaks out of the loop or cancels the task, the underlying transport iterator is closed immediately.
+- **`close() -> None`**  
+  Cancels all in-flight streams, releases active transports, and closes all open account backends cleanly. Idempotent and safe to retry on transient shutdown errors.
+
+#### Properties
+- **`accounts -> tuple[tuple[str, str], ...]`**  
+  Returns a tuple of all registered `(provider_id, account_id)` pairs.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.2. Provider Construction: `create_provider` & `ProviderRegistry`
+
+`providers.registry.create_provider`
+
+Constructs an isolated account backend instance without global application state.
+
+```python
+def create_provider(
+    provider_id: str,
+    account_id: str = "default",
+    *,
+    credential_file: str | Path | CredentialStore | None = None,
+    session: BrowserSession | None = None,
+    profile_directory: str | Path | None = None,
+    **options,
+) -> Backend:
+```
+
+#### Parameters
+- **`provider_id`** (`str`): One of `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`.
+- **`account_id`** (`str`): Local account identifier (defaults to `"default"`).
+- **`credential_file`** (`str | Path | CredentialStore | None`): Session JSON path or a custom `CredentialStore` implementation. Required for all providers unless `session` is supplied.
+- **`session`** (`BrowserSession | None`): Pre-existing `BrowserSession` instance (ChatGPT only).
+- **`profile_directory`** (`str | Path | None`): Custom browser profile directory for ChatGPT Sentinel data. Defaults to a sibling `chrome-profile/` directory.
+- **`**options`**: Adapter-specific keyword arguments, such as `client_factory`.
+
+#### `ProviderRegistry` Class
+- **`register(provider: Provider, *, account_factory: Callable | None = None) -> None`**: Registers a provider prototype and account constructor.
+- **`create_account(provider_id: str, account_id: str, **configuration) -> Backend`**: Creates an account using the registered factory.
+- **`set_enabled(provider_id: str, enabled: bool) -> None`**: Toggles whether a provider can receive future operations.
+- **`require(provider_id: str, capability: Capability) -> Provider`**: Asserts capability support and returns the provider.
+- **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Returns the provider's feature states.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.3. Core Backend Contract: `Backend` Protocol
+
+`providers.contracts.Backend`
+
+The unified protocol implemented by all four adapters.
+
+#### Identity and Lifecycle
+- **`id: str`**: Provider identifier (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`).
+- **`account_id: str`**: Account identifier.
+- **`capabilities: frozenset[Capability]`**: Set of capabilities supported by this adapter.
+- **`async def prepare() -> None`**: Sets up account-scoped transport state.
+- **`async def close() -> None`**: Closes connection pools and worker threads.
+
+#### Authentication and Health
+- **`async def authenticate() -> SessionStatus`**: Verifies and refreshes authentication cookies/tokens.
+- **`async def login() -> SessionStatus`**: Initiates interactive or profile-based login.
+- **`async def session_status() -> SessionStatus`**: Returns the current cached status without remote requests.
+- **`async def forget_session() -> SessionStatus`**: Deletes stored credentials and resets state.
+- **`async def describe() -> ProviderDescription`**: Queries supported and available features.
+
+#### Models and Text Generation
+- **`async def models(*, force: bool = False) -> ModelCatalog`**: Returns available models. Cached for 5 minutes unless `force=True`.
+- **`def stream(request: SendRequest) -> AsyncGenerator[ProviderEvent, None]`**: Submits the request and yields streaming events.
+
+#### Conversations and History
+- **`async def list_chats(cursor: str | None = None, limit: int = 28) -> Page[Conversation]`**: Lists conversation history with pagination.
+- **`async def get_chat(conversation_id: str) -> Conversation`**: Retrieves full turns and metadata for a conversation.
+- **`async def rename_chat(conversation_id: str, title: str) -> None`**: Renames a conversation.
+- **`async def delete_chat(conversation_id: str) -> None`**: Deletes a conversation remotely.
+- **`async def branch_chat(conversation_id: str, message_id: str) -> Conversation`**: Forks a turn into a new branch.
+- **`async def conversation_attachment_count(conversation_id: str) -> int | None`**: Returns the count of uploaded files in the conversation.
+
+#### Projects and Workspaces
+- **`async def list_projects(cursor: str | None = None) -> Page[Project]`**: Lists projects/workspaces.
+- **`async def get_project(project_id: str) -> Project`**: Retrieves project details and resources.
+- **`async def list_project_chats(project_id: str, cursor: str | None = None) -> Page[Conversation]`**: Lists conversations attached to a project.
+- **`async def create_project(name: str, instructions: str = "", *, visibility="private", memory="default") -> Project`**: Creates a new project.
+- **`async def update_project(project: Project) -> Project`**: Updates project name or instructions.
+- **`async def delete_project(project_id: str) -> None`**: Deletes a project remotely.
+- **`async def project_options(project_id: str | None = None) -> ProjectOptions`**: Returns supported project configuration fields.
+- **`async def add_project_resource(project_id: str, kind: str, **values) -> Project`**: Adds a document or text resource to a project.
+- **`async def remove_project_resource(project_id: str, resource_id: str) -> Project`**: Removes a resource from a project.
+- **`async def move_chat(conversation_id: str, project_id: str | None) -> None`**: Moves a chat into or out of a project.
+
+#### File Attachments and Downloads
+- **`def attachment_policy() -> dict | None`**: Returns transport file size, count, and extension rules.
+- **`async def upload_file(path: str | Path) -> dict`**: Uploads a local file to the provider's storage.
+- **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Resolves an authenticated download URL and headers.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.4. Requests & Streaming Events: `SendRequest` & `ProviderEvent`
+
+#### `SendRequest` Dataclass
+`providers.api.SendRequest(frozen=True)`
+
+| Field | Type | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| **`provider_id`** | `str` | *Required* | Target provider (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`). |
+| **`account_id`** | `str` | *Required* | Target account identifier. |
+| **`chat_id`** | `str` | *Required* | Caller's stable local chat ID (tracks drafts across turns). |
+| **`prompt`** | `str` | *Required* | Text prompt or revised message content. |
+| **`conversation_id`** | `str \| None` | `None` | Remote conversation ID for continuations (`None` on turn 1). |
+| **`model`** | `str \| None` | `None` | Provider model identifier (`Model.id`). |
+| **`effort`** | `str \| None` | `None` | Reasoning effort string (`"low"`, `"medium"`, `"high"`). |
+| **`project_id`** | `str \| None` | `None` | Remote project/workspace ID if bound to a project. |
+| **`temporary`** | `bool` | `False` | When `True`, runs as an incognito/ephemeral chat. |
+| **`attachments`** | `tuple[dict, ...]` | `()` | File descriptors returned by `upload_file()`. |
+| **`action`** | `MessageAction \| None` | `None` | `MessageAction.EDIT` or `MessageAction.RETRY`. |
+| **`message_id`** | `str \| None` | `None` | Target message ID when editing or retrying. |
+| **`branch`** | `BranchContext \| None` | `None` | Branch continuation metadata when continuing from a preview. |
+
+#### Event Types (`ProviderEvent`)
+`ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound | MessageMetadata`
+
+1. **`TextDelta(text: str, channel: str | None = None)`**  
+   Incremental token chunk.  
+   - `channel=None`: Primary assistant output text.  
+   - `channel="analysis"`: Thinking / reasoning trace.
+2. **`ReplaceText(text: str, channel: str | None = None)`**  
+   Replaces all previously accumulated text in the given channel (used for live summary refinements).
+3. **`ResponseComplete()`**  
+   Signals that remote generation has finished.
+4. **`ConversationBound(conversation_id: str)`**  
+   Emitted on the first turn when the remote server assigns the permanent conversation ID.
+5. **`MessageMetadata(...)`**  
+   Emitted at response completion with terminal turn metadata:  
+   - `message_id: str | None`: Assistant message ID.  
+   - `user_message_id: str | None`: Confirmed user prompt ID.  
+   - `model: str | None`: Actual model that answered.  
+   - `effort: str | None`: Confirmed reasoning effort.  
+   - `sources: tuple[dict, ...]`: Web citations and source document links.  
+   - `actions: tuple[str, ...]`: Allowed operations for this turn (`"edit"`, `"retry"`).  
+   - `files: tuple[dict, ...]`: Descriptors of files generated by the model.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.5. Domain & Status Models: `ModelCatalog`, `Conversation`, `Project`, etc.
+
+`providers.models`
+
+- **`ModelCatalog`**:
+  - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
+  - `models: tuple[Model, ...]`: Tuple of available models.
+  - `default_model: str | None`: Provider's default model ID.
+  - `chat_models -> tuple[Model, ...]`: Models selectable for user chat.
+  - `chat_model(model_id: str | None) -> Model | None`: Finds a model by ID.
+  - `effort(model_id: str, preferred: str = "medium") -> str | None`: Resolves matching effort.
+- **`Model`**:
+  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`.
+- **`Conversation`**:
+  - `origin: Origin`: `(provider_id, account_id, remote_id)`.
+  - `title: str`: Chat title.
+  - `messages: tuple[Message, ...]`: Sequence of turn messages.
+  - `project_id: str | None`: Associated project ID.
+- **`Message`**:
+  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `actions: tuple[str, ...]`.
+- **`Content`**:
+  - `kind: str` (`"text"`, `"resource"`), `text: str | None`, `resource: Resource | None`.
+- **`Project`**:
+  - `origin: Origin`, `name: str`, `instructions: str | None`, `resources: tuple[Resource, ...]`.
+- **`Page[T]`**:
+  - `items: tuple[T, ...]`, `next_cursor: str | None`.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.6. File Policies & Download Descriptors: `AttachmentPolicy` & `DownloadSource`
+
+`providers.attachments` & `providers.files`
+
+#### `AttachmentPolicy`
+Defines provider upload limits:
+- `max_files: int`: Maximum number of files allowed.
+- `max_bytes: int`: Maximum size in bytes per file.
+- `max_image_bytes: int | None`: Image size ceiling.
+- `max_video_bytes: int | None`: Video size ceiling.
+- `allowed_extensions: tuple[str, ...]`: Whitelist of file extensions.
+- `max_files_scope: str`: Scope of file quota (`"prompt"` or `"conversation"`).
+
+#### Built-in Presets
+- **`CHATGPT_ATTACHMENTS`**: 512 MiB per file, 20 MiB for images, 50 MiB for spreadsheets, 10 files per prompt.
+- **`GEMINI_ATTACHMENTS`**: 100 MiB per file (2 GiB for video), 10 files per prompt.
+- **`CLAUDE_ATTACHMENTS`**: 30 MiB per file, maximum 20 files per conversation, strict extension whitelist.
+- **`GROK_ATTACHMENTS`**: 3 MiB per file, 10 MiB total per prompt, 10 files per prompt.
+
+#### `DownloadSource`
+Descriptor returned by `resolve_download()`:
+- `url: str`: Download URL.
+- `filename: str | None`: Suggested local filename.
+- `force_download: bool`: Flag indicating forced attachment download.
+- `headers: dict[str, str]`: Transient authenticated request headers.
+- `client_factory: Callable | None`: HTTP transport factory.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.7. Sessions & Atomic Credential Storage: `CredentialStore`
+
+`providers.session`
+
+Session credentials are saved atomically using thread locks and temporary file replacement with restricted `0o600` permissions.
+
+#### `CredentialStore` Protocol
+```python
+class CredentialStore(Protocol):
+    def load(self) -> dict: ...
+    def save(self, value: dict) -> None: ...
+    def exists(self) -> bool: ...
+    def delete(self) -> None: ...
+```
+
+#### Utility Functions
+- **`read_session(path: str | Path | CredentialStore) -> dict`**: Loads session; raises `AccountPaused` on missing or corrupt credentials.
+- **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: Atomically persists session with `0o600` permissions.
+- **`session_exists(source: str | Path | CredentialStore) -> bool`**: Returns `True` if credentials exist.
+- **`delete_session(source: str | Path | CredentialStore) -> None`**: Removes session credentials safely.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.8. Browser Profile Import & CDP Utilities: `profiles` & `cdp`
+
+`providers.profiles` & `providers.cdp`
+
+Allows logging into accounts without typing passwords by importing live cookies directly from default browser profiles.
+
+#### Profile Utilities (`profiles.py`)
+- **`default_profile() -> BrowserProfile | None`**: Locates default browser cookies path (Chrome, Brave, Edge, Firefox, Safari).
+- **`import_cookies(provider: str) -> dict`**: Extracts and decrypts cookies for `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`.
+
+#### Chrome DevTools Protocol (`cdp.py`)
+- **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Tests if a remote debugging port is open.
+- **`open_provider_page(cdp_url: str, provider_url: str) -> None`**: Opens a provider URL in a browser tab.
+- **`read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]`**: Extracts active browser cookies via CDP.
+- **`capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]`**: Intercepts ChatGPT access token and browser headers.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.9. Error Handling & Failure Codes: `ProviderError`
+
+`providers.errors`
+
+All exceptions derive from `ProviderError`.
+
+```mermaid
+flowchart TD
+    PE["ProviderError\n(code='provider_error', message_submitted)"]
+    FU["FeatureUnavailable\n(code='feature_unavailable')"]
+    RL["RateLimited\n(code='rate_limited', retry_after)"]
+    AP["AccountPaused\n(code='account_paused')"]
+    CE["CompatibilityError\n(code='capability_changed')"]
+    RN["RemoteNotFound\n(code='remote_not_found')"]
+
+    PE --> FU
+    PE --> RL
+    PE --> AP
+    PE --> CE
+    PE --> RN
+```
+
+| Exception | `code` Value | Extra Fields | Semantic Meaning |
+| :--- | :--- | :--- | :--- |
+| **`ProviderError`** | `"provider_error"` | `message_submitted: bool \| None` | Base exception. `message_submitted=False` guarantees prompt never reached provider. `None` indicates unknown boundary (do not retry automatically). |
+| **`FeatureUnavailable`** | `"feature_unavailable"` | `capability: Capability`<br>`reason: str` | The requested feature is unsupported by this provider or account tier. |
+| **`RateLimited`** | `"rate_limited"` | `retry_after: float \| None` | Account rate limit exceeded. `retry_after` contains wait time in seconds if provided. |
+| **`AccountPaused`** | `"account_paused"` | - | Session expired or interactive challenge required. |
+| **`CompatibilityError`** | `"capability_changed"` | `capability: Capability` | Remote web contract changed unexpectedly. |
+| **`RemoteNotFound`** | `"remote_not_found"` | - | Target chat, project, or resource does not exist on the server. |
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+## 5. Practical Examples (from Simple to Advanced)
+
+### 5.1. Example 1: Minimal Token Streaming
+
+Submits a prompt to Claude and streams tokens to stdout in real time.
 
 ```python
 import asyncio
-from providers import ProviderClient, SendRequest, TextDelta, ReplaceText
+from providers import ProviderClient, ResponseComplete, SendRequest, TextDelta
 
 
 async def main():
     async with ProviderClient() as client:
         account = client.connect(
-            "claude", "personal", credential_file="/private/claude-session.json"
+            provider_id="claude",
+            account_id="personal",
+            credential_file="~/.config/siopechat/claude-session.json",
         )
         await account.authenticate()
-        catalog = await account.models()
-        model = catalog.default_chat_model
+
         request = SendRequest(
             provider_id="claude",
             account_id="personal",
-            chat_id="my-local-draft",
-            prompt="Hello",
-            model=model.id if model else None,
+            chat_id="draft-001",
+            prompt="Explain Python 3.13 free-threaded execution in two concise sentences.",
         )
+
         async for event in client.stream(request):
-            if isinstance(event, (TextDelta, ReplaceText)):
-                print(event.channel, event.text)
+            if isinstance(event, TextDelta):
+                print(event.text, end="", flush=True)
+            elif isinstance(event, ResponseComplete):
+                print("\n[Stream Complete]")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-## Accounts and sessions
+[↑ Back to Table of Contents](#table-of-contents)
 
-The caller supplies credential paths and imports a valid session through its own
-login flow or the profile helpers in `providers.profiles`. No application config is
-read. For ChatGPT, `create_provider` also accepts an existing `BrowserSession`, or
-an explicit `profile_directory` when using a credential store. File-backed
-credentials default to a sibling `chrome-profile` directory. Each account has its
-own adapter, connections and concurrency controls.
+---
 
-All three backends accept caller-owned credential storage through
-`providers.session.CredentialStore` (`load`, `save`, `exists`, `delete`); file
-paths remain supported. Database implementations belong to the host application.
+### 5.2. Example 2: Dynamic Model Discovery, Reasoning Effort & Multi-Turn Chat
 
-Call `await account.prepare()` to establish the initial account connection before
-interactive work starts. Concurrent first requests wait for the account's initial
-setup. Model catalogs are cached for up to five minutes; `await account.models(force=True)`
-requests an explicit refresh. Normal ChatGPT reads and project edits reuse an
-account-scoped HTTP pool, while uploads and generation keep dedicated transports.
-Large Claude JSON and Gemini RPC responses are parsed in background workers so
-decoding does not run directly on the shared provider event loop. Credential
-writes are serialized and complete before cancellation releases the save lock.
+Inspects the account's live model catalog, selects an explicit reasoning effort, captures `ConversationBound` on the first message, and continues the conversation on turn two.
 
-## Backend API
+```python
+import asyncio
+from providers import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderClient,
+    ReplaceText,
+    SendRequest,
+    TextDelta,
+)
 
-`client.account(provider_id, account_id)` returns the complete `Backend` contract:
-session status and authentication, model catalogs, paginated chats and projects,
-chat history, rename/delete, project editing and sources, file uploads and download
-resolution. Use `describe()` and `project_options()` to discover supported actions.
-Unsupported actions raise `FeatureUnavailable`; an empty list does not indicate
-unsupported functionality.
 
-### History and downloads
+async def main():
+    async with ProviderClient() as client:
+        account = client.connect(
+            "chatgpt",
+            "work",
+            credential_file="~/.config/siopechat/chatgpt-session.json",
+        )
+        await account.authenticate()
 
-History messages keep published sources and generated-file descriptors in their
-metadata. Streaming `MessageMetadata` events expose the same `sources` and `files`
-collections, plus the reply's available model and effort. File descriptors contain
-the native reference and available name, media type and size; file bytes are not
-included. Pass a descriptor's `url` to `resolve_download` with the owning chat and
-message IDs to obtain an authenticated, transient `DownloadSource`. ChatGPT file
-assets and sandbox outputs, Gemini image/video/audio references, and Claude's presented output
-paths are resolved by their own provider. A provider may expire or remove a file.
+        catalog = await account.models()
+        target_model = catalog.chat_model("o3-mini") or catalog.default_chat_model
+        effort = catalog.effort(target_model.id, preferred="high")
 
-To continue a chat, set `SendRequest.conversation_id` to the chat's
-`origin.remote_id`. For a project, also set `project_id` to its remote ID. Local
-`chat_id` is a caller-owned stable identity. Keep the provider and account identity
-from `Origin` with all stored records; remote IDs alone are not globally unique.
+        print(f"Model: {target_model.title} | Effort: {effort}")
 
-### Streaming and cancellation
+        remote_conv_id = None
+        req1 = SendRequest(
+            provider_id="chatgpt",
+            account_id="work",
+            chat_id="turn-1",
+            prompt="Write an O(log n) matrix exponentiation algorithm for Fibonacci numbers in Python.",
+            model=target_model.id,
+            effort=effort,
+        )
 
-Streams yield `TextDelta`, `ReplaceText`, `ConversationBound` and `MessageMetadata`. Replacement events
-replace the corresponding channel's accumulated text. Published thinking summaries
-use the analysis channel. Cancellation closes the transport; requests are never
-automatically resent after an ambiguous send failure. Closing a client cancels its
-active streams and closes all accounts, while keeping credential files intact.
+        async for event in client.stream(req1):
+            if isinstance(event, ConversationBound):
+                remote_conv_id = event.conversation_id
+            elif isinstance(event, TextDelta):
+                if event.channel == "analysis":
+                    print(f"[Thinking]: {event.text}", end="", flush=True)
+                else:
+                    print(event.text, end="", flush=True)
+            elif isinstance(event, ReplaceText):
+                print(f"\n[Revised Thinking]: {event.text}\n")
+            elif isinstance(event, MessageMetadata):
+                print(f"\nAssistant Message ID: {event.message_id}")
 
-### Errors
+        print("\n--- TURN 2 ---")
+        req2 = SendRequest(
+            provider_id="chatgpt",
+            account_id="work",
+            chat_id="turn-2",
+            conversation_id=remote_conv_id,
+            prompt="Now add complete type hints and docstrings to the matrix code.",
+            model=target_model.id,
+        )
 
-Provider failures derive from `ProviderError` and expose a stable machine-readable
-`code`. For send failures, `message_submitted is False` guarantees the prompt did
-not reach the provider; `None` means the client cannot prove whether it did. The
-ChatGPT Sentinel compatibility failure has its own code and is reported as
-“message not sent.” Claude and Gemini expose provider-specific compatibility and
-stream error types for callers that need to distinguish a changed web contract
-from an interrupted response.
+        async for event in client.stream(req2):
+            if isinstance(event, TextDelta) and not event.channel:
+                print(event.text, end="", flush=True)
 
-### Edit, retry and branch
 
-Message tools use provider identities, not list positions. `Message.actions` contains
-supported operations for that message on the current conversation path. Use
-`SendRequest(action=MessageAction.EDIT, message_id=..., prompt=...)` to edit a user
-message, or `MessageAction.RETRY` to retry an assistant response without adding a
-user message. Preserve `conversation_id` and the owning provider/account. Model
-and effort choices are checked against that account's current catalog. An edit
-selects a revised path; retrieve the confirmed history before replacing local
-records. Failed or cancelled requests are never automatically resubmitted.
+if __name__ == "__main__":
+    asyncio.run(main())
+```
 
-`await account.branch_chat(conversation_id, message_id)` returns a separate
-conversation. ChatGPT and Gemini support this operation; Claude does not expose
-it in this package. ChatGPT returns a branch preview: if its metadata contains
-`pending_branch`, pass `BranchContext(**chat.metadata["pending_branch"])` as
-`SendRequest.branch` on the first turn. The resulting `ConversationBound` identifies
-the persisted conversation; do not try to fetch the preview from the server.
-Persist the small continuation context if the preview must survive a restart.
+[↑ Back to Table of Contents](#table-of-contents)
 
-### Sources, model access and persistence
+---
 
-Published sources are distinct from analysis-channel summaries. Source metadata
-comes from native citations, including file references without a public URL;
-answer-text links are not treated as verified sources. `MessageMetadata` supplies
-native message identities, current-response tools and sources at stream completion.
-No subscription-name allowlist is maintained: account model access is discovered
-from the provider, while message operations follow the native supported contracts
-and any message restrictions. A successful check on one subscription does not
-establish availability on every plan; remote authorization errors remain authoritative.
+### 5.3. Example 3: File Uploads & Attachment Analysis
 
-Applications own persistence and synchronization. `get_chat()` returns the history
-available from the provider; the library does not invent remote message pagination
-where a web transport has none. The local SQL paging used by SiopeChat belongs to
-its archive extension.
+Validates local files against `AttachmentPolicy`, uploads them to Gemini storage, and runs an analysis prompt.
 
-## Development
+```python
+import asyncio
+from pathlib import Path
+from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 
-The package's runtime dependencies are declared in `pyproject.toml`; development
-tools are optional. After installing `.[dev]`, run:
+
+async def main():
+    report_file = Path("./report.pdf")
+    if not report_file.exists():
+        report_file.write_text("System Architecture Report: v2.0 migration plan approved.")
+
+    async with ProviderClient() as client:
+        account = client.connect(
+            "gemini",
+            "analyst",
+            credential_file="~/.config/siopechat/gemini-session.json",
+        )
+        await account.authenticate()
+
+        policy_dict = account.attachment_policy()
+        if policy_dict:
+            policy = AttachmentPolicy(**policy_dict)
+            if report_file.stat().st_size > policy.max_bytes:
+                raise ValueError("File size exceeds provider limits!")
+
+        upload_payload = await account.upload_file(report_file)
+
+        request = SendRequest(
+            provider_id="gemini",
+            account_id="analyst",
+            chat_id="doc-chat-1",
+            prompt="Summarize the key architectural decisions from this report.",
+            attachments=(upload_payload,),
+        )
+
+        async for event in client.stream(request):
+            if isinstance(event, TextDelta):
+                print(event.text, end="", flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 5.4. Example 4: Multi-Provider Concurrent Comparison CLI
+
+Demonstrates querying ChatGPT, Claude, Gemini, and Grok concurrently inside a single `ProviderClient` instance.
+
+```python
+import asyncio
+from providers import ProviderClient, SendRequest, TextDelta
+
+
+async def query_provider(client, provider_id, cred_path, prompt):
+    account = client.connect(provider_id, "default", credential_file=cred_path)
+    await account.authenticate()
+
+    req = SendRequest(
+        provider_id=provider_id,
+        account_id="default",
+        chat_id=f"bench-{provider_id}",
+        prompt=prompt,
+    )
+
+    full_text = []
+    async for event in client.stream(req):
+        if isinstance(event, TextDelta) and not event.channel:
+            full_text.append(event.text)
+    return provider_id, "".join(full_text)
+
+
+async def main():
+    prompt = "Explain the principle of Quantum Entanglement in a single concise paragraph."
+    configs = [
+        ("chatgpt", "~/.config/siopechat/chatgpt-session.json"),
+        ("claude", "~/.config/siopechat/claude-session.json"),
+        ("gemini", "~/.config/siopechat/gemini-session.json"),
+        ("grok", "~/.config/siopechat/grok-session.json"),
+    ]
+
+    async with ProviderClient() as client:
+        tasks = [query_provider(client, pid, path, prompt) for pid, path in configs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for item in results:
+            if isinstance(item, Exception):
+                print(f"\nERROR: {item}")
+            else:
+                pid, text = item
+                print(f"\n{'=' * 20} {pid.upper()} {'=' * 20}\n{text.strip()}\n")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 5.5. Example 5: Project & Workspace Resource Management
+
+Creates a project, provisions system instructions, attaches a document resource, and starts a scoped conversation.
+
+```python
+import asyncio
+from providers import ProviderClient, SendRequest, TextDelta
+
+
+async def main():
+    async with ProviderClient() as client:
+        account = client.connect(
+            "claude",
+            "lead",
+            credential_file="~/.config/siopechat/claude-session.json",
+        )
+        await account.authenticate()
+
+        project = await account.create_project(
+            name="WebAI Provider R&D",
+            instructions="You are a principal systems engineer. All code must be strictly typed.",
+        )
+        print(f"Created Project: {project.name} (Remote ID: {project.origin.remote_id})")
+
+        project = await account.add_project_resource(
+            project_id=project.origin.remote_id,
+            kind="text",
+            name="guidelines.txt",
+            text="Rule 1: Pure Python sentinel execution. Rule 2: Dedicated transport pools.",
+        )
+        print(f"Resource added. Total resources: {len(project.resources)}")
+
+        req = SendRequest(
+            provider_id="claude",
+            account_id="lead",
+            chat_id="proj-chat-1",
+            project_id=project.origin.remote_id,
+            prompt="What are our core architectural guidelines?",
+        )
+
+        async for event in client.stream(req):
+            if isinstance(event, TextDelta):
+                print(event.text, end="", flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 5.6. Example 6: Message Editing, Retrying, and Conversation Branching
+
+Demonstrates retrying an assistant response, editing an earlier prompt, and branching into an independent conversation.
+
+```python
+import asyncio
+from providers import (
+    BranchContext,
+    ConversationBound,
+    MessageAction,
+    ProviderClient,
+    SendRequest,
+    TextDelta,
+)
+
+
+async def main():
+    async with ProviderClient() as client:
+        account = client.connect(
+            "chatgpt",
+            "dev",
+            credential_file="~/.config/siopechat/chatgpt-session.json",
+        )
+        await account.authenticate()
+
+        conv = await account.get_chat("remote-conv-123")
+        last_asst_msg = next(m for m in reversed(conv.messages) if m.role == "assistant")
+
+        # 1. Retry assistant response
+        retry_req = SendRequest(
+            provider_id="chatgpt",
+            account_id="dev",
+            chat_id="retry-turn",
+            conversation_id=conv.origin.remote_id,
+            prompt="",
+            action=MessageAction.RETRY,
+            message_id=last_asst_msg.id,
+        )
+        async for event in client.stream(retry_req):
+            if isinstance(event, TextDelta):
+                print(event.text, end="", flush=True)
+
+        # 2. Branch conversation from a turn
+        new_branch = await account.branch_chat(
+            conversation_id=conv.origin.remote_id,
+            message_id=last_asst_msg.id,
+        )
+
+        branch_ctx = None
+        if "pending_branch" in new_branch.metadata:
+            branch_ctx = BranchContext(**new_branch.metadata["pending_branch"])
+
+        branch_req = SendRequest(
+            provider_id="chatgpt",
+            account_id="dev",
+            chat_id="branch-first-turn",
+            prompt="Continuing on new branch: implement the alternative algorithm.",
+            branch=branch_ctx,
+        )
+        async for event in client.stream(branch_req):
+            if isinstance(event, ConversationBound):
+                print(f"\nNew Branch Remote ID: {event.conversation_id}")
+            elif isinstance(event, TextDelta):
+                print(event.text, end="", flush=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 5.7. Example 7: Custom Encrypted Credential Storage
+
+Implements `CredentialStore` to store session cookies in encrypted memory or secure keyrings instead of plain JSON files.
+
+```python
+import asyncio
+import json
+from providers import CredentialStore, ProviderClient
+
+
+class EncryptedMemoryStore(CredentialStore):
+    def __init__(self, initial_data: dict | None = None):
+        self._blob = json.dumps(initial_data or {}).encode("utf-8")
+
+    def load(self) -> dict:
+        return json.loads(self._blob.decode("utf-8"))
+
+    def save(self, value: dict) -> None:
+        self._blob = json.dumps(value).encode("utf-8")
+        print("[Store] Session payload safely sealed in memory.")
+
+    def exists(self) -> bool:
+        return bool(self._blob and self._blob != b"{}")
+
+    def delete(self) -> None:
+        self._blob = b"{}"
+
+
+async def main():
+    vault_store = EncryptedMemoryStore({"cookies": {"session-token": "secret_abc123"}})
+
+    async with ProviderClient() as client:
+        account = client.connect(
+            provider_id="claude",
+            account_id="vault-user",
+            credential_file=vault_store,
+        )
+        status = await account.session_status()
+        print(f"Session State: {status.state.value}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+## 6. Runtime Architecture & Security Guarantees
+
+1. **Zero Password Storage:** The library never asks for, transmits, or stores account passwords. All operations rely exclusively on session cookies and short-lived transport tokens.
+2. **Credential Sanitization:** Exception strings, `repr()` outputs, and logging calls never contain raw session tokens, cookies, or challenge secrets.
+3. **SSRF and Redirect Defense:** Binary downloads explicitly reject arbitrary HTTP redirects (`follow_redirects=False`) and only trust verified provider origin domains.
+4. **Idempotency Safeguards:** Non-idempotent `POST send` calls are never automatically retried upon network dropouts, eliminating duplicate prompt turns.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+## 7. Development, Quality Assurance, and Testing
+
+The codebase enforces strict code quality and unit test verification:
 
 ```sh
+# Lint and format verification
 ruff check .
 ruff format --check .
-python -m unittest discover -s tests -t . -p 'test_*.py'
+
+# Run test suite
+python -m unittest discover -s tests -t . -p 'test_*.py' -v
+
+# Validate packaging
 python -m build --sdist --wheel
 python -m twine check dist/*
 ```
 
-## Use with SiopeChat
+[↑ Back to Table of Contents](#table-of-contents)
 
-SiopeChat installs this distribution from PyPI as a pinned runtime dependency;
-its wheel no longer bundles the `providers` import package. Clone SiopeChat
-normally, without Git submodules. Its dependency pin and lockfile select the
-provider version, so updating the application and rerunning its installer also
-installs the selected release. See the [SiopeChat README](https://github.com/TahsinCr/siopechat)
-for setup details.
+---
 
-To test provider changes with SiopeChat, publish or install a specific provider
-version and update the application's dependency pin and lockfile. The two
-projects keep separate source trees, package tests, and release histories.
+## 8. Integration with SiopeChat
 
-### Update a standalone checkout
+SiopeChat installs `webai-provider` as an external PyPI runtime dependency:
+- SiopeChat does not require Git submodules.
+- Dependency pins are locked in `pyproject.toml` and `uv.lock`.
 
-Run `git pull --ff-only` in the `webai-provider` repository, then reinstall it
-with `python -m pip install --upgrade .`.
+To test local changes against SiopeChat:
+```sh
+git pull --ff-only
+python -m pip install --upgrade .
+```
 
-## Changelog
+[↑ Back to Table of Contents](#table-of-contents)
 
-The `v1.1-beta` release adds Grok web-session support: account-specific model
-discovery, streaming, retries, workspace instructions and sources, document
-attachments, and web-search citations. It also improves session checks, rate-limit
-handling, stream reliability, and send preparation. See
-[CHANGELOG.md](CHANGELOG.md) for the full list. Changes after this release belong
-under **Unreleased**.
+---
 
-## License
+## 9. Changelog and License
 
-Copyright © TahsinCr. Licensed under [GPL-3.0-only](LICENSE). See
-[COPYRIGHT](COPYRIGHT) for the project notice.
+- **Current Release:** `v1.1-beta` (`1.1.0b0`)
+- **Recent Updates:** Added Grok web session support (model discovery, SSE streaming, thinking summaries, workspace resources, and search citations). See [CHANGELOG.md](CHANGELOG.md).
+- **License:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). See [COPYRIGHT](COPYRIGHT) for notices.
+
+[↑ Back to Table of Contents](#table-of-contents)
 
 [version-shield]: https://img.shields.io/badge/version-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
