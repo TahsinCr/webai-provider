@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-from collections import OrderedDict
 from io import StringIO
 
 from ..api import (
@@ -17,17 +16,15 @@ from ..api import (
 )
 from ..attachments import GROK_ATTACHMENTS
 from ..contracts import OptionalFeatures
+from ..core import MultiDimensionBoundedCache
 from ..errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ..messages import sources_from
 from ..models import (
     Conversation,
-    Feature,
     FeatureState,
     Model,
     ModelCatalog,
-    Origin,
     Page,
-    ProviderDescription,
     SessionState,
     SessionStatus,
 )
@@ -78,17 +75,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         self._gate = asyncio.Lock()
         self._catalog = None
         self._catalog_at = 0.0
-        self._continuations = OrderedDict()
-
-    def _origin(self, remote):
-        return Origin(self.id, self.account_id, remote)
+        self._continuations = MultiDimensionBoundedCache(
+            max_entries=_CONTINUATION_LIMIT,
+            default_ttl=_CONTINUATION_TTL,
+        )
 
     def _take_continuation(self, conversation_id):
-        cached = self._continuations.pop(conversation_id, None)
-        if cached is None:
-            return None
-        response_id, verified_at = cached
-        return response_id if time.monotonic() - verified_at < _CONTINUATION_TTL else None
+        return self._continuations.pop(conversation_id, None)
 
     def _remember_continuation(self, conversation_id, response_id):
         if (
@@ -97,10 +90,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             or not response_id
         ):
             return
-        self._continuations[conversation_id] = (response_id, time.monotonic())
-        self._continuations.move_to_end(conversation_id)
-        while len(self._continuations) > _CONTINUATION_LIMIT:
-            self._continuations.popitem(last=False)
+        self._continuations.put(conversation_id, response_id)
 
     async def prepare(self):
         await self.authenticate()
@@ -113,9 +103,6 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
     async def authenticate(self):
         await self.transport.authenticate()
         return SessionStatus(SessionState.AUTHENTICATED, True)
-
-    async def login(self):
-        return await self.authenticate()
 
     async def session_status(self):
         return SessionStatus(
@@ -135,25 +122,6 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             self._continuations.clear()
             self.transport.session.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
-
-    async def describe(self):
-        return ProviderDescription(
-            self.id,
-            tuple(
-                Feature(
-                    capability,
-                    FeatureState.AVAILABLE
-                    if capability in self.capabilities
-                    else FeatureState.UNSUPPORTED,
-                )
-                for capability in Capability
-            ),
-        )
-
-    def attachment_policy(self):
-        from ..attachments import policy_for
-
-        return policy_for(self.id).as_dict()
 
     async def upload_file(self, path):
         return await self.transport.upload_file(path)

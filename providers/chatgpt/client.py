@@ -16,6 +16,7 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
+from ..core import MultiDimensionBoundedCache
 from ..errors import RateLimited
 from ..timing import SendTiming, current_send_timing
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
@@ -164,8 +165,10 @@ class ChatGPTClient:
         self.headers: dict[str, str] = {}
         self._conversation_endpoint = "conversations"
         self.temporary_conversations: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self._continuation_cache: OrderedDict[str, tuple[float, dict[str, Any], int]] = (
-            OrderedDict()
+        self._continuation_cache = MultiDimensionBoundedCache(
+            max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
+            max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
+            default_ttl=_CONTINUATION_CACHE_TTL_SECONDS,
         )
         self._continuation_cache_text_chars = 0
         self._sentinel_lock = threading.Lock()
@@ -243,16 +246,10 @@ class ChatGPTClient:
             self._forget_conversation(conversation_id)
             return
         previous = self._continuation_cache.pop(conversation_id, None)
-        if previous is not None:
-            self._continuation_cache_text_chars -= previous[2]
+        if previous is not None and isinstance(previous, tuple):
+            self._continuation_cache_text_chars = self._continuation_cache.current_bytes
         self._continuation_cache[conversation_id] = (time.monotonic(), conversation, text_size)
-        self._continuation_cache_text_chars += text_size
-        while (
-            len(self._continuation_cache) > _CONTINUATION_CACHE_MAX_ITEMS
-            or self._continuation_cache_text_chars > _CONTINUATION_CACHE_MAX_TEXT_CHARS
-        ):
-            _, evicted = self._continuation_cache.popitem(last=False)
-            self._continuation_cache_text_chars -= evicted[2]
+        self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         cached = self._continuation_cache.get(conversation_id)
@@ -262,13 +259,12 @@ class ChatGPTClient:
         if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
             self._forget_conversation(conversation_id)
             return None
-        self._continuation_cache.move_to_end(conversation_id)
         return conversation
 
     def _forget_conversation(self, conversation_id: str) -> None:
         cached = self._continuation_cache.pop(conversation_id, None)
         if cached is not None:
-            self._continuation_cache_text_chars -= cached[2]
+            self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def forget_conversation(self, conversation_id: str) -> None:
         self._forget_conversation(conversation_id)

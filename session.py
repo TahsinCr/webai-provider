@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
+from .core import ProviderResilienceRegistry
 from .errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 
 
@@ -115,8 +116,13 @@ async def save_session_async(path, value):
         raise
 
 
+_ORIGIN_RESILIENCE = ProviderResilienceRegistry()
+
+
 class WebSession:
     """Reuse an authenticated HTTP connection; never launch processes or follow redirects."""
+
+    resilience = _ORIGIN_RESILIENCE
 
     def __init__(self, origin, credential_file, required_cookie, *, client_factory=None):
         if origin not in ("https://claude.ai", "https://gemini.google.com", "https://grok.com"):
@@ -203,9 +209,18 @@ class WebSession:
             raise ProviderError(f"Sağlayıcı isteği tamamlanamadı (HTTP {code})")
 
     async def request(self, method, path, **options):
+        if _ORIGIN_RESILIENCE.is_rate_limited(self.origin):
+            remaining = _ORIGIN_RESILIENCE.rate_limit_remaining(self.origin)
+            raise RateLimited(remaining if remaining > 0 else 1.0)
         url = self.url(path)
-        response = await self.connect().request(method, url, allow_redirects=False, **options)
-        self.check(response)
+        try:
+            response = await self.connect().request(method, url, allow_redirects=False, **options)
+            self.check(response)
+        except RateLimited as exc:
+            delay = getattr(exc, "retry_after", None)
+            if delay and isinstance(delay, (int, float)) and delay > 0:
+                _ORIGIN_RESILIENCE.register_rate_limit(self.origin, float(delay))
+            raise
         self.authenticated = True
         await self.persist()
         if response.status_code == 204 or not response.content:

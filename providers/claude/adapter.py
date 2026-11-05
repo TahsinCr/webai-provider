@@ -16,13 +16,10 @@ from ..contracts import OptionalFeatures
 from ..errors import AccountPaused, FeatureUnavailable
 from ..models import (
     Choice,
-    Feature,
     FeatureState,
     Model,
     ModelCatalog,
-    Origin,
     Page,
-    ProviderDescription,
     SessionState,
     SessionStatus,
 )
@@ -85,25 +82,14 @@ class ClaudeProvider(ProjectEditing, OptionalFeatures):
     async def prepare(self):
         await self.transport.prepare()
 
-    def attachment_policy(self):
-        from ..attachments import policy_for
-
-        return policy_for(self.id).as_dict()
-
     async def upload_file(self, path):
         async with self._gate:
             return await self.transport.upload_file(path)
-
-    def _origin(self, remote):
-        return Origin(self.id, self.account_id, remote)
 
     async def authenticate(self):
         async with self._gate:
             await self.transport.request("status")
         return SessionStatus(SessionState.AUTHENTICATED, True)
-
-    async def login(self):
-        return await self.authenticate()
 
     async def session_status(self):
         return SessionStatus(
@@ -171,18 +157,6 @@ class ClaudeProvider(ProjectEditing, OptionalFeatures):
             delete_session(self.credential_file)
             self.transport.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
-
-    async def describe(self):
-        return ProviderDescription(
-            self.id,
-            tuple(
-                Feature(
-                    c,
-                    FeatureState.AVAILABLE if c in self.capabilities else FeatureState.UNSUPPORTED,
-                )
-                for c in Capability
-            ),
-        )
 
     async def models(self, *, force: bool = False):
         async with self._gate:

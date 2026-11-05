@@ -6,7 +6,17 @@ from typing import Protocol
 from .api import Capability, Provider
 from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from .files import DownloadSource
-from .models import Conversation, ModelCatalog, Page, Project, ProviderDescription, SessionStatus
+from .models import (
+    Conversation,
+    Feature,
+    FeatureState,
+    ModelCatalog,
+    Origin,
+    Page,
+    Project,
+    ProviderDescription,
+    SessionStatus,
+)
 from .projects import ProjectOptions
 
 
@@ -60,7 +70,29 @@ class OptionalFeatures:
         return None
 
     def attachment_policy(self):
-        return None
+        from .attachments import policy_for
+
+        policy = policy_for(getattr(self, "id", ""))
+        return policy.as_dict() if policy else None
+
+    def _origin(self, remote):
+        return Origin(getattr(self, "id", ""), getattr(self, "account_id", "default"), remote)
+
+    async def describe(self) -> ProviderDescription:
+        caps = getattr(self, "capabilities", frozenset())
+        return ProviderDescription(
+            getattr(self, "id", ""),
+            tuple(
+                Feature(
+                    c,
+                    FeatureState.AVAILABLE if c in caps else FeatureState.UNSUPPORTED,
+                )
+                for c in Capability
+            ),
+        )
+
+    async def login(self) -> SessionStatus:
+        return await self.authenticate()
 
     async def upload_file(self, path):
         raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")

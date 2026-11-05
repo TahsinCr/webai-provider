@@ -124,11 +124,6 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
 
         await asyncio.to_thread(discard)
 
-    def attachment_policy(self):
-        from ..attachments import policy_for
-
-        return policy_for(self.id).as_dict()
-
     async def upload_file(self, path, *, cancel_event=None):
         import mimetypes
         import threading

@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from ..api import MessageAction
 from ..contracts import confirm_deleted
+from ..core import ConcurrencyCoordinator
 from ..errors import AccountPaused, ProviderError, RemoteNotFound
 from ..projects import ProjectOptions, source_file
 from ..session import WebSession, read_session
@@ -47,6 +48,7 @@ class ClaudeTransport:
         self.session = session or WebSession("https://claude.ai", credential_file, "sessionKey")
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
+        self._coordinator = ConcurrencyCoordinator()
         self._discover_task = None
         self._discovered_at = 0.0
 
@@ -125,23 +127,11 @@ class ClaudeTransport:
             if started is not None:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - started)
             return self.catalog
-        task = self._discover_task
-        if task is None or task.done():
-            task = asyncio.create_task(self._discover(), name="claude-account-discovery")
-            task.add_done_callback(self._observe_discovery)
-            self._discover_task = task
         try:
-            return await asyncio.shield(task)
+            return await self._coordinator.deduplicate("discover", self._discover)
         finally:
             if started is not None:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - started)
-            if task.done() and self._discover_task is task:
-                self._discover_task = None
-
-    @staticmethod
-    def _observe_discovery(task):
-        if not task.cancelled():
-            task.exception()
 
     async def prepare(self):
         """Resolve the account workspace and its selectable model catalog once."""
@@ -153,10 +143,7 @@ class ClaudeTransport:
         return "/api/organizations/" + remote_id(self.organization)
 
     async def close(self):
-        task, self._discover_task = self._discover_task, None
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await self._coordinator.aclose()
         self.organization = None
         self.catalog = None
         self.authenticated = False

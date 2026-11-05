@@ -20,12 +20,10 @@ from ..contracts import OptionalFeatures, confirm_deleted
 from ..errors import AccountPaused, FeatureUnavailable, ProviderError
 from ..messages import files_from, sources_from
 from ..models import (
-    Feature,
     FeatureState,
     ModelCatalog,
     Origin,
     Page,
-    ProviderDescription,
     SessionState,
     SessionStatus,
 )
@@ -91,11 +89,6 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
             Capability.PROJECT_DELETE,
             Capability.RESOURCES,
         }
-
-    def attachment_policy(self):
-        from ..attachments import policy_for
-
-        return policy_for(self.id).as_dict()
 
     async def upload_file(self, path):
         import mimetypes
@@ -191,20 +184,6 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                 delete_session(self.cookie_file)
                 self._temporary.clear()
         return SessionStatus(SessionState.LOGIN_REQUIRED)
-
-    async def describe(self):
-        return ProviderDescription(
-            self.id,
-            tuple(
-                Feature(
-                    cap,
-                    FeatureState.AVAILABLE
-                    if cap in self.capabilities
-                    else FeatureState.UNSUPPORTED,
-                )
-                for cap in Capability
-            ),
-        )
 
     async def models(self, *, force: bool = False):
         async with self._model_gate:
