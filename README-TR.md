@@ -1,5 +1,5 @@
 [![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![Sürüm: v1.0-beta][version-shield]](CHANGELOG.md)
+[![Sürüm: v1.1-beta][version-shield]](CHANGELOG.md)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
 [English](README.md) | **Türkçe** | [Русский](README-RU.md)
@@ -162,15 +162,18 @@ python -m twine check dist/*
 
 ## Değişiklikler
 
-`v1.0-beta` sürümünde provider geçmişindeki değişiklikler
-[CHANGELOG.md](CHANGELOG.md) dosyasında toplandı. Bu tag'den sonraki
-değişiklikler **Unreleased** altında yer alır.
+`v1.1-beta` sürümü Grok için web oturumu desteği ekler. Hesabın kullanabildiği
+modelleri dinamik olarak listeler; akışlı yanıtları, yeniden denemeyi, proje
+talimatı ve kaynak işlemlerini, belge eklerini ve web araması kaynaklarını
+destekler. Oturum doğrulama, istek sınırı bekleme süreleri, akış güvenilirliği ve
+gönderim hazırlığı da iyileştirildi. Tam liste [CHANGELOG.md](CHANGELOG.md)
+dosyasındadır. Bu sürümden sonraki değişiklikler **Unreleased** altında toplanır.
 
 ## Lisans
 
 Telif hakkı © TahsinCr. Paket [GPL-3.0-only](LICENSE) ile lisanslanmıştır.
 [COPYRIGHT](COPYRIGHT) proje bildirimini içerir.
 
-[version-shield]: https://img.shields.io/badge/s%C3%BCr%C3%BCm-v1.0--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/s%C3%BCr%C3%BCm-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/Lisans-GPL--3.0--only-2F6F4E.svg?style=for-the-badge

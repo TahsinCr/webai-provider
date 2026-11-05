@@ -1,5 +1,5 @@
 [![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![Version: v1.0-beta][version-shield]](CHANGELOG.md)
+[![Version: v1.1-beta][version-shield]](CHANGELOG.md)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
 **English** | [Türkçe](README-TR.md) | [Русский](README-RU.md)
@@ -229,15 +229,18 @@ with `python -m pip install --upgrade .`.
 
 ## Changelog
 
-The `v1.0-beta` release consolidates the provider-specific history in
-[CHANGELOG.md](CHANGELOG.md). New changes after this tag belong under
-**Unreleased**.
+The `v1.1-beta` release adds Grok web-session support: account-specific model
+discovery, streaming, retries, workspace instructions and sources, document
+attachments, and web-search citations. It also improves session checks, rate-limit
+handling, stream reliability, and send preparation. See
+[CHANGELOG.md](CHANGELOG.md) for the full list. Changes after this release belong
+under **Unreleased**.
 
 ## License
 
 Copyright © TahsinCr. Licensed under [GPL-3.0-only](LICENSE). See
 [COPYRIGHT](COPYRIGHT) for the project notice.
 
-[version-shield]: https://img.shields.io/badge/version-v1.0--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/License-GPL--3.0--only-2F6F4E.svg?style=for-the-badge

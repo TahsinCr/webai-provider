@@ -1,5 +1,5 @@
 [![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![Версия: v1.0-beta][version-shield]](CHANGELOG.md)
+[![Версия: v1.1-beta][version-shield]](CHANGELOG.md)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
 [English](README.md) | [Türkçe](README-TR.md) | **Русский**
@@ -164,15 +164,19 @@ python -m twine check dist/*
 
 ## История изменений
 
-В выпуске `v1.0-beta` изменения провайдеров собраны в файле
-[CHANGELOG.md](CHANGELOG.md). Изменения после этого тега будут добавляться в
-раздел **Unreleased**.
+В выпуске `v1.1-beta` добавлена поддержка Grok через веб-сессию: динамический
+список моделей, доступных аккаунту, потоковые ответы, повторная генерация,
+операции с инструкциями и источниками рабочих пространств, вложения документов
+и источники веб-поиска. Также улучшены проверка сессии, обработка ограничений
+частоты запросов, надёжность потоковой передачи и подготовка отправки. Полный
+список изменений находится в [CHANGELOG.md](CHANGELOG.md). Изменения после
+выпуска будут добавляться в раздел **Unreleased**.
 
 ## Лицензия
 
 Авторское право © TahsinCr. Пакет распространяется по лицензии
 [GPL-3.0-only](LICENSE). Уведомление проекта находится в [COPYRIGHT](COPYRIGHT).
 
-[version-shield]: https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-v1.0--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/Лицензия-GPL--3.0--only-2F6F4E.svg?style=for-the-badge
