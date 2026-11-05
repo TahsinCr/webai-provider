@@ -1,5 +1,6 @@
 """Grok continuation and browser-cookie contracts."""
 
+import asyncio
 import base64
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ from providers.api import (
 )
 from providers.errors import AccountPaused
 from providers.grok import GrokProvider
-from providers.grok.records import GrokTextFilter
+from providers.grok.records import GrokTextFilter, conversation
 from providers.grok.transport import (
     _MAX_LINE_BYTES,
     GrokProjectEditor,
@@ -924,3 +925,148 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             {"name": "session-token", "value": "insecure", "domain": ".grok.com", "secure": False},
         ]
         self.assertEqual(select_cookies(cookies, "grok"), {"sso-rw": "session"})
+
+    async def test_grok_stream_ignores_sse_comments_and_merges_multiline_data(self):
+        class Response:
+            def __init__(self, chunks):
+                self.chunks = iter(chunks)
+
+            async def aiter_content(self):
+                for chunk in self.chunks:
+                    yield chunk
+
+        chunks = [
+            b": ping\r\n\r\n",
+            b"event: message\r\n",
+            b'data: {"result":\r\n',
+            b'data: {"token": "hi"}}\r\n\r\n',
+            b": keepalive\r\n\r\n",
+            b'{"result": {"token": "bye"}}\r\n',
+        ]
+
+        class StreamContext:
+            async def __aenter__(self):
+                return Response(chunks)
+
+            async def __aexit__(self, *args):
+                return False
+
+        transport = GrokTransport(Path("unused"))
+        transport._ensure_authenticated = AsyncMock()
+        client = SimpleNamespace(stream=lambda *args, **kwargs: StreamContext())
+        transport.session = SimpleNamespace(
+            connect=lambda: client,
+            url=lambda path: "https://grok.com" + path,
+            check=lambda response: None,
+            persist=AsyncMock(),
+        )
+        events = [event async for event in transport.events("/responses", {})]
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0], {"result": {"token": "hi"}})
+        self.assertEqual(events[1], {"result": {"token": "bye"}})
+
+    def test_history_preserves_user_file_attachments(self):
+        history = {
+            "conversation": {"conversationId": "chat", "title": "Chat"},
+            "responses": [
+                {
+                    "responseId": "u1",
+                    "sender": "human",
+                    "message": "Check this",
+                    "fileAttachments": [
+                        {
+                            "assetId": "file-1",
+                            "fileName": "report.pdf",
+                            "fileMimeType": "application/pdf",
+                        }
+                    ],
+                },
+                {
+                    "responseId": "a1",
+                    "sender": "assistant",
+                    "parentResponseId": "u1",
+                    "message": "Reviewed",
+                },
+            ],
+        }
+        chat = conversation({"id": "chat"}, "account", history)
+        self.assertEqual(len(chat.messages), 2)
+        user_msg = chat.messages[0]
+        self.assertEqual(user_msg.content[0].text, "Check this")
+        self.assertEqual(user_msg.content[1].kind, "resource")
+        self.assertEqual(user_msg.content[1].resource.id, "file-1")
+        self.assertEqual(user_msg.content[1].resource.name, "report.pdf")
+        self.assertEqual(user_msg.content[1].resource.media_type, "application/pdf")
+
+    async def test_stream_allows_concurrent_models_lookup_without_gate_contention(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        started_event = asyncio.Event()
+        finish_event = asyncio.Event()
+
+        async def slow_events(path, body):
+            started_event.set()
+            await finish_event.wait()
+            yield {
+                "result": {
+                    "conversation": {"conversationId": "chat"},
+                    "response": {
+                        "userResponse": {"responseId": "user-1"},
+                        "token": "Done",
+                        "done": True,
+                        "modelResponse": {
+                            "responseId": "answer-1",
+                            "model": "grok-3",
+                            "message": "Done",
+                            "partial": False,
+                        },
+                    },
+                }
+            }
+
+        transport.events = slow_events
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Hello",
+            conversation_id="chat",
+            model="fast",
+        )
+
+        async def run_stream():
+            return [e async for e in provider.stream(request)]
+
+        stream_task = asyncio.create_task(run_stream())
+        try:
+            await started_event.wait()
+            catalog = await provider.models(force=True)
+            self.assertIsNotNone(catalog)
+            self.assertEqual(catalog.default_model, "fast")
+        finally:
+            finish_event.set()
+            await stream_task
+            await provider.close()
+
+    async def test_move_chat_retries_eventual_consistency_before_reporting_success(self):
+        provider = GrokProvider(Path("unused"), "test")
+        calls = 0
+
+        async def request(method, path, **kwargs):
+            nonlocal calls
+            if method == "GET" and path == "/rest/app-chat/conversations/chat":
+                calls += 1
+                return {"id": "chat", "workspaceId": "ws-1" if calls == 1 else "ws-2"}
+            if method == "POST":
+                return {}
+            if method == "DELETE":
+                return {}
+            return {}
+
+        provider.transport.request = AsyncMock(side_effect=request)
+        try:
+            await provider.move_chat("chat", "ws-2")
+            self.assertEqual(calls, 2)
+        finally:
+            await provider.close()

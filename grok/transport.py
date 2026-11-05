@@ -151,14 +151,37 @@ class GrokTransport:
                 timeout=600,
             ) as response:
                 self.session.check(response)
+                payload = []
                 async for line in _iter_bounded_lines(response):
                     line = line.strip()
-                    if not line or line == "[DONE]":
+                    if not line:
+                        if payload:
+                            raw = "\n".join(payload)
+                            payload.clear()
+                            if raw == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(raw)
+                            except ValueError:
+                                raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                            if not isinstance(event, dict):
+                                raise ProviderError("Grok akış yanıtının biçimi değişmiş")
+                            yield event
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line == "[DONE]":
                         continue
                     if line.startswith("data:"):
                         line = line[5:].lstrip()
-                        if not line or line == "[DONE]":
+                        if not line:
                             continue
+                        if line == "[DONE]":
+                            continue
+                        payload.append(line)
+                        continue
+                    if line.startswith(("event:", "id:", "retry:")):
+                        continue
                     try:
                         event = json.loads(line)
                     except ValueError:
@@ -166,6 +189,16 @@ class GrokTransport:
                     if not isinstance(event, dict):
                         raise ProviderError("Grok akış yanıtının biçimi değişmiş")
                     yield event
+                if payload:
+                    raw = "\n".join(payload)
+                    if raw != "[DONE]":
+                        try:
+                            event = json.loads(raw)
+                        except ValueError:
+                            raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                        if not isinstance(event, dict):
+                            raise ProviderError("Grok akış yanıtının biçimi değişmiş")
+                        yield event
         except AccountPaused:
             self.session.authenticated = False
             raise
@@ -216,8 +249,6 @@ class GrokProjectEditor:
                 name, content = values.get("name"), values.get("text")
                 if not isinstance(name, str) or not isinstance(content, str) or not content:
                     raise ValueError("Kaynak adı ve metin içeriği gerekir")
-                if len(content) > _MAX_WORKSPACE_FILE_BYTES:
-                    raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
                 mime_type = "text/plain"
                 content = content.encode("utf-8")
             else:

@@ -78,8 +78,9 @@ class GrokTextFilter:
                 if final:
                     self._pending = ""
                 elif len(self._pending) > 4096:
-                    output.append(self._visible(self._pending[:1]))
-                    self._pending = self._pending[1:]
+                    cut = len(self._pending) - 4096
+                    output.append(self._visible(self._pending[:cut]))
+                    self._pending = self._pending[cut:]
                     continue
                 break
             marker = self._pending[:end]
@@ -132,7 +133,20 @@ def _messages(history):
         sender = str(row.get("sender", "")).lower()
         if sender in ("human", "user"):
             text = row.get("message") or row.get("query") or ""
-            messages.append(Message(response_id, "user", (Content("text", str(text)),)))
+            files = row.get("fileAttachments") or row.get("attachments") or ()
+            resources = tuple(
+                Content(
+                    "resource",
+                    resource=Resource(
+                        str(item.get("assetId") or item.get("id") or ""),
+                        str(item.get("name") or item.get("fileName") or "Attachment"),
+                        item.get("mimeType") or item.get("fileMimeType"),
+                    ),
+                )
+                for item in files
+                if isinstance(item, dict) and (item.get("assetId") or item.get("id"))
+            )
+            messages.append(Message(response_id, "user", (Content("text", str(text)),) + resources))
             continue
         if sender not in ("assistant", "model", "grok"):
             continue
