@@ -8,26 +8,28 @@
 
 ### ChatGPT, Gemini, Claude ve Grok web oturumları için yüksek performanslı ve sözleşme odaklı Python istemcisi.
 
-`webai-provider`, Python uygulamalarınızı önde gelen yapay zekâ sağlayıcılarının (ChatGPT, Gemini, Claude ve Grok) web oturumlarına bağlayan bağımsız bir kütüphanedir. Resmî API anahtarlarına, ön ödemeli bakiye veya kredi kartlarına, harici proxy sunucularına ihtiyaç duymaz. Tamamen saf Python üzerinde çalışır; çok turlu sohbetleri, canlı jeton akışını (streaming), dinamik model ve düşünme eforu keşfini, dosya eklerini, proje ve çalışma alanı yönetimini, mesaj düzenleme ve sohbet dallandırma (branching) işlevlerini tek ve tutarlı bir asenkron arayüz arkasında sunar.
+`webai-provider`, Python uygulamalarınızı geliştirici API anahtarlarına, ön ödemeli bakiye yüklemelerine veya harici proxy ara yazılımlarına ihtiyaç duymadan doğrudan ChatGPT, Gemini, Claude ve Grok'un web oturumlarına bağlar. Harici tarayıcı süreçlerine (headless browser) gerek duymadan saf Python üzerinde yerel olarak çalışır; çok turlu sohbeti, canlı jeton (token) akışını, dinamik model ve efor keşfini, dosya eklerini, proje ve çalışma alanı yönetimini, mesaj düzenlemeyi ve dal (branch) devamlarını birleşik, asenkron bir arayüz arkasında sunar.
 
 ---
 
+<a id="icindekiler"></a>
 ## İçindekiler
 
 - [1. Genel Bakış ve Öne Çıkanlar](#1-genel-bakış-ve-öne-çıkanlar)
 - [2. Kurulum ve Gereksinimler](#2-kurulum-ve-gereksinimler)
 - [3. Desteklenen Sağlayıcılar ve Yetenek Matrisi](#3-desteklenen-sağlayıcılar-ve-yetenek-matrisi)
 - [4. Eksiksiz API Referansı (Genelden Özele)](#4-eksiksiz-api-referansı-genelden-özele)
-  - [4.1. İstemci ve Yaşam Döngüsü: `ProviderClient`](#41-istemci-ve-yaşam-döngüsü-providerclient)
-  - [4.2. Sağlayıcı İnşası: `create_provider` ve `ProviderRegistry`](#42-sağlayıcı-i̇nşası-create_provider-ve-providerregistry)
-  - [4.3. Temel Backend Sözleşmesi: `Backend` Protokolü](#43-temel-backend-sözleşmesi-backend-protokolü)
-  - [4.4. İstekler ve Akış Olayları: `SendRequest` ve `ProviderEvent`](#44-i̇stekler-ve-akış-olayları-sendrequest-ve-providerevent)
+  - [4.1. Üst Düzey Yönetici: `ProviderClient`](#41-üst-düzey-yönetici-providerclient)
+  - [4.2. Sağlayıcı İnşası: `create_provider` ve `ProviderRegistry`](#42-sağlayıcı-inşası-create_provider-ve-providerregistry)
+  - [4.3. Birleşik Backend Protokolü: `Backend` Sözleşmesi](#43-birleşik-backend-protokolü-backend-sözleşmesi)
+  - [4.4. İstekler ve Akış Olayları: `SendRequest` ve `ProviderEvent`](#44-istekler-ve-akış-olayları-sendrequest-ve-providerevent)
   - [4.5. Alan ve Durum Modelleri: `ModelCatalog`, `Conversation`, `Project` vb.](#45-alan-ve-durum-modelleri-modelcatalog-conversation-project-vb)
-  - [4.6. Dosya Politikaları ve İndirme Tanımlayıcıları: `AttachmentPolicy` ve `DownloadSource`](#46-dosya-politikaları-ve-i̇ndirme-tanımlayıcıları-attachmentpolicy-ve-downloadsource)
-  - [4.7. Oturumlar ve Atomik Kimlik Depolama: `CredentialStore`](#47-oturumlar-ve-atomik-kimlik-depolama-credentialstore)
-  - [4.8. Tarayıcı Profili İçe Aktarma ve CDP Araçları: `profiles` ve `cdp`](#48-tarayıcı-profili-i̇çe-aktarma-ve-cdp-araçları-profiles-ve-cdp)
-  - [4.9. Hata Yönetimi ve Hata Kodları: `ProviderError`](#49-hata-yönetimi-ve-hata-kodları-providererror)
-- [5. Pratik Örnekler (Basitten İleri Düzeye)](#5-pratik-örnekler-basitten-i̇leri-düzeye)
+  - [4.6. Dosya Politikaları ve İndirme Tanımlayıcıları: `AttachmentPolicy` ve `DownloadSource`](#46-dosya-politikaları-ve-indirme-tanımlayıcıları-attachmentpolicy-ve-downloadsource)
+  - [4.7. Oturumlar, Kimlik Depolama ve Geçmiş Senkronizasyonu](#47-oturumlar-kimlik-depolama-ve-geçmiş-senkronizasyonu)
+  - [4.8. Tarayıcı Profili İçe Aktarma ve CDP Araçları: `profiles` ve `cdp`](#48-tarayıcı-profili-içe-aktarma-ve-cdp-araçları-profiles-ve-cdp)
+  - [4.9. Telemetri ve Gönderim Zamanlama Profillemesi: `timing`](#49-telemetri-ve-gönderim-zamanlama-profillemesi-timing)
+  - [4.10. Hata Yönetimi ve Hata Kodları: `ProviderError`](#410-hata-yönetimi-ve-hata-kodları-providererror)
+- [5. Pratik Örnekler (Basitten İleri Düzeye)](#5-pratik-örnekler-basitten-ileri-düzeye)
   - [5.1. Örnek 1: Temel Jeton Akışı](#51-örnek-1-temel-jeton-akışı)
   - [5.2. Örnek 2: Dinamik Model Keşfi, Düşünme Eforu ve Çok Turlu Sohbet](#52-örnek-2-dinamik-model-keşfi-düşünme-eforu-ve-çok-turlu-sohbet)
   - [5.3. Örnek 3: Dosya Yükleme ve Ek Analizi](#53-örnek-3-dosya-yükleme-ve-ek-analizi)
@@ -44,21 +46,21 @@
 
 ## 1. Genel Bakış ve Öne Çıkanlar
 
-Web yapay zekâ servisleri, HTTP/2 çoklama, Server-Sent Events (SSE), Google'ın iç `batchexecute` RPC formatı ve özel bot koruma mekanizmaları gibi farklı taşıma katmanları kullanır. `webai-provider`, tüm bu karmaşıklığı geliştirici dostu Python sözleşmelerine dönüştürürken şu garantileri sağlar:
+Modern web yapay zekâ platformları birbirinden bütünüyle farklı ve belgelenmemiş iletim protokolleri üzerinde çalışır: HTTP/2 çoklama ve Server-Sent Events (SSE) teknolojisinden Google'ın dahili `batchexecute` RPC biçimine ve bot engelleme (anti-bot) mekanizmalarına kadar geniş bir yelpaze söz konusudur. `webai-provider`, bu protokolleri temiz, tip güvenli Python sözleşmelerine dönüştürür ve şu mimari teminatları sunar:
 
-- **Sıfır Node.js / Harici JS Motoru Bağımlılığı:** ChatGPT'nin Sentinel parmak izi, PoW (Proof of Work) çözümü ve desteklenen Turnstile doğrulama adımları saf Python üzerinde çalışır (`chatgpt/sentinel/`).
-- **Tembel (Lazy) Hesap İlklendirmesi:** Kütüphaneyi içe aktarmak veya hesap tanımlamak ağ trafiği oluşturmaz ve arka planda gereksiz süreç başlatmaz. Taşıma bağlantıları yalnızca istek anında açılır.
-- **Sıkı İptal ve Bağlantı Güvenliği:** Bir akış görevinden çıkıldığında veya görev iptal edildiğinde HTTP soketi anında güvenle kapatılır. Belirsiz ağ kopmalarında `POST send` çağrıları asla otomatik tekrarlanmaz.
-- **Eksiksiz Hesap İzolasyonu:** Her hesap kendi çerez deposuna, HTTP bağlantı havuzuna ve kilit mekanizmasına sahiptir. Hesaplar arası oturum veya önbellek sızıntısı yaşanmaz.
-- **Tipli Çok Kanallı Çıktı:** Kullanıcıya görünen metin (`None`), düşünme süreçleri (`analysis`), dinamik metin güncellemeleri (`ReplaceText`) ve web kaynakları (`MessageMetadata.sources`) birbirinden ayrık tipler olarak sunulur.
+- **Sıfır Node.js / Headless Tarayıcı Bağımlılığı:** ChatGPT Sentinel çalışma zamanı (parmak izi çıkarma, Proof of Work çözümü ve desteklenen Turnstile doğrulaması) harici tarayıcılara ihtiyaç kalmaksızın tamamen yerel Python üzerinde (`chatgpt/sentinel/`) çalışır.
+- **Tembel (Lazy) Hesap Başlatma:** Paketi içe aktarmak veya hesap tanımlamak sıfır ağ turu gerektirir ve hiçbir arka plan süreci başlatmaz. İletim katmanı yalnızca işlem başladığında devreye girer.
+- **Katı İptal ve Bağlantı Güvenliği:** Bir akış iptal edildiğinde veya `async for` döngüsünden çıkıldığında, ilgili iletim soketi derhal ve temiz bir şekilde kapatılır. Belirsiz POST hataları asla otomatik olarak yeniden denenmez.
+- **Kusursuz Hesap Yalıtımı:** Her hesap kendi çerez deposunu, HTTP bağlantı havuzunu ve eşzamanlılık kilitlerini yönetir. Hesaplar arası kimlik veya önbellek sızıntısı meydana gelmez.
+- **Tiplere Ayrılmış Çok Kanallı Çıktı:** Kullanıcıya görünen yanıt (`None`), derin düşünme/akıl yürütme izi (`analysis`), canlı özet güncellemeleri (`ReplaceText`) ve kaynak alıntıları (`MessageMetadata.sources`) birbirinden net bir biçimde ayrıştırılır.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 2. Kurulum ve Gereksinimler
 
-Python 3.10 veya üzeri gereklidir. Linux, macOS ve Windows ortamlarında Python 3.10, 3.11, 3.12, 3.13 ve 3.14 üzerinde düzenli olarak doğrulanmaktadır.
+Python 3.10 veya üzeri gereklidir. Ubuntu, macOS ve Windows ortamlarında Python 3.10, 3.11, 3.12, 3.13 ve 3.14 sürümlerinde düzenli olarak test edilmektedir.
 
 ```sh
 # Klonlama ve doğrudan kurulum
@@ -70,38 +72,38 @@ python -m pip install .
 python -m pip install -e ".[dev]"
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 3. Desteklenen Sağlayıcılar ve Yetenek Matrisi
 
-Kütüphane, özellikleri `Capability` numaralandırmasıyla bildirir. Düşünme eforu veya dosya yükleme gibi özellikler seçilen modele ve hesap aboneliğine bağlı olduğundan, `await account.models()` ile dönen canlı katalog her zaman belirleyicidir.
+Kütüphane yetenekleri `Capability` numaralandırması üzerinden sunulur. Düşünme eforu veya dosya yükleme gibi özellikler aktif modele ve hesap seviyesine bağlı olduğundan, `await account.models()` ile dönen dinamik katalog her zaman nihai otoritedir.
 
-| Yetenek (`Capability`) | ChatGPT | Gemini | Claude | Grok | Davranış ve Detaylar |
+| Yetenek (`Capability`) | ChatGPT | Gemini | Claude | Grok | Davranış ve Notlar |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| `CHAT` | ✅ | ✅ | ✅ | ✅ | Asenkron metin üretimi ve SSE akışı. |
-| `TEMPORARY` | ✅ | ✅ | ✅ | ✅ | Gizli/geçici sekme modu (sohbetler sunucu geçmişine kaydedilmez). |
-| `HISTORY` | ✅ | ✅ | ✅ | ✅ | Sayfalı sohbet keşfi ve mesaj geçmişi alma. |
-| `RENAME` | ✅ | ✅ | ✅ | ✅ | Sunucudaki sohbet başlığını güncelleme. |
-| `DELETE` | ✅ | ✅ | ✅ | ✅ | Sohbeti sunucudan kalıcı olarak silme. |
-| `AUTH` | ✅ | ✅ | ✅ | ✅ | Oturum geçerliliğini ve giriş durumunu denetleme. |
-| `ATTACHMENTS` | ✅ | ✅ | ✅ | ✅ | Doküman, resim, ses ve video dosyalarını mesaja ekleme. |
-| `RESOURCES` | ✅ | ✅ | ✅ | ✅ | Projelere ve çalışma alanlarına bağlı dosya/metin yönetimi. |
-| `PROJECTS` | ✅ | ✅ | ✅ | ✅ | Projeleri / çalışma alanlarını listeleme (Gemini için Notebooks). |
+| `CHAT` | ✅ | ✅ | ✅ | ✅ | Asenkron istem gönderme ve SSE olay akışı. |
+| `TEMPORARY` | ✅ | ✅ | ✅ | ✅ | Gizli / geçici oturum modu (sohbetler sunucu geçmişine kaydedilmez). |
+| `HISTORY` | ✅ | ✅ | ✅ | ✅ | Sayfalanmış sohbet listesi ve tüm sohbet turlarının geçmişini çekme. |
+| `RENAME` | ✅ | ✅ | ✅ | ✅ | Sunucu üzerindeki sohbet başlıklarını güncelleme. |
+| `DELETE` | ✅ | ✅ | ✅ | ✅ | Sohbetleri sunucu üzerinden kalıcı olarak silme. |
+| `AUTH` | ✅ | ✅ | ✅ | ✅ | Oturum geçerliliğini doğrulama ve giriş durumunu kontrol etme. |
+| `ATTACHMENTS` | ✅ | ✅ | ✅ | ✅ | İstem göndermeden önce belge, görsel ve ses/video dosyalarını yükleme. |
+| `RESOURCES` | ✅ | ✅ | ✅ | ✅ | Proje ve çalışma alanlarına bağlı belge ve metin kaynaklarını yönetme. |
+| `PROJECTS` | ✅ | ✅ | ✅ | ✅ | Projeleri keşfetme ve listeleme (Gemini için Notebooks, Grok için Workspaces). |
 | `PROJECT_CREATE` | ✅ | ✅ | ✅ | ✅ | Yeni proje veya çalışma alanı oluşturma. |
-| `PROJECT_UPDATE` | ✅ | ✅ | ✅ | ✅ | Proje başlığını, talimatlarını ve ayarlarını düzenleme. |
-| `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Projeyi sunucudan silme. |
-| `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Sohbetleri projeye taşıma veya çıkarma (Gemini Defter sohbetleri açılış anında sabitlenir). |
-| `MODELS` | ✅ | ✅ | ✅ | ✅ | Hesaba açık modelleri dinamik keşfetme. |
-| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Modele bağlı düşünme eforu / bütçesi (`Model.efforts` üzerinden dinamik). |
-| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Kullanıcı mesajını düzenleyip yeni yoldan devam etme. |
-| `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Asistan cevabını yeniden üretme (*Gemini bunu üst kullanıcı mesajını düzenleme biçiminde yürütür). |
-| `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Mesajdan bağımsız yeni bir sohbet dalı türetme (Claude ve Grok web arayüzünde dal türetme API'si bulunmaz). |
+| `PROJECT_UPDATE` | ✅ | ✅ | ✅ | ✅ | Proje başlığını, talimatlarını veya ayarlarını güncelleme. |
+| `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Sunucudaki projeleri veya çalışma alanlarını silme. |
+| `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Sohbetleri projeye taşıma veya projeden çıkarma (Gemini Notebook sohbetleri sabittir). |
+| `MODELS` | ✅ | ✅ | ✅ | ✅ | Hesaba tanımlı kullanılabilir modelleri dinamik olarak keşfetme. |
+| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Düşünme bütçesi / akıl yürütme eforu (modele bağlıdır; `Model.efforts` ile yapılandırılır). |
+| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Mevcut bir kullanıcı iletisini düzenleme ve yeni bir dal üretme. |
+| `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Asistan yanıtını yeniden üretme (*Gemini üzerinde retry işlemi üst istem düzenlenerek yürütülür). |
+| `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Belirli bir turdan bağımsız yeni bir sohbet dallandırma (Claude ve Grok web API'leri desteklemez). |
 
-> **Not:** Bir sorgudan boş liste dönmesi o özelliğin desteklenmediği anlamına gelmez; sunucuda henüz kayıt olmadığını gösterir. Desteklenmeyen işlemler açıkça `FeatureUnavailable` istisnası fırlatır.
+> **Not:** Bir sorgu metodundan boş liste dönmesi, özelliğin desteklenmediği anlamına gelmez; sunucuda o türe ait kayıt bulunmadığını gösterir. Desteklenmeyen eylemler doğrudan `FeatureUnavailable` istisnası fırlatır.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -109,18 +111,18 @@ Kütüphane, özellikleri `Capability` numaralandırmasıyla bildirir. Düşünm
 
 ```mermaid
 flowchart TD
-    subgraph IstemciKatmani["1. İstemci Katmanı"]
+    subgraph ClientLayer["1. İstemci Katmanı"]
         PC["ProviderClient"]
         PR["ProviderRegistry"]
         CP["create_provider()"]
     end
 
-    subgraph SozlesmeKatmani["2. Backend Sözleşmesi"]
+    subgraph ContractLayer["2. Backend Sözleşmesi"]
         BE["Backend Protocol"]
         OF["OptionalFeatures"]
     end
 
-    subgraph MesajlasmaKatmani["3. Mesajlaşma ve Akış"]
+    subgraph MessagingLayer["3. Mesajlaşma ve Akışlar"]
         SR["SendRequest"]
         PE["ProviderEvent"]
         TD["TextDelta"]
@@ -129,7 +131,7 @@ flowchart TD
         MM["MessageMetadata"]
     end
 
-    subgraph DomainKatmani["4. Alan Modelleri ve Saklama"]
+    subgraph DomainLayer["4. Alan Modelleri ve Depolama"]
         MC["ModelCatalog & Model"]
         CV["Conversation & Message"]
         PJ["Project & Resource"]
@@ -149,33 +151,35 @@ flowchart TD
 
 ---
 
-### 4.1. İstemci ve Yaşam Döngüsü: `ProviderClient`
+### 4.1. Üst Düzey Yönetici: `ProviderClient`
 
 `providers.client.ProviderClient`
 
-Birden çok sağlayıcı ve hesabın yaşam döngüsünü, akışlarını ve kapatılmasını yöneten ana sınıftır. Her `asyncio` olay döngüsünde tek bir örnek çalışacak şekilde tasarlanmıştır.
+Çoklu sağlayıcı ve çoklu hesap yaşam döngülerini yöneten merkezi orkestratör. Her `asyncio` olay döngüsü için tek bir örnek çalıştırılacak biçimde tasarlanmıştır.
 
 #### Metotlar
-- **`__init__() -> None`**  
-  İç tabloları, hesap kayıtlarını ve akış görev takipçilerini ilklendirir.
-- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**  
-  `create_provider` kullanarak tembel bir sağlayıcı adaptörü oluşturur ve kaydeder. Ağ veya tarayıcı çağrısı yapmaz.
-- **`add(backend: Backend) -> Backend`**  
-  Doğrudan oluşturulmuş bir `Backend` nesnesini bağlar. `(backend.id, backend.account_id)` çiftinin boş olmamasını ve benzersizliğini denetler.
-- **`account(provider_id: str, account_id: str = "default") -> Backend`**  
-  Kayıtlı arka uç nesnesini döndürür. Kayıt bulunamazsa `KeyError` verir.
-- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**  
-  Hesabın taşıma bağlantısını arka planda ısıtır. `for_send=True` ise sağlayıcıya özel gönderim öncesi hazırlığı tetikler.
-- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**  
-  İsteği hedef hesaba iletir, yetenekleri doğrular, görevi kaydeder ve tipli olayları akıtır. Döngü sonlandırıldığında veya iptal edildiğinde bağlantı hemen kapatılır.
-- **`close() -> None`**  
-  Devam eden tüm akışları iptal eder, bağlantı havuzlarını ve tüm hesap arka uçlarını temizce kapatır. Güvenle tekrar çağrılabilir (idempotent).
+- **`__init__() -> None`**<br>
+  Arka uç kayıtlarını, aktif akış görevlerini ve kapatma kalkanlarını başlatır.
+- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**<br>
+  `create_provider` kullanarak tembel (lazy) bir sağlayıcı arka ucu oluşturur ve kaydeder. Ağ isteği yapmaz veya tarayıcı oturumu açmaz.
+- **`add(backend: Backend) -> Backend`**<br>
+  Önceden oluşturulmuş bir arka ucu doğrudan kaydeder. `(backend.id, backend.account_id)` çiftinin boş olmamasını ve benzersizliğini güvenceye alır.
+- **`account(provider_id: str, account_id: str = "default") -> Backend`**<br>
+  Belirtilen kimlik çiftine ait aktif arka ucu döndürür. Kayıtlı değilse `KeyError` fırlatır.
+- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**<br>
+  Hesabın iletim durumunu arka planda hazırlar. `for_send=True` verilirse sağlayıcıya özgü ön ısınma işlemlerini (jeton çözümleme vb.) tetikler.
+- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**<br>
+  İsteği hedef arka uca yönlendirir, gerekli yetenekleri denetler, çalışan görevi takip eder ve tiplere ayrılmış olayları üretir. Çağırıcı döngüyü kırdığında veya görevi iptal ettiğinde iletim yineleyicisi derhal kapatılır.
+- **`close() -> None`**<br>
+  Sürmekte olan tüm akışları iptal eder, etkin iletim kaynaklarını serbest bırakır ve tüm hesap arka uçlarını temizce kapatır. Idempotent yapıdadır; kapanma sırasındaki geçici hatalarda güvenle yeniden çağrılabilir.
+- **`async with ProviderClient() as client:`**<br>
+  Güvenli ve kapsam içi yaşam döngüsü yönetimi için `__aenter__` ve `__aexit__` protokollerini uygular.
 
 #### Özellikler (Properties)
-- **`accounts -> tuple[tuple[str, str], ...]`**  
-  Tüm kayıtlı `(provider_id, account_id)` çiftlerini demet olarak döndürür.
+- **`accounts -> tuple[tuple[str, str], ...]`**<br>
+  Kayıtlı tüm `(provider_id, account_id)` çiftlerini demet (tuple) olarak döndürür.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -183,7 +187,7 @@ Birden çok sağlayıcı ve hesabın yaşam döngüsünü, akışlarını ve kap
 
 `providers.registry.create_provider`
 
-Genel uygulama durumuna bağımlı olmadan bağımsız bir arka uç adaptörü (`Backend`) inşa eder.
+Genel uygulama durumuna bağımlı olmaksızın yalıtılmış bir hesap arka ucu örneği inşa eder.
 
 ```python
 def create_provider(
@@ -198,74 +202,81 @@ def create_provider(
 ```
 
 #### Parametreler
-- **`provider_id`** (`str`): `"chatgpt"`, `"gemini"`, `"claude"` veya `"grok"`.
-- **`account_id`** (`str`): Hesabın yerel kimliği (varsayılan: `"default"`).
-- **`credential_file`** (`str | Path | CredentialStore | None`): Oturum JSON dosya yolu veya özel `CredentialStore` nesnesi. `session` verilmediğinde zorunludur.
-- **`session`** (`BrowserSession | None`): Yalnızca ChatGPT için hazır `BrowserSession` nesnesi.
-- **`profile_directory`** (`str | Path | None`): ChatGPT Sentinel verileri için profil dizini. Varsayılan olarak kimlik dosyasının yanındaki `chrome-profile/` dizinidir.
-- **`**options`**: Adaptör yapılandırıcısına iletilecek ek anahtar kelimeler (örn: `client_factory`).
+- **`provider_id`** (`str`): Hedef sağlayıcı tanıtıcısı: `"chatgpt"`, `"gemini"`, `"claude"` veya `"grok"`.
+- **`account_id`** (`str`): Yerel hesap tanımlayıcısı (varsayılan: `"default"`).
+- **`credential_file`** (`str | Path | CredentialStore | None`): Oturum JSON dosya yolu veya özel `CredentialStore` uygulaması. `session` verilmediği sürece tüm sağlayıcılar için zorunludur.
+- **`session`** (`BrowserSession | None`): Mevcut `BrowserSession` nesnesi (yalnızca ChatGPT için).
+- **`profile_directory`** (`str | Path | None`): ChatGPT Sentinel verileri için özel tarayıcı profil dizini. Belirtilmezse oturum dosyasının yanındaki `chrome-profile/` dizinini kullanır.
+- **`**options`**: `client_factory` gibi sağlayıcı adaptörüne özgü ek parametreler.
 
 #### `ProviderRegistry` Sınıfı
-- **`register(provider: Provider, *, account_factory: Callable | None = None) -> None`**: Yeni sağlayıcı türünü ve hesap fabrikasını kaydeder.
-- **`create_account(provider_id: str, account_id: str, **configuration) -> Backend`**: Kayıtlı fabrikadan hesap üretir.
-- **`set_enabled(provider_id: str, enabled: bool) -> None`**: Sağlayıcıyı genel olarak etkinleştirir veya askıya alır.
-- **`require(provider_id: str, capability: Capability) -> Provider`**: Yeteneğin varlığını denetler ve sağlayıcıyı döndürür.
-- **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Dinamik yetenek durumlarını raporlar.
+- **`register(provider: Provider, *, account_factory: Callable | None = None) -> None`**: Sağlayıcı prototipini ve hesap yapıcı fonksiyonunu kaydeder.
+- **`create_account(provider_id: str, account_id: str, **configuration) -> Backend`**: Kayıtlı fabrika üzerinden yeni bir hesap örneği oluşturur.
+- **`set_enabled(provider_id: str, enabled: bool) -> None`**: Bir sağlayıcının gelecekteki işlemleri kabul edip etmeyeceğini belirler.
+- **`require(provider_id: str, capability: Capability) -> Provider`**: Sağlayıcının ilgili yeteneğe sahip olduğunu doğrular ve nesneyi döndürür.
+- **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Sağlayıcının özellik durumlarını sorgular.
+- **`mark_unavailable(provider_id: str, capability: Capability) -> None`**: Belirli bir yeteneği geçici olarak devre dışı işaretler.
+- **`restore(provider_id: str, capability: Capability) -> None`**: Önceden devre dışı bırakılmış bir yeteneği yeniden etkinleştirir.
+- **`get(provider_id: str) -> Provider`**: Prototip sağlayıcı nesnesini döndürür.
+- **`ids() -> tuple[str, ...]`**: Kayıtlı tüm sağlayıcı kimliklerini listeler.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
-### 4.3. Temel Backend Sözleşmesi: `Backend` Protokolü
+### 4.3. Birleşik Backend Protokolü: `Backend` Sözleşmesi
 
 `providers.contracts.Backend`
 
-Dört sağlayıcı adaptörünün de uyguladığı ortak protokol.
+Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protokol.
 
 #### Kimlik ve Yaşam Döngüsü
 - **`id: str`**: Sağlayıcı kimliği (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`).
 - **`account_id: str`**: Hesap kimliği.
-- **`capabilities: frozenset[Capability]`**: Desteklenen yetenekler kümesi.
-- **`async def prepare() -> None`**: Hesabın taşıma durumunu hazırlar.
+- **`capabilities: frozenset[Capability]`**: Adaptörün desteklediği yetenekler kümesi.
+- **`async def prepare() -> None`**: Hesaba özgü iletim durumunu kurar.
 - **`async def close() -> None`**: Bağlantı havuzlarını ve arka plan iş parçacıklarını kapatır.
 
 #### Oturum ve Sağlık
-- **`async def authenticate() -> SessionStatus`**: Çerezleri ve oturum jetonlarını doğrular/yeniler.
-- **`async def login() -> SessionStatus`**: Etkileşimli veya profilden oturum açma sürecini başlatır.
-- **`async def session_status() -> SessionStatus`**: Ağ isteği yapmadan bellekteki oturum durumunu döner.
-- **`async def forget_session() -> SessionStatus`**: Kayıtlı kimlikleri siler ve durumu sıfırlar.
-- **`async def describe() -> ProviderDescription`**: Yetenek durumlarını (`AVAILABLE`, `UNSUPPORTED` vb.) raporlar.
+- **`async def authenticate() -> SessionStatus`**: Kimlik doğrulama çerezlerini/belirteçlerini doğrular ve yeniler.
+- **`async def login() -> SessionStatus`**: Etkileşimli veya profil tabanlı giriş sürecini tetikler.
+- **`async def session_status() -> SessionStatus`**: Uzak istek yapmaksızın önbellekteki oturum durumunu döner.
+- **`async def forget_session() -> SessionStatus`**: Saklanan kimlik bilgilerini siler ve durumu sıfırlar.
+- **`async def describe() -> ProviderDescription`**: Desteklenen ve kullanılabilir durumdaki yetenekleri sorgular.
 
 #### Modeller ve Üretim
-- **`async def models(*, force: bool = False) -> ModelCatalog`**: Modelleri döner. 5 dakika önbelleklenir; `force=True` ile zorla yenilenir.
-- **`def stream(request: SendRequest) -> AsyncGenerator[ProviderEvent, None]`**: İstek gönderir ve akış olayları üretir.
+- **`async def models(*, force: bool = False) -> ModelCatalog`**: Kullanılabilir modelleri listeler. `force=True` verilmediği sürece 5 dakika boyunca önbellekten yanıt verir.
+- **`def stream(request: SendRequest) -> AsyncGenerator[ProviderEvent, None]`**: İsteği iletir ve akış olaylarını üretir.
 
 #### Sohbetler ve Geçmiş
-- **`async def list_chats(cursor: str | None = None, limit: int = 28) -> Page[Conversation]`**: Sohbetleri sayfalı listeler.
-- **`async def get_chat(conversation_id: str) -> Conversation`**: Sohbetin mesaj geçmişini ve meta verilerini alır.
-- **`async def rename_chat(conversation_id: str, title: str) -> None`**: Sohbet başlığını değiştirir.
+- **`async def list_chats(cursor: str | None = None, limit: int = 28) -> Page[Conversation]`**: Sohbet geçmişini sayfalanmış olarak listeler.
+- **`async def get_chat(conversation_id: str) -> Conversation`**: Bir sohbetin tüm turlarını ve üst verilerini çeker.
+- **`async def rename_chat(conversation_id: str, title: str) -> None`**: Sohbet başlığını günceller.
 - **`async def delete_chat(conversation_id: str) -> None`**: Sohbeti sunucudan kalıcı olarak siler.
-- **`async def branch_chat(conversation_id: str, message_id: str) -> Conversation`**: Mesajdan yeni dal türetir.
-- **`async def conversation_attachment_count(conversation_id: str) -> int | None`**: Sohbetteki bilinen ek dosya sayısını verir.
+- **`async def branch_chat(conversation_id: str, message_id: str) -> Conversation`**: Bir mesaj turunu bağımsız yeni bir dala çatallar.
+- **`async def conversation_attachment_count(conversation_id: str) -> int | None`**: Sohbet içinde yüklenmiş dosya sayısını döndürür.
 
 #### Projeler ve Çalışma Alanları
-- **`async def list_projects(cursor: str | None = None) -> Page[Project]`**: Projeleri listeler.
-- **`async def get_project(project_id: str) -> Project`**: Proje detaylarını ve kaynaklarını döndürür.
-- **`async def list_project_chats(project_id: str, cursor: str | None = None) -> Page[Conversation]`**: Projedeki sohbetleri listeler.
-- **`async def create_project(name: str, instructions: str = "", *, visibility="private", memory="default") -> Project`**: Proje oluşturur.
-- **`async def update_project(project: Project) -> Project`**: Proje adını veya sistem talimatını günceller.
-- **`async def delete_project(project_id: str) -> None`**: Projeyi siler.
-- **`async def project_options(project_id: str | None = None) -> ProjectOptions`**: Desteklenen proje ayarlarını döner.
-- **`async def add_project_resource(project_id: str, kind: str, **values) -> Project`**: Projeye doküman veya metin ekler.
+- **`async def list_projects(cursor: str | None = None) -> Page[Project]`**: Projeleri/çalışma alanlarını listeler.
+- **`async def get_project(project_id: str) -> Project`**: Proje ayrıntılarını ve bağlı kaynakları getirir.
+- **`async def list_project_chats(project_id: str, cursor: str | None = None) -> Page[Conversation]`**: Projeye bağlı sohbetleri listeler.
+- **`async def create_project(name: str, instructions: str = "", *, visibility="private", memory="default") -> Project`**: Yeni proje oluşturur.
+- **`async def update_project(project: Project) -> Project`**: Proje adını veya sistem talimatlarını günceller.
+- **`async def delete_project(project_id: str) -> None`**: Projeyi sunucudan siler.
+- **`async def project_options(project_id: str | None = None) -> ProjectOptions`**: Desteklenen proje yapılandırma alanlarını döndürür.
+- **`async def add_project_resource(project_id: str, kind: str, **values) -> Project`**: Projeye belge veya metin kaynağı ekler.
 - **`async def remove_project_resource(project_id: str, resource_id: str) -> Project`**: Projeden kaynak siler.
-- **`async def move_chat(conversation_id: str, project_id: str | None) -> None`**: Sohbeti projeye taşır veya çıkarır.
+- **`async def move_chat(conversation_id: str, project_id: str | None) -> None`**: Sohbeti bir projeye taşır veya projeden çıkarır.
 
 #### Dosya Ekleri ve İndirme
-- **`def attachment_policy() -> dict | None`**: Dosya boyutu, formatı ve adet sınırlarını verir.
-- **`async def upload_file(path: str | Path) -> dict`**: Dosyayı sağlayıcı sunucusuna yükler.
-- **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Yetkilendirilmiş indirme bağlantısı ve başlıklarını döner.
+- **`def attachment_policy() -> dict | None`**: Boyut, dosya adedi ve uzantı sınırlarını döner.
+- **`async def upload_file(path: str | Path) -> dict`**: Yerel bir dosyayı sağlayıcı depolama alanına yükler.
+- **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Kimliği doğrulanmış indirme bağlantısını ve gerekli başlıkları çözer.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+#### `confirm_deleted` Yardımcısı
+- **`async def confirm_deleted(read: Callable, missing: Callable = lambda value: False) -> None`**: Yıkıcı istekleri tekrar göndermeden, üstel geri çekilme (`0s`, `0.2s`, `0.5s`, `1s`) uygulayarak silme işleminin sunucuda gerçekleştiğini teyit eder.
+
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -274,46 +285,52 @@ Dört sağlayıcı adaptörünün de uyguladığı ortak protokol.
 #### `SendRequest` Parametreleri
 `providers.api.SendRequest(frozen=True)`
 
-| Alan | Tip | Varsayılan | Amacı |
+| Alan | Tür | Varsayılan | Amacı |
 | :--- | :--- | :--- | :--- |
 | **`provider_id`** | `str` | *Zorunlu* | Hedef sağlayıcı (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`). |
-| **`account_id`** | `str` | *Zorunlu* | Hedef hesap kimliği. |
-| **`chat_id`** | `str` | *Zorunlu* | İstemci tarafındaki yerel sohbet kimliği (taslak takibi). |
-| **`prompt`** | `str` | *Zorunlu* | İstem metni veya düzenlenen mesaj gövdesi. |
-| **`conversation_id`** | `str \| None` | `None` | Devam eden uzak sohbet kimliği (ilk mesajda `None`). |
-| **`model`** | `str \| None` | `None` | Model kimliği (`Model.id`). |
-| **`effort`** | `str \| None` | `None` | Düşünme eforu seviyesi (`"low"`, `"medium"`, `"high"`). |
-| **`project_id`** | `str \| None` | `None` | Mesaj bir projeye aitse uzak proje kimliği. |
-| **`temporary`** | `bool` | `False` | `True` ise geçmişe kaydedilmeyen gizli/geçici oturum açar. |
-| **`attachments`** | `tuple[dict, ...]` | `()` | `upload_file()` çıktısı olan dosya ekleri demeti. |
+| **`account_id`** | `str` | *Zorunlu* | Hedef hesap tanımlayıcısı. |
+| **`chat_id`** | `str` | *Zorunlu* | Çağırıcının kararlı yerel sohbet kimliği (taslak takibi sağlar). |
+| **`prompt`** | `str` | *Zorunlu* | Gönderilen metin veya düzenlenen ileti içeriği. |
+| **`conversation_id`** | `str \| None` | `None` | Uzak sohbet kimliği (ilk turda `None`, devam turlarında dolu). |
+| **`model`** | `str \| None` | `None` | Seçilen model tanımlayıcısı (`Model.id`). |
+| **`effort`** | `str \| None` | `None` | Akıl yürütme eforu (`"low"`, `"medium"`, `"high"`). |
+| **`project_id`** | `str \| None` | `None` | Sohbet bir projeye bağlıysa uzak proje kimliği. |
+| **`temporary`** | `bool` | `False` | `True` ise gizli/geçici sohbet olarak yürütülür. |
+| **`attachments`** | `tuple[dict, ...]` | `()` | `upload_file()` çıktısı olan dosya tanımlayıcıları. |
 | **`action`** | `MessageAction \| None` | `None` | `MessageAction.EDIT` veya `MessageAction.RETRY`. |
-| **`message_id`** | `str \| None` | `None` | Düzenlenecek veya tekrarlanacak hedef mesaj kimliği. |
-| **`branch`** | `BranchContext \| None` | `None` | Yeni daldan devam edilirken kullanılan başlangıç bağlamı. |
+| **`message_id`** | `str \| None` | `None` | Düzenleme veya yeniden denemede hedef mesaj kimliği. |
+| **`branch`** | `BranchContext \| None` | `None` | Sohbet dalı devam üst verisi. |
+
+#### İstek Doğrulama: `validate_request`
+`providers.api.validate_request(provider, request: SendRequest)` şu kontrolleri yürütür:
+- İsteğin hedef sağlayıcı ve hesap ile uyuşması.
+- `action` belirtilmişse (`EDIT` veya `RETRY`) hem `conversation_id` hem `message_id` değerlerinin bulunması.
+- `branch` devamında kaynak `conversation_id` ve `message_id` bulunması; çelişkili `action` veya `temporary` bayraklarının olmaması.
 
 #### Olay Türleri (`ProviderEvent`)
 `ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound | MessageMetadata`
 
-1. **`TextDelta(text: str, channel: str | None = None)`**  
-   Gelen anlık metin parçacığı.  
-   - `channel=None`: Asistanın görünen ana yanıtı.  
-   - `channel="analysis"`: Düşünme / mantık yürütme süreci (reasoning trace).
-2. **`ReplaceText(text: str, channel: str | None = None)`**  
-   Belirtilen kanaldaki tüm birikmiş metnin yerini alır (canlı özet güncellemeleri için).
-3. **`ResponseComplete()`**  
-   Sunucu tarafında metin üretiminin bittiğini belirtir.
-4. **`ConversationBound(conversation_id: str)`**  
-   İlk turda sunucunun sohbete atadığı kalıcı kimliği bildirir.
-5. **`MessageMetadata(...)`**  
-   Cevap tamamlandığında gelen meta veriler:  
-   - `message_id: str | None`: Asistan mesaj kimliği.  
-   - `user_message_id: str | None`: Kabul edilen kullanıcı mesaj kimliği.  
-   - `model: str | None`: Yanıtı üreten gerçek model.  
-   - `effort: str | None`: Uygulanan düşünme eforu.  
-   - `sources: tuple[dict, ...]`: Web arama ve doküman alıntıları (citations).  
-   - `actions: tuple[str, ...]`: Bu mesaja uygulanabilecek izinli eylemler (`"edit"`, `"retry"`).  
-   - `files: tuple[dict, ...]`: Model tarafından üretilen dosya ve indirme tanımlayıcıları.
+1. **`TextDelta(text: str, channel: str | None = None)`**<br>
+   Artımlı jeton parçacığı.<br>
+   - `channel=None`: Asistanın birincil yanıt metni.<br>
+   - `channel="analysis"`: Akıl yürütme / düşünme süreci çıktısı.
+2. **`ReplaceText(text: str, channel: str | None = None)`**<br>
+   İlgili kanalda daha önce biriken metnin tamamını yenisiyle değiştirir (canlı özet revizyonlarında kullanılır).
+3. **`ResponseComplete()`**<br>
+   Uzak model üretiminin başarıyla sonlandığını bildirir.
+4. **`ConversationBound(conversation_id: str)`**<br>
+   İlk turda uzak sunucu kalıcı sohbet kimliği atadığında tetiklenir.
+5. **`MessageMetadata(...)`**<br>
+   Üretim tamamlandığında nihai tur üst verilerini taşır:<br>
+   - `message_id: str | None`: Asistan mesaj kimliği.<br>
+   - `user_message_id: str | None`: Sunucu tarafından onaylanan kullanıcı mesaj kimliği.<br>
+   - `model: str | None`: Yanıtı üreten gerçek model.<br>
+   - `effort: str | None`: Doğrulanan akıl yürütme eforu.<br>
+   - `sources: tuple[dict, ...]`: Web kaynakları ve alıntı bağlantıları.<br>
+   - `actions: tuple[str, ...]`: Bu tur için izin verilen eylemler (`"edit"`, `"retry"`).<br>
+   - `files: tuple[dict, ...]`: Model tarafından üretilen çıktı dosyaları.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -322,29 +339,47 @@ Dört sağlayıcı adaptörünün de uyguladığı ortak protokol.
 `providers.models`
 
 - **`ModelCatalog`**:
-  - `state: FeatureState`: Durum (`AVAILABLE`, `UNAVAILABLE` vb.).
-  - `models: tuple[Model, ...]`: Sunulan modeller.
-  - `default_model: str | None`: Önerilen varsayılan model ID'si.
-  - `chat_models -> tuple[Model, ...]`: Sohbette seçilebilir modeller.
-  - `chat_model(model_id: str | None) -> Model | None`: ID ile model arama.
-  - `effort(model_id: str, preferred: str = "medium") -> str | None`: Desteklenen eforu bulur.
+  - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
+  - `models: tuple[Model, ...]`: Kullanılabilir model listesi.
+  - `default_model: str | None`: Sağlayıcının varsayılan model kimliği.
+  - `chat_models -> tuple[Model, ...]`: Kullanıcı sohbeti için seçilebilir modeller.
+  - `chat_model(model_id: str | None) -> Model | None`: Kimliğe göre model bulur.
+  - `default_chat_model -> Model | None`: Varsayılan sohbet modelini çözer.
+  - `effort(model_id: str, preferred: str = "medium") -> str | None`: Uyumlu efor seviyesini çözer.
+  - `from_dict(value: dict) -> ModelCatalog`: Sözlükten katalog nesnesine dönüştürür.
 - **`Model`**:
-  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`.
+  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`, `chat_title: str | None`.
+- **`Choice`**:
+  - `id: str`, `title: str`.
 - **`Conversation`**:
   - `origin: Origin`: `(provider_id, account_id, remote_id)`.
   - `title: str`: Sohbet başlığı.
-  - `messages: tuple[Message, ...]`: Mesajlar dizisi.
-  - `project_id: str | None`: Bağlı proje ID'si.
+  - `messages: tuple[Message, ...]`: Sohbet turları dizisi.
+  - `project_id: str | None`: Bağlı olduğu proje kimliği.
 - **`Message`**:
-  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `actions: tuple[str, ...]`.
+  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `channel: str | None`, `actions: tuple[str, ...]`.
 - **`Content`**:
   - `kind: str` (`"text"`, `"resource"`), `text: str | None`, `resource: Resource | None`.
+- **`Resource`**:
+  - `id: str`, `name: str`, `media_type: str | None`, `remote_url: str | None`.
 - **`Project`**:
   - `origin: Origin`, `name: str`, `instructions: str | None`, `resources: tuple[Resource, ...]`.
+- **`ProjectOptions`**:
+  - `fields: tuple[str, ...]`, `visibility: tuple[Choice, ...]`, `memory: tuple[Choice, ...]`, `sources: tuple[dict, ...]`, `remove_sources: bool`, `source_error: str | None`.
+- **`Origin`**:
+  - `provider_id: str`, `account_id: str`, `remote_id: str`.
 - **`Page[T]`**:
   - `items: tuple[T, ...]`, `next_cursor: str | None`.
+- **`SessionStatus`**:
+  - `state: SessionState`: `UNKNOWN`, `LOGIN_REQUIRED`, `AUTHENTICATED`.
+  - `saved_snapshot: bool`, `reason: str | None`.
+- **`Feature`**:
+  - `capability: Capability`, `state: FeatureState`, `reason: str | None`.
+- **`ProviderDescription`**:
+  - `id: str`, `features: tuple[Feature, ...]`.
+  - `feature(capability: Capability) -> Feature`: Belirli bir yeteneğin durumunu sorgular.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -353,37 +388,45 @@ Dört sağlayıcı adaptörünün de uyguladığı ortak protokol.
 `providers.attachments` & `providers.files`
 
 #### `AttachmentPolicy`
-Sağlayıcıların dosya yükleme sınırlarını yönetir:
-- `max_files: int`: İzin verilen azami dosya adedi.
-- `max_bytes: int`: Dosya başına azami bayt.
-- `max_image_bytes: int | None`: Resim boyutu üst sınırı.
-- `max_video_bytes: int | None`: Video boyutu üst sınırı.
-- `allowed_extensions: tuple[str, ...]`: İzin verilen dosya uzantıları.
+Sağlayıcı yükleme sınırlarını tanımlar:
+- `max_files: int`: İzin verilen en fazla dosya adedi.
+- `max_bytes: int`: Dosya başına en yüksek bayt boyutu.
+- `max_image_bytes: int | None`: Görseller için üst boyut sınırı.
+- `max_spreadsheet_bytes: int | None`: Tablolar için üst boyut sınırı.
+- `max_video_bytes: int | None`: Videolar için üst boyut sınırı.
+- `max_total_bytes: int | None`: İstem başına toplam yükleme sınırı.
+- `allowed_extensions: tuple[str, ...]`: İzin verilen dosya uzantıları beyaz listesi.
 - `max_files_scope: str`: Kota kapsamı (`"prompt"` veya `"conversation"`).
+- `source: str`: İnsan tarafından okunabilir kaynak açıklaması.
+- `as_dict() -> dict`: Politikayı sözlük olarak serileştirir.
 
 #### Hazır Sabitler
-- **`CHATGPT_ATTACHMENTS`**: Dosya başı 512 MiB, resim için 20 MiB, tablo için 50 MiB, istek başı 10 dosya.
-- **`GEMINI_ATTACHMENTS`**: Dosya başı 100 MiB (video için 2 GiB), istek başı 10 dosya.
-- **`CLAUDE_ATTACHMENTS`**: Dosya başı 30 MiB, sohbet başı en fazla 20 dosya, katı uzantı beyaz listesi.
-- **`GROK_ATTACHMENTS`**: Dosya başı 3 MiB, istek başı toplam 10 MiB, istek başı 10 dosya.
+- **`CHATGPT_ATTACHMENTS`**: Dosya başına 512 MiB, görseller için 20 MiB, tablolar için 50 MiB, istem başına 10 dosya.
+- **`GEMINI_ATTACHMENTS`**: Dosya başına 100 MiB (videolar için 2 GiB), istem başına 10 dosya.
+- **`CLAUDE_ATTACHMENTS`**: Dosya başına 30 MiB, sohbet başına en fazla 20 dosya, katı uzantı beyaz listesi.
+- **`GROK_ATTACHMENTS`**: Dosya başına 3 MiB, istem başına toplam 10 MiB, istem başına 10 dosya.
 
 #### `DownloadSource`
-`resolve_download()` tarafından döndürülen indirme tanımlayıcısı:
+`resolve_download()` tarafından döndürülen tanımlayıcı:
 - `url: str`: İndirme adresi.
-- `filename: str | None`: Dosya adı önerisi.
-- `force_download: bool`: Zorunlu indirme bayrağı.
-- `headers: dict[str, str]`: Geçici yetkilendirilmiş istek başlıkları.
-- `client_factory: Callable | None`: HTTP taşıma istemcisi fabrikası.
+- `filename: str | None`: Önerilen yerel dosya adı.
+- `force_download: bool`: İndirmenin zorlanıp zorlanmayacağı bayrağı.
+- `headers: dict[str, str]`: Oturuma özgü yetkilendirme başlıkları.
+- `client_factory: Callable | None`: HTTP iletim fabrikası.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+#### `NativeDownloadClient`
+`curl_cffi` üzerinden Chrome taklidi ile bayt akışı sağlayan bağlam yöneticisi:
+- `stream(method, url, *, headers, resolved_address=None)`: Yönlendirmeleri engelleyerek etkin HTTP yanıtı sunan bağlam yöneticisi.
+
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
-### 4.7. Oturumlar ve Atomik Kimlik Depolama: `CredentialStore`
+### 4.7. Oturumlar, Kimlik Depolama ve Geçmiş Senkronizasyonu
 
-`providers.session`
+`providers.session` & `providers.history`
 
-Oturum verileri iş parçacığı kilitleri ve geçici dosya `replace` mekanizması ile `0o600` yetkileriyle atomik olarak kaydedilir.
+Oturum kimlik bilgileri, iş parçacığı kilitleri ve kısıtlı `0o600` dosya izinlerine sahip geçici dosyalar kullanılarak atomik biçimde diske yazılır.
 
 #### `CredentialStore` Protokolü
 ```python
@@ -395,12 +438,56 @@ class CredentialStore(Protocol):
 ```
 
 #### Oturum Yardımcıları
-- **`read_session(path: str | Path | CredentialStore) -> dict`**: Oturumu yükler; dosya bozuksa `AccountPaused` fırlatır.
-- **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: `0o600` yetkisiyle atomik yazar.
-- **`session_exists(source: str | Path | CredentialStore) -> bool`**: Oturumun varlığını denetler.
-- **`delete_session(source: str | Path | CredentialStore) -> None`**: Oturumu güvenle siler.
+- **`read_session(path: str | Path | CredentialStore) -> dict`**: Oturumu yükler; eksik veya bozuk kimlik verilerinde `AccountPaused` fırlatır.
+- **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: Oturumu `0o600` izinleriyle atomik olarak kaydeder.
+- **`session_exists(source: str | Path | CredentialStore) -> bool`**: Kimlik verilerinin mevcut olup olmadığını döner.
+- **`delete_session(source: str | Path | CredentialStore) -> None`**: Oturum bilgilerini güvenli bir şekilde siler.
+- **`cookie_header(values: dict, names: set[str]) -> str`**: Çerez sözlüğünden HTTP Cookie başlığı oluşturur.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+#### Beklenen Oturum Dosyası Biçimleri
+```json
+// ChatGPT (~/.config/siopechat/chatgpt-session.json)
+{
+  "cookies": {
+    "__Secure-next-auth.session-token": "eyJhbGciOi...",
+    "oai-did": "12345678-..."
+  }
+}
+
+// Gemini (~/.config/siopechat/gemini-session.json)
+{
+  "cookies": {
+    "__Secure-1PSID": "g.a000...",
+    "__Secure-1PSIDTS": "sidts-...",
+    "SID": "..."
+  }
+}
+
+// Claude (~/.config/siopechat/claude-session.json)
+{
+  "cookies": {
+    "sessionKey": "sk-ant-sid01-...",
+    "lastActiveOrg": "12345678-..."
+  }
+}
+
+// Grok (~/.config/siopechat/grok-session.json)
+{
+  "cookies": {
+    "sso": "...",
+    "sso-rw": "..."
+  }
+}
+```
+
+#### Geçmiş Senkronizasyonu: `merge_conversation`
+`providers.history.merge_conversation(remote: dict, local: dict) -> dict`, yerel bekleyen turları `difflib.SequenceMatcher` kullanarak doğrulanmış sunucu geçmişiyle güvenle hizalar:
+- Önceki sağlayıcı geçmişini dokunulmadan korur.
+- Geçici yerel kimlikleri sunucunun onayladığı kalıcı kimliklerle değiştirir.
+- Yerel doğrulanmamış düşünme süreçlerini ve kaynak eklerini muhafaza eder.
+- Silinmiş veya düzenlenmiş dalları asla yeniden diriltmez.
+
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -408,27 +495,44 @@ class CredentialStore(Protocol):
 
 `providers.profiles` & `providers.cdp`
 
-Parola girmeden, sistemdeki varsayılan tarayıcı profilinden canlı oturum çerezlerini okur.
+Şifre girmeye gerek kalmadan, doğrudan varsayılan tarayıcı profillerindeki etkin çerezleri içe aktararak oturum açmayı sağlar.
 
 #### Profil Fonksiyonları (`profiles.py`)
-- **`default_profile() -> BrowserProfile | None`**: Varsayılan tarayıcıyı ve çerez dosyasını bulur (Chrome, Brave, Edge, Firefox, Safari).
-- **`import_cookies(provider: str) -> dict`**: `"chatgpt"`, `"gemini"`, `"claude"` veya `"grok"` için çözülmüş çerezleri döner.
+- **`default_profile() -> BrowserProfile | None`**: Varsayılan tarayıcı çerez dizinini tespit eder (Chrome, Brave, Edge, Firefox, Safari).
+- **`import_cookies(provider: str) -> tuple[str, dict]`**: `"chatgpt"`, `"gemini"`, `"claude"` veya `"grok"` çerezlerini ayıklar ve çözer. `(tarayici_ailesi, cerezler_sozlugu)` döndürür.
 
 #### Chrome DevTools Protocol (`cdp.py`)
-- **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Hata ayıklama portunun açık olup olmadığını kontrol eder.
-- **`open_provider_page(cdp_url: str, provider_url: str) -> None`**: Tarayıcı sekmesinde adresi açar.
-- **`read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]`**: Sayfaya ait canlı çerezleri döker.
-- **`capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]`**: ChatGPT erişim jetonunu ve tarayıcı başlıklarını yakalar.
+- **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Uzaktan hata ayıklama portunun açık olup olmadığını test eder.
+- **`open_provider_page(cdp_url: str, provider_url: str) -> None`**: Tarayıcı sekmesinde sağlayıcı adresini açar.
+- **`read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]`**: CDP aracılığıyla etkin çerezleri okur.
+- **`capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]`**: ChatGPT erişim belirtecini ve istek başlıklarını yakalar.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
-### 4.9. Hata Yönetimi ve Hata Kodları: `ProviderError`
+### 4.9. Telemetri ve Gönderim Zamanlama Profillemesi: `timing`
+
+`providers.timing`
+
+İletim aşamaları boyunca içerikten bağımsız, isteğe bağlı performans takibi sağlar.
+
+- **`use_send_timing(timing: SendTiming | None)`**: Zamanlama izleyicisini geçerli `asyncio` bağlamına bağlayan bağlam yöneticisi.
+- **`current_send_timing() -> SendTiming | None`**: Etkin zamanlama izleyicisini döndürür.
+- **`record_send_timing(name: str, elapsed_ns: int) -> None`**: Belirli bir aşamanın süresini nanosaniye cinsinden kaydeder.
+- **`collect_send_timing(timing: SendTiming | None) -> None`**: Örneği dairesel bellek arabelleğine ekler (en fazla 256 örnek).
+- **`send_timing_report(*, clear: bool = True) -> str`**: Her aşama için medyan ve p95 milisaniye değerlerini içeren biçimlendirilmiş metin raporu döner.
+- **Ortam Değişkeni:** Profil kancalarını etkinleştirmek için `SIOPECHAT_SEND_TIMINGS=1` değerini tanımlayın.
+
+[↑ İçindekilere Dön](#icindekiler)
+
+---
+
+### 4.10. Hata Yönetimi ve Hata Kodları: `ProviderError`
 
 `providers.errors`
 
-Tüm istisnalar `ProviderError` taban sınıfından türer.
+Tüm özel istisnalar `ProviderError` temel sınıfından türetilmiştir.
 
 ```mermaid
 flowchart TD
@@ -448,14 +552,14 @@ flowchart TD
 
 | İstisna | `code` Değeri | Ek Alanlar | Semantik Anlamı |
 | :--- | :--- | :--- | :--- |
-| **`ProviderError`** | `"provider_error"` | `message_submitted: bool \| None` | Temel hata. `message_submitted=False` ise mesajın kesinlikle sunucuya gitmediğini garanti eder. `None` ise sınır belirsizdir (otomatik tekrar denenmemelidir). |
-| **`FeatureUnavailable`** | `"feature_unavailable"` | `capability: Capability`<br>`reason: str` | İstenen işlem sağlayıcı veya hesap paketi tarafından desteklenmiyor. |
-| **`RateLimited`** | `"rate_limited"` | `retry_after: float \| None` | Hız sınırı aşıldı. Varsa bekleme süresini saniye cinsinden bildirir. |
-| **`AccountPaused`** | `"account_paused"` | - | Oturum süresi doldu veya tarayıcıda doğrulama/kullanıcı onayı gerekiyor. |
-| **`CompatibilityError`** | `"capability_changed"` | `capability: Capability` | Sağlayıcının web sözleşmesi değişmiş. |
-| **`RemoteNotFound`** | `"remote_not_found"` | - | Hedef sohbet, proje veya kaynak sunucuda bulunamadı. |
+| **`ProviderError`** | `"provider_error"` | `message_submitted: bool \| None` | Temel sınıf. `message_submitted=False` istemin sunucuya asla ulaşmadığını garanti eder. `None` belirsiz sınır durumunu gösterir (otomatik yeniden denenmemelidir). |
+| **`FeatureUnavailable`** | `"feature_unavailable"` | `capability: Capability`<br>`reason: str` | İstenen işlem bu sağlayıcı veya hesap seviyesi tarafından desteklenmiyor. |
+| **`RateLimited`** | `"rate_limited"` | `retry_after: float \| None` | Hesap istek limiti aşıldı. Sunucu bildirmişse `retry_after` bekleme süresini saniye cinsinden içerir. |
+| **`AccountPaused`** | `"account_paused"` | - | Oturum süresi doldu veya doğrulama müdahalesi gerekiyor. |
+| **`CompatibilityError`** | `"capability_changed"` | `capability: Capability` | Uzak web protokolü beklenmedik şekilde değişti. |
+| **`RemoteNotFound`** | `"remote_not_found"` | - | Hedef sohbet, proje veya kaynak sunucuda mevcut değil. |
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
@@ -463,7 +567,7 @@ flowchart TD
 
 ### 5.1. Örnek 1: Temel Jeton Akışı
 
-Claude web oturumuna bağlanıp gelen jetonları terminale yazdırır.
+Claude üzerinde bir istem çalıştırır ve dönen yanıt jetonlarını gerçek zamanlı olarak standart çıktıya yazdırır.
 
 ```python
 import asyncio
@@ -483,7 +587,7 @@ async def main():
             provider_id="claude",
             account_id="personal",
             chat_id="draft-001",
-            prompt="Python 3.13 serbest iş parçacıklı (free-threaded) yapısını iki kısa cümlede açıkla.",
+            prompt="Explain Python 3.13 free-threaded execution in two concise sentences.",
         )
 
         async for event in client.stream(request):
@@ -497,13 +601,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.2. Örnek 2: Dinamik Model Keşfi, Düşünme Eforu ve Çok Turlu Sohbet
 
-Hesaba açık modelleri tarar, eforu belirler, ilk turda `ConversationBound` ile atanan ID'yi yakalayarak 2. turda sohbeti kesintisiz sürdürür.
+Canlı model kataloğunu inceler, yüksek akıl yürütme eforu seçer, ilk turda `ConversationBound` yakalayarak uzak sohbet kimliğini alır ve ikinci turda diyaloğu sürdürür.
 
 ```python
 import asyncio
@@ -537,7 +641,7 @@ async def main():
             provider_id="chatgpt",
             account_id="work",
             chat_id="turn-1",
-            prompt="Fibonacci sayıları için O(log n) matris üs alma algoritmasını Python'da yaz.",
+            prompt="Write an O(log n) matrix exponentiation algorithm for Fibonacci numbers in Python.",
             model=target_model.id,
             effort=effort,
         )
@@ -551,9 +655,9 @@ async def main():
                 else:
                     print(event.text, end="", flush=True)
             elif isinstance(event, ReplaceText):
-                print(f"\n[Revize Özet]: {event.text}\n")
+                print(f"\n[Güncellenen Düşünce]: {event.text}\n")
             elif isinstance(event, MessageMetadata):
-                print(f"\nAsistan Mesaj ID: {event.message_id}")
+                print(f"\nAsistan Mesaj Kimliği: {event.message_id}")
 
         print("\n--- 2. TUR ---")
         req2 = SendRequest(
@@ -561,7 +665,7 @@ async def main():
             account_id="work",
             chat_id="turn-2",
             conversation_id=remote_conv_id,
-            prompt="Şimdi bu koda eksiksiz tip ipuçları (type hints) ve docstring ekle.",
+            prompt="Now add complete type hints and docstrings to the matrix code.",
             model=target_model.id,
         )
 
@@ -574,13 +678,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.3. Örnek 3: Dosya Yükleme ve Ek Analizi
 
-Yerel dosyayı `AttachmentPolicy` sınırlarına göre denetler, Gemini sunucusuna yükler ve ek üzerinden analiz yaptırır.
+Yerel bir dosyayı `AttachmentPolicy` kurallarına göre doğrular, Gemini depolama alanına yükler ve analiz istemi yürütür.
 
 ```python
 import asyncio
@@ -589,7 +693,7 @@ from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 
 
 async def main():
-    report_file = Path("./rapor.pdf")
+    report_file = Path("./report.pdf")
     if not report_file.exists():
         report_file.write_text("Sistem Mimarisi Raporu: v2.0 geçiş planı onaylandı.")
 
@@ -613,7 +717,7 @@ async def main():
             provider_id="gemini",
             account_id="analyst",
             chat_id="doc-chat-1",
-            prompt="Bu rapordaki temel mimari kararları maddeler hâlinde özetle.",
+            prompt="Summarize the key architectural decisions from this report.",
             attachments=(upload_payload,),
         )
 
@@ -626,13 +730,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.4. Örnek 4: Çoklu Sağlayıcı Eşzamanlı Karşılaştırma CLI
 
-Tek bir `ProviderClient` altında ChatGPT, Claude, Gemini ve Grok'a paralel olarak aynı soruyu sorup cevapları karşılaştırır.
+Tek bir `ProviderClient` örneği içinde ChatGPT, Claude, Gemini ve Grok oturumlarına aynı anda paralel sorgu gönderir.
 
 ```python
 import asyncio
@@ -658,7 +762,7 @@ async def query_provider(client, provider_id, cred_path, prompt):
 
 
 async def main():
-    prompt = "Kuantum Dolanıklığı (Quantum Entanglement) ilkesini tek ve net bir paragrafta açıkla."
+    prompt = "Explain the principle of Quantum Entanglement in a single concise paragraph."
     configs = [
         ("chatgpt", "~/.config/siopechat/chatgpt-session.json"),
         ("claude", "~/.config/siopechat/claude-session.json"),
@@ -682,13 +786,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.5. Örnek 5: Proje ve Çalışma Alanı Kaynak Yönetimi
 
-Proje oluşturur, sistem talimatı tanımlar, metin kaynağı yükler ve proje bağlamında sohbet yürütür.
+Yeni bir proje açar, sistem talimatlarını tanımlar, bir metin kaynağı ekler ve bu proje kapsamına bağlı bir sohbet yürütür.
 
 ```python
 import asyncio
@@ -705,16 +809,16 @@ async def main():
         await account.authenticate()
 
         project = await account.create_project(
-            name="WebAI Provider Ar-Ge",
-            instructions="Sen kıdemli bir sistem mühendisisin. Tüm kodlar strictly typed olmalı.",
+            name="WebAI Provider R&D",
+            instructions="You are a principal systems engineer. All code must be strictly typed.",
         )
         print(f"Oluşturulan Proje: {project.name} (Uzak ID: {project.origin.remote_id})")
 
         project = await account.add_project_resource(
             project_id=project.origin.remote_id,
             kind="text",
-            name="kurallar.txt",
-            text="Kural 1: Saf Python sentinel yürütmesi. Kural 2: Ayrık bağlantı havuzları.",
+            name="guidelines.txt",
+            text="Rule 1: Pure Python sentinel execution. Rule 2: Dedicated transport pools.",
         )
         print(f"Kaynak eklendi. Toplam kaynak: {len(project.resources)}")
 
@@ -723,7 +827,7 @@ async def main():
             account_id="lead",
             chat_id="proj-chat-1",
             project_id=project.origin.remote_id,
-            prompt="Temel mimari kurallarımız nelerdir?",
+            prompt="What are our core architectural guidelines?",
         )
 
         async for event in client.stream(req):
@@ -735,13 +839,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.6. Örnek 6: Mesaj Düzenleme, Yeniden Deneme ve Sohbet Dallandırma
 
-Cevabı yeniden üretme, geçmiş mesajı düzenleme ve mesajdan yeni bir dal türeterek devam etme senaryoları.
+Bir asistan yanıtını yeniden denemeyi, önceki bir istemi düzenlemeyi ve belirli bir turdan yeni bir sohbet dalı türetmeyi gösterir.
 
 ```python
 import asyncio
@@ -767,7 +871,7 @@ async def main():
         conv = await account.get_chat("remote-conv-123")
         last_asst_msg = next(m for m in reversed(conv.messages) if m.role == "assistant")
 
-        # 1. Asistan cevabını yeniden dene (RETRY)
+        # 1. Asistan yanıtını yeniden dene
         retry_req = SendRequest(
             provider_id="chatgpt",
             account_id="dev",
@@ -781,7 +885,7 @@ async def main():
             if isinstance(event, TextDelta):
                 print(event.text, end="", flush=True)
 
-        # 2. Mesajdan yeni dal türet (Branching)
+        # 2. Belirli bir turdan yeni dal oluştur
         new_branch = await account.branch_chat(
             conversation_id=conv.origin.remote_id,
             message_id=last_asst_msg.id,
@@ -795,7 +899,7 @@ async def main():
             provider_id="chatgpt",
             account_id="dev",
             chat_id="branch-first-turn",
-            prompt="Yeni daldan devam ediyoruz: alternatif çözümü uygula.",
+            prompt="Continuing on new branch: implement the alternative algorithm.",
             branch=branch_ctx,
         )
         async for event in client.stream(branch_req):
@@ -809,13 +913,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ### 5.7. Örnek 7: Özel Şifrelenmiş Kimlik Depolama
 
-Düz JSON dosyaları yerine `CredentialStore` arayüzünü uygulayarak çerezleri şifreli bellekte veya kasada saklama.
+Oturum çerezlerini düz metin JSON dosyaları yerine şifrelenmiş bellekte veya güvenli sistem anahtarlığında saklamak için `CredentialStore` uygular.
 
 ```python
 import asyncio
@@ -832,7 +936,7 @@ class EncryptedMemoryStore(CredentialStore):
 
     def save(self, value: dict) -> None:
         self._blob = json.dumps(value).encode("utf-8")
-        print("[Store] Oturum güvenle belleğe mühürlendi.")
+        print("[Store] Oturum verisi bellekte güvenle mühürlendi.")
 
     def exists(self) -> bool:
         return bool(self._blob and self._blob != b"{}")
@@ -858,24 +962,24 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 6. Çalışma Zamanı Mimarisi ve Güvenlik Garantileri
 
-1. **Sıfır Parola Saklama:** Kütüphane kullanıcı parolalarını asla istemez, iletmez veya saklamaz. Yalnızca oturum çerezleri ve kısa ömürlü taşıma jetonlarıyla çalışır.
-2. **Kimlik Bilgisi Sızıntı Koruması:** `repr()` çıktıları, istisna metinleri ve günlükler asla ham oturum belirteçlerini veya gizli anahtarları içermez.
-3. **SSRF ve Yönlendirme Kalkanı:** İndirme işlemleri keyfî HTTP yönlendirmelerini (`follow_redirects=False`) reddeder; yalnızca doğrulanmış sağlayıcı alan adlarını kabul eder.
-4. **İdempotentlik Güvencesi:** İdempotent olmayan `POST send` çağrıları ağ kopması durumunda arka planda otomatik olarak tekrarlanmaz.
+1. **Sıfır Parola Depolama:** Kütüphane asla hesap şifrelerini sormaz, iletmez veya saklamaz. Tüm işlemler yalnızca oturum çerezleri ve kısa ömürlü iletim belirteçleri ile yürütülür.
+2. **Kimlik Bilgisi Arındırma:** İstisna metinleri, `repr()` çıktıları ve log kayıtları asla ham oturum belirteçlerini, çerezleri veya meydan okuma sırlarını içermez.
+3. **SSRF ve Yönlendirme Koruması:** İkili dosya indirmeleri rastgele HTTP yönlendirmelerini kesinlikle reddeder (`follow_redirects=False`) ve yalnızca doğrulanmış sağlayıcı kök alan adlarına güvenir.
+4. **Idempotency Güvenceleri:** Idempotent olmayan `POST send` istekleri, ağ kesintisi durumunda asla otomatik olarak tekrarlanmaz; böylece mükerrer istem turları önlenir.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 7. Geliştirme, Kalite Kontrol ve Testler
 
-Kod tabanı katı kalite ve test standartlarına tabidir:
+Kod tabanı katı kod kalitesi standartlarını ve birim test doğrulamasını şart koşar:
 
 ```sh
 # Lint ve biçimlendirme denetimleri
@@ -890,33 +994,33 @@ python -m build --sdist --wheel
 python -m twine check dist/*
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 8. SiopeChat ile Entegrasyon
 
-SiopeChat, `webai-provider` kütüphanesini harici bir PyPI çalışma zamanı bağımlılığı olarak kullanır:
-- SiopeChat tarafında Git alt modülü gerekmez.
-- Sürüm kilidi doğrudan `pyproject.toml` ve `uv.lock` üzerinden yürütülür.
+SiopeChat, `webai-provider` kütüphanesini harici bir PyPI çalışma zamanı bağımlılığı olarak kurar:
+- SiopeChat Git submodule yapısı gerektirmez.
+- Bağımlılık sürümleri `pyproject.toml` ve `uv.lock` içinde kilitlenir.
 
-Sağlayıcı üzerinde yerel değişiklikleri test etmek için:
+Yerel geliştirmeleri SiopeChat üzerinde test etmek için:
 ```sh
 git pull --ff-only
 python -m pip install --upgrade .
 ```
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 ---
 
 ## 9. Sürüm Geçmişi ve Lisans
 
 - **Mevcut Sürüm:** `v1.1-beta` (`1.1.0b0`)
-- **Son Yenilikler:** Grok web oturumu desteği eklendi (model keşfi, SSE akışı, düşünme özetleri, çalışma alanı kaynakları ve arama alıntıları). Detaylar için [CHANGELOG.md](CHANGELOG.md) dosyasına bakınız.
-- **Lisans:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). Telif hakkı bildirimi için [COPYRIGHT](COPYRIGHT) dosyasına bakınız.
+- **Son Güncellemeler:** Grok web oturumu desteği eklendi (model keşfi, SSE akışı, kullanıcı mesajı düzenleme, düşünme özetleri, çalışma alanı kaynakları ve web kaynak alıntıları). Ayrıntılar için [CHANGELOG.md](CHANGELOG.md) dosyasına bakın.
+- **Lisans:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). Bildirimler için [COPYRIGHT](COPYRIGHT) dosyasına bakın.
 
-[↑ İçindekilere Dön](#i̇çindekiler)
+[↑ İçindekilere Dön](#icindekiler)
 
 [version-shield]: https://img.shields.io/badge/s%C3%BCr%C3%BCm-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white

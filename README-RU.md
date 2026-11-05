@@ -8,25 +8,27 @@
 
 ### Высокопроизводительный Python-клиент на основе контрактов для веб-сессий ChatGPT, Gemini, Claude и Grok.
 
-`webai-provider` подключает ваши Python-приложения напрямую к веб-сессиям ведущих ИИ-сервисов — ChatGPT, Gemini, Claude и Grok — без необходимости использования платных API-ключей разработчика, баланса на кредитных картах или сторонних прокси-серверов. Библиотека работает полностью на чистом Python, предоставляя многошаговый диалог, потоковую передачу токенов (streaming), динамическое обнаружение моделей и управление уровнем рассуждений (reasoning effort), загрузку вложений, управление проектами, редактирование сообщений и ветвление диалогов (branching) за единым и предсказуемым асинхронным интерфейсом.
+`webai-provider` подключает ваши Python-приложения напрямую к веб-сессиям ведущих ИИ-провайдеров — ChatGPT, Gemini, Claude и Grok — без необходимости использования ключей API разработчика, предоплаченных кредитных балансов или сторонних прокси-серверов. Библиотека работает на чистом Python без headless-браузеров (таких как Playwright или Selenium), предоставляя унифицированный асинхронный интерфейс для многошагового диалога, потоковой передачи токенов в реальном времени, динамического обнаружения моделей и уровней рассуждений, вложений файлов, управления проектами и рабочими пространствами, редактирования сообщений и ветвления переписки.
 
 ---
 
+<a id="oglavlenie"></a>
 ## Оглавление
 
 - [1. Обзор и ключевые особенности](#1-обзор-и-ключевые-особенности)
 - [2. Установка и требования](#2-установка-и-требования)
 - [3. Поддерживаемые провайдеры и матрица возможностей](#3-поддерживаемые-провайдеры-и-матрица-возможностей)
 - [4. Полный справочник API (От общего к частному)](#4-полный-справочник-api-от-общего-к-частному)
-  - [4.1. Клиент и жизненный цикл: `ProviderClient`](#41-клиент-и-жизненный-цикл-providerclient)
+  - [4.1. Высокоуровневый координатор: `ProviderClient`](#41-высокоуровневый-координатор-providerclient)
   - [4.2. Создание провайдеров: `create_provider` и `ProviderRegistry`](#42-создание-провайдеров-create_provider-и-providerregistry)
   - [4.3. Базовый контракт: протокол `Backend`](#43-базовый-контракт-протокол-backend)
   - [4.4. Запросы и потоковые события: `SendRequest` и `ProviderEvent`](#44-запросы-и-потоковые-события-sendrequest-и-providerevent)
   - [4.5. Модели предметной области: `ModelCatalog`, `Conversation`, `Project` и др.](#45-модели-предметной-области-modelcatalog-conversation-project-и-др)
   - [4.6. Политики вложений и загрузка файлов: `AttachmentPolicy` и `DownloadSource`](#46-политики-вложений-и-загрузка-файлов-attachmentpolicy-и-downloadsource)
-  - [4.7. Сессии и атомарное хранение учетных данных: `CredentialStore`](#47-сессии-и-атомарное-хранение-учетных-данных-credentialstore)
+  - [4.7. Сессии, хранение учетных данных и синхронизация истории](#47-сессии-хранение-учетных-данных-и-синхронизация-истории)
   - [4.8. Браузерные профили и инструменты CDP: `profiles` и `cdp`](#48-браузерные-профили-и-инструменты-cdp-profiles-и-cdp)
-  - [4.9. Обработка ошибок и коды состояния: `ProviderError`](#49-обработка-ошибок-и-коды-состояния-providererror)
+  - [4.9. Телеметрия и профилирование задержек отправки: `timing`](#49-телеметрия-и-профилирование-задержек-отправки-timing)
+  - [4.10. Обработка ошибок и коды состояния: `ProviderError`](#410-обработка-ошибок-и-коды-состояния-providererror)
 - [5. Практические примеры (от простого к сложному)](#5-практические-примеры-от-простого-к-сложному)
   - [5.1. Пример 1: Базовый потоковый вывод токенов](#51-пример-1-базовый-потоковый-вывод-токенов)
   - [5.2. Пример 2: Динамическое обнаружение моделей, уровень рассуждений и многошаговый диалог](#52-пример-2-динамическое-обнаружение-моделей-уровень-рассуждений-и-многошаговый-диалог)
@@ -44,21 +46,21 @@
 
 ## 1. Обзор и ключевые особенности
 
-Современные веб-интерфейсы искусственного интеллекта работают на разнообразных и недокументированных транспортных протоколах: мультиплексирование HTTP/2, Server-Sent Events (SSE), внутренний формат Google `batchexecute` RPC и кастомные антибот-проверки. `webai-provider` берет на себя всю сложность работы с этими протоколами, гарантируя:
+Современные веб-платформы искусственного интеллекта функционируют на базе различных проприетарных и недокументированных транспортных протоколов: от мультиплексирования HTTP/2 и потоков Server-Sent Events (SSE) до внутреннего RPC-формата Google `batchexecute` и специализированных антибот-механизмов. `webai-provider` абстрагирует эти различия в строгие типизированные контракты Python и гарантирует:
 
-- **Отсутствие зависимостей от Node.js или внешних JS-движков:** Генерация отпечатков Sentinel ChatGPT, вычисление Proof of Work (PoW) и поддерживаемые проверки Turnstile реализованы на чистом Python (`chatgpt/sentinel/`).
-- **Ленивая (Lazy) инициализация аккаунтов:** Импорт библиотеки или конфигурация учетных записей не совершают сетевых запросов и не создают фоновых процессов до фактического старта операции.
-- **Строгая семантика отмены стриминга:** Прерывание цикла `async for` или отмена асинхронной задачи мгновенно и безопасно закрывает сетевой сокет. Неопределенные обрывы сети при вызовах `POST send` никогда не вызывают автоматических повторов.
-- **Полная изоляция учетных записей:** Каждый аккаунт владеет собственным изолированным пулом соединений, хранилищем cookie и блокировками параллелизма.
-- **Типизированный многоканальный вывод:** Основной текст ответа (`None`), цепочки рассуждений (`analysis`), заменяющие блоки (`ReplaceText`) и источники поиска (`MessageMetadata.sources`) разделены на уровне типов.
+- **Отсутствие зависимостей от Node.js и Headless-браузеров:** Вся среда выполнения ChatGPT Sentinel (снятие цифровых отпечатков, вычисление Proof of Work и поддерживаемая валидация Turnstile) реализована исключительно средствами нативного Python (`chatgpt/sentinel/`).
+- **Ленивая (Lazy) инициализация аккаунтов:** Импорт библиотеки или регистрация аккаунтов не выполняют сетевых запросов и не запускают фоновых процессов. Соединения открываются только в момент фактической отправки операций.
+- **Строгая отмена операций и безопасность соединений:** При прерывании генерации или выходе из цикла `async for` нижележащий сокет транспорта незамедлительно закрывается. Запросы с неоднозначным статусом сбоя (POST) никогда не повторяются автоматически.
+- **Полная изоляция учетных записей:** Каждый аккаунт изолированно управляет собственным хранилищем cookie, пулом HTTP-соединений и блокировками параллелизма. Утечка сессионных данных между аккаунтами исключена.
+- **Типизированный многоканальный вывод:** Разделение видимого ответа ассистента (`None`), скрытых цепочек рассуждений (`analysis`), инкрементальных правок текста (`ReplaceText`) и ссылок на источники цитирования (`MessageMetadata.sources`).
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 2. Установка и требования
 
-Для работы требуется Python версии 3.10 или выше (протестировано на Python 3.10, 3.11, 3.12, 3.13 и 3.14 под Linux, macOS и Windows).
+Требуется Python 3.10 или выше. Регулярно тестируется на Python 3.10, 3.11, 3.12, 3.13 и 3.14 в операционных системах Ubuntu, macOS и Windows.
 
 ```sh
 # Клонирование и стандартная установка
@@ -70,38 +72,38 @@ python -m pip install .
 python -m pip install -e ".[dev]"
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 3. Поддерживаемые провайдеры и матрица возможностей
 
-Возможности описываются перечислением `Capability`. Поскольку доступность уровней рассуждений или загрузки файлов зависит от выбранной модели и тарифного плана аккаунта, живой каталог моделей, возвращаемый методом `await account.models()`, всегда является определяющим.
+Возможности предоставляются через перечисление `Capability`. Поскольку такие параметры, как бюджет рассуждений или допустимые форматы вложений, зависят от конкретной модели и уровня подписки аккаунта, динамический каталог моделей, возвращаемый методом `await account.models()`, всегда является определяющим.
 
-| Возможность (`Capability`) | ChatGPT | Gemini | Claude | Grok | Поведение и примечания |
+| Возможность (`Capability`) | ChatGPT | Gemini | Claude | Grok | Особенности и поведение |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| `CHAT` | ✅ | ✅ | ✅ | ✅ | Асинхронная отправка запросов и стриминг SSE-событий. |
-| `TEMPORARY` | ✅ | ✅ | ✅ | ✅ | Режим инкогнито / временные диалоги (не сохраняются в удаленную историю). |
-| `HISTORY` | ✅ | ✅ | ✅ | ✅ | Постраничное обнаружение чатов и получение истории сообщений. |
-| `RENAME` | ✅ | ✅ | ✅ | ✅ | Обновление заголовка диалога на стороне сервера. |
-| `DELETE` | ✅ | ✅ | ✅ | ✅ | Безвозвратное удаление диалога на сервере. |
-| `AUTH` | ✅ | ✅ | ✅ | ✅ | Проверка валидности сессии и статуса входа. |
-| `ATTACHMENTS` | ✅ | ✅ | ✅ | ✅ | Загрузка документов, изображений, аудио- и видеофайлов к сообщению. |
-| `RESOURCES` | ✅ | ✅ | ✅ | ✅ | Управление документами и текстами, привязанными к проектам. |
-| `PROJECTS` | ✅ | ✅ | ✅ | ✅ | Обнаружение и список проектов (Notebooks для Gemini, Workspaces для Grok). |
+| `CHAT` | ✅ | ✅ | ✅ | ✅ | Асинхронная отправка промптов и потоковая обработка событий SSE. |
+| `TEMPORARY` | ✅ | ✅ | ✅ | ✅ | Приватный (инкогнито) режим (диалоги не сохраняются в истории на сервере). |
+| `HISTORY` | ✅ | ✅ | ✅ | ✅ | Постраничное получение списка диалогов и полной истории реплик. |
+| `RENAME` | ✅ | ✅ | ✅ | ✅ | Обновление заголовков диалогов на сервере. |
+| `DELETE` | ✅ | ✅ | ✅ | ✅ | Безвозвратное удаление диалогов с сервера. |
+| `AUTH` | ✅ | ✅ | ✅ | ✅ | Проверка валидности сессии и статуса авторизации. |
+| `ATTACHMENTS` | ✅ | ✅ | ✅ | ✅ | Загрузка документов, изображений и медиафайлов перед отправкой сообщения. |
+| `RESOURCES` | ✅ | ✅ | ✅ | ✅ | Управление текстовыми ресурсами и файлами, привязанными к проектам. |
+| `PROJECTS` | ✅ | ✅ | ✅ | ✅ | Обнаружение и просмотр проектов (Notebooks в Gemini, Workspaces в Grok). |
 | `PROJECT_CREATE` | ✅ | ✅ | ✅ | ✅ | Создание новых проектов или рабочих пространств. |
-| `PROJECT_UPDATE` | ✅ | ✅ | ✅ | ✅ | Изменение названия, системных инструкций или параметров проекта. |
-| `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Удаление проектов с сервера. |
-| `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Перемещение диалогов в проект и из него (в Gemini Notebooks чат фиксируется при создании). |
-| `MODELS` | ✅ | ✅ | ✅ | ✅ | Динамическое получение моделей, доступных текущему аккаунту. |
-| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Уровень рассуждений / бюджет размышлений (зависит от модели; настраивается через `Model.efforts`). |
-| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Редактирование пользовательского сообщения с генерацией новой ветки. |
-| `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Повторная генерация ответа ассистента (*в Gemini выполняется через редактирование родительского запроса). |
-| `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Создание отдельного диалога от указанного сообщения (в веб-API Claude и Grok ветвление отсутствует). |
+| `PROJECT_UPDATE` | ✅ | ✅ | ✅ | ✅ | Редактирование названия, системных инструкций или параметров проекта. |
+| `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Удаление проектов или рабочих пространств на сервере. |
+| `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Перемещение чатов в проект или из него (в Gemini Notebook чаты жестко фиксированы). |
+| `MODELS` | ✅ | ✅ | ✅ | ✅ | Динамическое обнаружение доступных аккаунту моделей. |
+| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Уровень глубины рассуждений (зависит от модели; настраивается в `Model.efforts`). |
+| `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Редактирование предыдущей реплики пользователя с созданием новой ветки. |
+| `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Перегенерация ответа ассистента (*в Gemini выполняется через редактирование родительского промпта). |
+| `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Ответвление реплики в новый независимый диалог (не поддерживается веб-API Claude и Grok). |
 
-> **Примечание:** Пустой список, возвращенный операцией поиска, означает отсутствие записей на сервере, а не отсутствие поддержки функции. Неподдерживаемые операции явно вызывают исключение `FeatureUnavailable`.
+> **Примечание:** Возврат пустого списка из метода запроса означает лишь отсутствие данных на стороне сервера, а не отсутствие поддержки функции. Неподдерживаемые операции вызывают исключение `FeatureUnavailable`.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -115,12 +117,12 @@ flowchart TD
         CP["create_provider()"]
     end
 
-    subgraph ContractLayer["2. Базовый контракт"]
-        BE["Протокол Backend"]
+    subgraph ContractLayer["2. Контракт бэкенда"]
+        BE["Backend Protocol"]
         OF["OptionalFeatures"]
     end
 
-    subgraph MessagingLayer["3. Сообщения и стриминг"]
+    subgraph MessagingLayer["3. Обмен сообщениями и потоки"]
         SR["SendRequest"]
         PE["ProviderEvent"]
         TD["TextDelta"]
@@ -129,7 +131,7 @@ flowchart TD
         MM["MessageMetadata"]
     end
 
-    subgraph DomainLayer["4. Доменные модели и хранилище"]
+    subgraph DomainLayer["4. Модели данных и хранилище"]
         MC["ModelCatalog & Model"]
         CV["Conversation & Message"]
         PJ["Project & Resource"]
@@ -137,8 +139,8 @@ flowchart TD
         CS["CredentialStore"]
     end
 
-    PC -->|подключает / маршрутизирует| BE
-    CP -->|создает| BE
+    PC -->|маршрутизирует / управляет| BE
+    CP -->|создает экземпляры| BE
     PR -->|регистрирует| BE
     BE -->|исполняет| SR
     BE -->|генерирует| PE
@@ -149,33 +151,35 @@ flowchart TD
 
 ---
 
-### 4.1. Клиент и жизненный цикл: `ProviderClient`
+### 4.1. Высокоуровневый координатор: `ProviderClient`
 
 `providers.client.ProviderClient`
 
-Главный диспетчер, управляющий жизненным циклом бэкендов, параллельными потоками и корректным завершением сессий. Рассчитан на один экземпляр на каждый цикл событий `asyncio`.
+Центральный координатор жизненного цикла для мультипровайдерных и мультиаккаунтных окружений. Рассчитан на запуск в одном экземпляре на событийный цикл `asyncio`.
 
 #### Методы
-- **`__init__() -> None`**  
-  Инициализирует внутренние реестры бэкендов, активных задач стриминга и объектов закрытия.
-- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**  
-  Лениво создает адаптер провайдера с помощью `create_provider` и регистрирует его. Не совершает сетевых вызовов и не запускает браузер.
-- **`add(backend: Backend) -> Backend`**  
-  Напрямую привязывает готовый объект `Backend`. Проверяет непустоту и уникальность пары `(backend.id, backend.account_id)`.
-- **`account(provider_id: str, account_id: str = "default") -> Backend`**  
-  Возвращает зарегистрированный бэкенд. Если не найден, вызывает `KeyError`.
-- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**  
-  Разогревает сетевой транспорт аккаунта в фоновом режиме. Если `for_send=True`, запускает подготовительные процедуры отправки.
-- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**  
-  Направляет запрос к целевому бэкенду, валидирует возможности, регистрирует задачу и возвращает поток типизированных событий. При выходе из цикла или отмене задачи соединение мгновенно закрывается.
-- **`close() -> None`**  
-  Отменяет активные потоки, освобождает сетевые соединения и безопасно закрывает все аккаунты. Метод идемпотентен и безопасен для повторного вызова.
+- **`__init__() -> None`**<br>
+  Инициализирует реестры бэкендов, активные потоковые задачи и защитные барьеры завершения.
+- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**<br>
+  Создает ленивый бэкенд провайдера через `create_provider` и регистрирует его. Не выполняет сетевых вызовов и не создает процессов браузера.
+- **`add(backend: Backend) -> Backend`**<br>
+  Напрямую регистрирует предварительно созданный бэкенд. Гарантирует уникальность и непустоту пары `(backend.id, backend.account_id)`.
+- **`account(provider_id: str, account_id: str = "default") -> Backend`**<br>
+  Возвращает зарегистрированный бэкенд по идентификаторам. Возбуждает `KeyError`, если бэкенд не найден.
+- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**<br>
+  Инициализирует транспортное состояние аккаунта в фоновом режиме. Если `for_send=True`, запускает предварительный прогрев транспорта (например, получение токенов).
+- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**<br>
+  Направляет запрос целевому бэкенду, валидирует возможности, отслеживает исполнение задачи и передает типизированные события. При выходе из цикла или отмене задачи транспортный итератор незамедлительно закрывается.
+- **`close() -> None`**<br>
+  Отменяет все выполняющиеся потоки, освобождает занятые транспортные ресурсы и корректно закрывает все бэкенды. Метод идемпотентен и безопасен при повторных вызовах в случае временных сбоев завершения.
+- **`async with ProviderClient() as client:`**<br>
+  Реализует протоколы `__aenter__` и `__aexit__` для безопасного управления контекстом.
 
 #### Свойства (Properties)
-- **`accounts -> tuple[tuple[str, str], ...]`**  
+- **`accounts -> tuple[tuple[str, str], ...]`**<br>
   Возвращает кортеж всех зарегистрированных пар `(provider_id, account_id)`.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -183,7 +187,7 @@ flowchart TD
 
 `providers.registry.create_provider`
 
-Создает изолированный адаптер провайдера (`Backend`) без зависимости от глобального состояния приложения.
+Создает изолированный экземпляр бэкенда аккаунта без привязки к глобальному состоянию приложения.
 
 ```python
 def create_provider(
@@ -198,21 +202,25 @@ def create_provider(
 ```
 
 #### Параметры
-- **`provider_id`** (`str`): Идентификатор провайдера: `"chatgpt"`, `"gemini"`, `"claude"` или `"grok"`.
-- **`account_id`** (`str`): Локальный строковый ID аккаунта (по умолчанию `"default"`).
-- **`credential_file`** (`str | Path | CredentialStore | None`): Путь к файлу сессии JSON или объект `CredentialStore`. Обязателен, если не передан `session`.
-- **`session`** (`BrowserSession | None`): Готовый объект браузерной сессии (только для ChatGPT).
-- **`profile_directory`** (`str | Path | None`): Каталог профиля браузера для данных ChatGPT Sentinel. По умолчанию каталог `chrome-profile/` рядом с файлом сессии.
+- **`provider_id`** (`str`): Идентификатор целевого провайдера: `"chatgpt"`, `"gemini"`, `"claude"` или `"grok"`.
+- **`account_id`** (`str`): Локальный идентификатор аккаунта (по умолчанию `"default"`).
+- **`credential_file`** (`str | Path | CredentialStore | None`): Путь к файлу сессии JSON или пользовательская реализация `CredentialStore`. Обязателен для всех провайдеров, если не передан `session`.
+- **`session`** (`BrowserSession | None`): Готовый объект `BrowserSession` (только для ChatGPT).
+- **`profile_directory`** (`str | Path | None`): Каталог профиля браузера для хранения данных Sentinel ChatGPT. По умолчанию используется каталог `chrome-profile/` рядом с файлом сессии.
 - **`**options`**: Дополнительные параметры адаптера, например `client_factory`.
 
 #### Класс `ProviderRegistry`
-- **`register(provider: Provider, *, account_factory: Callable | None = None) -> None`**: Регистрирует тип провайдера и фабрику аккаунтов.
-- **`create_account(provider_id: str, account_id: str, **configuration) -> Backend`**: Создает аккаунт из зарегистрированной фабрики.
-- **`set_enabled(provider_id: str, enabled: bool) -> None`**: Глобально включает или отключает провайдер.
-- **`require(provider_id: str, capability: Capability) -> Provider`**: Проверяет наличие возможности и возвращает провайдер.
-- **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Формирует динамический отчет о возможностях.
+- **`register(provider: Provider, *, account_factory: Callable | None = None) -> None`**: Регистрирует прототип провайдера и конструктор аккаунта.
+- **`create_account(provider_id: str, account_id: str, **configuration) -> Backend`**: Создает экземпляр аккаунта через зарегистрированную фабрику.
+- **`set_enabled(provider_id: str, enabled: bool) -> None`**: Включает или выключает прием запросов данным провайдером.
+- **`require(provider_id: str, capability: Capability) -> Provider`**: Проверяет поддержку возможности и возвращает объект провайдера.
+- **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Запрашивает текущее состояние возможностей провайдера.
+- **`mark_unavailable(provider_id: str, capability: Capability) -> None`**: Временно помечает возможность как недоступную.
+- **`restore(provider_id: str, capability: Capability) -> None`**: Восстанавливает ранее отключенную возможность.
+- **`get(provider_id: str) -> Provider`**: Возвращает зарегистрированный прототип провайдера.
+- **`ids() -> tuple[str, ...]`**: Возвращает список всех зарегистрированных идентификаторов провайдеров.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -220,52 +228,55 @@ def create_provider(
 
 `providers.contracts.Backend`
 
-Единый контракт, реализуемый адаптерами всех четырех провайдеров.
+Единый протокол, реализованный всеми четырьмя адаптерами провайдеров.
 
 #### Идентификация и жизненный цикл
 - **`id: str`**: Идентификатор провайдера (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`).
-- **`account_id: str`**: Идентификатор учетной записи.
-- **`capabilities: frozenset[Capability]`**: Набор поддерживаемых возможностей.
-- **`async def prepare() -> None`**: Настраивает транспортное состояние аккаунта.
-- **`async def close() -> None`**: Закрывает пулы соединений и останавливает фоновые потоки.
+- **`account_id: str`**: Идентификатор аккаунта.
+- **`capabilities: frozenset[Capability]`**: Набор возможностей, поддерживаемых адаптером.
+- **`async def prepare() -> None`**: Инициализирует изолированное состояние транспорта аккаунта.
+- **`async def close() -> None`**: Закрывает пулы сетевых соединений и рабочие потоки.
 
 #### Аутентификация и диагностика
-- **`async def authenticate() -> SessionStatus`**: Проверяет и обновляет токены авторизации.
-- **`async def login() -> SessionStatus`**: Запускает интерактивный или профильный вход.
-- **`async def session_status() -> SessionStatus`**: Возвращает кэшированное состояние сессии без сетевых вызовов.
+- **`async def authenticate() -> SessionStatus`**: Проверяет и при необходимости обновляет сессионные cookie/токены.
+- **`async def login() -> SessionStatus`**: Запускает интерактивный или профильный процесс авторизации.
+- **`async def session_status() -> SessionStatus`**: Возвращает текущий кэшированный статус без удаленных запросов.
 - **`async def forget_session() -> SessionStatus`**: Удаляет сохраненные учетные данные и сбрасывает состояние.
-- **`async def describe() -> ProviderDescription`**: Возвращает отчет о доступных возможностях.
+- **`async def describe() -> ProviderDescription`**: Предоставляет информацию о поддерживаемых возможностях.
 
 #### Модели и генерация текста
-- **`async def models(*, force: bool = False) -> ModelCatalog`**: Запрашивает каталог моделей (кэш на 5 минут; принудительно при `force=True`).
-- **`def stream(request: SendRequest) -> AsyncGenerator[ProviderEvent, None]`**: Отправляет запрос и возвращает генератор потоковых событий.
+- **`async def models(*, force: bool = False) -> ModelCatalog`**: Возвращает каталог доступных моделей. Кэшируется на 5 минут, если не указано `force=True`.
+- **`def stream(request: SendRequest) -> AsyncGenerator[ProviderEvent, None]`**: Отправляет запрос и генерирует поток событий.
 
 #### Диалоги и история
-- **`async def list_chats(cursor: str | None = None, limit: int = 28) -> Page[Conversation]`**: Постраничный список диалогов.
-- **`async def get_chat(conversation_id: str) -> Conversation`**: Получение всех сообщений и метаданных диалога.
-- **`async def rename_chat(conversation_id: str, title: str) -> None`**: Переименование диалога.
-- **`async def delete_chat(conversation_id: str) -> None`**: Безвозвратное удаление диалога на сервере.
-- **`async def branch_chat(conversation_id: str, message_id: str) -> Conversation`**: Создание новой ветки от указанного сообщения.
-- **`async def conversation_attachment_count(conversation_id: str) -> int | None`**: Число прикрепленных файлов в диалоге.
+- **`async def list_chats(cursor: str | None = None, limit: int = 28) -> Page[Conversation]`**: Возвращает список диалогов с поддержкой пагинации.
+- **`async def get_chat(conversation_id: str) -> Conversation`**: Загружает полную историю реплик и метаданные диалога.
+- **`async def rename_chat(conversation_id: str, title: str) -> None`**: Переименовывает диалог на сервере.
+- **`async def delete_chat(conversation_id: str) -> None`**: Безвозвратно удаляет диалог с сервера.
+- **`async def branch_chat(conversation_id: str, message_id: str) -> Conversation`**: Создает новую ветку диалога от указанной реплики.
+- **`async def conversation_attachment_count(conversation_id: str) -> int | None`**: Возвращает число загруженных файлов в переписке.
 
 #### Проекты и рабочие пространства
-- **`async def list_projects(cursor: str | None = None) -> Page[Project]`**: Список проектов.
-- **`async def get_project(project_id: str) -> Project`**: Детали проекта и его ресурсы.
-- **`async def list_project_chats(project_id: str, cursor: str | None = None) -> Page[Conversation]`**: Список диалогов проекта.
-- **`async def create_project(name: str, instructions: str = "", *, visibility="private", memory="default") -> Project`**: Создание проекта.
-- **`async def update_project(project: Project) -> Project`**: Обновление названия или инструкций проекта.
-- **`async def delete_project(project_id: str) -> None`**: Удаление проекта.
-- **`async def project_options(project_id: str | None = None) -> ProjectOptions`**: Поддерживаемые параметры проекта.
-- **`async def add_project_resource(project_id: str, kind: str, **values) -> Project`**: Добавление документа или текстового ресурса в проект.
-- **`async def remove_project_resource(project_id: str, resource_id: str) -> Project`**: Удаление ресурса из проекта.
-- **`async def move_chat(conversation_id: str, project_id: str | None) -> None`**: Перемещение диалога в/из проекта.
+- **`async def list_projects(cursor: str | None = None) -> Page[Project]`**: Возвращает список проектов/рабочих пространств.
+- **`async def get_project(project_id: str) -> Project`**: Возвращает подробную информацию о проекте и прикрепленных ресурсах.
+- **`async def list_project_chats(project_id: str, cursor: str | None = None) -> Page[Conversation]`**: Возвращает диалоги, привязанные к проекту.
+- **`async def create_project(name: str, instructions: str = "", *, visibility="private", memory="default") -> Project`**: Создает новый проект.
+- **`async def update_project(project: Project) -> Project`**: Обновляет название или инструкции проекта.
+- **`async def delete_project(project_id: str) -> None`**: Удаляет проект на сервере.
+- **`async def project_options(project_id: str | None = None) -> ProjectOptions`**: Возвращает поддерживаемые поля конфигурации проекта.
+- **`async def add_project_resource(project_id: str, kind: str, **values) -> Project`**: Добавляет документ или текст к проекту.
+- **`async def remove_project_resource(project_id: str, resource_id: str) -> Project`**: Удаляет ресурс из проекта.
+- **`async def move_chat(conversation_id: str, project_id: str | None) -> None`**: Перемещает чат в проект или извлекает из него.
 
 #### Вложения и файлы
-- **`def attachment_policy() -> dict | None`**: Лимиты размера, типов и количества файлов.
-- **`async def upload_file(path: str | Path) -> dict`**: Загрузка файла в облачное хранилище провайдера.
-- **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Получение авторизованного URL и заголовков для скачивания файла.
+- **`def attachment_policy() -> dict | None`**: Возвращает ограничения на размер, количество и форматы файлов.
+- **`async def upload_file(path: str | Path) -> dict`**: Загружает локальный файл в облачное хранилище провайдера.
+- **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Формирует авторизованную ссылку и заголовки для скачивания файла.
 
-[↑ К оглавлению](#оглавление)
+#### Утилита `confirm_deleted`
+- **`async def confirm_deleted(read: Callable, missing: Callable = lambda value: False) -> None`**: Выполняет повторную проверку с экспоненциальной задержкой (`0s`, `0.2s`, `0.5s`, `1s`) для подтверждения удаления без повторной отправки деструктивных запросов.
+
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -277,43 +288,49 @@ def create_provider(
 | Поле | Тип | По умолчанию | Назначение |
 | :--- | :--- | :--- | :--- |
 | **`provider_id`** | `str` | *Обязательно* | Идентификатор провайдера (`"chatgpt"`, `"gemini"`, `"claude"`, `"grok"`). |
-| **`account_id`** | `str` | *Обязательно* | Идентификатор учетной записи. |
-| **`chat_id`** | `str` | *Обязательно* | Локальный стабильный ID диалога (для отслеживания черновиков). |
-| **`prompt`** | `str` | *Обязательно* | Текст запроса или тело отредактированного сообщения. |
-| **`conversation_id`** | `str \| None` | `None` | Удаленный ID существующего диалога (`None` при первом запросе). |
-| **`model`** | `str \| None` | `None` | Идентификатор модели (`Model.id`). |
+| **`account_id`** | `str` | *Обязательно* | Идентификатор аккаунта. |
+| **`chat_id`** | `str` | *Обязательно* | Стабильный локальный ID чата (для отслеживания черновиков между репликами). |
+| **`prompt`** | `str` | *Обязательно* | Текст запроса или отредактированное сообщение. |
+| **`conversation_id`** | `str \| None` | `None` | Удаленный ID диалога (на первом шаге `None`, далее заполняется). |
+| **`model`** | `str \| None` | `None` | Идентификатор выбранной модели (`Model.id`). |
 | **`effort`** | `str \| None` | `None` | Уровень рассуждений (`"low"`, `"medium"`, `"high"`). |
-| **`project_id`** | `str \| None` | `None` | Удаленный ID проекта, если диалог относится к проекту. |
-| **`temporary`** | `bool` | `False` | Режим инкогнито (не сохранять историю на сервере). |
-| **`attachments`** | `tuple[dict, ...]` | `()` | Кортеж дескрипторов загруженных файлов из `upload_file()`. |
+| **`project_id`** | `str \| None` | `None` | Удаленный ID проекта, если диалог ведется в контексте проекта. |
+| **`temporary`** | `bool` | `False` | Если `True`, диалог выполняется в приватном режиме без сохранения. |
+| **`attachments`** | `tuple[dict, ...]` | `()` | Дескрипторы загруженных файлов из `upload_file()`. |
 | **`action`** | `MessageAction \| None` | `None` | `MessageAction.EDIT` или `MessageAction.RETRY`. |
 | **`message_id`** | `str \| None` | `None` | ID целевого сообщения при редактировании или повторе. |
-| **`branch`** | `BranchContext \| None` | `None` | Метаданные продолжения ветки при переходе из превью. |
+| **`branch`** | `BranchContext \| None` | `None` | Контекст продолжения диалога в новой ветке. |
+
+#### Валидация запроса: `validate_request`
+`providers.api.validate_request(provider, request: SendRequest)` проверяет:
+- Соответствие запроса целевому провайдеру и аккаунту.
+- При наличии `action` (`EDIT` или `RETRY`) обязательное присутствие `conversation_id` и `message_id`.
+- При наличии контекста `branch` наличие исходных `conversation_id` и `message_id`, а также отсутствие конфликтующих параметров `action` и `temporary`.
 
 #### Типы событий (`ProviderEvent`)
 `ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound | MessageMetadata`
 
-1. **`TextDelta(text: str, channel: str | None = None)`**  
-   Инкрементальный текстовый фрагмент (токен).  
-   - `channel=None`: Основной текст ответа ассистента.  
-   - `channel="analysis"`: Трассировка мыслей / рассуждений (reasoning).
-2. **`ReplaceText(text: str, channel: str | None = None)`**  
-   Заменяет весь накопленный в канале текст (для динамически уточняемых сводок).
-3. **`ResponseComplete()`**  
-   Сигнализирует о завершении генерации текста на сервере.
-4. **`ConversationBound(conversation_id: str)`**  
-   Генерируется на первом шаге диалога, сообщая постоянный ID, присвоенный сервером.
-5. **`MessageMetadata(...)`**  
-   Метаданные завершенного ответа:  
-   - `message_id: str | None`: ID сообщения ассистента.  
-   - `user_message_id: str | None`: ID принятого сообщения пользователя.  
-   - `model: str | None`: Фактическая модель, сгенерировавшая ответ.  
-   - `effort: str | None`: Примененный уровень рассуждений.  
-   - `sources: tuple[dict, ...]`: Источники поиска и цитаты.  
-   - `actions: tuple[str, ...]`: Допустимые действия над сообщением (`"edit"`, `"retry"`).  
-   - `files: tuple[dict, ...]`: Дескрипторы сгенерированных файлов или медиа.
+1. **`TextDelta(text: str, channel: str | None = None)`**<br>
+   Инкрементальный фрагмент токенов.<br>
+   - `channel=None`: Основной текст ответа ассистента.<br>
+   - `channel="analysis"`: Текст размышлений и логических цепочек модели.
+2. **`ReplaceText(text: str, channel: str | None = None)`**<br>
+   Полностью замещает ранее накопленный текст в канале (используется для динамических сводок рассуждений).
+3. **`ResponseComplete()`**<br>
+   Сигнализирует об успешном завершении генерации ответа.
+4. **`ConversationBound(conversation_id: str)`**<br>
+   Срабатывает на первой реплике, когда сервер присваивает постоянный идентификатор диалога.
+5. **`MessageMetadata(...)`**<br>
+   Передается по завершении генерации с финальными метаданными:<br>
+   - `message_id: str | None`: Идентификатор сообщения ассистента.<br>
+   - `user_message_id: str | None`: Подтвержденный сервером ID реплики пользователя.<br>
+   - `model: str | None`: Фактическая модель, сформировавшая ответ.<br>
+   - `effort: str | None`: Подтвержденный уровень рассуждений.<br>
+   - `sources: tuple[dict, ...]`: Источники из веб-поиска и ссылки на цитирования.<br>
+   - `actions: tuple[str, ...]`: Допустимые операции для этой реплики (`"edit"`, `"retry"`).<br>
+   - `files: tuple[dict, ...]`: Файлы, сгенерированные моделью в процессе ответа.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -323,28 +340,46 @@ def create_provider(
 
 - **`ModelCatalog`**:
   - `state: FeatureState`: `AVAILABLE`, `UNAVAILABLE`, `UNKNOWN`, `LOGIN_REQUIRED`.
-  - `models: tuple[Model, ...]`: Доступные модели.
-  - `default_model: str | None`: Рекомендуемая модель по умолчанию.
-  - `chat_models -> tuple[Model, ...]`: Модели, доступные для выбора в чате.
-  - `chat_model(model_id: str | None) -> Model | None`: Поиск модели по ID.
-  - `effort(model_id: str, preferred: str = "medium") -> str | None`: Определение поддерживаемого уровня рассуждений.
+  - `models: tuple[Model, ...]`: Список доступных моделей.
+  - `default_model: str | None`: ID модели по умолчанию для провайдера.
+  - `chat_models -> tuple[Model, ...]`: Модели, доступные для диалога с пользователем.
+  - `chat_model(model_id: str | None) -> Model | None`: Поиск модели по идентификатору.
+  - `default_chat_model -> Model | None`: Модель чата по умолчанию.
+  - `effort(model_id: str, preferred: str = "medium") -> str | None`: Подбор поддерживаемого уровня рассуждений.
+  - `from_dict(value: dict) -> ModelCatalog`: Десериализация каталога из словаря.
 - **`Model`**:
-  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`.
+  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`, `chat_title: str | None`.
+- **`Choice`**:
+  - `id: str`, `title: str`.
 - **`Conversation`**:
   - `origin: Origin`: `(provider_id, account_id, remote_id)`.
   - `title: str`: Заголовок диалога.
-  - `messages: tuple[Message, ...]`: Последовательность сообщений.
-  - `project_id: str | None`: ID связанного проекта.
+  - `messages: tuple[Message, ...]`: Последовательность реплик.
+  - `project_id: str | None`: ID привязанного проекта.
 - **`Message`**:
-  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `actions: tuple[str, ...]`.
+  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `channel: str | None`, `actions: tuple[str, ...]`.
 - **`Content`**:
   - `kind: str` (`"text"`, `"resource"`), `text: str | None`, `resource: Resource | None`.
+- **`Resource`**:
+  - `id: str`, `name: str`, `media_type: str | None`, `remote_url: str | None`.
 - **`Project`**:
   - `origin: Origin`, `name: str`, `instructions: str | None`, `resources: tuple[Resource, ...]`.
+- **`ProjectOptions`**:
+  - `fields: tuple[str, ...]`, `visibility: tuple[Choice, ...]`, `memory: tuple[Choice, ...]`, `sources: tuple[dict, ...]`, `remove_sources: bool`, `source_error: str | None`.
+- **`Origin`**:
+  - `provider_id: str`, `account_id: str`, `remote_id: str`.
 - **`Page[T]`**:
   - `items: tuple[T, ...]`, `next_cursor: str | None`.
+- **`SessionStatus`**:
+  - `state: SessionState`: `UNKNOWN`, `LOGIN_REQUIRED`, `AUTHENTICATED`.
+  - `saved_snapshot: bool`, `reason: str | None`.
+- **`Feature`**:
+  - `capability: Capability`, `state: FeatureState`, `reason: str | None`.
+- **`ProviderDescription`**:
+  - `id: str`, `features: tuple[Feature, ...]`.
+  - `feature(capability: Capability) -> Feature`: Запрос состояния отдельной возможности.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -353,37 +388,45 @@ def create_provider(
 `providers.attachments` & `providers.files`
 
 #### `AttachmentPolicy`
-Задает правила загрузки файлов:
+Определяет лимиты на загрузку файлов:
 - `max_files: int`: Максимальное количество файлов.
-- `max_bytes: int`: Лимит в байтах на один файл.
-- `max_image_bytes: int | None`: Лимит размера изображений.
-- `max_video_bytes: int | None`: Лимит размера видеофайлов.
-- `allowed_extensions: tuple[str, ...]`: Список разрешенных расширений.
-- `max_files_scope: str`: Область действия квоты (`"prompt"` или `"conversation"`).
+- `max_bytes: int`: Максимальный размер одного файла в байтах.
+- `max_image_bytes: int | None`: Лимит размера для изображений.
+- `max_spreadsheet_bytes: int | None`: Лимит размера для таблиц.
+- `max_video_bytes: int | None`: Лимит размера для видеофайлов.
+- `max_total_bytes: int | None`: Суммарный лимит объема файлов в одном запросе.
+- `allowed_extensions: tuple[str, ...]`: Белый список разрешенных расширений.
+- `max_files_scope: str`: Область действия лимита (`"prompt"` или `"conversation"`).
+- `source: str`: Описание источника политики для человека.
+- `as_dict() -> dict`: Сериализация политики в словарь.
 
 #### Предустановленные политики
-- **`CHATGPT_ATTACHMENTS`**: До 512 МиБ на файл, 20 МиБ для картинок, 50 МиБ для таблиц, 10 файлов на запрос.
-- **`GEMINI_ATTACHMENTS`**: До 100 МиБ на файл (2 ГиБ для видео), 10 файлов на запрос.
-- **`CLAUDE_ATTACHMENTS`**: До 30 МиБ на файл, не более 20 файлов на весь диалог, строгий список расширений.
-- **`GROK_ATTACHMENTS`**: До 3 МиБ на файл, 10 МиБ суммарно на запрос, 10 файлов на запрос.
+- **`CHATGPT_ATTACHMENTS`**: 512 МиБ на файл, 20 МиБ на изображения, 50 МиБ на таблицы, до 10 файлов на запрос.
+- **`GEMINI_ATTACHMENTS`**: 100 МиБ на файл (2 ГиБ для видео), до 10 файлов на запрос.
+- **`CLAUDE_ATTACHMENTS`**: 30 МиБ на файл, не более 20 файлов на весь диалог, строгий белый список форматов.
+- **`GROK_ATTACHMENTS`**: 3 МиБ на файл, суммарно до 10 МиБ на запрос, до 10 файлов на запрос.
 
 #### `DownloadSource`
 Дескриптор, возвращаемый методом `resolve_download()`:
-- `url: str`: URL для скачивания.
-- `filename: str | None`: Рекомендуемое имя файла.
+- `url: str`: Адрес для скачивания файла.
+- `filename: str | None`: Рекомендуемое локальное имя файла.
 - `force_download: bool`: Флаг принудительной загрузки вложения.
-- `headers: dict[str, str]`: Авторизационные заголовки запроса.
-- `client_factory: Callable | None`: Фабрика HTTP-клиента.
+- `headers: dict[str, str]`: Заголовки авторизованного HTTP-запроса.
+- `client_factory: Callable | None`: Фабрика клиента HTTP-транспорта.
 
-[↑ К оглавлению](#оглавление)
+#### `NativeDownloadClient`
+Контекстный менеджер для потоковой загрузки байтов через эмуляцию Chrome (`curl_cffi`):
+- `stream(method, url, *, headers, resolved_address=None)`: Контекстный менеджер, возвращающий активный HTTP-ответ с блокировкой автоматических перенаправлений.
+
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
-### 4.7. Сессии и атомарное хранение учетных данных: `CredentialStore`
+### 4.7. Сессии, хранение учетных данных и синхронизация истории
 
-`providers.session`
+`providers.session` & `providers.history`
 
-Данные сессий записываются на диск атомарно с использованием блокировок потоков и безопасной замены временных файлов с правами доступа `0o600`.
+Учетные данные сессий сохраняются атомарно с использованием файловых блокировок и временных файлов с правами доступа `0o600`.
 
 #### Протокол `CredentialStore`
 ```python
@@ -395,12 +438,56 @@ class CredentialStore(Protocol):
 ```
 
 #### Вспомогательные функции
-- **`read_session(path: str | Path | CredentialStore) -> dict`**: Чтение сессии; при повреждении вызывает `AccountPaused`.
-- **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: Атомарная запись с правами `0o600`.
-- **`session_exists(source: str | Path | CredentialStore) -> bool`**: Проверка наличия сохраненной сессии.
-- **`delete_session(source: str | Path | CredentialStore) -> None`**: Безопасное удаление сессии.
+- **`read_session(path: str | Path | CredentialStore) -> dict`**: Загружает данные сессии; возбуждает `AccountPaused` при повреждении или отсутствии данных.
+- **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: Атомарно сохраняет сессию с правами `0o600`.
+- **`session_exists(source: str | Path | CredentialStore) -> bool`**: Проверяет наличие сохраненной сессии.
+- **`delete_session(source: str | Path | CredentialStore) -> None`**: Безопасно удаляет данные сессии.
+- **`cookie_header(values: dict, names: set[str]) -> str`**: Формирует заголовок HTTP Cookie из словаря cookie.
 
-[↑ К оглавлению](#оглавление)
+#### Форматы файлов сессий
+```json
+// ChatGPT (~/.config/siopechat/chatgpt-session.json)
+{
+  "cookies": {
+    "__Secure-next-auth.session-token": "eyJhbGciOi...",
+    "oai-did": "12345678-..."
+  }
+}
+
+// Gemini (~/.config/siopechat/gemini-session.json)
+{
+  "cookies": {
+    "__Secure-1PSID": "g.a000...",
+    "__Secure-1PSIDTS": "sidts-...",
+    "SID": "..."
+  }
+}
+
+// Claude (~/.config/siopechat/claude-session.json)
+{
+  "cookies": {
+    "sessionKey": "sk-ant-sid01-...",
+    "lastActiveOrg": "12345678-..."
+  }
+}
+
+// Grok (~/.config/siopechat/grok-session.json)
+{
+  "cookies": {
+    "sso": "...",
+    "sso-rw": "..."
+  }
+}
+```
+
+#### Синхронизация истории: `merge_conversation`
+Функция `providers.history.merge_conversation(remote: dict, local: dict) -> dict` согласовывает локальные незавершенные реплики с подтвержденной сервером историей диалога с помощью `difflib.SequenceMatcher`:
+- Сохраняет исходную подтвержденную историю сервера без изменений.
+- Заменяет временные локальные ID сообщений на подтвержденные постоянные ID сервера.
+- Сохраняет локальные неподтвержденные размышления и прикрепленные ресурсы.
+- Предотвращает случайное восстановление удаленных или отредактированных веток.
+
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -408,27 +495,44 @@ class CredentialStore(Protocol):
 
 `providers.profiles` & `providers.cdp`
 
-Позволяет подключаться к аккаунтам без ввода паролей путем чтения cookie из системного профиля браузера.
+Позволяет осуществлять вход в учетные записи без ввода логина и пароля путем прямого импорта активных cookie из профилей установленных браузеров.
 
 #### Функции профилей (`profiles.py`)
-- **`default_profile() -> BrowserProfile | None`**: Определяет путь к cookie браузера по умолчанию (Chrome, Brave, Edge, Firefox, Safari).
-- **`import_cookies(provider: str) -> dict`**: Расшифровывает и импортирует cookie для `"chatgpt"`, `"gemini"`, `"claude"` или `"grok"`.
+- **`default_profile() -> BrowserProfile | None`**: Определяет путь к данным cookie браузера по умолчанию (Chrome, Brave, Edge, Firefox, Safari).
+- **`import_cookies(provider: str) -> tuple[str, dict]`**: Извлекает и расшифровывает cookie для `"chatgpt"`, `"gemini"`, `"claude"` или `"grok"`. Возвращает `(семейство_браузера, словарь_cookie)`.
 
 #### Chrome DevTools Protocol (`cdp.py`)
-- **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Проверяет доступность порта удаленной отладки.
-- **`open_provider_page(cdp_url: str, provider_url: str) -> None`**: Открывает адрес провайдера во вкладке.
-- **`read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]`**: Читает активные cookie через протокол CDP.
-- **`capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]`**: Перехватывает токен доступа ChatGPT и заголовки браузера.
+- **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Проверяет доступность удаленного порта отладки.
+- **`open_provider_page(cdp_url: str, provider_url: str) -> None`**: Открывает страницу провайдера во вкладке браузера.
+- **`read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]`**: Считывает текущие cookie через CDP.
+- **`capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]`**: Перехватывает токен авторизации и заголовки запросов ChatGPT.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
-### 4.9. Обработка ошибок и коды состояния: `ProviderError`
+### 4.9. Телеметрия и профилирование задержек отправки: `timing`
+
+`providers.timing`
+
+Предоставляет подключаемое профилирование задержек транспортных этапов без записи содержимого сообщений.
+
+- **`use_send_timing(timing: SendTiming | None)`**: Контекстный менеджер, привязывающий трекер времени к контексту `asyncio`.
+- **`current_send_timing() -> SendTiming | None`**: Возвращает активный трекер задержек.
+- **`record_send_timing(name: str, elapsed_ns: int) -> None`**: Записывает длительность конкретного этапа в наносекундах.
+- **`collect_send_timing(timing: SendTiming | None) -> None`**: Помещает замер в кольцевой буфер (до 256 замеров).
+- **`send_timing_report(*, clear: bool = True) -> str`**: Формирует текстовый отчет с медианой и 95-м процентилем (p95) задержек в миллисекундах по каждому этапу.
+- **Переменная окружения:** Задайте `SIOPECHAT_SEND_TIMINGS=1` для активации хуков замера.
+
+[↑ К оглавлению](#oglavlenie)
+
+---
+
+### 4.10. Обработка ошибок и коды состояния: `ProviderError`
 
 `providers.errors`
 
-Все ошибки библиотеки наследуются от базового класса `ProviderError`.
+Все пользовательские исключения наследуются от базового класса `ProviderError`.
 
 ```mermaid
 flowchart TD
@@ -448,14 +552,14 @@ flowchart TD
 
 | Исключение | Значение `code` | Дополнительные поля | Семантическое значение |
 | :--- | :--- | :--- | :--- |
-| **`ProviderError`** | `"provider_error"` | `message_submitted: bool \| None` | Базовое исключение. `message_submitted=False` гарантирует, что запрос не достиг сервера. `None` означает неопределенность (автоматический повтор запрещен). |
-| **`FeatureUnavailable`** | `"feature_unavailable"` | `capability: Capability`<br>`reason: str` | Возможность не поддерживается провайдером или тарифом аккаунта. |
-| **`RateLimited`** | `"rate_limited"` | `retry_after: float \| None` | Превышен лимит запросов. Содержит время ожидания в секундах, если указано. |
-| **`AccountPaused`** | `"account_paused"` | - | Истек срок действия сессии или требуется капча/проверка в браузере. |
-| **`CompatibilityError`** | `"capability_changed"` | `capability: Capability` | Изменился веб-контракт провайдера. |
-| **`RemoteNotFound`** | `"remote_not_found"` | - | Запрашиваемый диалог, проект или ресурс не найден на сервере. |
+| **`ProviderError`** | `"provider_error"` | `message_submitted: bool \| None` | Базовое исключение. При `message_submitted=False` гарантируется, что промпт не достиг сервера. `None` указывает на неопределенный сбой (повторять автоматически запрещено). |
+| **`FeatureUnavailable`** | `"feature_unavailable"` | `capability: Capability`<br>`reason: str` | Запрашиваемая операция не поддерживается провайдером или тарифом аккаунта. |
+| **`RateLimited`** | `"rate_limited"` | `retry_after: float \| None` | Превышен лимит запросов. Если сервер передал задержку, `retry_after` содержит паузу в секундах. |
+| **`AccountPaused`** | `"account_paused"` | - | Истек срок действия сессии или требуется прохождение защитного барьера. |
+| **`CompatibilityError`** | `"capability_changed"` | `capability: Capability` | Протокол веб-интерфейса провайдера изменился. |
+| **`RemoteNotFound`** | `"remote_not_found"` | - | Указанный диалог, проект или ресурс не найден на сервере. |
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
@@ -463,7 +567,7 @@ flowchart TD
 
 ### 5.1. Пример 1: Базовый потоковый вывод токенов
 
-Отправка запроса в сессию Claude и вывод токенов в stdout в реальном времени.
+Отправляет промпт в Claude и выводит генерируемые токены в стандартный вывод в реальном времени.
 
 ```python
 import asyncio
@@ -483,7 +587,7 @@ async def main():
             provider_id="claude",
             account_id="personal",
             chat_id="draft-001",
-            prompt="Объясни в двух предложениях принцип свободных потоков (free-threaded execution) в Python 3.13.",
+            prompt="Explain Python 3.13 free-threaded execution in two concise sentences.",
         )
 
         async for event in client.stream(request):
@@ -497,13 +601,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.2. Пример 2: Динамическое обнаружение моделей, уровень рассуждений и многошаговый диалог
 
-Запрашивает доступные модели, выбирает уровень рассуждений, фиксирует `ConversationBound` на первом шаге и продолжает диалог на втором шаге.
+Считывает актуальный каталог моделей аккаунта, задает повышенный уровень рассуждений, фиксирует постоянный ID диалога по событию `ConversationBound` и продолжает беседу на следующем шаге.
 
 ```python
 import asyncio
@@ -537,7 +641,7 @@ async def main():
             provider_id="chatgpt",
             account_id="work",
             chat_id="turn-1",
-            prompt="Напиши алгоритм возведения матрицы в степень для чисел Фибоначчи O(log n) на Python.",
+            prompt="Write an O(log n) matrix exponentiation algorithm for Fibonacci numbers in Python.",
             model=target_model.id,
             effort=effort,
         )
@@ -551,7 +655,7 @@ async def main():
                 else:
                     print(event.text, end="", flush=True)
             elif isinstance(event, ReplaceText):
-                print(f"\n[Обновленная сводка]: {event.text}\n")
+                print(f"\n[Обновленные рассуждения]: {event.text}\n")
             elif isinstance(event, MessageMetadata):
                 print(f"\nID сообщения ассистента: {event.message_id}")
 
@@ -561,7 +665,7 @@ async def main():
             account_id="work",
             chat_id="turn-2",
             conversation_id=remote_conv_id,
-            prompt="Добавь полные аннотации типов (type hints) и docstring к коду матрицы.",
+            prompt="Now add complete type hints and docstrings to the matrix code.",
             model=target_model.id,
         )
 
@@ -574,13 +678,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.3. Пример 3: Загрузка файлов и анализ вложений
 
-Проверяет файл по лимитам `AttachmentPolicy`, загружает его в Gemini и запускает анализ содержимого.
+Выполняет валидацию локального файла по правилам `AttachmentPolicy`, загружает его в Gemini и запускает анализ.
 
 ```python
 import asyncio
@@ -591,7 +695,7 @@ from providers import AttachmentPolicy, ProviderClient, SendRequest, TextDelta
 async def main():
     report_file = Path("./report.pdf")
     if not report_file.exists():
-        report_file.write_text("Отчет по архитектуре системы: план миграции v2.0 утвержден.")
+        report_file.write_text("Отчет об архитектуре: план миграции на v2.0 утвержден.")
 
     async with ProviderClient() as client:
         account = client.connect(
@@ -613,7 +717,7 @@ async def main():
             provider_id="gemini",
             account_id="analyst",
             chat_id="doc-chat-1",
-            prompt="Сделай краткое резюме ключевых архитектурных решений из этого отчета.",
+            prompt="Summarize the key architectural decisions from this report.",
             attachments=(upload_payload,),
         )
 
@@ -626,13 +730,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.4. Пример 4: Мультипровайдерное параллельное сравнение ответов
 
-Параллельный опрос ChatGPT, Claude, Gemini и Grok в рамках одного экземпляра `ProviderClient`.
+Демонстрирует одновременную параллельную отправку одного промпта в ChatGPT, Claude, Gemini и Grok в рамках одного экземпляра `ProviderClient`.
 
 ```python
 import asyncio
@@ -658,7 +762,7 @@ async def query_provider(client, provider_id, cred_path, prompt):
 
 
 async def main():
-    prompt = "Объясни явление квантовой запутанности одним кратким и емким абзацем."
+    prompt = "Explain the principle of Quantum Entanglement in a single concise paragraph."
     configs = [
         ("chatgpt", "~/.config/siopechat/chatgpt-session.json"),
         ("claude", "~/.config/siopechat/claude-session.json"),
@@ -682,13 +786,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.5. Пример 5: Управление ресурсами проектов и рабочих пространств
 
-Создает проект, задает системные инструкции, прикрепляет текстовый ресурс и начинает диалог в контексте проекта.
+Создает проект, задает системные инструкции, прикрепляет текстовый ресурс и начинает диалог в контексте созданного проекта.
 
 ```python
 import asyncio
@@ -705,16 +809,16 @@ async def main():
         await account.authenticate()
 
         project = await account.create_project(
-            name="Исследования WebAI Provider",
-            instructions="Ты ведущий системный архитектор. Весь код должен быть строго типизирован.",
+            name="WebAI Provider R&D",
+            instructions="You are a principal systems engineer. All code must be strictly typed.",
         )
         print(f"Создан проект: {project.name} (Удаленный ID: {project.origin.remote_id})")
 
         project = await account.add_project_resource(
             project_id=project.origin.remote_id,
             kind="text",
-            name="rules.txt",
-            text="Правило 1: Только чистый Python без Node.js. Правило 2: Изолированные пулы соединений.",
+            name="guidelines.txt",
+            text="Rule 1: Pure Python sentinel execution. Rule 2: Dedicated transport pools.",
         )
         print(f"Ресурс добавлен. Всего ресурсов: {len(project.resources)}")
 
@@ -723,7 +827,7 @@ async def main():
             account_id="lead",
             chat_id="proj-chat-1",
             project_id=project.origin.remote_id,
-            prompt="Каковы наши главные архитектурные правила?",
+            prompt="What are our core architectural guidelines?",
         )
 
         async for event in client.stream(req):
@@ -735,13 +839,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.6. Пример 6: Редактирование сообщений, повторы и ветвление диалога
 
-Повтор ответа ассистента, редактирование запроса и создание отдельной ветки диалога.
+Демонстрирует повторную генерацию ответа ассистента, редактирование ранее отправленного промпта и создание новой ветки переписки.
 
 ```python
 import asyncio
@@ -767,7 +871,7 @@ async def main():
         conv = await account.get_chat("remote-conv-123")
         last_asst_msg = next(m for m in reversed(conv.messages) if m.role == "assistant")
 
-        # 1. Повторная генерация ответа ассистента (RETRY)
+        # 1. Повторная генерация ответа ассистента
         retry_req = SendRequest(
             provider_id="chatgpt",
             account_id="dev",
@@ -781,7 +885,7 @@ async def main():
             if isinstance(event, TextDelta):
                 print(event.text, end="", flush=True)
 
-        # 2. Создание новой ветки диалога (Branching)
+        # 2. Создание новой ветки диалога от конкретной реплики
         new_branch = await account.branch_chat(
             conversation_id=conv.origin.remote_id,
             message_id=last_asst_msg.id,
@@ -795,12 +899,12 @@ async def main():
             provider_id="chatgpt",
             account_id="dev",
             chat_id="branch-first-turn",
-            prompt="Продолжаем в новой ветке: реализуй альтернативный алгоритм.",
+            prompt="Continuing on new branch: implement the alternative algorithm.",
             branch=branch_ctx,
         )
         async for event in client.stream(branch_req):
             if isinstance(event, ConversationBound):
-                print(f"\nID новой ветки: {event.conversation_id}")
+                print(f"\nУдаленный ID новой ветки: {event.conversation_id}")
             elif isinstance(event, TextDelta):
                 print(event.text, end="", flush=True)
 
@@ -809,13 +913,13 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ### 5.7. Пример 7: Кастомное зашифрованное хранилище сессий
 
-Хранение cookie сессии в зашифрованной памяти или безопасном хранилище вместо обычных JSON-файлов.
+Реализует интерфейс `CredentialStore` для сохранения cookie сессий в зашифрованной оперативной памяти или системном защищенном хранилище ключей вместо открытых JSON-файлов.
 
 ```python
 import asyncio
@@ -832,7 +936,7 @@ class EncryptedMemoryStore(CredentialStore):
 
     def save(self, value: dict) -> None:
         self._blob = json.dumps(value).encode("utf-8")
-        print("[Store] Сессия надежно зашифрована в памяти.")
+        print("[Store] Данные сессии надежно запечатаны в памяти.")
 
     def exists(self) -> bool:
         return bool(self._blob and self._blob != b"{}")
@@ -858,24 +962,24 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 6. Архитектура времени выполнения и безопасность
 
-1. **Никакого хранения паролей:** Библиотека не запрашивает, не передает и не хранит пароли учетных записей. Все операции производятся исключительно по cookie сессии и временным токенам.
-2. **Защита учетных данных от утечек:** В выводы `repr()`, логи и тексты ошибок никогда не попадают сырые cookie, секретные ключи или токены.
-3. **Защита от SSRF и перенаправлений:** При скачивании файлов редиректы блокируются (`follow_redirects=False`), запросы отправляются только к доверенным доменам CDN провайдеров.
-4. **Гарантии идемпотентности:** Вызовы `POST send` никогда автоматически не повторяются при сетевых сбоях, чтобы исключить дублирование сообщений.
+1. **Отсутствие хранения паролей:** Библиотека не запрашивает, не передает и не сохраняет пароли от аккаунтов. Все операции производятся исключительно через сессионные cookie и короткоживущие служебные токены.
+2. **Очистка конфиденциальных данных:** Тексты исключений, вывод `repr()` и журналы логирования никогда не содержат сырых токенов авторизации, cookie или секретов антибот-проверок.
+3. **Защита от SSRF и небезопасных перенаправлений:** Загрузка бинарных файлов блокирует произвольные перенаправления HTTP (`follow_redirects=False`) и доверяет только проверенным доменным зонам провайдеров.
+4. **Гарантии идемпотентности:** Неидемпотентные запросы `POST send` никогда не повторяются автоматически при сетевых сбоях, что исключает появление дубликатов реплик.
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 7. Разработка, тестирование и контроль качества
 
-В репозитории поддерживается строгий контроль качества кода:
+В репозитории приняты строгие требования к качеству исходного кода и проверке модульными тестами:
 
 ```sh
 # Проверка стиля кода и линтинг
@@ -890,33 +994,33 @@ python -m build --sdist --wheel
 python -m twine check dist/*
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 8. Интеграция с SiopeChat
 
-SiopeChat использует `webai-provider` как внешнюю PyPI-зависимость времени выполнения:
-- SiopeChat не требует Git-подмодулей.
-- Версии фиксируются через `pyproject.toml` и `uv.lock`.
+SiopeChat использует `webai-provider` как внешнюю зависимость времени выполнения PyPI:
+- В SiopeChat не требуются субмодули Git.
+- Версии зафиксированы в файлах `pyproject.toml` и `uv.lock`.
 
-Для локального тестирования правок провайдера:
+Для локального тестирования изменений в SiopeChat:
 ```sh
 git pull --ff-only
 python -m pip install --upgrade .
 ```
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 ---
 
 ## 9. История версий и лицензия
 
 - **Текущая версия:** `v1.1-beta` (`1.1.0b0`)
-- **Последние изменения:** Добавлена поддержка веб-сессий Grok (обнаружение моделей, стриминг SSE, сводки рассуждений, ресурсы проектов и поисковые цитаты). См. [CHANGELOG.md](CHANGELOG.md).
-- **Лицензия:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). Уведомление об авторских правах в [COPYRIGHT](COPYRIGHT).
+- **Последние изменения:** Добавлена поддержка веб-сессий Grok (обнаружение моделей, потоки SSE, редактирование сообщений пользователя, сводки размышлений, ресурсы рабочих пространств и цитирование веб-поиска). Подробности в [CHANGELOG.md](CHANGELOG.md).
+- **Лицензия:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). Уведомления об авторских правах в [COPYRIGHT](COPYRIGHT).
 
-[↑ К оглавлению](#оглавление)
+[↑ К оглавлению](#oglavlenie)
 
 [version-shield]: https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white

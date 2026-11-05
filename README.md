@@ -12,21 +12,23 @@
 
 ---
 
+<a id="table-of-contents"></a>
 ## Table of Contents
 
 - [1. Overview and Key Highlights](#1-overview-and-key-highlights)
 - [2. Installation and Requirements](#2-installation-and-requirements)
 - [3. Supported Providers and Capabilities Matrix](#3-supported-providers-and-capabilities-matrix)
 - [4. Full API Reference (General to Specific)](#4-full-api-reference-general-to-specific)
-  - [4.1. Client & Lifecycle: `ProviderClient`](#41-client--lifecycle-providerclient)
+  - [4.1. High-Level Orchestrator: `ProviderClient`](#41-high-level-orchestrator-providerclient)
   - [4.2. Provider Construction: `create_provider` & `ProviderRegistry`](#42-provider-construction-create_provider--providerregistry)
-  - [4.3. Core Backend Contract: `Backend` Protocol](#43-core-backend-contract-backend-protocol)
+  - [4.3. Unified Backend Protocol: `Backend` Contract](#43-unified-backend-protocol-backend-contract)
   - [4.4. Requests & Streaming Events: `SendRequest` & `ProviderEvent`](#44-requests--streaming-events-sendrequest--providerevent)
   - [4.5. Domain & Status Models: `ModelCatalog`, `Conversation`, `Project`, etc.](#45-domain--status-models-modelcatalog-conversation-project-etc)
   - [4.6. File Policies & Download Descriptors: `AttachmentPolicy` & `DownloadSource`](#46-file-policies--download-descriptors-attachmentpolicy--downloadsource)
-  - [4.7. Sessions & Atomic Credential Storage: `CredentialStore`](#47-sessions--atomic-credential-storage-credentialstore)
+  - [4.7. Sessions, Credential Storage & History Synchronization](#47-sessions-credential-storage--history-synchronization)
   - [4.8. Browser Profile Import & CDP Utilities: `profiles` & `cdp`](#48-browser-profile-import--cdp-utilities-profiles--cdp)
-  - [4.9. Error Handling & Failure Codes: `ProviderError`](#49-error-handling--failure-codes-providererror)
+  - [4.9. Telemetry & Send Timing Profiling: `timing`](#49-telemetry--send-timing-profiling-timing)
+  - [4.10. Error Handling & Failure Codes: `ProviderError`](#410-error-handling--failure-codes-providererror)
 - [5. Practical Examples (from Simple to Advanced)](#5-practical-examples-from-simple-to-advanced)
   - [5.1. Example 1: Minimal Token Streaming](#51-example-1-minimal-token-streaming)
   - [5.2. Example 2: Dynamic Model Discovery, Reasoning Effort & Multi-Turn Chat](#52-example-2-dynamic-model-discovery-reasoning-effort--multi-turn-chat)
@@ -149,30 +151,32 @@ flowchart TD
 
 ---
 
-### 4.1. Client & Lifecycle: `ProviderClient`
+### 4.1. High-Level Orchestrator: `ProviderClient`
 
 `providers.client.ProviderClient`
 
 The central manager for multi-provider and multi-account lifecycles. Designed to run one instance per `asyncio` event loop.
 
 #### Methods
-- **`__init__() -> None`**  
+- **`__init__() -> None`**<br>
   Initializes internal registries for backends, active stream tasks, and closing shields.
-- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**  
+- **`connect(provider_id: str, account_id: str = "default", **configuration) -> Backend`**<br>
   Lazily builds a provider backend using `create_provider` and registers it. Does not perform network requests or open browser sessions.
-- **`add(backend: Backend) -> Backend`**  
+- **`add(backend: Backend) -> Backend`**<br>
   Registers a pre-constructed backend directly. Enforces that `(backend.id, backend.account_id)` is non-empty and unique.
-- **`account(provider_id: str, account_id: str = "default") -> Backend`**  
+- **`account(provider_id: str, account_id: str = "default") -> Backend`**<br>
   Returns the active backend for the given identity tuple. Raises `KeyError` if not registered.
-- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**  
+- **`prepare(provider_id: str, account_id: str = "default", *, for_send: bool = False) -> Backend`**<br>
   Initializes the account's transport state in the background. If `for_send=True`, invokes provider-specific pre-warm routines (such as pre-resolving tokens).
-- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**  
+- **`stream(request: SendRequest) -> AsyncIterator[ProviderEvent]`**<br>
   Routes `request` to the target backend, validates required capabilities, tracks the running task, and yields typed events. When the caller breaks out of the loop or cancels the task, the underlying transport iterator is closed immediately.
-- **`close() -> None`**  
+- **`close() -> None`**<br>
   Cancels all in-flight streams, releases active transports, and closes all open account backends cleanly. Idempotent and safe to retry on transient shutdown errors.
+- **`async with ProviderClient() as client:`**<br>
+  Implements `__aenter__` and `__aexit__` for clean scoped lifecycle management.
 
 #### Properties
-- **`accounts -> tuple[tuple[str, str], ...]`**  
+- **`accounts -> tuple[tuple[str, str], ...]`**<br>
   Returns a tuple of all registered `(provider_id, account_id)` pairs.
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -198,7 +202,7 @@ def create_provider(
 ```
 
 #### Parameters
-- **`provider_id`** (`str`): One of `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`.
+- **`provider_id`** (`str`): Target provider identifier: `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`.
 - **`account_id`** (`str`): Local account identifier (defaults to `"default"`).
 - **`credential_file`** (`str | Path | CredentialStore | None`): Session JSON path or a custom `CredentialStore` implementation. Required for all providers unless `session` is supplied.
 - **`session`** (`BrowserSession | None`): Pre-existing `BrowserSession` instance (ChatGPT only).
@@ -211,12 +215,16 @@ def create_provider(
 - **`set_enabled(provider_id: str, enabled: bool) -> None`**: Toggles whether a provider can receive future operations.
 - **`require(provider_id: str, capability: Capability) -> Provider`**: Asserts capability support and returns the provider.
 - **`describe(provider_id: str) -> Coroutine[ProviderDescription]`**: Returns the provider's feature states.
+- **`mark_unavailable(provider_id: str, capability: Capability) -> None`**: Marks a specific capability temporarily unavailable.
+- **`restore(provider_id: str, capability: Capability) -> None`**: Restores a previously unavailable capability.
+- **`get(provider_id: str) -> Provider`**: Gets the prototype provider object.
+- **`ids() -> tuple[str, ...]`**: Returns all registered provider IDs.
 
 [↑ Back to Table of Contents](#table-of-contents)
 
 ---
 
-### 4.3. Core Backend Contract: `Backend` Protocol
+### 4.3. Unified Backend Protocol: `Backend` Contract
 
 `providers.contracts.Backend`
 
@@ -265,6 +273,9 @@ The unified protocol implemented by all four adapters.
 - **`async def upload_file(path: str | Path) -> dict`**: Uploads a local file to the provider's storage.
 - **`async def resolve_download(url: str, conversation_id: str | None = None, message_id: str | None = None) -> DownloadSource | None`**: Resolves an authenticated download URL and headers.
 
+#### `confirm_deleted` Utility
+- **`async def confirm_deleted(read: Callable, missing: Callable = lambda value: False) -> None`**: Retries readback with exponential backoff (`0s`, `0.2s`, `0.5s`, `1s`) to confirm remote deletion without re-issuing destructive requests.
+
 [↑ Back to Table of Contents](#table-of-contents)
 
 ---
@@ -290,27 +301,33 @@ The unified protocol implemented by all four adapters.
 | **`message_id`** | `str \| None` | `None` | Target message ID when editing or retrying. |
 | **`branch`** | `BranchContext \| None` | `None` | Branch continuation metadata when continuing from a preview. |
 
+#### Request Validation: `validate_request`
+`providers.api.validate_request(provider, request: SendRequest)` validates:
+- Request belongs to the matching provider and account.
+- `action` is supported (`EDIT` or `RETRY`) and has both `conversation_id` and `message_id`.
+- `branch` continuation has both source `conversation_id` and `message_id`, and has no conflicting `action` or `temporary` flags.
+
 #### Event Types (`ProviderEvent`)
 `ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound | MessageMetadata`
 
-1. **`TextDelta(text: str, channel: str | None = None)`**  
-   Incremental token chunk.  
-   - `channel=None`: Primary assistant output text.  
+1. **`TextDelta(text: str, channel: str | None = None)`**<br>
+   Incremental token chunk.<br>
+   - `channel=None`: Primary assistant output text.<br>
    - `channel="analysis"`: Thinking / reasoning trace.
-2. **`ReplaceText(text: str, channel: str | None = None)`**  
+2. **`ReplaceText(text: str, channel: str | None = None)`**<br>
    Replaces all previously accumulated text in the given channel (used for live summary refinements).
-3. **`ResponseComplete()`**  
+3. **`ResponseComplete()`**<br>
    Signals that remote generation has finished.
-4. **`ConversationBound(conversation_id: str)`**  
+4. **`ConversationBound(conversation_id: str)`**<br>
    Emitted on the first turn when the remote server assigns the permanent conversation ID.
-5. **`MessageMetadata(...)`**  
-   Emitted at response completion with terminal turn metadata:  
-   - `message_id: str | None`: Assistant message ID.  
-   - `user_message_id: str | None`: Confirmed user prompt ID.  
-   - `model: str | None`: Actual model that answered.  
-   - `effort: str | None`: Confirmed reasoning effort.  
-   - `sources: tuple[dict, ...]`: Web citations and source document links.  
-   - `actions: tuple[str, ...]`: Allowed operations for this turn (`"edit"`, `"retry"`).  
+5. **`MessageMetadata(...)`**<br>
+   Emitted at response completion with terminal turn metadata:<br>
+   - `message_id: str | None`: Assistant message ID.<br>
+   - `user_message_id: str | None`: Confirmed user prompt ID.<br>
+   - `model: str | None`: Actual model that answered.<br>
+   - `effort: str | None`: Confirmed reasoning effort.<br>
+   - `sources: tuple[dict, ...]`: Web citations and source document links.<br>
+   - `actions: tuple[str, ...]`: Allowed operations for this turn (`"edit"`, `"retry"`).<br>
    - `files: tuple[dict, ...]`: Descriptors of files generated by the model.
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -327,22 +344,40 @@ The unified protocol implemented by all four adapters.
   - `default_model: str | None`: Provider's default model ID.
   - `chat_models -> tuple[Model, ...]`: Models selectable for user chat.
   - `chat_model(model_id: str | None) -> Model | None`: Finds a model by ID.
+  - `default_chat_model -> Model | None`: Resolves default chat model.
   - `effort(model_id: str, preferred: str = "medium") -> str | None`: Resolves matching effort.
+  - `from_dict(value: dict) -> ModelCatalog`: Deserializes catalog from dictionary.
 - **`Model`**:
-  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`.
+  - `id: str`, `title: str`, `efforts: tuple[Choice, ...]`, `default_effort: str | None`, `chat_selectable: bool`, `chat_title: str | None`.
+- **`Choice`**:
+  - `id: str`, `title: str`.
 - **`Conversation`**:
   - `origin: Origin`: `(provider_id, account_id, remote_id)`.
   - `title: str`: Chat title.
   - `messages: tuple[Message, ...]`: Sequence of turn messages.
   - `project_id: str | None`: Associated project ID.
 - **`Message`**:
-  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `actions: tuple[str, ...]`.
+  - `id: str`, `role: str` (`"user"`, `"assistant"`), `content: tuple[Content, ...]`, `channel: str | None`, `actions: tuple[str, ...]`.
 - **`Content`**:
   - `kind: str` (`"text"`, `"resource"`), `text: str | None`, `resource: Resource | None`.
+- **`Resource`**:
+  - `id: str`, `name: str`, `media_type: str | None`, `remote_url: str | None`.
 - **`Project`**:
   - `origin: Origin`, `name: str`, `instructions: str | None`, `resources: tuple[Resource, ...]`.
+- **`ProjectOptions`**:
+  - `fields: tuple[str, ...]`, `visibility: tuple[Choice, ...]`, `memory: tuple[Choice, ...]`, `sources: tuple[dict, ...]`, `remove_sources: bool`, `source_error: str | None`.
+- **`Origin`**:
+  - `provider_id: str`, `account_id: str`, `remote_id: str`.
 - **`Page[T]`**:
   - `items: tuple[T, ...]`, `next_cursor: str | None`.
+- **`SessionStatus`**:
+  - `state: SessionState`: `UNKNOWN`, `LOGIN_REQUIRED`, `AUTHENTICATED`.
+  - `saved_snapshot: bool`, `reason: str | None`.
+- **`Feature`**:
+  - `capability: Capability`, `state: FeatureState`, `reason: str | None`.
+- **`ProviderDescription`**:
+  - `id: str`, `features: tuple[Feature, ...]`.
+  - `feature(capability: Capability) -> Feature`: Looks up specific feature.
 
 [↑ Back to Table of Contents](#table-of-contents)
 
@@ -357,9 +392,13 @@ Defines provider upload limits:
 - `max_files: int`: Maximum number of files allowed.
 - `max_bytes: int`: Maximum size in bytes per file.
 - `max_image_bytes: int | None`: Image size ceiling.
+- `max_spreadsheet_bytes: int | None`: Spreadsheet size ceiling.
 - `max_video_bytes: int | None`: Video size ceiling.
+- `max_total_bytes: int | None`: Total prompt attachment size ceiling.
 - `allowed_extensions: tuple[str, ...]`: Whitelist of file extensions.
 - `max_files_scope: str`: Scope of file quota (`"prompt"` or `"conversation"`).
+- `source: str`: Human-readable source description.
+- `as_dict() -> dict`: Serializes policy to dictionary.
 
 #### Built-in Presets
 - **`CHATGPT_ATTACHMENTS`**: 512 MiB per file, 20 MiB for images, 50 MiB for spreadsheets, 10 files per prompt.
@@ -375,13 +414,17 @@ Descriptor returned by `resolve_download()`:
 - `headers: dict[str, str]`: Transient authenticated request headers.
 - `client_factory: Callable | None`: HTTP transport factory.
 
+#### `NativeDownloadClient`
+Context manager for streaming bytes using Chrome impersonation via `curl_cffi`:
+- `stream(method, url, *, headers, resolved_address=None)`: Context manager yielding an active HTTP response with redirect prevention.
+
 [↑ Back to Table of Contents](#table-of-contents)
 
 ---
 
-### 4.7. Sessions & Atomic Credential Storage: `CredentialStore`
+### 4.7. Sessions, Credential Storage & History Synchronization
 
-`providers.session`
+`providers.session` & `providers.history`
 
 Session credentials are saved atomically using thread locks and temporary file replacement with restricted `0o600` permissions.
 
@@ -394,11 +437,55 @@ class CredentialStore(Protocol):
     def delete(self) -> None: ...
 ```
 
-#### Utility Functions
+#### Session Utility Functions
 - **`read_session(path: str | Path | CredentialStore) -> dict`**: Loads session; raises `AccountPaused` on missing or corrupt credentials.
 - **`save_session(path: str | Path | CredentialStore, value: dict) -> None`**: Atomically persists session with `0o600` permissions.
 - **`session_exists(source: str | Path | CredentialStore) -> bool`**: Returns `True` if credentials exist.
 - **`delete_session(source: str | Path | CredentialStore) -> None`**: Removes session credentials safely.
+- **`cookie_header(values: dict, names: set[str]) -> str`**: Formats an HTTP Cookie header string from a dictionary of cookie names.
+
+#### Expected Session File Formats
+```json
+// ChatGPT (~/.config/siopechat/chatgpt-session.json)
+{
+  "cookies": {
+    "__Secure-next-auth.session-token": "eyJhbGciOi...",
+    "oai-did": "12345678-..."
+  }
+}
+
+// Gemini (~/.config/siopechat/gemini-session.json)
+{
+  "cookies": {
+    "__Secure-1PSID": "g.a000...",
+    "__Secure-1PSIDTS": "sidts-...",
+    "SID": "..."
+  }
+}
+
+// Claude (~/.config/siopechat/claude-session.json)
+{
+  "cookies": {
+    "sessionKey": "sk-ant-sid01-...",
+    "lastActiveOrg": "12345678-..."
+  }
+}
+
+// Grok (~/.config/siopechat/grok-session.json)
+{
+  "cookies": {
+    "sso": "...",
+    "sso-rw": "..."
+  }
+}
+```
+
+#### History Synchronization: `merge_conversation`
+`providers.history.merge_conversation(remote: dict, local: dict) -> dict` aligns the tail of local pending turns against confirmed provider history using `difflib.SequenceMatcher`:
+- Keeps earlier provider history intact.
+- Replaces provisional local IDs with confirmed server IDs.
+- Retains local unconfirmed thoughts and resource attachments.
+- Never resurrects deleted or edited branches.
 
 [↑ Back to Table of Contents](#table-of-contents)
 
@@ -412,7 +499,7 @@ Allows logging into accounts without typing passwords by importing live cookies 
 
 #### Profile Utilities (`profiles.py`)
 - **`default_profile() -> BrowserProfile | None`**: Locates default browser cookies path (Chrome, Brave, Edge, Firefox, Safari).
-- **`import_cookies(provider: str) -> dict`**: Extracts and decrypts cookies for `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`.
+- **`import_cookies(provider: str) -> tuple[str, dict]`**: Extracts and decrypts cookies for `"chatgpt"`, `"gemini"`, `"claude"`, or `"grok"`. Returns `(browser_family, cookies_dict)`.
 
 #### Chrome DevTools Protocol (`cdp.py`)
 - **`is_devtools_available(cdp_url: str, timeout: float = 1.0) -> bool`**: Tests if a remote debugging port is open.
@@ -424,7 +511,24 @@ Allows logging into accounts without typing passwords by importing live cookies 
 
 ---
 
-### 4.9. Error Handling & Failure Codes: `ProviderError`
+### 4.9. Telemetry & Send Timing Profiling: `timing`
+
+`providers.timing`
+
+Opt-in, content-free performance tracing across transport stages.
+
+- **`use_send_timing(timing: SendTiming | None)`**: Context manager binding a timing tracker to the current `asyncio` context.
+- **`current_send_timing() -> SendTiming | None`**: Returns active send timing tracker.
+- **`record_send_timing(name: str, elapsed_ns: int) -> None`**: Records an elapsed stage duration in nanoseconds.
+- **`collect_send_timing(timing: SendTiming | None) -> None`**: Appends sample to circular memory buffer (max 256 samples).
+- **`send_timing_report(*, clear: bool = True) -> str`**: Returns formatted text report containing median and p95 millisecond metrics for each stage.
+- **Environment Variable:** Set `SIOPECHAT_SEND_TIMINGS=1` to enable profiling hooks.
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+---
+
+### 4.10. Error Handling & Failure Codes: `ProviderError`
 
 `providers.errors`
 
@@ -913,7 +1017,7 @@ python -m pip install --upgrade .
 ## 9. Changelog and License
 
 - **Current Release:** `v1.1-beta` (`1.1.0b0`)
-- **Recent Updates:** Added Grok web session support (model discovery, SSE streaming, thinking summaries, workspace resources, and search citations). See [CHANGELOG.md](CHANGELOG.md).
+- **Recent Updates:** Added Grok web session support (model discovery, SSE streaming, user message editing, thinking summaries, workspace resources, and search citations). See [CHANGELOG.md](CHANGELOG.md).
 - **License:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). See [COPYRIGHT](COPYRIGHT) for notices.
 
 [↑ Back to Table of Contents](#table-of-contents)
