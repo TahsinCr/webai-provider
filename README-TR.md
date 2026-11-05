@@ -1,5 +1,5 @@
-[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
 [![Sürüm: v1.1-beta][version-shield]](CHANGELOG.md)
+[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
 [English](README.md) | **Türkçe** | [Русский](README-RU.md)
@@ -1022,6 +1022,6 @@ python -m pip install --upgrade .
 
 [↑ İçindekilere Dön](#icindekiler)
 
-[version-shield]: https://img.shields.io/badge/s%C3%BCr%C3%BCm-v1.1--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
-[license-shield]: https://img.shields.io/badge/Lisans-GPL--3.0--only-2F6F4E.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge

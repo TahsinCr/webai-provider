@@ -1,5 +1,5 @@
-[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
 [![Версия: v1.1-beta][version-shield]](CHANGELOG.md)
+[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
 [English](README.md) | [Türkçe](README-TR.md) | **Русский**
@@ -1022,6 +1022,6 @@ python -m pip install --upgrade .
 
 [↑ К оглавлению](#oglavlenie)
 
-[version-shield]: https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-v1.1--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-v1.1--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
-[license-shield]: https://img.shields.io/badge/%D0%9B%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0--only-2F6F4E.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
