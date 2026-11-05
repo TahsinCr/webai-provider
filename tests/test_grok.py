@@ -19,9 +19,9 @@ from providers.api import (
     SendRequest,
     TextDelta,
 )
-from providers.errors import AccountPaused
+from providers.errors import AccountPaused, RateLimited
 from providers.grok import GrokProvider
-from providers.grok.records import GrokTextFilter, conversation
+from providers.grok.records import GrokTextFilter, active_responses, conversation
 from providers.grok.transport import (
     _MAX_LINE_BYTES,
     GrokProjectEditor,
@@ -1123,3 +1123,164 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, 2)
         finally:
             await provider.close()
+
+    async def test_grok_send_routes_images_to_image_attachments(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+        img_meta = {
+            "assetId": "asset-img",
+            "name": "photo.png",
+            "mimeType": "image/png",
+        }
+        doc_meta = {
+            "assetId": "asset-doc",
+            "name": "notes.txt",
+            "mimeType": "text/plain",
+        }
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Analyze both",
+            conversation_id="chat",
+            model="fast",
+            attachments=(
+                {
+                    "id": "asset-img",
+                    "size_bytes": 50,
+                    "mime_type": "image/png",
+                    "grok_file": img_meta,
+                },
+                {
+                    "id": "asset-doc",
+                    "size_bytes": 100,
+                    "mime_type": "text/plain",
+                    "grok_file": doc_meta,
+                },
+            ),
+        )
+        try:
+            [event async for event in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        self.assertEqual(transport.bodies[0]["imageAttachments"], [img_meta])
+        self.assertEqual(transport.bodies[0]["fileAttachments"], [doc_meta])
+
+    async def test_get_project_handles_null_files_listing(self):
+        provider = GrokProvider(Path("unused"), "test")
+        provider.transport.request = AsyncMock(
+            side_effect=[
+                {"workspaceId": "ws-empty", "name": "Empty WS"},
+                {"files": None},
+            ]
+        )
+        try:
+            proj = await provider.get_project("ws-empty")
+            self.assertEqual(proj.name, "Empty WS")
+            self.assertEqual(proj.resources, ())
+        finally:
+            await provider.close()
+
+    def test_text_filter_ignores_greater_than_inside_quotes(self):
+        f = GrokTextFilter()
+        out = f.feed('Prefix <grok:render card_id="a>b">1</grok:render> Suffix', final=True)
+        self.assertEqual(out, "Prefix 1 Suffix")
+
+    def test_active_responses_sorts_leaves_chronologically(self):
+        history = {
+            "responseNodes": [
+                {
+                    "responseId": "u1",
+                    "sender": "human",
+                    "parentResponseId": "",
+                    "createTime": "2026-01-01T10:00:00Z",
+                },
+                {
+                    "responseId": "a1",
+                    "sender": "assistant",
+                    "parentResponseId": "u1",
+                    "createTime": "2026-01-01T10:01:00Z",
+                },
+                {
+                    "responseId": "a2",
+                    "sender": "assistant",
+                    "parentResponseId": "u1",
+                    "createTime": "2026-01-01T10:05:00Z",
+                },
+            ]
+        }
+        active = active_responses(history)
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["responseId"], "u1")
+        self.assertEqual(active[1]["responseId"], "a2")
+
+    async def test_stream_maps_rate_limit_error_to_rate_limited(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        provider.transport = transport
+
+        async def events(_path, _body):
+            yield {
+                "result": {
+                    "response": {
+                        "error": {
+                            "code": "RATE_LIMIT_EXCEEDED",
+                            "message": "Too many requests, please slow down",
+                            "retryAfter": 15,
+                        }
+                    }
+                }
+            }
+
+        transport.events = events
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            prompt="Hello",
+            model="fast",
+        )
+        try:
+            with self.assertRaises(RateLimited) as ctx:
+                [e async for e in provider.stream(request)]
+            self.assertEqual(ctx.exception.retry_after, 15.0)
+        finally:
+            await provider.close()
+
+    async def test_stream_edit_preserves_both_file_and_image_attachments(self):
+        provider = GrokProvider(Path("unused"), "test")
+        transport = GrokTransportFixture()
+        img_meta = {"assetId": "img-1", "mimeType": "image/png"}
+        doc_meta = {"assetId": "doc-1", "mimeType": "application/pdf"}
+        transport.responses = [
+            {
+                "responseId": "u0",
+                "sender": "human",
+                "parentResponseId": "",
+                "fileAttachments": [doc_meta],
+                "imageAttachments": [img_meta],
+            },
+            {"responseId": "a0", "sender": "assistant", "parentResponseId": "u0"},
+        ]
+        provider.transport = transport
+
+        request = SendRequest(
+            provider_id="grok",
+            account_id="test",
+            chat_id="local",
+            conversation_id="conv-1",
+            prompt="New edited prompt",
+            action=MessageAction.EDIT,
+            message_id="u0",
+            model="fast",
+        )
+        try:
+            [e async for e in provider.stream(request)]
+        finally:
+            await provider.close()
+
+        self.assertEqual(transport.bodies[0]["fileAttachments"], [doc_meta])
+        self.assertEqual(transport.bodies[0]["imageAttachments"], [img_meta])
+        self.assertEqual(transport.bodies[0]["message"], "New edited prompt")

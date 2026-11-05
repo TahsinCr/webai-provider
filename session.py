@@ -178,7 +178,7 @@ class WebSession:
     @staticmethod
     def check(response):
         code = response.status_code
-        if code == 401:
+        if code == 401 or code in (301, 302, 303, 307, 308):
             raise AccountPaused("Sağlayıcı oturumu sona ermiş; Hesaplar bölümünden doğrulayın")
         if code == 403:
             raise ProviderError("Sağlayıcı bu işleme erişim vermedi (403); istek tekrarlanmadı")

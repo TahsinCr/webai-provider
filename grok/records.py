@@ -49,6 +49,19 @@ class GrokTextFilter:
             return index
         return len(text)
 
+    @staticmethod
+    def _find_tag_end(text):
+        quote_char = None
+        for i, char in enumerate(text):
+            if quote_char is not None:
+                if char == quote_char:
+                    quote_char = None
+            elif char in ('"', "'"):
+                quote_char = char
+            elif char == ">":
+                return i
+        return -1
+
     def feed(self, text="", *, final=False):
         self._pending += text
         output = []
@@ -73,7 +86,7 @@ class GrokTextFilter:
             index = match.start()
             output.append(self._visible(self._pending[:index]))
             self._pending = self._pending[index:]
-            end = self._pending.find(">")
+            end = self._find_tag_end(self._pending)
             if end < 0:
                 if final:
                     self._pending = ""
@@ -112,7 +125,11 @@ def active_responses(history):
     if leaf_id not in by_id:
         parents = {row.get("parentResponseId") for row in rows}
         leaves = [row for row in rows if row.get("responseId") not in parents]
-        leaf_id = leaves[-1].get("responseId") if leaves else None
+        if leaves:
+            leaves.sort(key=lambda r: str(r.get("createTime") or r.get("createdAt") or ""))
+            leaf_id = leaves[-1].get("responseId")
+        else:
+            leaf_id = None
     if leaf_id in by_id:
         branch, seen = [], set()
         while leaf_id in by_id and leaf_id not in seen:
@@ -133,7 +150,11 @@ def _messages(history):
         sender = str(row.get("sender", "")).lower()
         if sender in ("human", "user"):
             text = row.get("message") or row.get("query") or ""
-            files = row.get("fileAttachments") or row.get("attachments") or ()
+            files = (
+                list(row.get("fileAttachments") or ())
+                + list(row.get("imageAttachments") or ())
+                + list(row.get("attachments") or ())
+            )
             resources = tuple(
                 Content(
                     "resource",
@@ -216,6 +237,7 @@ def project(value, account_id, files=()):
     identifier = value.get("workspaceId") or value.get("id")
     if not isinstance(identifier, str) or not identifier:
         raise ProviderError("Grok workspace response contract changed")
+    files = files or ()
     resources = tuple(
         Resource(
             str(item.get("path") or item.get("assetId")),

@@ -17,7 +17,7 @@ from ..api import (
 )
 from ..attachments import GROK_ATTACHMENTS
 from ..contracts import OptionalFeatures
-from ..errors import AccountPaused, FeatureUnavailable, ProviderError
+from ..errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ..messages import sources_from
 from ..models import (
     Conversation,
@@ -269,10 +269,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         if cursor:
             query["pageToken"] = cursor
         data = await self.transport.request("GET", "/rest/app-chat/conversations", params=query)
-        if not isinstance(data, dict) or not isinstance(data.get("conversations", []), list):
+        if not isinstance(data, dict):
+            raise ProviderError("Grok conversation list response contract changed")
+        conversations = data.get("conversations")
+        if conversations is not None and not isinstance(conversations, list):
             raise ProviderError("Grok conversation list response contract changed")
         return Page(
-            tuple(conversation(item, self.account_id) for item in data.get("conversations", [])),
+            tuple(conversation(item, self.account_id) for item in (conversations or ())),
             data.get("nextPageToken"),
         )
 
@@ -337,10 +340,13 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         if cursor:
             query["pageToken"] = cursor
         data = await self.transport.request("GET", "/rest/workspaces", params=query)
-        if not isinstance(data, dict) or not isinstance(data.get("workspaces", []), list):
+        if not isinstance(data, dict):
+            raise ProviderError("Grok workspace list response contract changed")
+        workspaces = data.get("workspaces")
+        if workspaces is not None and not isinstance(workspaces, list):
             raise ProviderError("Grok workspace list response contract changed")
         return Page(
-            tuple(project(item, self.account_id) for item in data.get("workspaces", [])),
+            tuple(project(item, self.account_id) for item in (workspaces or ())),
             data.get("nextPageToken"),
         )
 
@@ -350,16 +356,22 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             self.transport.request("GET", path),
             self.transport.request("GET", path + "/files", params={"recursive": "true"}),
         )
-        if not isinstance(listing, dict) or not isinstance(listing.get("files", []), list):
+        if not isinstance(listing, dict):
             raise ProviderError("Grok workspace file response contract changed")
-        return project(workspace, self.account_id, listing.get("files", []))
+        files = listing.get("files")
+        if files is not None and not isinstance(files, list):
+            raise ProviderError("Grok workspace file response contract changed")
+        return project(workspace, self.account_id, files or [])
 
     async def list_project_chats(self, project_id, cursor=None):
         query = {"pageSize": 50, "workspaceId": project_id}
         if cursor:
             query["pageToken"] = cursor
         data = await self.transport.request("GET", "/rest/app-chat/conversations", params=query)
-        if not isinstance(data, dict) or not isinstance(data.get("conversations", []), list):
+        if not isinstance(data, dict):
+            raise ProviderError("Grok project conversation response contract changed")
+        conversations = data.get("conversations")
+        if conversations is not None and not isinstance(conversations, list):
             raise ProviderError("Grok project conversation response contract changed")
         return Page(
             tuple(
@@ -370,7 +382,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     },
                     self.account_id,
                 )
-                for item in data.get("conversations", [])
+                for item in (conversations or ())
             ),
             data.get("nextPageToken"),
         )
@@ -441,6 +453,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         if len(request.attachments) > GROK_ATTACHMENTS.max_files:
             raise ValueError("Too many Grok chat attachments")
         file_attachments = []
+        image_attachments = []
         total_attachment_bytes = 0
         for attachment in request.attachments:
             metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
@@ -456,7 +469,11 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
             ):
                 raise ValueError("Grok chat attachment metadata is invalid")
             total_attachment_bytes += size
-            file_attachments.append(metadata)
+            mime = str(attachment.get("mime_type") or metadata.get("mimeType") or "").lower()
+            if mime.startswith("image/"):
+                image_attachments.append(metadata)
+            else:
+                file_attachments.append(metadata)
         if (
             GROK_ATTACHMENTS.max_total_bytes
             and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
@@ -557,10 +574,19 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                                 "Grok edit target is no longer on the active conversation path"
                             )
                         parent_response_id = target.get("parentResponseId") or ""
-                        if not file_attachments and target.get("fileAttachments"):
-                            file_attachments = [
-                                item for item in target["fileAttachments"] if isinstance(item, dict)
-                            ]
+                        if not file_attachments and not image_attachments:
+                            for item in target.get("fileAttachments") or ():
+                                if isinstance(item, dict):
+                                    mime = str(
+                                        item.get("mimeType") or item.get("fileMimeType") or ""
+                                    ).lower()
+                                    if mime.startswith("image/"):
+                                        image_attachments.append(item)
+                                    else:
+                                        file_attachments.append(item)
+                            for item in target.get("imageAttachments") or ():
+                                if isinstance(item, dict):
+                                    image_attachments.append(item)
                     elif active:
                         parent_response_id = active[-1].get("responseId") or ""
 
@@ -568,7 +594,7 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 "message": "" if is_retry else request.prompt,
                 "parentResponseId": parent_response_id,
                 "fileAttachments": file_attachments,
-                "imageAttachments": [],
+                "imageAttachments": image_attachments,
                 "disableSearch": False,
                 "temporary": request.temporary,
                 "isRegenRequest": is_retry,
@@ -588,11 +614,17 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
         streamed_text, streamed_analysis = StringIO(), StringIO()
         raw_native_text = raw_native_analysis = None
         sources = ()
+        raw_search_results = []
         response_model = model
         complete = False
         completion_notified = False
         bound = False
         text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
+
+        def resolve_sources():
+            nonlocal sources
+            if raw_search_results and not sources:
+                sources = sources_from({"sources": raw_search_results})
 
         def flush_text_filters():
             for cleaner, output, channel in (
@@ -639,12 +671,24 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                     bound = True
             error = response.get("error") or result.get("error") or chunk.get("error")
             if error:
-                if isinstance(error, dict) and error.get("code") in (
-                    "UNAUTHORIZED",
-                    "AUTH_REQUIRED",
-                ):
+                code = str(error.get("code") or "").upper() if isinstance(error, dict) else ""
+                msg = str(error.get("message") or "") if isinstance(error, dict) else str(error)
+                if code in ("UNAUTHORIZED", "AUTH_REQUIRED"):
                     self.transport.session.authenticated = False
                     raise AccountPaused("Grok session expired; verify the account again")
+                if (
+                    "RATE_LIMIT" in code
+                    or "QUOTA" in code
+                    or "TOO_MANY_REQUESTS" in code
+                    or "rate limit" in msg.lower()
+                    or "too many requests" in msg.lower()
+                ):
+                    retry_after = error.get("retryAfter") if isinstance(error, dict) else None
+                    try:
+                        delay = float(retry_after) if retry_after is not None else None
+                    except (ValueError, TypeError):
+                        delay = None
+                    raise RateLimited(delay)
                 raise ProviderError("Grok stream reported an error; the request was not resent")
             user = response.get("userResponse")
             if isinstance(user, dict) and user.get("responseId"):
@@ -654,7 +698,9 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 response_id = native.get("responseId") or response_id
                 response_model = native.get("model") or response_model
                 if isinstance(native.get("webSearchResults"), list):
-                    sources = sources_from({"sources": [*sources, *native["webSearchResults"]]})
+                    for item in native["webSearchResults"]:
+                        if isinstance(item, dict) and item not in raw_search_results:
+                            raw_search_results.append(item)
                 if isinstance(native.get("message"), str):
                     raw_native_text = native["message"]
                 if native.get("thinkingTrace") is not None:
@@ -681,12 +727,14 @@ class GrokProvider(ProjectEditing, OptionalFeatures):
                 and not completion_notified
                 and (request.conversation_id or conversation_id)
             ):
+                resolve_sources()
                 for event in flush_text_filters():
                     yield event
                 for event in reconcile_native():
                     yield event
                 yield ResponseComplete()
                 completion_notified = True
+        resolve_sources()
         for event in flush_text_filters():
             yield event
         for event in reconcile_native():
