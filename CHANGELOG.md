@@ -7,10 +7,23 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Added
 
 - Support user message editing on Grok through its parent-response tree branching contract.
+- Route image attachments to `imageAttachments` on Grok to enable multi-modal vision model analysis.
+- Preserve and deduplicate both file and image attachments when editing user prompts or loading conversation history on Grok.
 
 ### Changed
 
+- Defer Grok web-search citation resolution to stream completion, avoiding repeated per-chunk tree traversals and deduplicating citation results in $O(1)$ time.
+- Map Grok `RATE_LIMIT_EXCEEDED`, `TOO_MANY_REQUESTS`, `QUOTA`, and textual cooldown errors directly to typed `RateLimited` exceptions with parsed retry delays.
+- Intercept HTTP 3xx redirect responses during `WebSession.check` to immediately raise `AccountPaused` when web sessions expire.
+- Omit retry and edit actions on Grok temporary chats across live streaming and loaded conversation history.
 - Update SiopeChat integration guidance for its pinned PyPI dependency; no provider submodule is required.
+
+### Fixed
+
+- Prevent premature tag termination in `GrokTextFilter` by ignoring `>` characters located inside attribute quotes.
+- Ensure deterministic leaf selection in Grok response trees by sorting sibling leaf nodes chronologically by creation timestamp.
+- Add null-safety guards for Grok conversation, workspace, and workspace file endpoints when server payloads return `null` lists.
+- Guard against missing MIME metadata when inspecting Grok attachment structures.
 
 ## [1.1-beta] - 2026-11-05
 
