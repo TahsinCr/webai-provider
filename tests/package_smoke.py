@@ -1,17 +1,21 @@
-"""Smoke the standalone provider wheel from its clean site-packages install."""
+from __future__ import annotations
 
 import asyncio
 import tempfile
 from pathlib import Path
 
 import webai_provider
-from webai_provider import ProviderClient, SendRequest
+import webaiprovider
+from webai_provider import Account, ChatGPTProvider
 from webai_provider.providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
 
 
 def main():
     if webai_provider.__version__ != "1.3.0b0":
         raise SystemExit(f"invalid providers version: {webai_provider.__version__}")
+    if webaiprovider.__version__ != webai_provider.__version__:
+        raise SystemExit("package version mismatch between webai_provider and webaiprovider")
+
     with SentinelRuntime(user_agent="Mozilla/5.0 (X11; Linux x86_64)") as runtime:
         initial = runtime.create_initial_proof()
         if not initial.startswith("gAAAAAC") or not initial.endswith("~S"):
@@ -29,22 +33,20 @@ def main():
         if not proof.startswith("gAAAAAB") or not proof.endswith("~S"):
             raise SystemExit("generate_enforcement_proof did not produce a valid proof token")
 
-    async def verify_lazy_account_factory():
+    async def verify_v2_session():
         with tempfile.TemporaryDirectory() as folder:
-            client = ProviderClient()
-            backend = client.connect(
-                "chatgpt",
-                "package-smoke",
-                credential_file=Path(folder) / "session.json",
-            )
-            if backend.id != "chatgpt" or backend.account_id != "package-smoke":
-                raise SystemExit("standalone provider factory returned the wrong account")
-            request = SendRequest("chatgpt", "package-smoke", "local", "smoke")
-            if (request.provider_id, request.account_id) != (backend.id, backend.account_id):
-                raise SystemExit("public request model did not preserve account identity")
-            await client.close()
+            session_file = Path(folder) / "session.json"
+            session_file.write_text('{"token": "smoke-test"}', encoding="utf-8")
+            acc = Account.from_cookies("chatgpt", session_file)
+            if acc.provider != "chatgpt":
+                raise SystemExit("Account did not preserve provider identity")
+            provider = ChatGPTProvider(account=acc)
+            session = provider.connect()
+            if session.provider != "chatgpt":
+                raise SystemExit("ProviderSession did not preserve provider identity")
+            await session.close()
 
-    asyncio.run(verify_lazy_account_factory())
+    asyncio.run(verify_v2_session())
 
 
 if __name__ == "__main__":

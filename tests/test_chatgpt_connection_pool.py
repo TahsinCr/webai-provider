@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from webai_provider.api import ConversationBound, SendRequest, TextDelta
+from webai_provider.base import ConversationBound, SendRequest, TextDelta
 from webai_provider.providers.chatgpt.adapter import ChatGPTProvider
 
 

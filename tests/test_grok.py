@@ -9,19 +9,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from webai_provider.api import (
-    Capability,
+from webai_provider.accounts.cookies import select_cookies
+from webai_provider.base import (
     MessageAction,
     MessageMetadata,
-    ProviderError,
     ReplaceText,
     ResponseComplete,
     SendRequest,
     TextDelta,
-    select_cookies,
 )
-from webai_provider.errors import AccountPaused, RateLimited
-from webai_provider.models import Resource
+from webai_provider.errors import AccountPaused, ProviderError, RateLimited
+from webai_provider.models import Capability, Resource
 from webai_provider.providers.grok import GrokProvider
 from webai_provider.providers.grok.records import GrokTextFilter, active_responses, conversation
 from webai_provider.providers.grok.transport import (

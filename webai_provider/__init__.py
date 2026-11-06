@@ -6,22 +6,12 @@ from .accounts.credentials import (
     FileCredentialStore,
     MemoryCredentialStore,
 )
-from .base import (
-    BranchContext,
-    ConversationBound,
-    MessageAction,
-    ReplaceText,
-    SendRequest,
-    TextDelta,
-    ThoughtDelta,
-)
 from .catalogs.chatgpt import ChatGPTModels
 from .catalogs.claude import ClaudeModels
 from .catalogs.gemini import GeminiModels
 from .catalogs.grok import GrokModels
 from .catalogs.policies import Efforts, Models
 from .catalogs.resolver import SelectionResolver
-from .client import ProviderClient
 from .collections.base import ResourceCollection
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
@@ -76,7 +66,6 @@ from .providers.chatgpt.errors import (
     ChatGPTWebError,
     SentinelCompatibilityError,
 )
-from .registry import ProviderRegistry, create_provider
 from .resources.attachments import Attachment, Attachments
 from .resources.chat import Chat
 from .resources.message import Message
@@ -93,6 +82,7 @@ __all__ = [
     "CredentialStore",
     "FileCredentialStore",
     "MemoryCredentialStore",
+    "Capability",
     "ChatGPTModels",
     "ClaudeModels",
     "GeminiModels",
@@ -121,9 +111,6 @@ __all__ = [
     "ThinkingDelta",
     "ThinkingEnd",
     "TimingMetrics",
-    "TextDelta",
-    "ThoughtDelta",
-    "ReplaceText",
     "AccountPaused",
     "AmbiguousMatchError",
     "CapabilityError",
@@ -150,37 +137,11 @@ __all__ = [
     "GrokProvider",
     "Attachment",
     "Attachments",
-    "BranchContext",
-    "Capability",
     "Chat",
-    "ConversationBound",
     "Message",
-    "MessageAction",
     "MessageOperation",
     "OperationHooks",
     "Project",
-    "ProjectsCollection",
-    "ProviderClient",
-    "ProviderRegistry",
-    "ProviderSession",
-    "RateLimited",
-    "RemoteNotFound",
-    "ReplaceText",
-    "ResourceCollection",
     "Response",
-    "SelectionResolver",
-    "SendRequest",
-    "SentinelCompatibilityError",
-    "Source",
-    "SourceDiscovered",
-    "StreamEvent",
-    "TerminalStatus",
-    "TextDelta",
-    "ThinkingBegin",
-    "ThinkingDelta",
-    "ThinkingEnd",
-    "TimingMetrics",
-    "ThoughtDelta",
-    "UnsupportedOperationError",
-    "create_provider",
+    "ProviderSession",
 ]

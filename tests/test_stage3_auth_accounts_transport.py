@@ -19,12 +19,13 @@ from webai_provider.accounts import (
     save_session,
     session_exists,
 )
-from webai_provider.api import (
+from webai_provider.accounts.filters import (
     ALLOWED_PROVIDER_ORIGINS,
-    Capability,
-    CookieReader,
     ProviderCookieFilter,
     filter_provider_cookies,
+)
+from webai_provider.accounts.importer import (
+    CookieReader,
     import_browser_session,
 )
 from webai_provider.errors import (
@@ -33,6 +34,7 @@ from webai_provider.errors import (
     RateLimited,
     RemoteNotFound,
 )
+from webai_provider.models import Capability
 from webai_provider.transport import (
     BoundedWorkPool,
     HttpSession,

@@ -5,9 +5,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from webai_provider import Capability, ProviderRegistry, ReplaceText, SendRequest, TextDelta
+from webai_provider.base import ReplaceText, SendRequest, TextDelta
 from webai_provider.errors import ProviderError, RateLimited, RemoteNotFound
-from webai_provider.models import Choice, FeatureState, Model, ModelCatalog, SessionState
+from webai_provider.models import (
+    Capability,
+    Choice,
+    FeatureState,
+    Model,
+    ModelCatalog,
+    SessionState,
+)
 from webai_provider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
 from webai_provider.providers.chatgpt.client import ChatGPTClient
 from webai_provider.providers.chatgpt.errors import SentinelCompatibilityError
@@ -362,15 +369,6 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(raised.exception, failure)
         self.assertEqual(raised.exception.code, "chatgpt_sentinel_incompatible")
         self.assertFalse(raised.exception.message_submitted)
-
-    async def test_runtime_health_overlay_leaves_unrelated_capabilities_usable(self):
-        registry = ProviderRegistry()
-        registry.register(self.provider)
-        registry.mark_unavailable("chatgpt", Capability.CHAT)
-        description = await registry.describe("chatgpt")
-        self.assertEqual(description.feature(Capability.CHAT).state, FeatureState.UNAVAILABLE)
-        self.assertEqual(description.feature(Capability.HISTORY).state, FeatureState.AVAILABLE)
-        self.assertIs(registry.require("chatgpt", Capability.HISTORY), self.provider)
 
     def test_medium_effort_only_selected_when_catalog_supports_it(self):
         catalog = ModelCatalog(

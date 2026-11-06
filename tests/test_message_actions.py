@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
-from webai_provider import BranchContext, MessageAction, SendRequest
-from webai_provider.api import files_from, sources_from
+from webai_provider.base import BranchContext, MessageAction, SendRequest
 from webai_provider.models import Model, Origin
 from webai_provider.providers.chatgpt.client import ChatGPTClient
 from webai_provider.providers.claude.transport import ClaudeTransport
 from webai_provider.providers.gemini.history import history
 from webai_provider.providers.gemini.transport import generation_request
+from webai_provider.transformers.citations import files_from, sources_from
 
 
 class ChatGPTActionsTests(unittest.TestCase):

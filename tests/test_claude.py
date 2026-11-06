@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webai_provider import Capability, ConversationBound, ReplaceText, SendRequest
+from webai_provider.base import ConversationBound, ReplaceText, SendRequest
 from webai_provider.errors import FeatureUnavailable, ProviderError
-from webai_provider.models import FeatureState
+from webai_provider.models import Capability, FeatureState
 from webai_provider.providers.claude import ClaudeProvider
 from webai_provider.providers.claude.records import (
     conversation,

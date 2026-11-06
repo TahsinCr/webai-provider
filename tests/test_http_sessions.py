@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
-from webai_provider.api import read_session, save_session, save_session_async
+from webai_provider.accounts.credentials import read_session, save_session, save_session_async
 from webai_provider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from webai_provider.providers.claude.errors import ClaudeRequestNotSent
 from webai_provider.providers.claude.transport import ClaudeTransport, organization_from_bootstrap

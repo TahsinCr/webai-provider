@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from webai_provider import MessageAction, ReplaceText, SendRequest
+from webai_provider.base import MessageAction, ReplaceText, SendRequest
 from webai_provider.errors import AccountPaused, ProviderError
 from webai_provider.models import Choice, Model
 from webai_provider.providers.gemini import GeminiProvider
