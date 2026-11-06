@@ -16,7 +16,7 @@ from ...api import (
     SendRequest,
     validate_request,
 )
-from ...contracts import OptionalFeatures, confirm_deleted
+from ...base import ProviderAdapter, confirm_deleted
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...messages import files_from, sources_from
 from ...models import (
@@ -29,13 +29,13 @@ from ...models import (
 )
 from ...projects import ProjectEditing
 from ...session import delete_session, session_exists
-from ...timing import current_send_timing
+from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 
 _CHAT_METADATA_TTL_SECONDS = 60.0
 
 
-class GeminiProvider(ProjectEditing, OptionalFeatures):
+class GeminiProvider(ProjectEditing, ProviderAdapter):
     id = "gemini"
     capabilities = frozenset(
         {
@@ -324,7 +324,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
 
     async def project_options(self, project_id=None):
         if not hasattr(self, "editor"):
-            return await OptionalFeatures.project_options(self, project_id)
+            return await ProviderAdapter.project_options(self, project_id)
         return await ProjectEditing.project_options(self, project_id)
 
     async def create_project(
@@ -582,7 +582,7 @@ class GeminiProvider(ProjectEditing, OptionalFeatures):
                     self._temporary.pop(oldest)
 
     async def resolve_download(self, url, conversation_id=None, message_id=None):
-        from ...files import DownloadSource, NativeDownloadClient, cookie_header
+        from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
         from .media import PLACEHOLDER, valid_media_url
 
         stable_reference = bool(PLACEHOLDER.fullmatch(url) or url.startswith("gemini-media:"))

@@ -6,6 +6,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Add modular streaming framers in `webai_provider.framers`: `SSEFramer` for RFC-compliant Server-Sent Events with keep-alive skipping, and `JSPBFramer` for Gemini batchexecute Protobuf-over-JSON length-prefixed stream decoding.
+- Add streaming text and citation transformers in `webai_provider.transformers`: `StreamReconciler` for diff-based snapshot reconciliation, `extract_citations` / `sources_from` for unified web/file citations, and `GrokTextFilter` / `clean_render_markup` / `strip_protocol_tags` for protocol and render markup sanitation.
+- Expand core error hierarchy in `webai_provider.errors`: introduce unified `StreamError`, `RequestNotSentError`, `NetworkError`, and `AuthenticationError` base classes.
+- Create dedicated `providers.grok.errors` module with `GrokError`, `GrokStreamError`, and `GrokCompatibilityError`.
+- Consolidate common provider base layer in `webai_provider.base`: introduce `ProviderAdapter` replacing `Backend` protocol and `OptionalFeatures` mixin.
 - Integrate EventFlow concurrency, cache, and resilience primitives in `webai_provider.core`:
   - `MultiDimensionBoundedCache`: dual-bounded (entry count and character size) cache with TTL expiration.
   - `ConcurrencyCoordinator`: fine-grained keyed concurrency limiting (`KeyedConcurrencyLimiter`) and single-flight request coalescing (`SingleFlight`).
@@ -16,12 +21,15 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Move standalone utility modules (`cdp.py`, `timing.py`, `files.py`, `history.py`, `attachments.py`) into the dedicated `webai_provider.utils` package.
+- Re-export unified provider error classes across `providers.chatgpt.errors`, `providers.claude.errors`, `providers.gemini.errors`, and `providers.grok.errors`.
 - Migrate package layout to a clean, flat `webai_provider` root directory without requiring a `src/` wrapper or setuptools package mapping hacks.
 - Group bundled provider adapters (ChatGPT, Claude, Gemini, Grok) under the canonical `webai_provider.providers` subpackage.
 - Standardize `pyproject.toml` configuration using `[tool.setuptools.packages.find]` for `webai_provider*` and `known-first-party = ["webai_provider"]`.
 
 ### Removed
 
+- Remove ad-hoc `webai_provider.contracts` module and legacy `Backend` protocol naming in favor of `ProviderAdapter`.
 - Remove legacy `[tool.setuptools.package-dir]` virtual path mappings and `providers = "."` hacks.
 - Remove runtime `sys.modules` monkey-patching from provider initialization.
 - Remove deprecated `__verison__` backward-compatibility typo alias from public exports.

@@ -14,8 +14,7 @@ from ...api import (
     TextDelta,
     validate_request,
 )
-from ...attachments import GROK_ATTACHMENTS
-from ...contracts import OptionalFeatures
+from ...base import ProviderAdapter
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...messages import sources_from
@@ -30,6 +29,7 @@ from ...models import (
 )
 from ...projects import ProjectEditing
 from ...session import delete_session, session_exists
+from ...utils.attachments import GROK_ATTACHMENTS
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id
 
@@ -44,7 +44,7 @@ _MODEL_MODES = {
 }
 
 
-class GrokProvider(ProjectEditing, OptionalFeatures):
+class GrokProvider(ProjectEditing, ProviderAdapter):
     id = "grok"
     capabilities = frozenset(
         {

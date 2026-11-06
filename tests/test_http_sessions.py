@@ -461,7 +461,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fetch.call_count, 3)
 
     async def test_http_stream_preserves_published_thinking_and_end_marker(self):
-        from webai_provider.timing import SendTiming, use_send_timing
+        from webai_provider.utils.timing import SendTiming, use_send_timing
 
         cid = "11111111-1111-1111-1111-111111111111"
         events = [

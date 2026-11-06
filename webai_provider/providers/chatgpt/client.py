@@ -18,7 +18,7 @@ import httpx
 
 from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
-from ...timing import SendTiming, current_send_timing
+from ...utils.timing import SendTiming, current_send_timing
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (
     model_catalog as parse_model_catalog,

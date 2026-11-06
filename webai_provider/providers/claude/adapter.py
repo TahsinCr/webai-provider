@@ -12,7 +12,7 @@ from ...api import (
     TextDelta,
     validate_request,
 )
-from ...contracts import OptionalFeatures
+from ...base import ProviderAdapter
 from ...errors import AccountPaused, FeatureUnavailable
 from ...models import (
     Choice,
@@ -25,13 +25,13 @@ from ...models import (
 )
 from ...projects import ProjectEditing
 from ...session import delete_session, session_exists
-from ...timing import current_send_timing
+from ...utils.timing import current_send_timing
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .transport import ClaudeProjectEditor, ClaudeTransport
 
 
-class ClaudeProvider(ProjectEditing, OptionalFeatures):
+class ClaudeProvider(ProjectEditing, ProviderAdapter):
     id = "claude"
     capabilities = frozenset(
         {
@@ -104,8 +104,8 @@ class ClaudeProvider(ProjectEditing, OptionalFeatures):
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-        from ...files import DownloadSource, NativeDownloadClient, cookie_header
         from ...session import read_session
+        from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
         from .transport import remote_id
 
         parsed = urlsplit(url)

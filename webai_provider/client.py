@@ -4,31 +4,31 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from .api import Capability, ProviderEvent, SendRequest
-from .contracts import Backend
+from .base import ProviderAdapter
 from .errors import FeatureUnavailable
 from .registry import create_provider
 
 
 class ProviderClient:
-    """An async resource scope for independent account backends.
+    """An async resource scope for independent account adapters.
 
-    account() exposes the full Backend contract: authentication, models, history,
+    account() exposes the full ProviderAdapter contract: authentication, models, history,
     projects, sources, uploads and downloads. stream() routes a SendRequest using
     both provider_id and account_id; chat/project remote IDs remain provider-owned.
-    Closing the client cancels its active streams and closes every owned backend.
-    If a backend close fails, the client stays terminal and a later close() retries
-    only that backend. Use one instance per asyncio event loop; application
+    Closing the client cancels its active streams and closes every owned adapter.
+    If an adapter close fails, the client stays terminal and a later close() retries
+    only that adapter. Use one instance per asyncio event loop; application
     persistence is external.
     """
 
     def __init__(self):
-        self._accounts: dict[tuple[str, str], Backend] = {}
+        self._accounts: dict[tuple[str, str], ProviderAdapter] = {}
         self._streams: dict[asyncio.Task, int] = {}
         self._iterators = set()
         self._closed = False
         self._closing = None
 
-    def add(self, backend: Backend) -> Backend:
+    def add(self, backend: ProviderAdapter) -> ProviderAdapter:
         if self._closed:
             raise RuntimeError("provider client is closed")
         key = (backend.id, backend.account_id)
@@ -37,7 +37,9 @@ class ProviderClient:
         self._accounts[key] = backend
         return backend
 
-    def connect(self, provider_id: str, account_id: str = "default", **configuration) -> Backend:
+    def connect(
+        self, provider_id: str, account_id: str = "default", **configuration
+    ) -> ProviderAdapter:
         """Configure an account lazily; no browser/session request is made here."""
         if self._closed:
             raise RuntimeError("provider client is closed")
@@ -45,14 +47,14 @@ class ProviderClient:
             raise ValueError("provider/account identity must be unique")
         return self.add(create_provider(provider_id, account_id, **configuration))
 
-    def account(self, provider_id: str, account_id: str = "default") -> Backend:
+    def account(self, provider_id: str, account_id: str = "default") -> ProviderAdapter:
         if self._closed:
             raise RuntimeError("provider client is closed")
         return self._accounts[provider_id, account_id]
 
     async def prepare(
         self, provider_id: str, account_id: str = "default", *, for_send: bool = False
-    ) -> Backend:
+    ) -> ProviderAdapter:
         """Warm one account before use; opt in to provider-specific send preparation."""
         backend = self.account(provider_id, account_id)
         await backend.prepare()

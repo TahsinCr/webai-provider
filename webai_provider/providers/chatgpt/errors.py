@@ -1,12 +1,13 @@
-from ...errors import ProviderError
+from ...errors import CompatibilityError, ProviderError
 
 
-class ChatGPTWebError(ProviderError):
+class ChatGPTError(ProviderError):
     code = "chatgpt_error"
 
 
-class SentinelCompatibilityError(ChatGPTWebError):
-    """The local proof helper cannot satisfy the current web verification flow."""
+ChatGPTWebError = ChatGPTError
 
+
+class SentinelCompatibilityError(CompatibilityError, ChatGPTError):
     code = "chatgpt_sentinel_incompatible"
     message_submitted = False

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .api import Capability, Provider
-from .contracts import Backend
+from .base import ProviderAdapter
 
 PROVIDERS = {
     "chatgpt": ("ChatGPT", "https://chatgpt.com/"),
@@ -31,7 +31,7 @@ class ProviderRegistry:
             raise ValueError("provider ID must be nonempty and unique")
         self._providers[provider.id] = _Entry(provider, account_factory)
 
-    def create_account(self, provider_id: str, account_id: str, **configuration) -> Backend:
+    def create_account(self, provider_id: str, account_id: str, **configuration) -> ProviderAdapter:
         """Construct an independent account adapter using host-supplied configuration."""
         factory = self._providers[provider_id].account_factory
         if factory is None:
@@ -109,7 +109,7 @@ def create_provider(
     session=None,
     profile_directory=None,
     **options,
-) -> Backend:
+) -> ProviderAdapter:
     """Construct a bundled account backend without application state or network I/O.
 
     Callers own credentials and their locations. ChatGPT callers may supply an

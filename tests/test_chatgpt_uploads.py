@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from webai_provider.attachments import policy_for
 from webai_provider.providers.chatgpt.client import ChatGPTClient
 from webai_provider.providers.chatgpt.errors import ChatGPTWebError
+from webai_provider.utils.attachments import policy_for
 
 
 class AttachmentPolicyContractTests(unittest.TestCase):

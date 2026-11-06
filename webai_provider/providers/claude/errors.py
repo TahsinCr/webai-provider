@@ -1,20 +1,17 @@
-"""Claude web-session failures exposed through the provider contract."""
-
-from ...errors import ProviderError
+from ...errors import CompatibilityError, ProviderError, RequestNotSentError, StreamError
 
 
 class ClaudeError(ProviderError):
     code = "claude_error"
 
 
-class ClaudeCompatibilityError(ClaudeError):
+class ClaudeCompatibilityError(CompatibilityError, ClaudeError):
     code = "claude_compatibility"
 
 
-class ClaudeRequestNotSent(ClaudeError):
+class ClaudeRequestNotSent(RequestNotSentError, ClaudeError):
     code = "claude_request_not_sent"
-    message_submitted = False
 
 
-class ClaudeStreamError(ClaudeError):
+class ClaudeStreamError(StreamError, ClaudeError):
     code = "claude_stream_error"

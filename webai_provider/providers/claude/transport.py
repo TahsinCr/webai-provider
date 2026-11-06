@@ -9,12 +9,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 from ...api import MessageAction
-from ...contracts import confirm_deleted
+from ...base import confirm_deleted
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
 from ...projects import ProjectOptions, source_file
 from ...session import WebSession, read_session
-from ...timing import current_send_timing
+from ...utils.timing import current_send_timing
 from .catalog import selector_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 

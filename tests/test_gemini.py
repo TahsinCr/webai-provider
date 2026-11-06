@@ -546,7 +546,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
         from webai_provider.providers.gemini.transport import generate
-        from webai_provider.timing import SendTiming, use_send_timing
+        from webai_provider.utils.timing import SendTiming, use_send_timing
 
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[8] = "rcid", ["answer"], [2]

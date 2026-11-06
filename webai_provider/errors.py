@@ -1,29 +1,42 @@
-"""Provider-independent failures without credentials or raw transport payloads."""
-
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .api import Capability
 
 
 class ProviderError(RuntimeError):
-    """Safe, machine-readable failure returned by a provider operation.
-
-    ``message_submitted`` is specific to send operations: ``False`` guarantees
-    that the user's prompt was not sent, while ``None`` means the boundary
-    cannot be proven. ``code`` is stable for callers; display text is not.
-    """
-
     code = "provider_error"
     message_submitted: bool | None = None
+
+
+class NetworkError(ProviderError):
+    code = "network_error"
+    message_submitted = False
+
+
+class RequestNotSentError(ProviderError):
+    code = "request_not_sent"
+    message_submitted = False
+
+
+class StreamError(ProviderError):
+    code = "stream_error"
+
+
+class AuthenticationError(ProviderError):
+    code = "authentication_error"
+
+
+class AccountPaused(AuthenticationError):
+    code = "account_paused"
 
 
 class FeatureUnavailable(ProviderError):
     code = "feature_unavailable"
 
-    def __init__(self, capability, reason: str = "unsupported"):
+    def __init__(self, capability: Capability, reason: str = "unsupported"):
         super().__init__(f"{capability.value}: {reason}")
         self.capability = capability
         self.reason = reason
@@ -42,29 +55,26 @@ class RateLimited(ProviderError):
         self.retry_after = retry_after
 
 
-class AccountPaused(ProviderError):
-    """Login or user verification is needed before new sends are allowed."""
-
-    code = "account_paused"
-
-
 class CompatibilityError(ProviderError):
-    code = "capability_changed"
+    code = "compatibility_error"
 
-    def __init__(self, capability: Capability):
-        super().__init__("provider capability changed")
-        self.capability = capability
+    def __init__(self, capability_or_message: Any = None):
+        if hasattr(capability_or_message, "value"):
+            super().__init__(f"provider capability changed: {capability_or_message.value}")
+            self.capability = capability_or_message
+        elif isinstance(capability_or_message, str):
+            super().__init__(capability_or_message)
+            self.capability = None
+        else:
+            super().__init__("provider capability changed")
+            self.capability = None
 
 
 class RemoteNotFound(ProviderError):
-    """The provider confirmed that this remote record no longer exists."""
-
     code = "remote_not_found"
 
 
 class ProfileError(ProviderError):
-    """Safe diagnostic: never include decryption exceptions or cookie values."""
-
     code = "profile_error"
     default_message = "Profil okunamadı (beklenmeyen hata); Python bağımlılıklarını ve profil erişimini kontrol edin"
 

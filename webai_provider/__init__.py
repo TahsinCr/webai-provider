@@ -16,11 +16,12 @@ from .api import (
     SendRequest,
     TextDelta,
 )
-from .attachments import AttachmentPolicy
+from .base import ProviderAdapter
 from .client import ProviderClient
-from .contracts import Backend
 from .errors import (
+    AuthenticationError,
     FeatureUnavailable,
+    NetworkError,
     ProfileDatabaseError,
     ProfileDecryptionError,
     ProfileDependencyError,
@@ -33,8 +34,9 @@ from .errors import (
     ProfileTimeoutError,
     ProviderError,
     RemoteNotFound,
+    RequestNotSentError,
+    StreamError,
 )
-from .files import DownloadSource
 from .models import (
     Choice,
     Content,
@@ -55,12 +57,15 @@ from .models import (
 from .projects import ProjectOptions
 from .registry import ProviderRegistry, create_provider
 from .session import CredentialStore
+from .utils.attachments import AttachmentPolicy
+from .utils.files import DownloadSource
 
 __version__ = "1.2.0b0"
 
 __all__ = [
     "__version__",
     "AccountPaused",
+    "AuthenticationError",
     "BranchContext",
     "CredentialStore",
     "AttachmentPolicy",
@@ -74,6 +79,7 @@ __all__ = [
     "MessageAction",
     "MessageMetadata",
     "Model",
+    "NetworkError",
     "Origin",
     "Page",
     "Project",
@@ -92,16 +98,18 @@ __all__ = [
     "ProfileTimeoutError",
     "ResponseComplete",
     "RemoteNotFound",
+    "RequestNotSentError",
     "Resource",
     "SessionState",
     "SessionStatus",
+    "StreamError",
     "create_provider",
     "Capability",
     "CompatibilityError",
     "ConversationBound",
     "Provider",
     "DownloadSource",
-    "Backend",
+    "ProviderAdapter",
     "ProviderDescription",
     "ModelCatalog",
     "ProviderRegistry",

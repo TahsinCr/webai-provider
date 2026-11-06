@@ -1,15 +1,13 @@
-"""Gemini web-session failures exposed through the provider contract."""
-
-from ...errors import ProviderError
+from ...errors import CompatibilityError, ProviderError, StreamError
 
 
 class GeminiError(ProviderError):
     code = "gemini_error"
 
 
-class GeminiCompatibilityError(GeminiError):
+class GeminiCompatibilityError(CompatibilityError, GeminiError):
     code = "gemini_compatibility"
 
 
-class GeminiStreamError(GeminiError):
+class GeminiStreamError(StreamError, GeminiError):
     code = "gemini_stream_error"

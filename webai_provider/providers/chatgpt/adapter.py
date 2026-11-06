@@ -19,7 +19,7 @@ from ...api import (
     TextDelta,
     validate_request,
 )
-from ...contracts import OptionalFeatures, confirm_deleted
+from ...base import ProviderAdapter, confirm_deleted
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
@@ -43,7 +43,7 @@ from ...models import (
 )
 from ...projects import ProjectEditing
 from ...session import delete_session, session_exists
-from ...timing import current_send_timing
+from ...utils.timing import current_send_timing
 from .client import ChatGPTClient
 from .discovery import project_id
 from .errors import ChatGPTWebError
@@ -56,7 +56,7 @@ class _Stopped(Exception):
     pass
 
 
-class ChatGPTProvider(ProjectEditing, OptionalFeatures):
+class ChatGPTProvider(ProjectEditing, ProviderAdapter):
     id = "chatgpt"
     capabilities = frozenset(
         {
@@ -516,7 +516,7 @@ class ChatGPTProvider(ProjectEditing, OptionalFeatures):
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-        from ...files import DownloadSource
+        from ...utils.files import DownloadSource
 
         parsed = urlsplit(url)
         if parsed.scheme == "file-service":

@@ -6,10 +6,10 @@ import json
 import mimetypes
 from urllib.parse import quote
 
-from ...attachments import GROK_ATTACHMENTS
 from ...errors import AccountPaused, ProviderError
 from ...projects import ProjectOptions, source_file
 from ...session import WebSession
+from ...utils.attachments import GROK_ATTACHMENTS
 
 ORIGIN = "https://grok.com"
 _MAX_LINE_BYTES = 1_048_576

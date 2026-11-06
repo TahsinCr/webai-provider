@@ -11,7 +11,7 @@ from webai_provider.models import Choice, FeatureState, Model, ModelCatalog, Ses
 from webai_provider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
 from webai_provider.providers.chatgpt.client import ChatGPTClient
 from webai_provider.providers.chatgpt.errors import SentinelCompatibilityError
-from webai_provider.timing import SendTiming, use_send_timing
+from webai_provider.utils.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient
 
