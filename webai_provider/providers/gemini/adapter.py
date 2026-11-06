@@ -519,7 +519,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 timing.record(
                     "provider_activity_sync_ms", time.perf_counter_ns() - activity_started
                 )
-        bound, visible, cid = False, False, request.conversation_id
+        bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
         final_metadata = None
         output_files, published_sources = (), ()
         async for chunk in generate(
@@ -532,7 +532,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         ):
             cid = chunk.get("cid") or cid
             metadata = chunk["metadata"]
-            if cid and not bound:
+            if cid and not bound and cid != request.conversation_id:
                 yield ConversationBound(cid)
                 bound = True
             if chunk.get("context_only"):
