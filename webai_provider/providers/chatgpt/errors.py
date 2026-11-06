@@ -1,4 +1,4 @@
-from ...errors import CompatibilityError, ProviderError
+from ...errors import ProviderError
 
 
 class ChatGPTError(ProviderError):
@@ -8,6 +8,6 @@ class ChatGPTError(ProviderError):
 ChatGPTWebError = ChatGPTError
 
 
-class SentinelCompatibilityError(CompatibilityError, ChatGPTError):
+class SentinelCompatibilityError(ChatGPTError):
     code = "chatgpt_sentinel_incompatible"
     message_submitted = False

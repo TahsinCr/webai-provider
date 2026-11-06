@@ -27,6 +27,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Group bundled provider adapters (ChatGPT, Claude, Gemini, Grok) under the canonical `webai_provider.providers` subpackage.
 - Standardize `pyproject.toml` configuration using `[tool.setuptools.packages.find]` for `webai_provider*` and `known-first-party = ["webai_provider"]`.
 
+### Fixed
+
+- Preserve specific `chatgpt_sentinel_incompatible` error code by having `SentinelCompatibilityError` inherit directly from `ChatGPTError`.
+
 ### Removed
 
 - Remove ad-hoc `webai_provider.contracts` module and legacy `Backend` protocol naming in favor of `ProviderAdapter`.
