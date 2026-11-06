@@ -1,270 +1,38 @@
-"""Origin-scoped HTTP web sessions and private, atomic credential persistence."""
-
-import asyncio
-import json
-import math
-import os
-import tempfile
-import threading
 import time
-from datetime import timezone
-from email.utils import parsedate_to_datetime
-from pathlib import Path
-from typing import Protocol, runtime_checkable
-from urllib.parse import urlsplit
 
-from .core import ProviderResilienceRegistry
-from .errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from .accounts.credentials import (
+    CredentialStore,
+    FileCredentialStore,
+    MemoryCredentialStore,
+    _replace_with_retry,
+    _session_write_lock,
+    delete_session,
+    read_session,
+    save_session,
+    save_session_async,
+    session_exists,
+)
+from .transport.session import (
+    _ORIGIN_RESILIENCE,
+    DEFAULT_JSON_OFFLOAD_THRESHOLD,
+    HttpSession,
+    WebSession,
+)
 
-
-@runtime_checkable
-class CredentialStore(Protocol):
-    def load(self) -> dict: ...
-    def save(self, value: dict) -> None: ...
-    def exists(self) -> bool: ...
-    def delete(self) -> None: ...
-
-
-def session_exists(source):
-    return source.exists() if isinstance(source, CredentialStore) else Path(source).is_file()
-
-
-def delete_session(source):
-    if isinstance(source, CredentialStore):
-        source.delete()
-    else:
-        Path(source).unlink(missing_ok=True)
-
-
-_SESSION_WRITE_LOCKS = {}
-_SESSION_WRITE_LOCKS_GUARD = threading.Lock()
-
-
-def _session_write_lock(path):
-    key = os.path.normcase(os.path.abspath(path))
-    with _SESSION_WRITE_LOCKS_GUARD:
-        return _SESSION_WRITE_LOCKS.setdefault(key, threading.Lock())
-
-
-def _replace_with_retry(source, destination):
-    for attempt in range(5):
-        try:
-            os.replace(source, destination)
-            return
-        except PermissionError:
-            if os.name != "nt" or attempt == 4:
-                raise
-            time.sleep(0.01 * (2**attempt))
-
-
-def read_session(path):
-    if isinstance(path, CredentialStore):
-        try:
-            value = path.load()
-            if not isinstance(value, dict):
-                raise ValueError("session shape")
-            return value
-        except (OSError, ValueError):
-            raise AccountPaused("Kayıtlı oturum yok veya geçersiz; hesabı doğrulayın") from None
-    path = Path(path)
-    try:
-        if path.stat().st_size > 1_048_576:
-            raise ValueError("session size")
-        value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError("session shape")
-        return value
-    except (OSError, ValueError):
-        raise AccountPaused(
-            "Kayıtlı oturum yok veya geçersiz; Hesaplar bölümünden doğrulayın"
-        ) from None
-
-
-def save_session(path, value, *, ensure_ascii=False, newline=False):
-    if isinstance(path, CredentialStore):
-        path.save(value)
-        return
-    path = Path(path)
-    with _session_write_lock(path):
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        name = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=path.parent, delete=False
-            ) as output:
-                name = output.name
-                if os.name != "nt":
-                    os.chmod(name, 0o600)
-                json.dump(value, output, ensure_ascii=ensure_ascii)
-                if newline:
-                    output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            _replace_with_retry(name, path)
-        finally:
-            if name and os.path.exists(name):
-                os.unlink(name)
-
-
-async def save_session_async(path, value):
-    """Finish an in-flight credential write before releasing a caller's save lock."""
-    worker = asyncio.create_task(asyncio.to_thread(save_session, path, value))
-    try:
-        await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        await asyncio.gather(worker, return_exceptions=True)
-        raise
-
-
-_ORIGIN_RESILIENCE = ProviderResilienceRegistry()
-
-
-class WebSession:
-    """Reuse an authenticated HTTP connection; never launch processes or follow redirects."""
-
-    resilience = _ORIGIN_RESILIENCE
-
-    def __init__(self, origin, credential_file, required_cookie, *, client_factory=None):
-        if origin not in ("https://claude.ai", "https://gemini.google.com", "https://grok.com"):
-            raise ValueError("unsupported session origin")
-        self.origin, self.path, self.required_cookie = (
-            origin,
-            credential_file,
-            required_cookie,
-        )
-        self.factory, self.client, self.authenticated = client_factory, None, False
-        self._saved_cookies = None
-        self._save_lock = asyncio.Lock()
-
-    def connect(self):
-        if self.client is None:
-            values = read_session(self.path)
-            cookies = values.get("cookies", values)
-            if (
-                not isinstance(cookies, dict)
-                or not cookies
-                or (self.required_cookie is not None and not cookies.get(self.required_cookie))
-            ):
-                raise AccountPaused("Oturumunuzu Hesaplar bölümünden bir kez yeniden doğrulayın")
-            if any(
-                not isinstance(k, str) or not isinstance(v, str) or "\n" in k + v or "\r" in k + v
-                for k, v in cookies.items()
-            ):
-                raise AccountPaused("Oturum kaydı geçersiz")
-            self._saved_cookies = dict(cookies)
-            factory = self.factory
-            if factory is None:
-                from curl_cffi.requests import AsyncSession
-
-                factory = AsyncSession
-            self.client = factory(
-                cookies=cookies,
-                impersonate="chrome",
-                timeout=60,
-                headers={
-                    "origin": self.origin,
-                    "referer": self.origin + "/",
-                    "accept": "application/json",
-                },
-            )
-        return self.client
-
-    def url(self, path):
-        parsed = urlsplit(path)
-        if (
-            parsed.scheme
-            or parsed.netloc
-            or not path.startswith("/")
-            or ".." in parsed.path
-            or path.startswith("//")
-        ):
-            raise ValueError("session request must remain on its origin")
-        return self.origin + path
-
-    @staticmethod
-    def check(response):
-        code = response.status_code
-        if code == 401 or code in (301, 302, 303, 307, 308):
-            raise AccountPaused("Sağlayıcı oturumu sona ermiş; Hesaplar bölümünden doğrulayın")
-        if code == 403:
-            raise ProviderError("Sağlayıcı bu işleme erişim vermedi (403); istek tekrarlanmadı")
-        if code == 404:
-            raise RemoteNotFound("Uzak kayıt bulunamadı")
-        if code == 429:
-            value = response.headers.get("retry-after", "")
-            try:
-                delay = float(value)
-            except (TypeError, ValueError, OverflowError):
-                try:
-                    retry_at = parsedate_to_datetime(value)
-                    if retry_at.tzinfo is None:
-                        retry_at = retry_at.replace(tzinfo=timezone.utc)
-                    delay = retry_at.timestamp() - time.time()
-                except (TypeError, ValueError, OverflowError, OSError):
-                    delay = None
-            if delay is not None:
-                delay = max(0.0, delay) if math.isfinite(delay) else None
-            raise RateLimited(delay)
-        if not 200 <= code < 300:
-            raise ProviderError(f"Sağlayıcı isteği tamamlanamadı (HTTP {code})")
-
-    async def request(self, method, path, **options):
-        if _ORIGIN_RESILIENCE.is_rate_limited(self.origin):
-            remaining = _ORIGIN_RESILIENCE.rate_limit_remaining(self.origin)
-            raise RateLimited(remaining if remaining > 0 else 1.0)
-        url = self.url(path)
-        try:
-            response = await self.connect().request(method, url, allow_redirects=False, **options)
-            self.check(response)
-        except RateLimited as exc:
-            delay = getattr(exc, "retry_after", None)
-            if delay and isinstance(delay, (int, float)) and delay > 0:
-                _ORIGIN_RESILIENCE.register_rate_limit(self.origin, float(delay))
-            raise
-        self.authenticated = True
-        await self.persist()
-        if response.status_code == 204 or not response.content:
-            return None
-        if len(response.content) > 16 * 1024 * 1024:
-            raise ProviderError("Sağlayıcı yanıtı boyut sınırını aştı")
-        try:
-            # Large histories must not block unrelated accounts on the shared loop.
-            if len(response.content) >= 256 * 1024:
-                return await asyncio.to_thread(response.json)
-            return response.json()
-        except ValueError:
-            raise ProviderError("Sağlayıcı yanıt biçimi değişmiş") from None
-
-    async def persist(self):
-        if self.client is None or self._saved_cookies is None:
-            return
-        async with self._save_lock:
-            # Only save the selected origin's existing credential names.
-            jar = getattr(self.client.cookies, "jar", None)
-            if jar is None:
-                cookies = {
-                    k: self.client.cookies.get(k) or v for k, v in self._saved_cookies.items()
-                }
-            else:
-                host = urlsplit(self.origin).hostname
-                cookies = dict(self._saved_cookies)
-                for cookie in sorted(jar, key=lambda c: len(c.domain or "")):
-                    if cookie.name in cookies and (
-                        not cookie.domain or host == cookie.domain.lstrip(".")
-                    ):
-                        cookies[cookie.name] = cookie.value
-            if cookies != self._saved_cookies:
-                try:
-                    await save_session_async(self.path, cookies)
-                    self._saved_cookies = cookies
-                except OSError:
-                    self.persistence_warning = "Oturum yenilendi ancak yerel kayıt güncellenemedi"
-
-    async def close(self):
-        client = self.client
-        if client is not None:
-            try:
-                await self.persist()
-            finally:
-                self.client = None
-                await client.close()
+__all__ = [
+    "CredentialStore",
+    "FileCredentialStore",
+    "MemoryCredentialStore",
+    "delete_session",
+    "read_session",
+    "save_session",
+    "save_session_async",
+    "session_exists",
+    "HttpSession",
+    "WebSession",
+    "DEFAULT_JSON_OFFLOAD_THRESHOLD",
+    "_ORIGIN_RESILIENCE",
+    "_replace_with_retry",
+    "_session_write_lock",
+    "time",
+]

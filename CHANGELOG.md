@@ -6,6 +6,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Implement Stage 3 identity, cookie, and networking layer across `webai_provider.accounts`, `webai_provider.auth`, and `webai_provider.transport`:
+  - `accounts`: typed `Account` entity, `CredentialStore` protocol, `FileCredentialStore` with atomic replace, fsync, and 0o600 file permissions, and thread-safe `MemoryCredentialStore`.
+  - `auth`: `ProviderCookieFilter` with origin enforcement and character sanitation, `CookieReader` profile discovery, and unified `import_browser_session`.
+  - `transport`: origin-scoped `HttpSession` (with `WebSession` alias), RFC HTTP-Date and delta-seconds `parse_retry_after`, `calculate_backoff`, `RetryPolicy`, and `BoundedWorkPool` offloading payloads >= 256KB from the event loop.
 - Add modular streaming framers in `webai_provider.framers`: `SSEFramer` for RFC-compliant Server-Sent Events with keep-alive skipping, and `JSPBFramer` for Gemini batchexecute Protobuf-over-JSON length-prefixed stream decoding.
 - Add streaming text and citation transformers in `webai_provider.transformers`: `StreamReconciler` for diff-based snapshot reconciliation, `extract_citations` / `sources_from` for unified web/file citations, and `GrokTextFilter` / `clean_render_markup` / `strip_protocol_tags` for protocol and render markup sanitation.
 - Expand core error hierarchy in `webai_provider.errors`: introduce unified `StreamError`, `RequestNotSentError`, `NetworkError`, and `AuthenticationError` base classes.

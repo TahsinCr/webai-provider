@@ -1,5 +1,11 @@
 """Reusable provider contracts and bundled provider-specific helpers."""
 
+from .accounts import (
+    Account,
+    CredentialStore,
+    FileCredentialStore,
+    MemoryCredentialStore,
+)
 from .api import (
     AccountPaused,
     BranchContext,
@@ -15,6 +21,11 @@ from .api import (
     ResponseComplete,
     SendRequest,
     TextDelta,
+)
+from .auth import (
+    CookieReader,
+    ProviderCookieFilter,
+    import_browser_session,
 )
 from .base import ProviderAdapter
 from .client import ProviderClient
@@ -37,6 +48,7 @@ from .errors import (
     RequestNotSentError,
     StreamError,
 )
+from .framers import JSPBFramer, SSEFramer
 from .models import (
     Choice,
     Content,
@@ -56,7 +68,20 @@ from .models import (
 )
 from .projects import ProjectOptions
 from .registry import ProviderRegistry, create_provider
-from .session import CredentialStore
+from .transformers import (
+    GrokTextFilter,
+    StreamReconciler,
+    extract_citations,
+    sources_from,
+)
+from .transport import (
+    BoundedWorkPool,
+    HttpSession,
+    RetryPolicy,
+    WebSession,
+    calculate_backoff,
+    parse_retry_after,
+)
 from .utils.attachments import AttachmentPolicy
 from .utils.files import DownloadSource
 
@@ -64,28 +89,37 @@ __version__ = "1.2.0b0"
 
 __all__ = [
     "__version__",
+    "Account",
     "AccountPaused",
-    "AuthenticationError",
-    "BranchContext",
-    "CredentialStore",
     "AttachmentPolicy",
+    "AuthenticationError",
+    "BoundedWorkPool",
+    "BranchContext",
+    "Capability",
     "Choice",
+    "CompatibilityError",
     "Content",
     "Conversation",
+    "ConversationBound",
+    "CookieReader",
+    "CredentialStore",
+    "DownloadSource",
     "Feature",
     "FeatureState",
     "FeatureUnavailable",
+    "FileCredentialStore",
+    "GrokTextFilter",
+    "HttpSession",
+    "JSPBFramer",
+    "MemoryCredentialStore",
     "Message",
     "MessageAction",
     "MessageMetadata",
     "Model",
+    "ModelCatalog",
     "NetworkError",
     "Origin",
     "Page",
-    "Project",
-    "ProjectOptions",
-    "ProviderClient",
-    "ProviderError",
     "ProfileDatabaseError",
     "ProfileDecryptionError",
     "ProfileDependencyError",
@@ -96,26 +130,35 @@ __all__ = [
     "ProfilePermissionError",
     "ProfileSessionNotFoundError",
     "ProfileTimeoutError",
-    "ResponseComplete",
+    "Project",
+    "ProjectOptions",
+    "Provider",
+    "ProviderAdapter",
+    "ProviderClient",
+    "ProviderCookieFilter",
+    "ProviderDescription",
+    "ProviderError",
+    "ProviderEvent",
+    "ProviderRegistry",
+    "RateLimited",
     "RemoteNotFound",
+    "ReplaceText",
     "RequestNotSentError",
     "Resource",
+    "ResponseComplete",
+    "RetryPolicy",
+    "SSEFramer",
+    "SendRequest",
     "SessionState",
     "SessionStatus",
     "StreamError",
-    "create_provider",
-    "Capability",
-    "CompatibilityError",
-    "ConversationBound",
-    "Provider",
-    "DownloadSource",
-    "ProviderAdapter",
-    "ProviderDescription",
-    "ModelCatalog",
-    "ProviderRegistry",
-    "ProviderEvent",
-    "RateLimited",
-    "ReplaceText",
-    "SendRequest",
+    "StreamReconciler",
     "TextDelta",
+    "WebSession",
+    "calculate_backoff",
+    "create_provider",
+    "extract_citations",
+    "import_browser_session",
+    "parse_retry_after",
+    "sources_from",
 ]
