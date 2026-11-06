@@ -283,13 +283,41 @@ class GeminiSession:
         from ...models import Choice, Model
         from .rpc import RPCPayload
 
-        endpoint, _ = self.graphql_endpoints()
-        response = await self.http.get(
+        endpoint, xsrf_endpoint = self.graphql_endpoints()
+        headers = {
+            **HEADERS,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Framework-XSRF-Token": self.token,
+        }
+        body = json.dumps(
+            {"querySignature": MODEL_CATALOG_SIGNATURE},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        response = await self.http.post(
             endpoint,
-            params={"query_signature": MODEL_CATALOG_SIGNATURE},
-            headers={**HEADERS, "Accept": "application/json"},
+            headers=headers,
+            data=body,
             allow_redirects=False,
         )
+        if response.status_code == 400 and self._has_xsrf_error(response):
+            token_response = await self.http.get(
+                xsrf_endpoint,
+                headers={**HEADERS, "Accept": "text/plain"},
+                allow_redirects=False,
+            )
+            WebSession.check(token_response)
+            token = token_response.text.strip()
+            if not token:
+                raise ProviderError("Gemini oturum doğrulama belirteci yenilenemedi")
+            self.token = token
+            response = await self.http.post(
+                endpoint,
+                headers={**headers, "X-Framework-XSRF-Token": token},
+                data=body,
+                allow_redirects=False,
+            )
         WebSession.check(response)
         result = self._decode_graphql(response.text)
         data = result.get("data") or {}

@@ -341,13 +341,13 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         }
         session = GeminiSession(Path("unused"))
         session.rpc_path_prefix = "/_/BardChatUi/"
+        mock_status_response = SimpleNamespace(
+            status_code=200,
+            text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
+        )
         session.http = SimpleNamespace(
-            get=AsyncMock(
-                return_value=SimpleNamespace(
-                    status_code=200,
-                    text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
-                )
-            )
+            get=AsyncMock(return_value=mock_status_response),
+            post=AsyncMock(return_value=mock_status_response),
         )
         session.batch = AsyncMock(
             return_value=SimpleNamespace(
@@ -848,13 +848,13 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         }
         session = GeminiSession(Path("unused"))
         session.rpc_path_prefix = "/_/BardChatUi/"
+        mock_status_response = SimpleNamespace(
+            status_code=200,
+            text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
+        )
         session.http = SimpleNamespace(
-            get=AsyncMock(
-                return_value=SimpleNamespace(
-                    status_code=200,
-                    text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
-                )
-            )
+            get=AsyncMock(return_value=mock_status_response),
+            post=AsyncMock(return_value=mock_status_response),
         )
         session.batch = AsyncMock(
             return_value=SimpleNamespace(
