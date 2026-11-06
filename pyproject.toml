@@ -46,8 +46,8 @@ line-length = 100
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["webai_provider"]
+known-first-party = ["webai_provider", "webaiprovider"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["webai_provider*"]
+include = ["webai_provider*", "webaiprovider*"]

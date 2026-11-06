@@ -25,6 +25,46 @@ class Account:
             return MemoryCredentialStore(self.credentials)
         return FileCredentialStore(self.credentials)
 
+    @classmethod
+    def from_cookies(
+        cls,
+        provider: str,
+        cookies: dict[str, Any] | Path | str,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+    ) -> Account:
+        import uuid
+
+        account_id = id or str(uuid.uuid4())
+        return cls(
+            id=account_id,
+            provider=provider.lower(),
+            credentials=cookies,
+            name=name or f"{provider.capitalize()} Account",
+        )
+
+    @classmethod
+    def from_browser(
+        cls,
+        provider: str,
+        *,
+        browser: str | None = None,
+        id: str | None = None,
+        name: str | None = None,
+    ) -> Account:
+        from .importer import import_cookies
+
+        _, cookies = import_cookies(provider.lower())
+        return cls.from_cookies(provider, cookies, id=id, name=name)
+
+    def connect(self) -> Any:
+        from ..bridge import get_bridge
+        from ..session import ProviderSession
+
+        bridge = get_bridge(self.provider, self)
+        return ProviderSession(self, bridge=bridge)
+
     def to_dict(self) -> dict[str, Any]:
         data = {
             "id": self.id,

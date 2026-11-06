@@ -3,9 +3,9 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from .api import Capability, ProviderEvent, SendRequest
-from .base import ProviderAdapter
+from .base import ProviderAdapter, ProviderEvent, SendRequest
 from .errors import FeatureUnavailable
+from .models import Capability
 from .registry import create_provider
 
 

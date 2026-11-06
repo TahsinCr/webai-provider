@@ -3,8 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .api import Capability, Provider
-from .base import ProviderAdapter
+from .base import Provider, ProviderAdapter
+from .models import Capability
 
 PROVIDERS = {
     "chatgpt": ("ChatGPT", "https://chatgpt.com/"),

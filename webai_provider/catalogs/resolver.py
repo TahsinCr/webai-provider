@@ -56,7 +56,9 @@ class SelectionResolver:
             return partial_matches[0]
         if len(partial_matches) > 1:
             names = [m.id for m in partial_matches]
-            raise AmbiguousMatchError(f"Model adı belirsiz, birden çok aday bulundu: {', '.join(names)}")
+            raise AmbiguousMatchError(
+                f"Model adı belirsiz, birden çok aday bulundu: {', '.join(names)}"
+            )
 
         raise RemoteNotFound(f"Model bulunamadı: {target}")
 

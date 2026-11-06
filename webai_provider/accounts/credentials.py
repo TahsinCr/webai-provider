@@ -47,6 +47,9 @@ class FileCredentialStore:
     def exists(self) -> bool:
         return self.path.is_file()
 
+    def read(self) -> dict:
+        return self.load()
+
     def delete(self) -> None:
         self.path.unlink(missing_ok=True)
 
@@ -95,6 +98,9 @@ class MemoryCredentialStore:
     def exists(self) -> bool:
         with self._lock:
             return self._value is not None
+
+    def read(self) -> dict:
+        return self.load()
 
     def delete(self) -> None:
         with self._lock:
