@@ -4,6 +4,29 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Integrate EventFlow concurrency, cache, and resilience primitives in `webai_provider.core`:
+  - `MultiDimensionBoundedCache`: dual-bounded (entry count and character size) cache with TTL expiration.
+  - `ConcurrencyCoordinator`: fine-grained keyed concurrency limiting (`KeyedConcurrencyLimiter`) and single-flight request coalescing (`SingleFlight`).
+  - `ProviderResilienceRegistry`: adaptive cooldown tracking (`CooldownRegistry`) and fail-fast circuit breaking (`CircuitBreaker`).
+  - `ProviderResourceScope`: deterministic async task and resource cleanup scopes (`AsyncTaskScope`, `AsyncResourceScope`).
+  - `SyncPortalBridge`: bidirectional sync-async loop portal bridge for off-loop thread orchestration.
+- Introduce typed profile error hierarchy (`ProfileError`, `ProfileNotFoundError`, `ProfileKeyringError`, `ProfileDatabaseError`, `ProfilePermissionError`, `ProfileTimeoutError`, `ProfileDependencyError`, `ProfileDecryptionError`, `ProfileSessionNotFoundError`, `ProfileInvalidResultError`) replacing string-based failure lookups.
+
+### Changed
+
+- Migrate package layout to a clean, flat `webai_provider` root directory without requiring a `src/` wrapper or setuptools package mapping hacks.
+- Group bundled provider adapters (ChatGPT, Claude, Gemini, Grok) under the canonical `webai_provider.providers` subpackage.
+- Standardize `pyproject.toml` configuration using `[tool.setuptools.packages.find]` for `webai_provider*` and `known-first-party = ["webai_provider"]`.
+
+### Removed
+
+- Remove legacy `[tool.setuptools.package-dir]` virtual path mappings and `providers = "."` hacks.
+- Remove runtime `sys.modules` monkey-patching from provider initialization.
+- Remove deprecated `__verison__` backward-compatibility typo alias from public exports.
+- Remove static `PROFILE_FAILURES` dictionary in favor of the typed profile error hierarchy.
+
 ## [1.2-beta] - 2026-11-05
 
 ### Added
