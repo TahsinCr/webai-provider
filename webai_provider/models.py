@@ -175,6 +175,8 @@ class ModelCatalog:
         if model is None:
             return None
         supported = {e.id for e in model.efforts}
+        if model.default_effort is None and preferred == "medium":
+            return None
         if preferred in supported:
             return preferred
         return model.default_effort if model.default_effort in supported else None

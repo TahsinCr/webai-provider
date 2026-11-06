@@ -69,6 +69,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         self.account_id = account_id
         self._factory = client_factory
         self._client = None
+        self._cached_models = None
         self._catalog_at = None
         self._model_gate = asyncio.Lock()
         self._gate = asyncio.Lock()
@@ -129,6 +130,12 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             else self._factory(self.cookie_file)
         )
         await client.open()
+        if (
+            self._cached_models is not None
+            and self._catalog_at is not None
+            and (time.monotonic() - self._catalog_at < 300)
+        ):
+            client.models = list(self._cached_models)
         self._client = client
         return client
 
@@ -155,7 +162,6 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             if self._client is client:
                 self._client = None
             if self._client is None:
-                self._catalog_at = None
                 self._chat_metadata.clear()
                 self._chat_metadata_verified_at.clear()
         if editor_error is not None:
@@ -185,6 +191,8 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 await self._close_unlocked()
                 delete_session(self.cookie_file)
                 self._temporary.clear()
+                self._cached_models = None
+                self._catalog_at = None
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def models(self, *, force: bool = False):
@@ -197,7 +205,10 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 or (time.monotonic() - self._catalog_at >= 300)
             ):
                 client.models = await client.discover_models()
+                self._cached_models = list(client.models)
                 self._catalog_at = time.monotonic()
+            elif not client.models and self._cached_models is not None:
+                client.models = list(self._cached_models)
             return ModelCatalog(FeatureState.AVAILABLE, client.models)
 
     def _origin(self, remote_id):

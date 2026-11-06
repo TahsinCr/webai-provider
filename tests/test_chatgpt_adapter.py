@@ -378,8 +378,11 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             (
                 Model("a", "A", (Choice("low", "Low"), Choice("medium", "Medium")), "low"),
                 Model("b", "B", (Choice("auto", "Automatic"),), "auto"),
+                Model("c", "C", (Choice("standard", "Standard"), Choice("medium", "Medium")), None),
             ),
         )
         self.assertEqual(catalog.effort("a"), "medium")
         self.assertEqual(catalog.effort("b"), "auto")
+        self.assertIsNone(catalog.effort("c"))
+        self.assertEqual(catalog.effort("c", "standard"), "standard")
         self.assertIsNone(catalog.effort("unknown"))
