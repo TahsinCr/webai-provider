@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from webai_provider import CredentialStore, create_provider
-from webai_provider.session import read_session, save_session
+from webai_provider.api import read_session, save_session
 
 
 class MemoryCredentials:

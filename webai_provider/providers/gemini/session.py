@@ -7,8 +7,9 @@ import re
 import time
 import uuid
 
+from ...accounts import read_session, save_session_async
 from ...errors import AccountPaused, ProviderError, RateLimited
-from ...session import WebSession, read_session, save_session_async
+from ...transport import WebSession
 from .errors import GeminiCompatibilityError, GeminiError
 
 ORIGIN = "https://gemini.google.com"

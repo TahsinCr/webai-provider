@@ -4,20 +4,21 @@ import asyncio
 import time
 from io import StringIO
 
-from ...api import (
+from ...accounts import delete_session, session_exists
+from ...base import (
     Capability,
     ConversationBound,
     MessageAction,
     MessageMetadata,
+    ProjectEditing,
+    ProviderAdapter,
     ReplaceText,
     ResponseComplete,
     TextDelta,
     validate_request,
 )
-from ...base import ProviderAdapter
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
-from ...messages import sources_from
 from ...models import (
     Conversation,
     FeatureState,
@@ -26,9 +27,8 @@ from ...models import (
     Page,
     SessionState,
     SessionStatus,
+    sources_from,
 )
-from ...projects import ProjectEditing
-from ...session import delete_session, session_exists
 from ...utils.attachments import GROK_ATTACHMENTS
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id

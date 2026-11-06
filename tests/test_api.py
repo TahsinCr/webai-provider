@@ -233,3 +233,38 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("__version__", webai_provider.__all__)
         self.assertNotIn("__verison__", webai_provider.__all__)
         self.assertFalse(hasattr(webai_provider, "__verison__"))
+
+    def test_redact_sensitive_url(self):
+        from webai_provider.api import redact_sensitive_url
+
+        url = "https://user:pass@api.openai.com/v1/files?token=secret123&session_id=abc&format=json"
+        redacted = redact_sensitive_url(url)
+        self.assertNotIn("secret123", redacted)
+        self.assertNotIn("pass", redacted)
+        self.assertIn("format=json", redacted)
+        self.assertIn("[REDACTED]", redacted)
+
+    def test_validate_network_address_and_ssrf_block(self):
+        from webai_provider.api import NativeDownloadClient, validate_network_address
+
+        for blocked in (
+            "127.0.0.1",
+            "169.254.169.254",
+            "10.0.0.1",
+            "192.168.1.1",
+            "::1",
+            "0.0.0.0",
+        ):
+            with self.assertRaises(ValueError):
+                validate_network_address(blocked, allow_private=False)
+
+        with self.assertRaises(ValueError):
+            validate_network_address("169.254.169.254")
+
+        validate_network_address("93.184.216.34")
+        validate_network_address("example.com")
+
+        client = NativeDownloadClient()
+        with self.assertRaises(ValueError):
+            with client.stream("GET", "http://169.254.169.254/latest/meta-data/", headers={}):
+                pass

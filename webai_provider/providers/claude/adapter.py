@@ -3,16 +3,18 @@
 import asyncio
 import time
 
-from ...api import (
+from ...accounts import delete_session, session_exists
+from ...base import (
     Capability,
     ConversationBound,
     MessageMetadata,
+    ProjectEditing,
+    ProviderAdapter,
     ReplaceText,
     ResponseComplete,
     TextDelta,
     validate_request,
 )
-from ...base import ProviderAdapter
 from ...errors import AccountPaused, FeatureUnavailable
 from ...models import (
     Choice,
@@ -23,8 +25,6 @@ from ...models import (
     SessionState,
     SessionStatus,
 )
-from ...projects import ProjectEditing
-from ...session import delete_session, session_exists
 from ...utils.timing import current_send_timing
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
@@ -104,7 +104,7 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-        from ...session import read_session
+        from ...accounts import read_session
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
         from .transport import remote_id
 

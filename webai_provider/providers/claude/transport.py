@@ -8,12 +8,12 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from ...api import MessageAction
-from ...base import confirm_deleted
+from ...accounts import read_session
+from ...base import MessageAction, confirm_deleted
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
-from ...projects import ProjectOptions, source_file
-from ...session import WebSession, read_session
+from ...models import ProjectOptions, source_file
+from ...transport import WebSession
 from ...utils.timing import current_send_timing
 from .catalog import selector_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
@@ -306,7 +306,7 @@ class ClaudeTransport:
                 raise ClaudeRequestNotSent("Claude temporary conversation could not be verified")
             parent = history.get("current_leaf_message_uuid")
             if v.get("action"):
-                from ...messages import target_message
+                from ...models import target_message
                 from .records import conversation
 
                 role = "user" if v["action"] == MessageAction.EDIT else "assistant"
@@ -441,7 +441,7 @@ class ClaudeTransport:
                     raise ClaudeStreamError("Claude stream failed; the request was not retried")
                 if kind == "content_block_start":
                     block = event.get("content_block", {})
-                    from ...messages import files_from
+                    from ...models import files_from
 
                     files = files_from({"files": files}, block)
                     if block.get("type") == "tool_use" and block.get("name") == "present_files":
@@ -451,7 +451,7 @@ class ClaudeTransport:
                         presented_inputs[event.get("index", 0)] = ""
                     blocks[event.get("index", 0)] = block.get("type")
                     if block.get("type") in ("text", "web_search_tool_result"):
-                        from ...messages import sources_from
+                        from ...models import sources_from
 
                         if block.get("type") == "web_search_tool_result":
                             results = block.get("content")
@@ -479,7 +479,7 @@ class ClaudeTransport:
                         else:
                             presented_inputs.pop(index)
                     if delta.get("type") == "citations_delta":
-                        from ...messages import sources_from
+                        from ...models import sources_from
 
                         sources = sources_from(
                             {"sources": list(sources), "citations": [delta.get("citation")]}

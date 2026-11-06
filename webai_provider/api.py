@@ -1,167 +1,311 @@
-"""Version-one provider boundary; adapters own all provider-specific details."""
+from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import AsyncGenerator, Protocol
-
-from .errors import AccountPaused, CompatibilityError, ProviderError, RateLimited
-
-
-class Capability(str, Enum):
-    CHAT = "chat"
-    TEMPORARY = "temporary"
-    HISTORY = "history"
-    RENAME = "rename"
-    DELETE = "delete"
-    AUTH = "auth"
-    ATTACHMENTS = "attachments"
-    RESOURCES = "resources"
-    PROJECTS = "projects"
-    PROJECT_CREATE = "project_create"
-    PROJECT_UPDATE = "project_update"
-    PROJECT_DELETE = "project_delete"
-    PROJECT_MEMBERSHIP = "project_membership"
-    MODELS = "models"
-    EFFORT = "effort"
-    CONNECTORS = "connectors"
-    MESSAGE_EDIT = "message_edit"
-    MESSAGE_RETRY = "message_retry"
-    CHAT_BRANCH = "chat_branch"
-
-
-class MessageAction(str, Enum):
-    EDIT = "edit"
-    RETRY = "retry"
-    BRANCH = "branch"
-
-    @property
-    def capability(self):
-        return {
-            self.EDIT: Capability.MESSAGE_EDIT,
-            self.RETRY: Capability.MESSAGE_RETRY,
-            self.BRANCH: Capability.CHAT_BRANCH,
-        }[self]
-
-
-@dataclass(frozen=True)
-class BranchContext:
-    conversation_id: str
-    message_id: str
-
-
-@dataclass(frozen=True)
-class SendRequest:
-    provider_id: str
-    account_id: str
-    chat_id: str  # Stable local identity, including before the remote ID exists.
-    prompt: str
-    conversation_id: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    project_id: str | None = None
-    temporary: bool = False
-    attachments: tuple[dict, ...] = ()
-    action: MessageAction | None = None
-    message_id: str | None = None
-    branch: BranchContext | None = None
-
-
-@dataclass(frozen=True)
-class TextDelta:
-    text: str
-    channel: str | None = None
-
-
-@dataclass(frozen=True)
-class ReplaceText:
-    text: str
-    channel: str | None = None
-
-
-@dataclass(frozen=True)
-class ResponseComplete:
-    """Text generation ended; request confirmation may still be pending."""
-
-
-@dataclass(frozen=True)
-class ConversationBound:
-    conversation_id: str
-
-
-@dataclass(frozen=True)
-class MessageMetadata:
-    message_id: str | None = None
-    user_message_id: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    sources: tuple[dict, ...] = ()
-    actions: tuple[str, ...] = ()
-    files: tuple[dict, ...] = ()
-
-
-ProviderEvent = TextDelta | ReplaceText | ResponseComplete | ConversationBound | MessageMetadata
-
-
-class Provider(Protocol):
-    id: str
-    account_id: str
-    capabilities: frozenset[Capability]
-
-    async def prepare(self) -> None:
-        """Establish account-scoped transport state before user work begins.
-
-        Preparation must be safe to call in the background and concurrent with
-        normal requests. Requests arriving during preparation should share or
-        wait for the same initialization rather than opening duplicate sessions.
-        """
-        ...
-
-    def stream(self, request: SendRequest) -> AsyncGenerator[ProviderEvent, None]:
-        """Yield events; cancellation must close transport without resending.
-
-        Normal exhaustion means a confirmed successful response. Adapters must
-        raise on truncated streams and must never log credentials in exceptions.
-        Provider failures derive from ProviderError, expose a stable ``code``,
-        and set ``message_submitted`` to False only when the prompt is known not
-        to have reached the provider.
-        Model/effort identifiers remain provider-owned, not a universal enum.
-        """
-        ...
-
-
-def validate_request(provider, request: SendRequest) -> None:
-    """Reject cross-account requests before a transport is opened."""
-    if request.provider_id != provider.id or request.account_id != provider.account_id:
-        raise ValueError("send request belongs to a different provider/account")
-    if request.action is not None:
-        if request.action not in (MessageAction.EDIT, MessageAction.RETRY):
-            raise ValueError("unsupported generation action")
-        if not request.conversation_id or not request.message_id:
-            raise ValueError("message actions require a conversation and message identity")
-    if request.branch is not None:
-        if request.action is not None or request.temporary:
-            raise ValueError("a branch continuation requires a new persistent turn")
-        if not request.branch.conversation_id or not request.branch.message_id:
-            raise ValueError("a branch continuation requires its source identities")
-        if provider.id != "chatgpt":
-            raise ValueError(
-                "this provider creates branches immediately; no continuation context is needed"
-            )
-
+from .accounts.account import Account
+from .accounts.cookies import (
+    AUTH_COOKIE,
+    HOSTS,
+    NAMES,
+    import_cookies,
+    select_cookies,
+)
+from .accounts.credentials import (
+    CredentialStore,
+    FileCredentialStore,
+    MemoryCredentialStore,
+    delete_session,
+    read_session,
+    save_session,
+    save_session_async,
+    session_exists,
+)
+from .accounts.filters import (
+    ALLOWED_PROVIDER_ORIGINS,
+    REQUIRED_PROVIDER_COOKIES,
+    ProviderCookieFilter,
+    filter_provider_cookies,
+)
+from .accounts.importer import (
+    CookieReader,
+    import_browser_session,
+)
+from .accounts.profiles import (
+    BrowserProfile,
+    default_profile,
+    list_profiles,
+    snapshot_sqlite_file,
+)
+from .accounts.status import (
+    FeatureState,
+    SessionState,
+    SessionStatus,
+)
+from .base import (
+    ActionBegin,
+    ActionDelta,
+    ActionEnd,
+    BranchContext,
+    Capability,
+    ConversationBound,
+    MessageAction,
+    MessageMetadata,
+    ProjectEditing,
+    Provider,
+    ProviderAdapter,
+    ProviderEvent,
+    ReplaceText,
+    ResponseComplete,
+    SendRequest,
+    TextDelta,
+    ThoughtDelta,
+    confirm_deleted,
+    validate_request,
+)
+from .client import ProviderClient
+from .errors import (
+    AccountPaused,
+    CapabilityError,
+    CompatibilityError,
+    FeatureUnavailable,
+    ProfileDatabaseError,
+    ProfileDecryptionError,
+    ProfileDependencyError,
+    ProfileError,
+    ProfileInvalidResultError,
+    ProfileKeyringError,
+    ProfileNotFoundError,
+    ProfilePermissionError,
+    ProfileSessionNotFoundError,
+    ProfileTimeoutError,
+    ProviderError,
+    RateLimited,
+    RemoteNotFound,
+)
+from .models import (
+    Choice,
+    Content,
+    Conversation,
+    Feature,
+    Message,
+    Model,
+    ModelCatalog,
+    Origin,
+    Page,
+    Project,
+    ProjectOptions,
+    ProviderDescription,
+    Resource,
+    actions_for,
+    files_from,
+    source_file,
+    sources_from,
+    target_message,
+)
+from .providers.chatgpt import (
+    BrowserSession,
+    ChatGPTClient,
+    ChatGPTProvider,
+    SessionPaths,
+)
+from .providers.chatgpt.constants import DEFAULT_CDP_URL, DEFAULT_PAGE_SIZE
+from .providers.chatgpt.discovery import model_catalog, project_id
+from .providers.chatgpt.errors import (
+    ChatGPTWebError,
+    SentinelCompatibilityError,
+)
+from .providers.chatgpt.formats import (
+    new_messages,
+    normalize_conversation,
+    normalize_message,
+)
+from .providers.claude import ClaudeProvider
+from .providers.gemini import GeminiProvider
+from .providers.gemini.rpc import NotebookRPC
+from .providers.grok import GrokProvider
+from .registry import (
+    PROVIDERS,
+    ProviderRegistry,
+    create_provider,
+)
+from .transformers.citations import (
+    Citation,
+    extract_citations,
+)
+from .transformers.filters import (
+    GrokTextFilter,
+    clean_render_markup,
+    strip_protocol_tags,
+)
+from .transformers.reconciler import (
+    StreamReconciler,
+    reconcile_stream_text,
+)
+from .transport import (
+    BoundedWorkPool,
+    HttpSession,
+    RetryPolicy,
+    WebSession,
+)
+from .utils.attachments import (
+    AttachmentPolicy,
+    fit_attachments,
+    policy_for,
+)
+from .utils.cdp import (
+    DevToolsError,
+    open_provider_page,
+    read_provider_cookies,
+)
+from .utils.files import (
+    DownloadSource,
+    NativeDownloadClient,
+    cookie_header,
+    redact_sensitive_url,
+    validate_network_address,
+)
+from .utils.history import (
+    MERGE_WINDOW,
+    merge_conversation,
+)
+from .utils.timing import (
+    SendTiming,
+    collect_send_timing,
+    current_send_timing,
+    send_timing_report,
+    timing_enabled,
+    use_send_timing,
+)
 
 __all__ = [
-    "AccountPaused",
-    "CompatibilityError",
-    "ProviderError",
-    "RateLimited",
     "Capability",
     "MessageAction",
-    "MessageMetadata",
     "BranchContext",
     "SendRequest",
     "TextDelta",
+    "ThoughtDelta",
+    "ActionBegin",
+    "ActionDelta",
+    "ActionEnd",
     "ReplaceText",
+    "ResponseComplete",
     "ConversationBound",
+    "MessageMetadata",
     "ProviderEvent",
     "Provider",
+    "validate_request",
+    "PROVIDERS",
+    "ProviderRegistry",
+    "create_provider",
+    "ProviderClient",
+    "ProviderAdapter",
+    "ProjectEditing",
+    "confirm_deleted",
+    "ChatGPTProvider",
+    "ChatGPTClient",
+    "BrowserSession",
+    "SessionPaths",
+    "DEFAULT_CDP_URL",
+    "DEFAULT_PAGE_SIZE",
+    "model_catalog",
+    "project_id",
+    "normalize_conversation",
+    "normalize_message",
+    "new_messages",
+    "ClaudeProvider",
+    "GeminiProvider",
+    "NotebookRPC",
+    "GrokProvider",
+    "Account",
+    "CredentialStore",
+    "FileCredentialStore",
+    "MemoryCredentialStore",
+    "read_session",
+    "save_session",
+    "save_session_async",
+    "session_exists",
+    "delete_session",
+    "import_cookies",
+    "import_browser_session",
+    "select_cookies",
+    "default_profile",
+    "list_profiles",
+    "snapshot_sqlite_file",
+    "BrowserProfile",
+    "SessionState",
+    "SessionStatus",
+    "FeatureState",
+    "ProviderCookieFilter",
+    "filter_provider_cookies",
+    "CookieReader",
+    "Choice",
+    "Content",
+    "Conversation",
+    "Feature",
+    "Message",
+    "Model",
+    "ModelCatalog",
+    "Origin",
+    "Page",
+    "Project",
+    "ProjectOptions",
+    "ProviderDescription",
+    "Resource",
+    "actions_for",
+    "files_from",
+    "source_file",
+    "sources_from",
+    "target_message",
+    "Citation",
+    "extract_citations",
+    "GrokTextFilter",
+    "clean_render_markup",
+    "strip_protocol_tags",
+    "StreamReconciler",
+    "reconcile_stream_text",
+    "merge_conversation",
+    "MERGE_WINDOW",
+    "fit_attachments",
+    "AttachmentPolicy",
+    "policy_for",
+    "DownloadSource",
+    "NativeDownloadClient",
+    "cookie_header",
+    "redact_sensitive_url",
+    "validate_network_address",
+    "SendTiming",
+    "timing_enabled",
+    "send_timing_report",
+    "collect_send_timing",
+    "use_send_timing",
+    "current_send_timing",
+    "DevToolsError",
+    "open_provider_page",
+    "read_provider_cookies",
+    "ProviderError",
+    "AccountPaused",
+    "RemoteNotFound",
+    "CapabilityError",
+    "RateLimited",
+    "CompatibilityError",
+    "FeatureUnavailable",
+    "ProfileError",
+    "ProfileNotFoundError",
+    "ProfilePermissionError",
+    "ProfileSessionNotFoundError",
+    "ProfileDependencyError",
+    "ProfileDatabaseError",
+    "ProfileKeyringError",
+    "ProfileDecryptionError",
+    "ProfileTimeoutError",
+    "ProfileInvalidResultError",
+    "ChatGPTWebError",
+    "SentinelCompatibilityError",
+    "HOSTS",
+    "NAMES",
+    "AUTH_COOKIE",
+    "ALLOWED_PROVIDER_ORIGINS",
+    "REQUIRED_PROVIDER_COOKIES",
+    "HttpSession",
+    "WebSession",
+    "BoundedWorkPool",
+    "RetryPolicy",
 ]

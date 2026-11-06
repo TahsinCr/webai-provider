@@ -7,8 +7,8 @@ import mimetypes
 from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
-from ...projects import ProjectOptions, source_file
-from ...session import WebSession
+from ...models import ProjectOptions, source_file
+from ...transport import WebSession
 from ...utils.attachments import GROK_ATTACHMENTS
 
 ORIGIN = "https://grok.com"

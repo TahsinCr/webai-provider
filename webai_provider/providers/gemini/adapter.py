@@ -6,19 +6,21 @@ from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
 
-from ...api import (
+from ...accounts import delete_session, session_exists
+from ...base import (
     Capability,
     ConversationBound,
     MessageAction,
     MessageMetadata,
+    ProjectEditing,
+    ProviderAdapter,
     ReplaceText,
     ResponseComplete,
     SendRequest,
+    confirm_deleted,
     validate_request,
 )
-from ...base import ProviderAdapter, confirm_deleted
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
-from ...messages import files_from, sources_from
 from ...models import (
     FeatureState,
     ModelCatalog,
@@ -26,9 +28,9 @@ from ...models import (
     Page,
     SessionState,
     SessionStatus,
+    files_from,
+    sources_from,
 )
-from ...projects import ProjectEditing
-from ...session import delete_session, session_exists
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 
@@ -257,7 +259,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         return await asyncio.to_thread(history, parts[0], self._origin, conversation_id)
 
     async def branch_chat(self, conversation_id, message_id):
-        from ...messages import target_message
+        from ...models import target_message
         from .session import nested
 
         current = await self.get_chat(conversation_id)
@@ -466,7 +468,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                         turns = nested(parts[0], 0, default=[])
                         turn = turns[0] if turns else None
                         if request.action:
-                            from ...messages import target_message
+                            from ...models import target_message
                             from .history import history
 
                             current = history(parts[0], self._origin, request.conversation_id)
@@ -608,7 +610,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         # Never attach Google cookies to arbitrary user-controlled CDN subdomains.
         host = urlsplit(target["url"]).hostname
         if host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}:
-            from ...session import read_session
+            from ...accounts import read_session
 
             client = self._client
             values = (

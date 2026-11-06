@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from ...accounts import CredentialStore, read_session, save_session
 from ...errors import AccountPaused
-from ...session import CredentialStore, read_session, save_session
 from ...utils.cdp import DevToolsError, capture_chatgpt_auth, is_devtools_available
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
 from .errors import ChatGPTWebError

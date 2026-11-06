@@ -18,10 +18,10 @@ from webai_provider.api import (
     ResponseComplete,
     SendRequest,
     TextDelta,
+    select_cookies,
 )
 from webai_provider.errors import AccountPaused, RateLimited
 from webai_provider.models import Resource
-from webai_provider.profiles import select_cookies
 from webai_provider.providers.grok import GrokProvider
 from webai_provider.providers.grok.records import GrokTextFilter, active_responses, conversation
 from webai_provider.providers.grok.transport import (

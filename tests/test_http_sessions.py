@@ -14,11 +14,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
+from webai_provider.api import read_session, save_session, save_session_async
 from webai_provider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from webai_provider.providers.claude.errors import ClaudeRequestNotSent
 from webai_provider.providers.claude.transport import ClaudeTransport, organization_from_bootstrap
 from webai_provider.providers.gemini.rpc import NotebookEditor, NotebookRPC
-from webai_provider.session import WebSession, read_session, save_session, save_session_async
+from webai_provider.transport import WebSession
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
@@ -62,7 +63,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.client.request.assert_awaited_once()
 
     async def test_local_persistence_failure_does_not_reject_remote_success(self):
-        with patch("webai_provider.session.save_session", side_effect=OSError("disk full")):
+        with patch(
+            "webai_provider.accounts.credentials.save_session", side_effect=OSError("disk full")
+        ):
             self.assertEqual(await self.session.request("POST", "/api/project"), {"ok": True})
         self.assertTrue(self.session.persistence_warning)
 
@@ -84,7 +87,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             if not release.wait(2):
                 raise TimeoutError("write not released")
 
-        with patch("webai_provider.session.save_session", side_effect=write):
+        with patch("webai_provider.accounts.credentials.save_session", side_effect=write):
             task = asyncio.create_task(save_session_async(self.path, {}))
             self.assertTrue(await asyncio.to_thread(started.wait, 2))
             task.cancel()
@@ -110,7 +113,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
         )
-        with patch("webai_provider.session.time.time", return_value=now.timestamp()):
+        with patch("webai_provider.transport.session.time.time", return_value=now.timestamp()):
             with self.assertRaises(RateLimited) as error:
                 WebSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)

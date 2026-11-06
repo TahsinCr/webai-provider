@@ -6,6 +6,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Canonical facade `webai_provider.api` (re-exported by `webai_provider/__init__.py`) providing clean public exports for all providers, models, protocols, accounts, transformers, and utilities.
+- Dedicated quarantine module `webai_provider.compat` isolating deprecated backwards-compatibility shims for future v2.0 removal.
+- Consolidated `webai_provider.accounts` package unifying profile discovery, cookie filtering, SQLite WAL snapshotting with `webai-profile-` temp prefixes, and session importing.
+- Hardened `NativeDownloadClient` with SSRF and link-local/cloud metadata IP protection (`169.254.169.254`).
+- Sensitive URL query parameter and userinfo credential redaction with `redact_sensitive_url`.
 - Implement Stage 3 identity, cookie, and networking layer across `webai_provider.accounts`, `webai_provider.auth`, and `webai_provider.transport`:
   - `accounts`: typed `Account` entity, `CredentialStore` protocol, `FileCredentialStore` with atomic replace, fsync, and 0o600 file permissions, and thread-safe `MemoryCredentialStore`.
   - `auth`: `ProviderCookieFilter` with origin enforcement and character sanitation, `CookieReader` profile discovery, and unified `import_browser_session`.
@@ -25,6 +30,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Optimize Sentinel Proof-of-Work solver by pre-encoding JSON buffer segments and amortizing timing measurements to once per 128 iterations.
+- Reuse persistent `json.JSONDecoder` instance across frames in `JSPBFramer`.
 - Optimize `SSEFramer` with C-accelerated line scanning (`find`) handling CRLF, standalone CR, and split chunk boundaries with zero byte-by-byte loop overhead.
 - Consolidate `SessionState`, `SessionStatus`, and `FeatureState` in `models.py` by importing from `webai_provider.accounts.status` to eliminate duplicate model definitions.
 - Refactor `ProviderClient` parameters, local variables, and test doubles to replace legacy `backend` naming with `adapter`.
@@ -42,6 +49,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
+- Remove scattered root-level legacy compatibility modules (`auth/`, `session.py`, `messages.py`, `projects.py`, `profiles.py`), isolating legacy fallback shims exclusively in `webai_provider.compat`.
 - Remove ad-hoc `webai_provider.contracts` module and legacy `Backend` protocol naming in favor of `ProviderAdapter`.
 - Remove legacy `[tool.setuptools.package-dir]` virtual path mappings and `providers = "."` hacks.
 - Remove runtime `sys.modules` monkey-patching from provider initialization.

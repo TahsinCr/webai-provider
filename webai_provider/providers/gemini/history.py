@@ -2,8 +2,7 @@
 
 import re
 
-from ...messages import actions_for, sources_from
-from ...models import Content, Conversation, Message, Resource
+from ...models import Content, Conversation, Message, Resource, actions_for, sources_from
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 

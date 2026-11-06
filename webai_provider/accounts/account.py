@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..api import Capability
+from ..models import Capability
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 
 

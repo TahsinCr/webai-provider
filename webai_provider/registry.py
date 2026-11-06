@@ -128,7 +128,7 @@ def create_provider(
         if session is None:
             if credential_file is None:
                 raise ValueError("credential_file or session is required")
-            from .session import CredentialStore
+            from .accounts.credentials import CredentialStore
 
             is_store = isinstance(credential_file, CredentialStore)
             if is_store and profile_directory is None:

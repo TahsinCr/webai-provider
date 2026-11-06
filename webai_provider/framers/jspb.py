@@ -14,6 +14,7 @@ class JSPBFramer:
         self._max_frame_bytes = max_frame_bytes
         self._buffer = ""
         self._prefix_stripped = False
+        self._decoder = json.JSONDecoder()
 
     def feed(self, chunk: str | bytes) -> list[Any]:
         if isinstance(chunk, bytes):
@@ -53,7 +54,7 @@ class JSPBFramer:
                         raise StreamError(f"Malformed JSPB payload: {exc}") from exc
 
             try:
-                parsed, end_idx = json.JSONDecoder().raw_decode(self._buffer)
+                parsed, end_idx = self._decoder.raw_decode(self._buffer)
                 frames.append(parsed)
                 self._buffer = self._buffer[end_idx:]
             except json.JSONDecodeError:

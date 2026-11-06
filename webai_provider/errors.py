@@ -70,6 +70,9 @@ class CompatibilityError(ProviderError):
             self.capability = None
 
 
+CapabilityError = CompatibilityError
+
+
 class RemoteNotFound(ProviderError):
     code = "remote_not_found"
 

@@ -2,10 +2,9 @@
 
 import re
 
-from ...api import MessageAction
+from ...base import MessageAction
 from ...errors import ProviderError
-from ...messages import sources_from
-from ...models import Content, Conversation, Message, Origin, Project, Resource
+from ...models import Content, Conversation, Message, Origin, Project, Resource, sources_from
 
 
 def _text(value):

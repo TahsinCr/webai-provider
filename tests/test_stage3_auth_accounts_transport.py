@@ -19,9 +19,9 @@ from webai_provider.accounts import (
     save_session,
     session_exists,
 )
-from webai_provider.api import Capability
-from webai_provider.auth import (
+from webai_provider.api import (
     ALLOWED_PROVIDER_ORIGINS,
+    Capability,
     CookieReader,
     ProviderCookieFilter,
     filter_provider_cookies,

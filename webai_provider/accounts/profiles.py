@@ -1,9 +1,3 @@
-"""Explicit, domain-scoped import from the default browser's existing profile.
-
-No browser launch, remote debugging, password-store mutation or profile writes.
-Decryption is delegated to browser-cookie3 and the user's OS keyring.
-"""
-
 from __future__ import annotations
 
 import configparser
@@ -16,13 +10,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from .errors import (
+from ..errors import (
     ProfileDatabaseError,
     ProfileDecryptionError,
     ProfileDependencyError,
@@ -35,6 +28,28 @@ from .errors import (
     ProfileTimeoutError,
 )
 
+__all__ = [
+    "BrowserProfile",
+    "HOSTS",
+    "NAMES",
+    "AUTH_COOKIE",
+    "default_profile",
+    "list_profiles",
+    "snapshot_sqlite_file",
+    "import_cookies",
+    "select_cookies",
+    "ProfileError",
+    "ProfileNotFoundError",
+    "ProfilePermissionError",
+    "ProfileSessionNotFoundError",
+    "ProfileDependencyError",
+    "ProfileDatabaseError",
+    "ProfileKeyringError",
+    "ProfileDecryptionError",
+    "ProfileTimeoutError",
+    "ProfileInvalidResultError",
+]
+
 _PROFILE_ERROR_MAP = {
     2: ProfileSessionNotFoundError,
     3: ProfileDependencyError,
@@ -44,9 +59,56 @@ _PROFILE_ERROR_MAP = {
     7: ProfileDecryptionError,
 }
 
+HOSTS = {
+    "chatgpt": "chatgpt.com",
+    "gemini": "gemini.google.com",
+    "claude": "claude.ai",
+    "grok": "grok.com",
+}
+
+NAMES = {
+    "chatgpt": {"oai-did", "cf_clearance", "__cf_bm", "__Host-next-auth.csrf-token"},
+    "gemini": {
+        "__Secure-1PSID",
+        "__Secure-1PSIDTS",
+        "__Secure-3PSID",
+        "__Secure-3PSIDTS",
+        "SID",
+        "HSID",
+        "SSID",
+        "APISID",
+        "SAPISID",
+        "__Secure-1PAPISID",
+        "__Secure-3PAPISID",
+    },
+    "claude": {"sessionKey", "lastActiveOrg", "anthropic-device-id", "__cf_bm", "cf_clearance"},
+    "grok": set(),
+}
+
+AUTH_COOKIE = re.compile(r"__Secure-(?:next-auth|authjs)\.session-token(?:\.\d+)?\Z")
+_GROK_AUTH_COOKIE = re.compile(r"(?:^|[_-])(?:auth|session|sso|token)(?:[_-]|$)", re.IGNORECASE)
+_GROK_NON_AUTH_COOKIES = {"grok_device_id", "__cf_bm", "cf_clearance"}
+
+
+def select_cookies(jar, provider):
+    from .cookies import select_cookies as _select
+
+    return _select(jar, provider)
+
+
+def import_cookies(provider):
+    from .cookies import import_cookies as _import
+
+    return _import(provider)
+
+
+def _main():
+    from .cookies import _main as _main_impl
+
+    return _main_impl()
+
 
 def _failure_code(error):
-    """Classify locally; raw exceptions may contain secrets and never leave the worker."""
     if isinstance(error, ImportError):
         return 3
     if isinstance(error, PermissionError):
@@ -94,8 +156,6 @@ class _BrowserSource:
     location: str
 
 
-# Profile layout and cookie handling follow browser engines. A source entry only
-# supplies the OS-specific root and, for Chromium, the OS keyring identity.
 _BROWSER_SOURCES = (
     (("brave-origin", "brave.origin"), _BrowserSource("chromium", "brave", "brave-origin")),
     (("brave",), _BrowserSource("chromium", "brave", "brave")),
@@ -143,36 +203,6 @@ _CHROMIUM_PROFILE_ROOTS = {
         "linux": "vivaldi",
     },
 }
-
-
-# Host matching below is stricter than browser-cookie3's SQL substring filter.
-HOSTS = {
-    "chatgpt": "chatgpt.com",
-    "gemini": "gemini.google.com",
-    "claude": "claude.ai",
-    "grok": "grok.com",
-}
-NAMES = {
-    "chatgpt": {"oai-did", "cf_clearance", "__cf_bm", "__Host-next-auth.csrf-token"},
-    "gemini": {
-        "__Secure-1PSID",
-        "__Secure-1PSIDTS",
-        "__Secure-3PSID",
-        "__Secure-3PSIDTS",
-        "SID",
-        "HSID",
-        "SSID",
-        "APISID",
-        "SAPISID",
-        "__Secure-1PAPISID",
-        "__Secure-3PAPISID",
-    },
-    "claude": {"sessionKey", "lastActiveOrg", "anthropic-device-id", "__cf_bm", "cf_clearance"},
-    "grok": set(),
-}
-AUTH_COOKIE = re.compile(r"__Secure-(?:next-auth|authjs)\.session-token(?:\.\d+)?\Z")
-_GROK_AUTH_COOKIE = re.compile(r"(?:^|[_-])(?:auth|session|sso|token)(?:[_-]|$)", re.IGNORECASE)
-_GROK_NON_AUTH_COOKIES = {"grok_device_id", "__cf_bm", "cf_clearance"}
 
 
 def _read_json(path):
@@ -223,7 +253,6 @@ def _default_id():
 
 
 def _safari_cookie_file(home):
-    """Resolve Safari's last active profile without falling back across accounts."""
     library = home / "Library/Containers/com.apple.Safari/Data/Library"
     try:
         result = subprocess.run(
@@ -339,8 +368,7 @@ def _firefox_root(location, browser_name, home):
     return next((root for root in roots if (root / "profiles.ini").is_file()), roots[0])
 
 
-def default_profile():
-    """Resolve a profile by browser engine; never merge profiles or accounts."""
+def default_profile(family: str | None = None) -> BrowserProfile:
     try:
         name = _default_id().lower()
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -348,6 +376,10 @@ def default_profile():
     source = _browser_source(name)
     if source is None:
         raise ProfileError("Varsayılan tarayıcının profili desteklenmiyor")
+    if family is not None and source.family != family:
+        raise ProfileError(
+            f"Varsayılan tarayıcı ({source.family}) istenen aile ({family}) ile eşleşmiyor"
+        )
     home = Path.home()
     if source.family == "safari":
         if sys.platform != "darwin":
@@ -378,6 +410,16 @@ def default_profile():
     if not cookies.is_file():
         raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
     return BrowserProfile(source.family, source.cookie_backend, cookies, key)
+
+
+def list_profiles() -> list[BrowserProfile]:
+    profiles: list[BrowserProfile] = []
+    try:
+        prof = default_profile()
+        profiles.append(prof)
+    except ProfileError:
+        pass
+    return profiles
 
 
 def _firefox_profile(root):
@@ -416,109 +458,34 @@ def _firefox_profile(root):
         raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı") from None
 
 
-def select_cookies(jar, provider):
-    """Retain only the provider's authentication cookies for its exact host."""
-    host, values = HOSTS[provider], {}
-
-    def value_of(cookie, key, default=None):
-        return (
-            cookie.get(key, default) if isinstance(cookie, dict) else getattr(cookie, key, default)
-        )
-
-    now = time.time()
-    for cookie in sorted(jar, key=lambda item: len(value_of(item, "domain", "") or "")):
-        domain = (value_of(cookie, "domain", "") or "").lstrip(".").lower()
-        if not domain or not (host == domain or host.endswith("." + domain)):
+def snapshot_sqlite_file(
+    source_path: Path, prefix: str = "webai-profile-"
+) -> tuple[Path, tempfile.TemporaryDirectory]:
+    source = Path(source_path)
+    sidecars = [source.with_name(source.name + suffix) for suffix in ("-wal", "-journal")]
+    for _ in range(3):
+        temp_dir = tempfile.TemporaryDirectory(prefix=prefix)
+        folder = Path(temp_dir.name)
+        try:
+            files = [source] + [path for path in sidecars if path.is_file()]
+            before = [(p.stat().st_size, p.stat().st_mtime_ns) for p in files]
+            target = folder / source.name
+            for path in files:
+                shutil.copyfile(path, folder / path.name)
+            after = [(p.stat().st_size, p.stat().st_mtime_ns) for p in files]
+            if before != after or any(path.is_file() and path not in files for path in sidecars):
+                temp_dir.cleanup()
+                continue
+            return target, temp_dir
+        except FileNotFoundError:
+            temp_dir.cleanup()
             continue
-        name, value = value_of(cookie, "name"), value_of(cookie, "value")
-        if not isinstance(name, str) or not name or not isinstance(value, str):
-            continue
-        expires = value_of(cookie, "expires")
-        expired = (
-            cookie.is_expired()
-            if hasattr(cookie, "is_expired")
-            else isinstance(expires, (int, float)) and expires > 0 and expires <= now
-        )
-        if expired or value_of(cookie, "path", "/") != "/":
-            continue
-        grok_auth_cookie = (
-            provider == "grok"
-            and name not in _GROK_NON_AUTH_COOKIES
-            and _GROK_AUTH_COOKIE.search(name)
-            and bool(value_of(cookie, "secure", False))
-        )
-        if (
-            name not in NAMES[provider]
-            and not (provider == "chatgpt" and AUTH_COOKIE.fullmatch(name))
-            and not grok_auth_cookie
-        ):
-            continue
-        if any(c in name + value for c in "\r\n\0"):
-            continue
-        values[name] = value
-    if provider == "chatgpt":
-        required = any(AUTH_COOKIE.fullmatch(name) for name in values)
-    elif provider == "grok":
-        required = bool(values)
-    else:
-        required = bool(values.get("__Secure-1PSID" if provider == "gemini" else "sessionKey"))
-    if not required:
-        raise ProfileSessionNotFoundError()
-    return values
-
-
-def import_cookies(provider):
-    """Bound keyring/SQLite work in a child; stdout is a private pipe, never a terminal."""
-    if provider not in HOSTS:
-        raise ValueError("unsupported provider")
-    profile = default_profile()
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "webai_provider.profiles"],
-            input=json.dumps(
-                {
-                    "provider": provider,
-                    "family": profile.family,
-                    "cookie_backend": profile.cookie_backend,
-                    "cookies": str(profile.cookies),
-                    "key_file": str(profile.key_file) if profile.key_file else None,
-                }
-            ),
-            capture_output=True,
-            text=True,
-            timeout=25,
-            check=False,
-            env=dict(
-                os.environ,
-                PYTHONPATH=str(Path(__file__).resolve().parent.parent)
-                + os.pathsep
-                + os.environ.get("PYTHONPATH", ""),
-            ),
-        )
-    except subprocess.TimeoutExpired:
-        raise ProfileTimeoutError() from None
-    if result.returncode == 2:
-        raise ProfileSessionNotFoundError()
-    if result.returncode:
-        error_cls = _PROFILE_ERROR_MAP.get(result.returncode, ProfileError)
-        raise error_cls()
-    try:
-        if len(result.stdout) > 1_048_576:
-            raise ValueError("invalid result")
-        values = json.loads(result.stdout)
-        if (
-            not isinstance(values, dict)
-            or not values
-            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in values.items())
-        ):
-            raise ValueError("invalid result")
-    except ValueError:
-        raise ProfileInvalidResultError() from None
-    return profile.family, values
+    raise sqlite3.OperationalError("Cookie snapshot changed during copy")
 
 
 def _firefox_rows(cookie_file, provider):
-    """Read a consistent private SQLite/WAL copy if the live database is locked."""
+    from .cookies import HOSTS
+
     source = Path(cookie_file)
 
     def read(path, private=False):
@@ -543,12 +510,10 @@ def _firefox_rows(cookie_file, provider):
     try:
         return read(source)
     except sqlite3.OperationalError:
-        # Browser locks and read-only WAL shared-memory access vary by platform.
-        # Never use immutable=1 on the original: it would ignore committed WAL data.
         pass
     sidecars = [source.with_name(source.name + suffix) for suffix in ("-wal", "-journal")]
     for _ in range(3):
-        with tempfile.TemporaryDirectory(prefix="siope-profile-") as folder:
+        with tempfile.TemporaryDirectory(prefix="webai-profile-") as folder:
             try:
                 files = [source] + [path for path in sidecars if path.is_file()]
                 before = [(p.stat().st_size, p.stat().st_mtime_ns) for p in files]
@@ -560,16 +525,15 @@ def _firefox_rows(cookie_file, provider):
                     path.is_file() and path not in files for path in sidecars
                 ):
                     continue
-                # Recovery, if required, writes only inside the private temporary directory.
                 return read(target, private=True)
             except FileNotFoundError:
-                # A browser checkpoint can remove a WAL/journal while copying it.
                 continue
     raise sqlite3.OperationalError("Cookie snapshot changed during copy")
 
 
 def _firefox_session_cookies(directory, provider):
-    """Read the newest session snapshot, never combine historical recovery files."""
+    from .cookies import HOSTS
+
     candidates = [
         directory / "sessionstore-backups/recovery.jsonlz4",
         directory / "sessionstore.jsonlz4",
@@ -601,7 +565,6 @@ def _firefox_session_cookies(directory, provider):
             if isinstance(window, dict):
                 cookies.extend(window.get("cookies") or [])
     except (OSError, ValueError, RuntimeError):
-        # A partially written recovery file must not invalidate persistent cookies.
         return []
     domains = {HOSTS[provider], "." + HOSTS[provider]}
     if provider == "gemini":
@@ -615,51 +578,3 @@ def _firefox_session_cookies(directory, provider):
         and not cookie.get("userContextId")
         and not cookie.get("privateBrowsingId")
     ]
-
-
-def _main():
-    try:
-        import browser_cookie3
-
-        data = json.load(sys.stdin)
-        family = data["family"]
-        if family == "firefox":
-            # Firefox containers can contain other signed-in accounts. Read only
-            # the default container; the upstream loader merges container rows.
-            from http.cookiejar import CookieJar
-
-            jar = CookieJar()
-            for row in _firefox_rows(data["cookies"], data["provider"]):
-                jar.set_cookie(browser_cookie3.create_cookie(*row))
-            for cookie in _firefox_session_cookies(Path(data["cookies"]).parent, data["provider"]):
-                jar.set_cookie(
-                    browser_cookie3.create_cookie(
-                        cookie.get("host", ""),
-                        cookie.get("path", "/"),
-                        cookie.get("secure", False),
-                        cookie.get("expiry"),
-                        cookie.get("name", ""),
-                        cookie.get("value", ""),
-                        cookie.get("httponly", False),
-                    )
-                )
-        else:
-            jar = getattr(browser_cookie3, data["cookie_backend"])(
-                cookie_file=data["cookies"],
-                key_file=data["key_file"],
-                domain_name="google.com"
-                if data["provider"] == "gemini"
-                else HOSTS[data["provider"]],
-            )
-        values = select_cookies(jar, data["provider"])
-        sys.stdout.write(json.dumps(values))
-    except ProfileError:
-        return 2
-    except Exception as error:
-        # Return only an allowlisted category, never the exception text.
-        return _failure_code(error)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(_main())

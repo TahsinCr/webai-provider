@@ -812,7 +812,7 @@ class ChatGPTClient:
             )
         submitted_message_id = body["messages"][0]["id"]
         if action:
-            from ...api import MessageAction
+            from ...base import MessageAction
 
             items = (conversation or {}).get("messages", [])
             target_index = next(

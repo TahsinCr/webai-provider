@@ -232,7 +232,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 if not release.wait(2):
                     raise TimeoutError("save not released")
 
-        with patch("webai_provider.session.save_session", side_effect=save):
+        with patch("webai_provider.accounts.credentials.save_session", side_effect=save):
             first = asyncio.create_task(session.persist())
             self.assertTrue(await asyncio.to_thread(started.wait, 2))
             current["__Secure-1PSID"] = "rotated"

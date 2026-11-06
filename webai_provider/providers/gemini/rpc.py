@@ -76,7 +76,7 @@ class NotebookEditor:
         pass
 
     async def options(self, project_id=None):
-        from ...projects import ProjectOptions
+        from ...models import ProjectOptions
 
         return ProjectOptions(
             fields=("name", "instructions") if project_id else ("name",),

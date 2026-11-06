@@ -3,7 +3,7 @@ import time
 from urllib.parse import urlsplit
 
 from ..accounts.credentials import read_session, save_session_async
-from ..auth.filters import ProviderCookieFilter
+from ..accounts.filters import ProviderCookieFilter
 from ..core import ProviderResilienceRegistry
 from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from .retry import parse_retry_after

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, AsyncGenerator, Protocol
 
-from .api import Capability, Provider
 from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from .models import (
+    Capability,
     Conversation,
     Feature,
     FeatureState,
@@ -13,10 +15,212 @@ from .models import (
     Origin,
     Page,
     Project,
+    ProjectOptions,
     ProviderDescription,
     SessionStatus,
 )
-from .projects import ProjectOptions
+
+
+class MessageAction(str, Enum):
+    EDIT = "edit"
+    RETRY = "retry"
+    BRANCH = "branch"
+
+    @property
+    def capability(self):
+        return {
+            self.EDIT: Capability.MESSAGE_EDIT,
+            self.RETRY: Capability.MESSAGE_RETRY,
+            self.BRANCH: Capability.CHAT_BRANCH,
+        }[self]
+
+
+@dataclass(frozen=True)
+class BranchContext:
+    conversation_id: str
+    message_id: str
+
+
+@dataclass(frozen=True)
+class SendRequest:
+    provider_id: str
+    account_id: str
+    chat_id: str
+    prompt: str
+    conversation_id: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    project_id: str | None = None
+    temporary: bool = False
+    attachments: tuple[dict, ...] = ()
+    action: MessageAction | None = None
+    message_id: str | None = None
+    branch: BranchContext | None = None
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+    channel: str | None = None
+
+
+@dataclass(frozen=True)
+class ThoughtDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class ActionBegin:
+    action_id: str
+    kind: str
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class ActionDelta:
+    action_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class ActionEnd:
+    action_id: str
+
+
+@dataclass(frozen=True)
+class ReplaceText:
+    text: str
+    channel: str | None = None
+
+
+@dataclass(frozen=True)
+class ResponseComplete:
+    pass
+
+
+@dataclass(frozen=True)
+class ConversationBound:
+    conversation_id: str
+
+
+@dataclass(frozen=True)
+class MessageMetadata:
+    message_id: str | None = None
+    user_message_id: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    sources: tuple[dict, ...] = ()
+    actions: tuple[str, ...] = ()
+    files: tuple[dict, ...] = ()
+
+
+ProviderEvent = (
+    TextDelta
+    | ThoughtDelta
+    | ActionBegin
+    | ActionDelta
+    | ActionEnd
+    | ReplaceText
+    | ResponseComplete
+    | ConversationBound
+    | MessageMetadata
+)
+
+
+class Provider(Protocol):
+    id: str
+    account_id: str
+    capabilities: frozenset[Capability]
+
+    async def prepare(self) -> None: ...
+
+    def stream(self, request: SendRequest) -> AsyncGenerator[ProviderEvent, None]: ...
+
+
+def validate_request(provider: Provider, request: SendRequest) -> None:
+    if request.provider_id != provider.id or request.account_id != provider.account_id:
+        raise ValueError("send request belongs to a different provider/account")
+    if request.action is not None:
+        if request.action not in (MessageAction.EDIT, MessageAction.RETRY):
+            raise ValueError("unsupported generation action")
+        if not request.conversation_id or not request.message_id:
+            raise ValueError("message actions require a conversation and message identity")
+    if request.branch is not None:
+        if request.action is not None or request.temporary:
+            raise ValueError("a branch continuation requires a new persistent turn")
+        if not request.branch.conversation_id or not request.branch.message_id:
+            raise ValueError("a branch continuation requires its source identities")
+        if provider.id != "chatgpt":
+            raise ValueError(
+                "this provider creates branches immediately; no continuation context is needed"
+            )
+
+
+class ProjectEditing:
+    async def project_options(self, project_id: str | None = None) -> ProjectOptions:
+        async with self._gate:
+            return await self.editor.options(project_id)
+
+    async def _project_after_write(self, project_id: str, confirmed: Any) -> Project:
+        for _ in range(12):
+            project = await self.get_project(project_id)
+            if confirmed(project):
+                return project
+            await asyncio.sleep(0.4)
+        raise ProviderError(
+            "Proje değişikliği sunucuda doğrulanamadı; tekrarlamadan önce eşitleyin"
+        )
+
+    async def update_project(self, project: Project) -> Project:
+        if project.origin.provider_id != self.id or project.origin.account_id != self.account_id:
+            raise ValueError("Proje başka bir sağlayıcı hesabına ait")
+        remote = project.origin.remote_id
+        if not project.name.strip():
+            raise ValueError("Proje adı gerekir")
+        current = await self.get_project(remote)
+        changes = {}
+        if current.name != project.name:
+            changes["name"] = project.name
+        if (current.instructions or "") != (project.instructions or ""):
+            changes["instructions"] = project.instructions or ""
+        if not changes:
+            return current
+        async with self._gate:
+            await self.editor.write("update", remote, **changes)
+        return await self._project_after_write(
+            remote,
+            lambda p: (
+                p.name == project.name and (p.instructions or "") == (project.instructions or "")
+            ),
+        )
+
+    async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> Project:
+        before = await self.get_project(project_id)
+        ids = {r.id for r in before.resources}
+        async with self._gate:
+            await self.editor.write(
+                "add_source", project_id, kind=kind, existing_resources=before.resources, **values
+            )
+        return await self._project_after_write(
+            project_id, lambda p: any(r.id not in ids for r in p.resources)
+        )
+
+    async def remove_project_resource(self, project_id: str, resource_id: str) -> Project:
+        before = await self.get_project(project_id)
+        source = next((r for r in before.resources if r.id == resource_id), None)
+        if source is None:
+            raise ValueError("Proje kaynağı bulunamadı")
+        async with self._gate:
+            await self.editor.write(
+                "remove_source",
+                project_id,
+                resource_id=resource_id,
+                resource_name=source.name,
+                resource=source,
+            )
+        return await self._project_after_write(
+            project_id, lambda p: all(r.id != resource_id for r in p.resources)
+        )
 
 
 class ProviderAdapter(Provider):
@@ -31,7 +235,7 @@ class ProviderAdapter(Provider):
         policy = policy_for(getattr(self, "id", ""))
         return policy.as_dict() if policy else None
 
-    def _origin(self, remote) -> Origin:
+    def _origin(self, remote: str) -> Origin:
         return Origin(getattr(self, "id", ""), getattr(self, "account_id", "default"), remote)
 
     async def describe(self) -> ProviderDescription:

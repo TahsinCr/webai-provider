@@ -1,12 +1,15 @@
-"""Provider-neutral records with explicit provenance and lossless provider metadata."""
+from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from .accounts.status import FeatureState, SessionState, SessionStatus
-from .api import Capability
+from .transformers.citations import files_from, sources_from
 
 __all__ = [
+    "Capability",
     "FeatureState",
     "SessionState",
     "SessionStatus",
@@ -21,8 +24,71 @@ __all__ = [
     "Message",
     "Conversation",
     "Project",
+    "ProjectOptions",
+    "source_file",
+    "MessageAction",
+    "actions_for",
+    "target_message",
+    "sources_from",
+    "files_from",
     "Page",
 ]
+
+
+class Capability(str, Enum):
+    CHAT = "chat"
+    TEMPORARY = "temporary"
+    HISTORY = "history"
+    RENAME = "rename"
+    DELETE = "delete"
+    AUTH = "auth"
+    ATTACHMENTS = "attachments"
+    RESOURCES = "resources"
+    PROJECTS = "projects"
+    PROJECT_CREATE = "project_create"
+    PROJECT_UPDATE = "project_update"
+    PROJECT_DELETE = "project_delete"
+    PROJECT_MEMBERSHIP = "project_membership"
+    MODELS = "models"
+    EFFORT = "effort"
+    CONNECTORS = "connectors"
+    MESSAGE_EDIT = "message_edit"
+    MESSAGE_RETRY = "message_retry"
+    CHAT_BRANCH = "chat_branch"
+
+
+class MessageAction(str, Enum):
+    EDIT = "edit"
+    RETRY = "retry"
+    BRANCH = "branch"
+
+
+def actions_for(
+    role: str, *, final: bool = True, latest: bool = True, branch: bool = False
+) -> tuple[str, ...]:
+    if not final:
+        return ()
+    if role == "user":
+        return (MessageAction.EDIT.value,)
+    if role != "assistant":
+        return ()
+    return (
+        *((MessageAction.RETRY.value,) if latest else ()),
+        *((MessageAction.BRANCH.value,) if branch else ()),
+    )
+
+
+def target_message(
+    messages: tuple[Message, ...] | list[Message], message_id: str, role: str
+) -> tuple[int, Message]:
+    for index, message in enumerate(messages):
+        if message.id == message_id:
+            if message.role != role or message.channel == "analysis":
+                break
+            return index, message
+    from .errors import ProviderError
+
+    raise ProviderError("The selected message is no longer on the active conversation path")
 
 
 @dataclass(frozen=True)
@@ -164,6 +230,34 @@ class Project:
     instructions: str | None = None
     resources: tuple[Resource, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class ProjectOptions:
+    fields: tuple[str, ...] = ()
+    visibility: tuple[Choice, ...] = ()
+    memory: tuple[Choice, ...] = ()
+    sources: tuple[dict, ...] = ()
+    remove_sources: bool = False
+    source_error: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ProjectOptions:
+        return cls(
+            tuple(value.get("fields", ())),
+            tuple(Choice(**v) for v in value.get("visibility", ())),
+            tuple(Choice(**v) for v in value.get("memory", ())),
+            tuple(value.get("sources", ())),
+            bool(value.get("remove_sources")),
+            value.get("source_error"),
+        )
+
+
+def source_file(path: Any, *, error: str = "Kaynak dosyası en fazla 20 MiB olabilir") -> Path:
+    file = Path(path).expanduser().resolve(strict=True)
+    if not file.is_file() or file.stat().st_size > 20 * 1024 * 1024:
+        raise ValueError(error)
+    return file
 
 
 T = TypeVar("T")
