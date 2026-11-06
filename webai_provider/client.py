@@ -28,14 +28,14 @@ class ProviderClient:
         self._closed = False
         self._closing = None
 
-    def add(self, backend: ProviderAdapter) -> ProviderAdapter:
+    def add(self, adapter: ProviderAdapter) -> ProviderAdapter:
         if self._closed:
             raise RuntimeError("provider client is closed")
-        key = (backend.id, backend.account_id)
+        key = (adapter.id, adapter.account_id)
         if not all(key) or key in self._accounts:
             raise ValueError("provider/account identity must be nonempty and unique")
-        self._accounts[key] = backend
-        return backend
+        self._accounts[key] = adapter
+        return adapter
 
     def connect(
         self, provider_id: str, account_id: str = "default", **configuration
@@ -56,29 +56,29 @@ class ProviderClient:
         self, provider_id: str, account_id: str = "default", *, for_send: bool = False
     ) -> ProviderAdapter:
         """Warm one account before use; opt in to provider-specific send preparation."""
-        backend = self.account(provider_id, account_id)
-        await backend.prepare()
+        adapter = self.account(provider_id, account_id)
+        await adapter.prepare()
         if for_send:
-            prepare_for_send = getattr(backend, "prepare_for_send", None)
+            prepare_for_send = getattr(adapter, "prepare_for_send", None)
             if callable(prepare_for_send):
                 await prepare_for_send()
-        return backend
+        return adapter
 
     @property
     def accounts(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._accounts)
 
     async def stream(self, request: SendRequest) -> AsyncIterator[ProviderEvent]:
-        backend = self.account(request.provider_id, request.account_id)
-        if Capability.CHAT not in backend.capabilities:
+        adapter = self.account(request.provider_id, request.account_id)
+        if Capability.CHAT not in adapter.capabilities:
             raise FeatureUnavailable(Capability.CHAT)
-        if request.action and request.action.capability not in backend.capabilities:
+        if request.action and request.action.capability not in adapter.capabilities:
             raise FeatureUnavailable(request.action.capability)
-        if request.branch and Capability.CHAT_BRANCH not in backend.capabilities:
+        if request.branch and Capability.CHAT_BRANCH not in adapter.capabilities:
             raise FeatureUnavailable(Capability.CHAT_BRANCH)
         task = asyncio.current_task()
         self._streams[task] = self._streams.get(task, 0) + 1
-        iterator = backend.stream(request)
+        iterator = adapter.stream(request)
         self._iterators.add(iterator)
         try:
             async for event in iterator:
@@ -115,16 +115,16 @@ class ProviderClient:
                 )
                 self._iterators.clear()
                 self._streams.clear()
-                backends = tuple(self._accounts.items())
+                adapters = tuple(self._accounts.items())
                 results = await asyncio.gather(
-                    *(backend.close() for _, backend in backends), return_exceptions=True
+                    *(adapter.close() for _, adapter in adapters), return_exceptions=True
                 )
                 failures = [
-                    (key, backend, result)
-                    for (key, backend), result in zip(backends, results, strict=True)
+                    (key, adapter, result)
+                    for (key, adapter), result in zip(adapters, results, strict=True)
                     if isinstance(result, BaseException)
                 ]
-                self._accounts = {key: backend for key, backend, _ in failures}
+                self._accounts = {key: adapter for key, adapter, _ in failures}
                 if failures:
                     raise failures[0][2]
 

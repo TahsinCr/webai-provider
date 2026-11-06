@@ -32,7 +32,6 @@ class SSEFramer:
         self._retry: int | None = None
         self._total_data_bytes = 0
         self._buffer = bytearray()
-        self._skip_lf = False
 
     def feed(self, chunk: bytes | str) -> list[SSEEvent]:
         if isinstance(chunk, str):
@@ -40,37 +39,49 @@ class SSEFramer:
         else:
             raw_bytes = chunk
 
+        self._buffer.extend(raw_bytes)
         events: list[SSEEvent] = []
-        for byte in raw_bytes:
-            if self._skip_lf:
-                self._skip_lf = False
-                if byte == 10:
-                    continue
 
-            if byte == 13:
-                self._skip_lf = True
-                ev = self._process_line(bytes(self._buffer))
-                self._buffer.clear()
-                if ev is not None:
-                    events.append(ev)
-            elif byte == 10:
-                ev = self._process_line(bytes(self._buffer))
-                self._buffer.clear()
-                if ev is not None:
-                    events.append(ev)
-            else:
+        while True:
+            nl = self._buffer.find(b"\n")
+            cr = self._buffer.find(b"\r")
+            if nl == -1 and cr == -1:
                 if len(self._buffer) >= self._max_line_bytes:
                     raise StreamError("SSE line length exceeded buffer limit")
-                self._buffer.append(byte)
+                break
+
+            if cr != -1 and (nl == -1 or cr < nl):
+                if cr == len(self._buffer) - 1:
+                    if len(self._buffer) >= self._max_line_bytes:
+                        raise StreamError("SSE line length exceeded buffer limit")
+                    break
+                line = self._buffer[:cr]
+                if nl == cr + 1:
+                    del self._buffer[: cr + 2]
+                else:
+                    del self._buffer[: cr + 1]
+            else:
+                line = self._buffer[:nl]
+                del self._buffer[: nl + 1]
+
+            if len(line) >= self._max_line_bytes:
+                raise StreamError("SSE line length exceeded buffer limit")
+
+            ev = self._process_line(bytes(line))
+            if ev is not None:
+                events.append(ev)
+
         return events
 
     def finish(self) -> list[SSEEvent]:
         events: list[SSEEvent] = []
         if self._buffer:
-            ev = self._process_line(bytes(self._buffer))
+            trailing = bytes(self._buffer).rstrip(b"\r\n")
             self._buffer.clear()
-            if ev is not None:
-                events.append(ev)
+            if trailing:
+                ev = self._process_line(trailing)
+                if ev is not None:
+                    events.append(ev)
         if self._data_lines:
             events.append(self._dispatch_event())
         return events
@@ -98,10 +109,11 @@ class SSEFramer:
         elif field == "event":
             self._event_type = value
         elif field == "id":
-            self._event_id = value
+            if "\x00" not in value:
+                self._event_id = value
         elif field == "retry":
             try:
-                self._retry = int(value)
+                self._retry = int(value.strip())
             except ValueError:
                 pass
         return None
@@ -114,10 +126,8 @@ class SSEFramer:
             retry=self._retry,
         )
         self._data_lines.clear()
-        self._total_data_bytes = 0
         self._event_type = None
-        self._event_id = None
-        self._retry = None
+        self._total_data_bytes = 0
         return event
 
 
@@ -125,14 +135,16 @@ def parse_sse_chunks(chunks: Iterable[bytes | str]) -> Iterator[str]:
     framer = SSEFramer()
     for chunk in chunks:
         for event in framer.feed(chunk):
-            yield event.data
+            if event.data:
+                yield event.data
     for event in framer.finish():
-        yield event.data
+        if event.data:
+            yield event.data
 
 
-async def parse_sse_async(stream: AsyncIterable[bytes | str]) -> AsyncIterator[SSEEvent]:
+async def parse_sse_async(chunks: AsyncIterable[bytes | str]) -> AsyncIterator[SSEEvent]:
     framer = SSEFramer()
-    async for chunk in stream:
+    async for chunk in chunks:
         for event in framer.feed(chunk):
             yield event
     for event in framer.finish():

@@ -1,31 +1,28 @@
 """Provider-neutral records with explicit provenance and lossless provider metadata."""
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Generic, TypeVar
 
+from .accounts.status import FeatureState, SessionState, SessionStatus
 from .api import Capability
 
-
-class FeatureState(str, Enum):
-    AVAILABLE = "available"
-    UNSUPPORTED = "unsupported"
-    UNKNOWN = "unknown"
-    UNAVAILABLE = "unavailable"
-    LOGIN_REQUIRED = "login_required"
-
-
-class SessionState(str, Enum):
-    UNKNOWN = "unknown"
-    LOGIN_REQUIRED = "login_required"
-    AUTHENTICATED = "authenticated"
-
-
-@dataclass(frozen=True)
-class SessionStatus:
-    state: SessionState
-    saved_snapshot: bool = False
-    reason: str | None = None
+__all__ = [
+    "FeatureState",
+    "SessionState",
+    "SessionStatus",
+    "Feature",
+    "ProviderDescription",
+    "Choice",
+    "Model",
+    "ModelCatalog",
+    "Origin",
+    "Resource",
+    "Content",
+    "Message",
+    "Conversation",
+    "Project",
+    "Page",
+]
 
 
 @dataclass(frozen=True)

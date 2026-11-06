@@ -19,7 +19,7 @@ from webai_provider.providers.gemini.errors import GeminiStreamError
 from webai_provider.registry import PROVIDERS
 
 
-class FakeBackend:
+class FakeAdapter:
     id = "claude"
     capabilities = frozenset({Capability.CHAT})
 
@@ -100,8 +100,8 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_routes_both_account_identity_and_conversation_project_context(self):
         async with ProviderClient() as client:
-            first = client.add(FakeBackend("first"))
-            second = client.add(FakeBackend("second"))
+            first = client.add(FakeAdapter("first"))
+            second = client.add(FakeAdapter("second"))
             request = SendRequest(
                 "claude",
                 "second",
@@ -121,27 +121,27 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_prepare_warms_only_the_requested_account(self):
         client = ProviderClient()
-        backend = client.add(FakeBackend("personal"))
+        adapter = client.add(FakeAdapter("personal"))
         send_preparations = 0
 
         async def prepare_for_send():
             nonlocal send_preparations
             send_preparations += 1
 
-        backend.prepare_for_send = prepare_for_send
+        adapter.prepare_for_send = prepare_for_send
         prepared = await client.prepare("claude", "personal")
-        self.assertIs(prepared, backend)
-        self.assertEqual(backend.prepared, 1)
+        self.assertIs(prepared, adapter)
+        self.assertEqual(adapter.prepared, 1)
         self.assertEqual(send_preparations, 0)
 
         await client.prepare("claude", "personal", for_send=True)
-        self.assertEqual(backend.prepared, 2)
+        self.assertEqual(adapter.prepared, 2)
         self.assertEqual(send_preparations, 1)
         await client.close()
 
     async def test_close_cancels_stream_before_closing_backend(self):
         client = ProviderClient()
-        backend = client.add(FakeBackend("default", wait=True))
+        adapter = client.add(FakeAdapter("default", wait=True))
 
         async def consume():
             return [
@@ -150,20 +150,20 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
             ]
 
         task = asyncio.create_task(consume())
-        await backend.started.wait()
+        await adapter.started.wait()
         await asyncio.wait_for(client.close(), 2)
         self.assertTrue(task.cancelled())
-        self.assertTrue(backend.stopped.is_set())
-        self.assertEqual(backend.closed, 1)
+        self.assertTrue(adapter.stopped.is_set())
+        self.assertEqual(adapter.closed, 1)
         self.assertFalse(client._streams)
         with self.assertRaises(RuntimeError):
             client.account("claude")
 
     async def test_concurrent_close_retries_only_backend_that_failed_to_close(self):
         client = ProviderClient()
-        flaky = FakeBackend("first")
+        flaky = FakeAdapter("first")
         flaky.id = "flaky"
-        healthy = FakeBackend("second")
+        healthy = FakeAdapter("second")
         healthy.id = "healthy"
         flaky_attempts = 0
 
@@ -193,16 +193,16 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_early_stop_in_caller_task_can_close_suspended_iterator(self):
         client = ProviderClient()
-        backend = client.add(FakeBackend("default"))
+        adapter = client.add(FakeAdapter("default"))
         stream = client.stream(SendRequest("claude", "default", "local", "Hello"))
         await anext(stream)
         await client.close()
         await stream.aclose()
-        self.assertTrue(backend.stopped.is_set())
+        self.assertTrue(adapter.stopped.is_set())
 
     async def test_duplicate_identity_is_rejected_before_constructing_an_account(self):
         async with ProviderClient() as client:
-            client.add(FakeBackend("default"))
+            client.add(FakeAdapter("default"))
             with patch("webai_provider.client.create_provider") as factory:
                 with self.assertRaises(ValueError):
                     client.connect("claude")

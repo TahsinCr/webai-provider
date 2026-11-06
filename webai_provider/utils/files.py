@@ -32,12 +32,14 @@ def cookie_header(values, names):
 class NativeDownloadClient:
     """Stream bytes with the same HTTP transport used by Gemini and Claude."""
 
-    def __init__(self, *, timeout, follow_redirects=False, trust_env=False):
+    def __init__(self, *, timeout=None, follow_redirects=False, trust_env=False):
         from curl_cffi.requests import Session
 
+        connect_timeout = getattr(timeout, "connect", 15) if timeout is not None else 15
+        read_timeout = getattr(timeout, "read", 120) if timeout is not None else 120
         self.client = Session(
             impersonate="chrome",
-            timeout=(getattr(timeout, "connect", 15), getattr(timeout, "read", 120)),
+            timeout=(connect_timeout, read_timeout),
             allow_redirects=False,
             trust_env=trust_env,
         )
@@ -62,6 +64,8 @@ class NativeDownloadClient:
             from curl_cffi import CurlOpt
 
             target = urlsplit(url)
+            if not target.hostname:
+                raise ValueError("Download URL has no valid hostname")
             port = target.port or (443 if target.scheme == "https" else 80)
             address = f"[{resolved_address}]" if ":" in resolved_address else resolved_address
             self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{address}"]
@@ -83,5 +87,5 @@ class _NativeDownloadResponse:
         self.headers = response.headers
         self.response = response
 
-    def iter_bytes(self, chunk_size):
+    def iter_bytes(self, chunk_size: int = 65536):
         return self.response.iter_content(chunk_size=chunk_size)

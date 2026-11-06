@@ -176,6 +176,13 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(ProviderCookieFilter.domain_matches("evilclaude.ai", "claude.ai"))
         self.assertFalse(ProviderCookieFilter.domain_matches("claude.ai.attacker.com", "claude.ai"))
 
+    def test_cookie_reader_provider_for_origin(self):
+        self.assertEqual(CookieReader.provider_for_origin("https://chatgpt.com"), "chatgpt")
+        self.assertEqual(CookieReader.provider_for_origin("https://claude.ai/chat"), "claude")
+        self.assertEqual(CookieReader.provider_for_origin("gemini"), "gemini")
+        with self.assertRaises(ValueError):
+            CookieReader.provider_for_origin("https://unknown.com")
+
     def test_import_browser_session_with_mock_reader(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "imported.json"

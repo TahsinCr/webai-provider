@@ -54,7 +54,7 @@ class CredentialContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_backends_accept_the_same_injected_store(self):
         with tempfile.TemporaryDirectory() as folder:
-            for kind in ("chatgpt", "gemini", "claude"):
+            for kind in ("chatgpt", "gemini", "claude", "grok"):
                 store = MemoryCredentials()
                 self.assertIsInstance(store, CredentialStore)
                 provider = create_provider(
@@ -72,12 +72,14 @@ class CredentialContractTests(unittest.IsolatedAsyncioTestCase):
                         save_session(store, value)
                         self.assertEqual(provider.session.load()[0], value["url"])
                     else:
-                        save_session(
-                            store,
+                        cookies = (
                             {"sessionKey": "fixture"}
                             if kind == "claude"
-                            else {"__Secure-1PSID": "fixture"},
+                            else {"sso": "fixture"}
+                            if kind == "grok"
+                            else {"__Secure-1PSID": "fixture"}
                         )
+                        save_session(store, cookies)
                         self.assertTrue(read_session(store))
                     await provider.forget_session()
                     self.assertFalse(store.exists())

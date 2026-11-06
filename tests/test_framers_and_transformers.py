@@ -39,6 +39,19 @@ class SSEFramerTests(unittest.TestCase):
         with self.assertRaises(StreamError):
             framer.feed("data: " + ("x" * 50) + "\n\n")
 
+    def test_handles_crlf_and_split_chunk_boundaries(self):
+        framer = SSEFramer()
+        events = framer.feed(b"data: part1\r")
+        self.assertEqual(len(events), 0)
+        events = framer.feed(b"\ndata: part2\r\n\r\n")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].data, "part1\npart2")
+
+    def test_enforces_line_size_limit(self):
+        framer = SSEFramer(max_line_bytes=15)
+        with self.assertRaises(StreamError):
+            framer.feed("data: line_exceeding_fifteen_bytes_limit\n\n")
+
 
 class JSPBFramerTests(unittest.TestCase):
     def test_strips_anti_hijacking_prefix_and_parses_length_prefixed(self):

@@ -25,6 +25,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Optimize `SSEFramer` with C-accelerated line scanning (`find`) handling CRLF, standalone CR, and split chunk boundaries with zero byte-by-byte loop overhead.
+- Consolidate `SessionState`, `SessionStatus`, and `FeatureState` in `models.py` by importing from `webai_provider.accounts.status` to eliminate duplicate model definitions.
+- Refactor `ProviderClient` parameters, local variables, and test doubles to replace legacy `backend` naming with `adapter`.
+- Enhance `NativeDownloadClient` with hostname validation and resilient default timeout configuration.
+- Expand `CredentialContractTests` to verify memory store injection across all four bundled providers (ChatGPT, Claude, Gemini, Grok).
 - Move standalone utility modules (`cdp.py`, `timing.py`, `files.py`, `history.py`, `attachments.py`) into the dedicated `webai_provider.utils` package.
 - Re-export unified provider error classes across `providers.chatgpt.errors`, `providers.claude.errors`, `providers.gemini.errors`, and `providers.grok.errors`.
 - Migrate package layout to a clean, flat `webai_provider` root directory without requiring a `src/` wrapper or setuptools package mapping hacks.
