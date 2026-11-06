@@ -130,3 +130,23 @@ class ProfileTimeoutError(ProfileError):
 class ProfileInvalidResultError(ProfileError):
     code = "profile_invalid_result"
     default_message = "Profil okuma sonucu geçersiz"
+
+
+class AmbiguousMatchError(ProviderError):
+    code = "ambiguous_match"
+
+
+class UnsupportedOperationError(ProviderError):
+    code = "unsupported_operation"
+
+
+class OperationCancelledError(ProviderError):
+    code = "operation_cancelled"
+
+
+class ConfigurationError(ProviderError):
+    code = "configuration_error"
+
+
+class ContentError(ProviderError):
+    code = "content_error"
