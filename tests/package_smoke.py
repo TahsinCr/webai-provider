@@ -10,7 +10,7 @@ from webai_provider.providers.chatgpt.sentinel import SentinelRuntime, generate_
 
 
 def main():
-    if webai_provider.__version__ != "1.2.0b0":
+    if webai_provider.__version__ != "1.3.0b0":
         raise SystemExit(f"invalid providers version: {webai_provider.__version__}")
     with SentinelRuntime(user_agent="Mozilla/5.0 (X11; Linux x86_64)") as runtime:
         initial = runtime.create_initial_proof()

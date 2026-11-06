@@ -229,7 +229,7 @@ class PublicAPITests(unittest.IsolatedAsyncioTestCase):
     def test_package_exports_version_symbols(self):
         import webai_provider
 
-        self.assertEqual(webai_provider.__version__, "1.2.0b0")
+        self.assertEqual(webai_provider.__version__, "1.3.0b0")
         self.assertIn("__version__", webai_provider.__all__)
         self.assertNotIn("__verison__", webai_provider.__all__)
         self.assertFalse(hasattr(webai_provider, "__verison__"))

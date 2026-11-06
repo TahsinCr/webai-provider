@@ -4,6 +4,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [1.3-beta] - 2026-11-06
+
 ### Added
 
 - Canonical facade `webai_provider.api` (re-exported by `webai_provider/__init__.py`) providing clean public exports for all providers, models, protocols, accounts, transformers, and utilities.
@@ -51,6 +53,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Default optional-reasoning models (such as Gemini 4 Argon) to fast generation mode without reasoning, and cache discovered model catalog across connections to eliminate pre-send discovery overhead.
+- Omit `ConversationBound` on existing conversation turns to resolve Gemini continuation 403 Forbidden errors.
 - Fix Gemini model catalog discovery HTTP 403 Forbidden errors by switching GraphQL query execution from GET to POST with JSON payload, framework XSRF token header, and automatic token refresh.
 - Preserve specific `chatgpt_sentinel_incompatible` error code by having `SentinelCompatibilityError` inherit directly from `ChatGPTError`.
 

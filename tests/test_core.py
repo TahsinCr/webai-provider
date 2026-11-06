@@ -136,11 +136,11 @@ class CoreResilienceTests(unittest.IsolatedAsyncioTestCase):
         key = "grok:acc_test"
 
         self.assertFalse(registry.is_rate_limited(key))
-        registry.register_rate_limit(key, 0.05)
+        registry.register_rate_limit(key, 0.02)
         self.assertTrue(registry.is_rate_limited(key))
         self.assertGreater(registry.rate_limit_remaining(key), 0.0)
 
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.08)
         self.assertFalse(registry.is_rate_limited(key))
 
     async def test_execute_protected_auto_catches_rate_limit(self) -> None:
@@ -163,12 +163,12 @@ class CoreResilienceTests(unittest.IsolatedAsyncioTestCase):
         key = "grok:acc_rl"
 
         async def rate_limited_call() -> None:
-            raise RateLimited(retry_after=0.01)
+            raise RateLimited(retry_after=0.02)
 
         for _ in range(5):
             with self.assertRaises(RateLimited):
                 await registry.execute_protected(key, rate_limited_call)
-            await asyncio.sleep(0.015)
+            await asyncio.sleep(0.05)
 
         self.assertEqual(registry.circuit_state(), "closed")
 

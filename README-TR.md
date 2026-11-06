@@ -1,4 +1,4 @@
-[![Sürüm: v1.2-beta][version-shield]](CHANGELOG.md)
+[![Sürüm: v1.3-beta][version-shield]](CHANGELOG.md)
 [![Python 3.10+][python-shield]](https://www.python.org/downloads/)
 [![GPL-3.0-only][license-shield]](LICENSE)
 
@@ -1016,12 +1016,12 @@ python -m pip install --upgrade .
 
 ## 9. Sürüm Geçmişi ve Lisans
 
-- **Mevcut Sürüm:** `v1.2-beta` (`1.2.0b0`)
-- **Son Güncellemeler:** Grok web oturumu desteği eklendi (model keşfi, SSE akışı, kullanıcı mesajı düzenleme, düşünme özetleri, çalışma alanı kaynakları ve web kaynak alıntıları). Ayrıntılar için [CHANGELOG.md](CHANGELOG.md) dosyasına bakın.
+- **Mevcut Sürüm:** `v1.3-beta` (`1.3.0b0`)
+- **Son Güncellemeler:** Kanonik `webai_provider.api` cephesi kuruldu, eski uyumluluk kodları `compat` altına taşındı, Aşama 3 kimlik ve çerez katmanı uygulandı, EventFlow eşzamanlılık ve dayanıklılık ilkelleri entegre edildi ve Gemini akış/model keşfi optimize edildi. Ayrıntılar için [CHANGELOG.md](CHANGELOG.md) dosyasına bakın.
 - **Lisans:** GNU General Public License v3.0 ([GPL-3.0-only](LICENSE)). Bildirimler için [COPYRIGHT](COPYRIGHT) dosyasına bakın.
 
 [↑ İçindekilere Dön](#icindekiler)
 
-[version-shield]: https://img.shields.io/badge/version-v1.2--beta-b7a3e3.svg?style=for-the-badge
+[version-shield]: https://img.shields.io/badge/version-v1.3--beta-b7a3e3.svg?style=for-the-badge
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
