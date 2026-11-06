@@ -97,6 +97,16 @@ class Frames:
 
     def _scan_payload(self):
         index = self.payload_start + self.scanned_chars
+        needed_units = self.expected_units - self.scanned_units
+        remaining_chars = len(self.pending) - index
+        if remaining_chars > 0 and needed_units > 0:
+            take_candidate = min(remaining_chars, needed_units)
+            chunk = self.pending[index : index + take_candidate]
+            if max(chunk) <= "\uffff":
+                take_chars = len(chunk)
+                self.scanned_chars += take_chars
+                self.scanned_units += take_chars
+                index += take_chars
         while self.scanned_units < self.expected_units and index < len(self.pending):
             units = 2 if ord(self.pending[index]) > 0xFFFF else 1
             if self.scanned_units + units > self.expected_units:
@@ -288,7 +298,11 @@ async def generate(
                     raise GeminiCompatibilityError("Gemini yanıt gövdesi değişti") from error
                 returned = nested(body, 1)
                 if isinstance(returned, list) and returned:
-                    metadata = returned
+                    cand_id = metadata[2] if len(metadata) > 2 else None
+                    metadata = list(returned)
+                    if cand_id and len(metadata) >= 2:
+                        metadata.extend([None] * max(0, 3 - len(metadata)))
+                        metadata[2] = cand_id
                     if nested(metadata, 0) and not nested(body, 4):
                         yield {
                             "cid": metadata[0],
@@ -305,6 +319,8 @@ async def generate(
                     current = list(metadata)
                     current.extend([None] * max(0, 3 - len(current)))
                     current[2] = candidate[0]
+                    if len(current) >= 3 and current[2]:
+                        metadata = list(current)
                     response_complete = nested(candidate, 8, 0) == 2
                     completed = completed or response_complete
                     text = nested(candidate, 1, 0)

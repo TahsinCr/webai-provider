@@ -808,6 +808,28 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(provider._take_chat_metadata("conversation"))
         self.assertNotIn("conversation", provider._chat_metadata)
 
+    def test_prepare_next_turn_reorders_lru(self):
+        provider = GeminiProvider(Path("unused"), "test")
+        provider._chat_metadata["c1"] = ["c1", "r1", "rc1"]
+        provider._chat_metadata["c2"] = ["c2", "r2", "rc2"]
+        provider.prepare_next_turn("c1")
+        self.assertEqual(list(provider._chat_metadata.keys()), ["c2", "c1"])
+
+    def test_frames_fast_path_and_astral_planes(self):
+        from webai_provider.providers.gemini.transport import Frames
+
+        def encode(rows):
+            payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+            size = len(("\n" + payload).encode("utf-16-le")) // 2
+            return f"{size}\n{payload}"
+
+        frames = Frames()
+        frame = [["test", "Merhaba dünya! 🚀"]]
+        wire = (")]}'\n\n" + encode(frame) + "\n").encode()
+        parsed = list(frames.feed(wire, final=True))
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0][1], "Merhaba dünya! 🚀")
+
     async def test_flash_variants_distinguish_default_fast_and_specialized_models(self):
         fast_row = [None] * 18
         fast_row[0], fast_row[1], fast_row[11], fast_row[17] = (

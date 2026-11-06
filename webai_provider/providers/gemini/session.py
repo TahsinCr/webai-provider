@@ -97,6 +97,7 @@ class GeminiSession:
             if not self.token:
                 raise AccountPaused("Gemini oturumu geçersiz; hesabı doğrulayın")
             self.verified = True
+            self._activity_synced_at = time.monotonic()
             await self.persist()
             self.refresh_task = asyncio.create_task(self.refresh(), name="gemini-session-refresh")
         except BaseException:
@@ -295,30 +296,38 @@ class GeminiSession:
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        response = await self.http.post(
-            endpoint,
-            headers=headers,
-            data=body,
-            allow_redirects=False,
-        )
-        if response.status_code == 400 and self._has_xsrf_error(response):
-            token_response = await self.http.get(
-                xsrf_endpoint,
-                headers={**HEADERS, "Accept": "text/plain"},
-                allow_redirects=False,
-            )
-            WebSession.check(token_response)
-            token = token_response.text.strip()
-            if not token:
-                raise ProviderError("Gemini oturum doğrulama belirteci yenilenemedi")
-            self.token = token
-            response = await self.http.post(
+
+        async def fetch_graphql():
+            res = await self.http.post(
                 endpoint,
-                headers={**headers, "X-Framework-XSRF-Token": token},
+                headers=headers,
                 data=body,
                 allow_redirects=False,
             )
-        WebSession.check(response)
+            if res.status_code == 400 and self._has_xsrf_error(res):
+                token_response = await self.http.get(
+                    xsrf_endpoint,
+                    headers={**HEADERS, "Accept": "text/plain"},
+                    allow_redirects=False,
+                )
+                WebSession.check(token_response)
+                token = token_response.text.strip()
+                if not token:
+                    raise ProviderError("Gemini oturum doğrulama belirteci yenilenemedi")
+                self.token = token
+                res = await self.http.post(
+                    endpoint,
+                    headers={**headers, "X-Framework-XSRF-Token": token},
+                    data=body,
+                    allow_redirects=False,
+                )
+            WebSession.check(res)
+            return res
+
+        response, rpc_response = await asyncio.gather(
+            fetch_graphql(),
+            self.batch([RPCPayload("otAQ7b", "[]")]),
+        )
         result = self._decode_graphql(response.text)
         data = result.get("data") or {}
         viewer = data.get("viewer") or {}
@@ -348,8 +357,7 @@ class GeminiSession:
             if remote:
                 policies[remote] = item
 
-        response = await self.batch([RPCPayload("otAQ7b", "[]")])
-        parts = list(rpc_parts(response.text, "otAQ7b"))
+        parts = list(rpc_parts(rpc_response.text, "otAQ7b"))
         if len(parts) != 1 or nested(parts[0], 14) == 1016:
             raise AccountPaused("Gemini hesabı doğrulanamadı; misafir moduna geçilmedi")
         body = parts[0]
@@ -436,13 +444,23 @@ class GeminiSession:
             if self.http is None or not self.verified:
                 return
             cookies = self.http.cookies.get_dict()
-            if cookies != self._saved:
+            record = dict(cookies)
+            if self.token:
+                record.update(
+                    token=self.token,
+                    build=self.build,
+                    sid=self.sid,
+                    language=self.language,
+                    push_id=self.push_id,
+                    rpc_path_prefix=self.rpc_path_prefix,
+                )
+            if record != self._saved:
                 try:
-                    await save_session_async(self.credential_file, cookies)
+                    await save_session_async(self.credential_file, record)
                 except (OSError, ValueError):
                     self.persistence_warning = "Gemini oturum kaydı güncellenemedi"
                     return
-                self._saved = cookies
+                self._saved = record
                 self.persistence_warning = None
 
     async def refresh(self):

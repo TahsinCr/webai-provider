@@ -213,13 +213,19 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         )
 
     def _take_chat_metadata(self, conversation_id):
-        metadata = self._chat_metadata.pop(conversation_id, None)
-        verified_at = self._chat_metadata_verified_at.pop(conversation_id, None)
+        metadata = self._chat_metadata.get(conversation_id)
+        verified_at = self._chat_metadata_verified_at.get(conversation_id)
         if metadata is None or verified_at is None:
             return None
         if time.monotonic() - verified_at > _CHAT_METADATA_TTL_SECONDS:
+            self._chat_metadata.pop(conversation_id, None)
+            self._chat_metadata_verified_at.pop(conversation_id, None)
             return None
         return metadata
+
+    def prepare_next_turn(self, conversation_id, last_message_id=None):
+        if conversation_id and conversation_id in self._chat_metadata:
+            self._chat_metadata.move_to_end(conversation_id)
 
     def _remember_chat_metadata(self, conversation_id, metadata):
         self._chat_metadata[conversation_id] = list(metadata)
@@ -507,81 +513,81 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                                 "Gemini sohbet devam kimlikleri alınamadı"
                             )
                         metadata[1:3] = [rid or "", rcid or ""]
-            bound, visible, cid = False, False, request.conversation_id
-            final_metadata = None
-            output_files, published_sources = (), ()
             activity_started = time.perf_counter_ns() if timing is not None else None
             await client.sync_activity()
             if activity_started is not None:
                 timing.record(
                     "provider_activity_sync_ms", time.perf_counter_ns() - activity_started
                 )
-            async for chunk in generate(
-                client,
-                request,
-                metadata,
-                context,
-                files=action_files,
-                request_timeout=(15, self.stream_idle_timeout + 10),
-            ):
-                cid = chunk.get("cid") or cid
-                metadata = chunk["metadata"]
-                if cid and not bound:
-                    yield ConversationBound(cid)
-                    bound = True
-                if chunk.get("context_only"):
-                    continue
-                images = chunk["files"]
-                output_files = files_from(
-                    {"files": output_files},
-                    {
-                        "files": [
-                            {
-                                "id": image["alias"],
-                                "name": image["name"],
-                                "remote_url": image["url"],
-                                "media_type": image.get("media_type"),
-                            }
-                            for image in images
-                        ]
-                    },
+        bound, visible, cid = False, False, request.conversation_id
+        final_metadata = None
+        output_files, published_sources = (), ()
+        async for chunk in generate(
+            client,
+            request,
+            metadata,
+            context,
+            files=action_files,
+            request_timeout=(15, self.stream_idle_timeout + 10),
+        ):
+            cid = chunk.get("cid") or cid
+            metadata = chunk["metadata"]
+            if cid and not bound:
+                yield ConversationBound(cid)
+                bound = True
+            if chunk.get("context_only"):
+                continue
+            images = chunk["files"]
+            output_files = files_from(
+                {"files": output_files},
+                {
+                    "files": [
+                        {
+                            "id": image["alias"],
+                            "name": image["name"],
+                            "remote_url": image["url"],
+                            "media_type": image.get("media_type"),
+                        }
+                        for image in images
+                    ]
+                },
+            )
+            published_sources = sources_from(
+                {"sources": published_sources}, {"sources": chunk.get("sources", ())}
+            )
+            visible = visible or bool(chunk["text"] or images)
+            if chunk["thoughts"]:
+                yield ReplaceText(chunk["thoughts"], "analysis")
+            for image in images:
+                self._media[cid, image["alias"]] = image
+                self._media[cid, image["url"]] = image
+            while len(self._media) > 256:
+                self._media.pop(next(iter(self._media)))
+            yield ReplaceText(resolve_image_links(chunk["text"], images), "final")
+            if chunk.get("response_complete"):
+                yield ResponseComplete()
+            rid = metadata[1] if len(metadata) > 1 else None
+            if rid:
+                final_metadata = MessageMetadata(
+                    message_id=rid + ":model",
+                    user_message_id=rid + ":user",
+                    model=request.model,
+                    effort=request.effort,
+                    sources=published_sources,
+                    actions=() if request.temporary else ("retry", "branch"),
+                    files=output_files,
                 )
-                published_sources = sources_from(
-                    {"sources": published_sources}, {"sources": chunk.get("sources", ())}
-                )
-                visible = visible or bool(chunk["text"] or images)
-                if chunk["thoughts"]:
-                    yield ReplaceText(chunk["thoughts"], "analysis")
-                for image in images:
-                    self._media[cid, image["alias"]] = image
-                    self._media[cid, image["url"]] = image
-                while len(self._media) > 256:
-                    self._media.pop(next(iter(self._media)))
-                yield ReplaceText(resolve_image_links(chunk["text"], images), "final")
-                if chunk.get("response_complete"):
-                    yield ResponseComplete()
-                rid = metadata[1] if len(metadata) > 1 else None
-                if rid:
-                    final_metadata = MessageMetadata(
-                        message_id=rid + ":model",
-                        user_message_id=rid + ":user",
-                        model=request.model,
-                        effort=request.effort,
-                        sources=published_sources,
-                        actions=() if request.temporary else ("retry", "branch"),
-                        files=output_files,
-                    )
-            if not visible or not cid:
-                raise GeminiStreamError("Gemini yanıtı tamamlanmadı; yeniden gönderilmedi")
-            if final_metadata:
-                yield final_metadata
-            if cid and not request.temporary and self._usable_chat_metadata(metadata, cid):
-                self._remember_chat_metadata(cid, metadata)
-            if request.temporary:
-                self._temporary[cid] = metadata
-                while len(self._temporary) > 32:
-                    oldest = next(iter(self._temporary))
-                    self._temporary.pop(oldest)
+        if not visible or not cid:
+            raise GeminiStreamError("Gemini yanıtı tamamlanmadı; yeniden gönderilmedi")
+        if final_metadata:
+            yield final_metadata
+        if cid and not request.temporary and self._usable_chat_metadata(metadata, cid):
+            self._remember_chat_metadata(cid, metadata)
+        if request.temporary:
+            self._temporary[cid] = metadata
+            while len(self._temporary) > 32:
+                oldest = next(iter(self._temporary))
+                self._temporary.pop(oldest)
 
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
