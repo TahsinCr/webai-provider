@@ -167,7 +167,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         provider.stream_total_timeout = 0.005
 
         provider._stream = delayed_response
-        with self.assertRaisesRegex(ProviderError, "10 dakikalık süre sınırını"):
+        with self.assertRaisesRegex(ProviderError, "10-minute time limit"):
             _ = [
                 event
                 async for event in provider.stream(
@@ -370,7 +370,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(headers["x-goog-ext-525001261-jspb"])[7], 0)
         from dataclasses import replace
 
-        with self.assertRaisesRegex(ValueError, "Efor"):
+        with self.assertRaisesRegex(ValueError, "effort"):
             generation_request(session, replace(request, effort="extended"), [], [])
 
         # A refreshed server policy changes the choices without local model-name tables.
@@ -391,7 +391,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 {"data": {"viewer": {"rpcs": {"getUserStatus": status}}}},
             ]
         )
-        with self.assertRaisesRegex(ProviderError, "kullanılabilir model"):
+        with self.assertRaisesRegex(ProviderError, "available models"):
             await session.discover_models()
 
     async def test_uploads_use_local_paths_serially_and_close_mime(self):

@@ -79,7 +79,7 @@ class RemoteNotFound(ProviderError):
 
 class ProfileError(ProviderError):
     code = "profile_error"
-    default_message = "Profil okunamadı (beklenmeyen hata); Python bağımlılıklarını ve profil erişimini kontrol edin"
+    default_message = "Could not read the browser profile (unexpected error); check Python dependencies and profile access."
 
     def __init__(self, message: str | None = None):
         super().__init__(message or self.default_message)
@@ -87,49 +87,49 @@ class ProfileError(ProviderError):
 
 class ProfileNotFoundError(ProfileError):
     code = "profile_not_found"
-    default_message = "Varsayılan tarayıcı profili bulunamadı"
+    default_message = "The default browser profile was not found"
 
 
 class ProfileSessionNotFoundError(ProfileError):
     code = "profile_session_not_found"
-    default_message = "Bu profilde sağlayıcıya ait açık oturum bulunamadı"
+    default_message = "No active provider session was found in this profile."
 
 
 class ProfileDependencyError(ProfileError):
     code = "profile_dependency_missing"
-    default_message = "Profil okuyucu bağımlılıkları eksik; uygulamanın Python ortamında bağımlılıkları güncelleyin"
+    default_message = "Browser profile reader dependencies are missing; update dependencies in the application's Python environment."
 
 
 class ProfilePermissionError(ProfileError):
     code = "profile_permission_denied"
-    default_message = "Profil dosyasına erişim reddedildi; uygulamayı profilin sahibi olan kullanıcıyla çalıştırın"
+    default_message = (
+        "Access to the profile file was denied; run the application as the profile owner."
+    )
 
 
 class ProfileDatabaseError(ProfileError):
     code = "profile_database_error"
-    default_message = "Çerez veritabanı okunamadı; tarayıcıyı kapatıp yeniden deneyin"
+    default_message = "Could not read the cookie database; close the browser and try again."
 
 
 class ProfileKeyringError(ProfileError):
     code = "profile_keyring_error"
-    default_message = (
-        "Sistem anahtarlığına erişilemedi; masaüstü oturumunu ve anahtarlık kilidini kontrol edin"
-    )
+    default_message = "Could not access the system keyring; check the desktop session and whether the keyring is unlocked."
 
 
 class ProfileDecryptionError(ProfileError):
     code = "profile_decryption_error"
-    default_message = "Tarayıcı çerezleri çözülemedi; anahtarlık erişimi veya tarayıcı şifrelemesi uyumsuz olabilir"
+    default_message = "Could not decrypt browser cookies; keyring access or browser encryption may be incompatible."
 
 
 class ProfileTimeoutError(ProfileError):
     code = "profile_timeout"
-    default_message = "Profil okuma zaman aşımına uğradı; sistem anahtarlığının kilidini açın"
+    default_message = "Timed out reading the profile; unlock the system keyring."
 
 
 class ProfileInvalidResultError(ProfileError):
     code = "profile_invalid_result"
-    default_message = "Profil okuma sonucu geçersiz"
+    default_message = "The profile reader returned an invalid result."
 
 
 class AmbiguousMatchError(ProviderError):

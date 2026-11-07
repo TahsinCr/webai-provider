@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..models import Capability
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
+
+if TYPE_CHECKING:
+    from ..session import ProviderSession
 
 
 @dataclass(frozen=True)
@@ -55,10 +58,10 @@ class Account:
     ) -> Account:
         from .importer import import_cookies
 
-        _, cookies = import_cookies(provider.lower())
+        _, cookies = import_cookies(provider.lower(), browser=browser)
         return cls.from_cookies(provider, cookies, id=id, name=name)
 
-    def connect(self) -> Any:
+    def connect(self) -> ProviderSession:
         from ..bridge import get_bridge
         from ..session import ProviderSession
 

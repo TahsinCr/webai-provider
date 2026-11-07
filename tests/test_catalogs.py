@@ -150,9 +150,11 @@ class CatalogTests(unittest.TestCase):
 
 class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_account_model_cache_is_shared_across_sessions_and_refreshable(self) -> None:
+        from webaiprovider.models import FeatureState, Model, ModelCatalog
+
         account = Account("account-1", "chatgpt", {"session_token": "test"})
-        model = SimpleNamespace(id="gpt-6-pro", title="GPT-6 Pro", efforts=(), metadata={})
-        catalog = SimpleNamespace(chat_models=(model,), default_chat_model=None)
+        model = Model("gpt-6-pro", "GPT-6 Pro")
+        catalog = ModelCatalog(FeatureState.AVAILABLE, (model,))
         provider = SimpleNamespace(models=AsyncMock(return_value=catalog))
         bridge = ProviderBridge(account)
         bridge._provider_instance = provider

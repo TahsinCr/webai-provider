@@ -41,15 +41,15 @@ class ProviderCookieFilter:
     ) -> dict[str, str]:
         cls.validate_origin(origin)
         if not isinstance(cookies, dict) or not cookies:
-            raise AccountPaused("Oturumunuzu Hesaplar bölümünden bir kez yeniden doğrulayın")
+            raise AccountPaused("Reverify your session once through the Accounts section")
         req = required_cookie or REQUIRED_PROVIDER_COOKIES.get(origin)
         if req is not None and not cookies.get(req):
-            raise AccountPaused("Oturumunuzu Hesaplar bölümünden bir kez yeniden doğrulayın")
+            raise AccountPaused("Reverify your session once through the Accounts section")
         for key, val in cookies.items():
             if not isinstance(key, str) or not isinstance(val, str):
-                raise AccountPaused("Oturum kaydı geçersiz")
+                raise AccountPaused("Session record is invalid")
             if "\n" in key + val or "\r" in key + val:
-                raise AccountPaused("Oturum kaydı geçersiz")
+                raise AccountPaused("Session record is invalid")
         return dict(cookies)
 
     @classmethod

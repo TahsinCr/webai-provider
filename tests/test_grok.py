@@ -802,7 +802,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "workspace", "text", name="notes.txt", text="Notes"
             )
             self.assertEqual(added.resources[0].id, "/notes.txt")
-            with self.assertRaisesRegex(ValueError, "zaten var"):
+            with self.assertRaisesRegex(ValueError, "already exists"):
                 await provider.add_project_resource(
                     "workspace", "text", name="notes.txt", text="Overwrite"
                 )

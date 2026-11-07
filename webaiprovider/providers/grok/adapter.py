@@ -290,7 +290,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
 
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
-            raise ValueError("Sohbet başlığı 1–200 karakter olmalıdır")
+            raise ValueError("Conversation title must be between 1 and 200 characters")
         await self.transport.request(
             "PUT",
             "/rest/app-chat/conversations/" + remote_id(conversation_id),
@@ -363,9 +363,9 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                 Capability.PROJECT_CREATE, "Grok privacy or memory options are unavailable"
             )
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
-            raise ValueError("Proje adı 1–200 karakter olmalıdır")
+            raise ValueError("Project name must be between 1 and 200 characters")
         if not isinstance(instructions, str):
-            raise ValueError("Proje talimatları metin olmalıdır")
+            raise ValueError("Project instructions must be text")
         data = await self.transport.request(
             "POST",
             "/rest/workspaces",
@@ -404,7 +404,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                         )
                     except Exception:
                         raise ProviderError(
-                            "Grok sohbet taşıma işlemi tamamlanmadı; sohbet birden fazla çalışma alanında kalmış olabilir"
+                            "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
                         ) from None
                 raise
         for _ in range(5):
@@ -412,7 +412,9 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
             if conversation(metadata, self.account_id).project_id == project_id:
                 return
             await asyncio.sleep(0.2)
-        raise ProviderError("Grok sohbetin proje üyeliği sunucuda doğrulanamadı")
+        raise ProviderError(
+            "Grok conversation project membership could not be confirmed by the server"
+        )
 
     async def stream(self, request):
         validate_request(self, request)

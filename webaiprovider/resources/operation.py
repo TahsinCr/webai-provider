@@ -10,7 +10,16 @@ from typing import (
     Coroutine,
 )
 
-from ..contracts import StreamEvent, TerminalStatus, TimingMetrics
+from ..contracts import (
+    ArtifactDiscovered,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    SourceDiscovered,
+    StreamEvent,
+    TerminalStatus,
+    TimingMetrics,
+)
 from ..errors import OperationCancelledError, ProviderError
 from .response import Response
 
@@ -76,56 +85,97 @@ class MessageOperation:
         self._completed = False
         self._cancelled = False
         self._events: list[StreamEvent] = []
-        self._completion_future: asyncio.Future[Response] | None = None
-        self._stage_waiters: dict[str, list[asyncio.Future[StreamEvent]]] = {}
-        self._stream_task: asyncio.Task[None] | None = None
+        self._stream_task: asyncio.Task[Response] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._condition = asyncio.Condition()
 
     def cancel(self) -> None:
+        if self._completed:
+            return
         self._cancelled = True
-        if self._stream_task is not None and not self._stream_task.done():
-            self._stream_task.cancel()
-        if self._completion_future is not None and not self._completion_future.done():
-            self._completion_future.set_exception(OperationCancelledError("İşlem iptal edildi"))
+        task = self._stream_task
+        loop = self._loop
+        if task is not None and loop is not None and not task.done():
+            loop.call_soon_threadsafe(task.cancel)
+            return
+        if task is None:
+            self._events.append(
+                TerminalStatus("cancelled", OperationCancelledError("Operation cancelled"))
+            )
+            self._completed = True
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(lambda: asyncio.create_task(self._notify_waiters()))
+
+    async def _notify_waiters(self) -> None:
+        async with self._condition:
+            self._condition.notify_all()
+
+    def _ensure_started(self) -> asyncio.Task[Response]:
+        if self._cancelled:
+            raise OperationCancelledError("Operation cancelled")
+        if self._stream_task is None:
+            if self._executor is None:
+                raise ProviderError("No executor is configured for this operation")
+            self._loop = asyncio.get_running_loop()
+            self._started = True
+            self._stream_task = self._loop.create_task(self._run_internal())
+        return self._stream_task
+
+    async def _publish(self, event: StreamEvent) -> None:
+        self._events.append(event)
+        async with self._condition:
+            self._condition.notify_all()
+        await self.hooks.emit(event)
+
+    async def _finish(self, status: TerminalStatus) -> None:
+        self._events.append(status)
+        self._completed = True
+        async with self._condition:
+            self._condition.notify_all()
+        await self.hooks.emit(status)
 
     async def wait_for(
         self, stage_name: str, *, timeout: float | None = None
     ) -> StreamEvent | None:
-        for ev in self._events:
-            if ev.event == stage_name:
-                return ev
+        self._ensure_started()
 
-        if self._completed or self._cancelled:
-            return None
-
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[StreamEvent] = loop.create_future()
-        self._stage_waiters.setdefault(stage_name, []).append(future)
-
-        if not self._started:
-            asyncio.create_task(self._run_internal())
+        async def wait_for_event() -> StreamEvent | None:
+            async with self._condition:
+                await self._condition.wait_for(
+                    lambda: (
+                        any(event.event == stage_name for event in self._events) or self._completed
+                    )
+                )
+                return next(
+                    (event for event in self._events if event.event == stage_name),
+                    None,
+                )
 
         try:
-            if timeout is not None:
-                return await asyncio.wait_for(future, timeout=timeout)
-            return await future
+            if timeout is None:
+                return await wait_for_event()
+            return await asyncio.wait_for(wait_for_event(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
 
     async def stream(self) -> AsyncIterator[StreamEvent]:
-        if self._started:
-            for ev in self._events:
-                yield ev
-            if self._response is not None:
-                return
+        task = self._ensure_started()
+        index = 0
+        while True:
+            async with self._condition:
+                await self._condition.wait_for(lambda: index < len(self._events) or self._completed)
+                if index >= len(self._events):
+                    break
+                event = self._events[index]
+                index += 1
 
-        self._started = True
-        loop = asyncio.get_running_loop()
-        if self._completion_future is None:
-            self._completion_future = loop.create_future()
+            if isinstance(event, TerminalStatus):
+                continue
+            yield event
 
-        if self._executor is None:
-            raise ProviderError("İşlem için çalıştırıcı motor bulunamadı")
+        await task
 
+    async def _run_internal(self) -> Response:
         started_at = time.perf_counter()
         first_token_at: float | None = None
         collected_text: list[str] = []
@@ -133,106 +183,72 @@ class MessageOperation:
         collected_artifacts: list[Any] = []
 
         try:
+            assert self._executor is not None
             async for event in self._executor(self):
                 if self._cancelled:
-                    raise OperationCancelledError("İşlem iptal edildi")
+                    raise OperationCancelledError("Operation cancelled")
 
-                self._events.append(event)
-                await self.hooks.emit(event)
-
-                waiters = self._stage_waiters.pop(event.event, [])
-                for w in waiters:
-                    if not w.done():
-                        w.set_result(event)
-
-                if event.event == "output.delta":
+                if isinstance(event, OutputDelta):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
-                    collected_text.append(getattr(event, "delta", ""))
-                elif event.event == "output.replace":
+                    collected_text.append(event.delta)
+                elif isinstance(event, OutputReplace):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
-                    collected_text = [getattr(event, "text", "")]
-                elif event.event == "output.end":
-                    if not collected_text:
-                        collected_text.append(getattr(event, "text", ""))
-                elif event.event == "source.discovered":
-                    collected_sources.append(getattr(event, "source", None))
-                elif event.event == "artifact.discovered":
-                    collected_artifacts.append(getattr(event, "artifact", None))
+                    collected_text = [event.text]
+                elif isinstance(event, OutputEnd) and not collected_text and event.text:
+                    collected_text.append(event.text)
+                elif isinstance(event, SourceDiscovered):
+                    collected_sources.append(event.source)
+                elif isinstance(event, ArtifactDiscovered):
+                    collected_artifacts.append(event.artifact)
 
-                yield event
+                await self._publish(event)
 
             completed_at = time.perf_counter()
-            duration_ms = (completed_at - started_at) * 1000.0
-            first_token_ms = (
-                (first_token_at - started_at) * 1000.0 if first_token_at is not None else None
-            )
-
             timing = TimingMetrics(
                 started_at=started_at,
                 first_token_at=first_token_at,
                 completed_at=completed_at,
-                first_token_ms=first_token_ms,
-                duration_ms=duration_ms,
+                first_token_ms=(
+                    (first_token_at - started_at) * 1000.0 if first_token_at is not None else None
+                ),
+                duration_ms=(completed_at - started_at) * 1000.0,
             )
 
             from .message import Message
 
             full_text = "".join(collected_text)
-            resp_message = Message(
+            response_message = Message(
                 content=full_text,
                 role="assistant",
                 model=self.message.model,
                 chat=self.chat,
             )
             self._response = Response(
-                resp_message,
-                sources=[s for s in collected_sources if s is not None],
-                artifacts=[a for a in collected_artifacts if a is not None],
+                response_message,
+                sources=collected_sources,
+                artifacts=collected_artifacts,
                 timing=timing,
             )
-            self._completed = True
-            if self._completion_future and not self._completion_future.done():
-                self._completion_future.set_result(self._response)
-
-            term_event = TerminalStatus("completed")
-            self._events.append(term_event)
-            await self.hooks.emit(term_event)
-
-        except Exception as exc:
-            self._completed = True
-            term_event = TerminalStatus("failed", error=exc)
-            self._events.append(term_event)
-            await self.hooks.emit(term_event)
-
-            for stage_waiters in self._stage_waiters.values():
-                for w in stage_waiters:
-                    if not w.done():
-                        w.set_result(term_event)
-
-            if self._completion_future and not self._completion_future.done():
-                self._completion_future.set_exception(exc)
-            raise
-
-    async def _run_internal(self) -> Response:
-        try:
-            async for _ in self.stream():
-                pass
-        except Exception:
-            pass
-        if self._response is not None:
+            await self._finish(TerminalStatus("completed"))
             return self._response
-        if self._completion_future is not None and self._completion_future.done():
-            return self._completion_future.result()
-        raise ProviderError("Cevap nesnesi oluşturulamadı")
+
+        except asyncio.CancelledError:
+            error = OperationCancelledError("Operation cancelled")
+            self._cancelled = True
+            await self._finish(TerminalStatus("cancelled", error))
+            raise error from None
+        except Exception as exc:
+            await self._finish(TerminalStatus("failed", exc))
+            raise
+        finally:
+            self._completed = True
+            async with self._condition:
+                self._condition.notify_all()
 
     async def start(self) -> Response:
-        if self._response is not None:
-            return self._response
-        if self._stream_task is None:
-            self._stream_task = asyncio.create_task(self._run_internal())
-        return await self._stream_task
+        return await self._ensure_started()
 
     async def wait(self) -> Response:
         return await self.start()

@@ -399,9 +399,7 @@ class DiscoveryTests(unittest.TestCase):
             buffers.append(weakref.ref(value))
             return value
 
-        with patch(
-            "webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer
-        ):
+        with patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer):
             with (
                 patch.object(self.client, "create_sentinel_headers", return_value={}),
                 self.assertRaisesRegex(ChatGPTWebError, "stream failed"),

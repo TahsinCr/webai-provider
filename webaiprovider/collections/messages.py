@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from ..catalogs.policies import Models
 from ..contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
+from ..errors import ProviderError
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
 from .base import ManageableCollection
@@ -46,15 +47,10 @@ class MessagesCollection(ManageableCollection[Message]):
 
     async def _execute_send(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         session = self.chat.session
-        if session is not None and hasattr(session, "_bridge") and session._bridge:
-            async for ev in session._bridge.execute_stream(operation):
-                yield ev
-        else:
-            from ..contracts import OutputBegin, OutputDelta, OutputEnd
-
-            yield OutputBegin()
-            yield OutputDelta(f"Yanıt: {operation.message.content}")
-            yield OutputEnd(f"Yanıt: {operation.message.content}")
+        if session is None or session._bridge is None:
+            raise ProviderError("No provider session is attached to this chat")
+        async for event in session._bridge.execute_stream(operation):
+            yield event
 
     def update(
         self,

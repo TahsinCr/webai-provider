@@ -270,11 +270,15 @@ def _safari_cookie_file(home):
         try:
             profile_id = str(uuid.UUID(active_profile)).lower()
         except ValueError:
-            raise ProfileNotFoundError("Son kullanılan Safari profili belirlenemedi") from None
+            raise ProfileNotFoundError(
+                "The most recently used Safari profile could not be determined"
+            ) from None
         cookies = library / "WebKit/WebsiteDataStore" / profile_id / "Cookies/Cookies.binarycookies"
         if cookies.is_file():
             return cookies
-        raise ProfileNotFoundError("Son kullanılan Safari profilinin çerez dosyası bulunamadı")
+        raise ProfileNotFoundError(
+            "The cookie file for the most recently used Safari profile was not found"
+        )
 
     if not active_profile:
         profile_store = library / "WebKit/WebsiteDataStore"
@@ -286,11 +290,11 @@ def _safari_cookie_file(home):
             )
         except OSError:
             raise ProfileError(
-                "Safari profili belirlenemedi; Safari'de kullanacağınız profili açın"
+                "Could not identify the Safari profile; open the profile you want to use in Safari."
             ) from None
         if has_named_profiles:
             raise ProfileError(
-                "Safari profili belirlenemedi; Safari'de kullanacağınız profili açın"
+                "Could not identify the Safari profile; open the profile you want to use in Safari."
             )
 
     cookie_files = (
@@ -299,7 +303,7 @@ def _safari_cookie_file(home):
     )
     cookies = next((path for path in cookie_files if path.is_file()), None)
     if cookies is None:
-        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
+        raise ProfileNotFoundError("The default browser profile was not found")
     return cookies
 
 
@@ -323,7 +327,7 @@ def _browser_source(name):
             "technologypreview",
         )
     ):
-        raise ProfileError("Varsayılan tarayıcının profili desteklenmiyor")
+        raise ProfileError("The default browser profile is not supported")
     return next(
         (source for tokens, source in _BROWSER_SOURCES if any(token in name for token in tokens)),
         None,
@@ -368,22 +372,18 @@ def _firefox_root(location, browser_name, home):
     return next((root for root in roots if (root / "profiles.ini").is_file()), roots[0])
 
 
-def default_profile(family: str | None = None) -> BrowserProfile:
+def default_profile(browser: str | None = None) -> BrowserProfile:
     try:
-        name = _default_id().lower()
+        name = (browser or _default_id()).lower()
     except (OSError, ValueError, subprocess.SubprocessError):
-        raise ProfileError("Varsayılan tarayıcı belirlenemedi") from None
+        raise ProfileError("The default browser could not be determined") from None
     source = _browser_source(name)
     if source is None:
-        raise ProfileError("Varsayılan tarayıcının profili desteklenmiyor")
-    if family is not None and source.family != family:
-        raise ProfileError(
-            f"Varsayılan tarayıcı ({source.family}) istenen aile ({family}) ile eşleşmiyor"
-        )
+        raise ProfileError(f"The browser profile is not supported: {name}")
     home = Path.home()
     if source.family == "safari":
         if sys.platform != "darwin":
-            raise ProfileError("Safari profilleri yalnızca macOS üzerinde destekleniyor")
+            raise ProfileError("Safari profiles are supported only on macOS")
         return BrowserProfile("safari", "safari", _safari_cookie_file(home))
     if source.family == "firefox":
         root = _firefox_root(source.location, name, home)
@@ -392,7 +392,7 @@ def default_profile(family: str | None = None) -> BrowserProfile:
         root = _chromium_root(source.location, name, home)
         state = _read_json(root / "Local State")
         if (root / "Local State").is_file() and not state:
-            raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
+            raise ProfileNotFoundError("The default browser profile was not found")
         profile = state.get("profile", {})
         selected = profile.get("last_used", "Default") if isinstance(profile, dict) else "Default"
         if (
@@ -401,14 +401,14 @@ def default_profile(family: str | None = None) -> BrowserProfile:
             or "/" in selected
             or "\\" in selected
         ):
-            raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
+            raise ProfileNotFoundError("The default browser profile was not found")
         directory = root / selected
         cookies = directory / "Network/Cookies"
         if not cookies.is_file():
             cookies = directory / "Cookies"
         key = root / "Local State"
     if not cookies.is_file():
-        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı")
+        raise ProfileNotFoundError("The default browser profile was not found")
     return BrowserProfile(source.family, source.cookie_backend, cookies, key)
 
 
@@ -451,11 +451,11 @@ def _firefox_profile(root):
             }
         if len(defaults) != 1:
             raise ProfileError(
-                "Varsayılan profil belirlenemedi; tarayıcıda varsayılan profil seçin"
+                "Could not identify the default profile; select a default profile in the browser."
             )
         return root / defaults.pop()
     except (OSError, configparser.Error, KeyError):
-        raise ProfileNotFoundError("Varsayılan tarayıcı profili bulunamadı") from None
+        raise ProfileNotFoundError("The default browser profile was not found") from None
 
 
 def snapshot_sqlite_file(

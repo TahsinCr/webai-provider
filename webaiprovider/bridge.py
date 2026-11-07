@@ -1,9 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from .base import SendRequest
+from .base import (
+    ActionBegin,
+    ActionDelta,
+    ActionEnd,
+    ConversationBound,
+    MessageAction,
+    MessageMetadata,
+    ProviderAdapter,
+    ReplaceText,
+    ResponseComplete,
+    SendRequest,
+    TextDelta,
+    ThoughtDelta,
+    validate_request,
+)
 from .contracts import (
     Artifact,
     ArtifactDiscovered,
@@ -22,6 +38,17 @@ from .contracts import (
     ThinkingEnd,
 )
 from .errors import ProviderError, UnsupportedOperationError
+from .models import (
+    Conversation,
+    ModelCatalog,
+)
+from .models import (
+    Project as ProviderProject,
+)
+from .models import (
+    Resource as ProviderResource,
+)
+from .utils.files import DownloadSource, NativeDownloadClient
 
 if TYPE_CHECKING:
     from .accounts.account import Account
@@ -31,13 +58,24 @@ if TYPE_CHECKING:
     from .session import ProviderSession
 
 
+def _resource_record(resource: ProviderResource) -> dict[str, Any]:
+    return {
+        "id": resource.id,
+        "type": resource.metadata.get("kind", "file"),
+        "name": resource.name,
+        "media_type": resource.media_type,
+        "url": resource.remote_url,
+        "metadata": dict(resource.metadata),
+    }
+
+
 class ProviderBridge:
     def __init__(self, account: Account) -> None:
         self.account = account
-        self._provider_instance: Any = None
+        self._provider_instance: ProviderAdapter | None = None
         self._models_cache: tuple[ModelRef, ...] | None = None
 
-    def _get_provider(self) -> Any:
+    def _get_provider(self) -> ProviderAdapter:
         if self._provider_instance is not None:
             return self._provider_instance
 
@@ -64,7 +102,7 @@ class ProviderBridge:
 
             self._provider_instance = GrokProvider(store, account_id=self.account.id)
         else:
-            raise UnsupportedOperationError(f"Desteklenmeyen sağlayıcı: {provider_name}")
+            raise UnsupportedOperationError(f"Unsupported provider: {provider_name}")
 
         return self._provider_instance
 
@@ -74,8 +112,10 @@ class ProviderBridge:
         provider = self._get_provider()
         catalog = await provider.models(force=refresh)
         result: list[ModelRef] = []
-        available_models = getattr(catalog, "chat_models", getattr(catalog, "models", ()))
-        default_model = getattr(catalog, "default_chat_model", None)
+        if not isinstance(catalog, ModelCatalog):
+            raise ProviderError("Provider returned an invalid model catalog")
+        available_models = catalog.chat_models
+        default_model = catalog.default_chat_model
         for rank, m in enumerate(available_models):
             efforts = tuple(
                 EffortRef(
@@ -91,19 +131,19 @@ class ProviderBridge:
                     or choice.id,
                     rank=index,
                 )
-                for index, choice in enumerate(getattr(m, "efforts", ()))
+                for index, choice in enumerate(m.efforts)
             )
-            default_effort_id = getattr(m, "default_effort", None)
+            default_effort_id = m.default_effort
             if default_effort_id not in {effort.id for effort in efforts}:
                 default_effort_id = None
-            metadata = dict(getattr(m, "metadata", {}))
+            metadata = dict(m.metadata)
             if default_model is not None and default_model.id == m.id:
                 metadata["default"] = True
             result.append(
                 ModelRef(
                     provider=self.account.provider,
                     id=m.id,
-                    name=getattr(m, "title", None) or m.id,
+                    name=m.title or m.id,
                     efforts=EffortSet.from_refs(
                         efforts,
                         name=f"{m.id}_Efforts",
@@ -118,283 +158,347 @@ class ProviderBridge:
 
     async def list_chats(self, session: ProviderSession) -> list[Chat]:
         provider = self._get_provider()
-        if not hasattr(provider, "list_chats"):
-            return []
-
         from .resources.chat import Chat
 
         chats_data = await provider.list_chats()
-        items = (
-            getattr(chats_data, "items", chats_data)
-            if not isinstance(chats_data, list)
-            else chats_data
-        )
         result: list[Chat] = []
-        for item in items:
-            remote_id = getattr(item, "remote_id", None) or getattr(item, "id", None)
-            title = getattr(item, "title", "Adsız Sohbet")
-            project_id = getattr(item, "project_id", None)
+        for item in chats_data.items:
+            if not isinstance(item, Conversation):
+                raise ProviderError("Provider returned an invalid conversation")
             result.append(
                 Chat(
-                    title=title,
-                    remote_id=str(remote_id) if remote_id else None,
-                    project_id=str(project_id) if project_id else None,
+                    title=item.title,
+                    remote_id=item.origin.remote_id,
+                    project_id=item.project_id,
                     session=session,
                 )
             )
         return result
 
-    async def create_chat(self, chat: Chat, **options: Any) -> None:
-        pass
-
     async def rename_chat(self, chat: Chat, title: str) -> None:
-        if not chat.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "rename_chat"):
-            await provider.rename_chat(chat.remote_id, title)
+        if chat.remote_id:
+            await self._get_provider().rename_chat(chat.remote_id, title)
 
     async def delete_chat(self, chat: Chat) -> None:
-        if not chat.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "delete_chat"):
-            await provider.delete_chat(chat.remote_id)
+        if chat.remote_id:
+            await self._get_provider().delete_chat(chat.remote_id)
 
     async def branch_chat(self, chat: Chat, message_id: str, *, title: str | None = None) -> Chat:
         if not chat.remote_id:
-            raise UnsupportedOperationError("Sohbet uzakta kaydedilmediğinden dallandırılamaz")
-        provider = self._get_provider()
-        if not hasattr(provider, "branch_chat"):
             raise UnsupportedOperationError(
-                f"{self.account.provider} sohbet dallandırmayı desteklemiyor"
+                "Cannot branch a conversation that has not been persisted remotely"
             )
-
         from .resources.chat import Chat
 
-        res = await provider.branch_chat(chat.remote_id, message_id)
-        new_remote_id = getattr(res, "remote_id", None) or getattr(res, "id", None) or str(res)
+        branched = await self._get_provider().branch_chat(chat.remote_id, message_id)
         return Chat(
-            title=title or f"{chat.title} (Branch)",
-            remote_id=new_remote_id,
-            project_id=chat.project_id,
+            title=title or branched.title,
+            remote_id=branched.origin.remote_id,
+            project_id=branched.project_id,
             session=chat.session,
         )
 
     async def move_chat(self, chat: Chat, project_id: str | None) -> None:
-        if not chat.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "move_chat"):
-            await provider.move_chat(chat.remote_id, project_id)
+        if chat.remote_id:
+            await self._get_provider().move_chat(chat.remote_id, project_id)
 
     async def list_projects(self, session: ProviderSession) -> list[Project]:
-        provider = self._get_provider()
-        if not hasattr(provider, "list_projects"):
-            return []
-
         from .resources.project import Project
 
-        data = await provider.list_projects()
-        items = getattr(data, "items", data) if not isinstance(data, list) else data
         result: list[Project] = []
-        for item in items:
-            remote_id = getattr(item, "remote_id", None) or getattr(item, "id", None)
-            title = getattr(item, "title", "Adsız Proje")
-            result.append(
-                Project(
-                    title=title,
-                    remote_id=str(remote_id) if remote_id else None,
-                    session=session,
-                )
+        for native in (await self._get_provider().list_projects()).items:
+            if not isinstance(native, ProviderProject):
+                raise ProviderError("Provider returned an invalid project")
+            project = Project(
+                title=native.name,
+                remote_id=native.origin.remote_id,
+                session=session,
             )
+            project.instruction._text = native.instructions or ""
+            project.resources._items.extend(
+                _resource_record(resource) for resource in native.resources
+            )
+            result.append(project)
         return result
 
     async def create_project(
         self, project: Project, instruction: str | None = None, **options: Any
     ) -> None:
-        provider = self._get_provider()
-        if hasattr(provider, "create_project"):
-            res = await provider.create_project(project.title, instruction=instruction, **options)
-            project.remote_id = getattr(res, "remote_id", None) or getattr(res, "id", None)
+        created = await self._get_provider().create_project(
+            project.title,
+            instructions=instruction or "",
+            **options,
+        )
+        if not isinstance(created, ProviderProject):
+            raise ProviderError("Provider returned an invalid project")
+        project.remote_id = created.origin.remote_id
+        project.title = created.name
+        project.instruction._text = created.instructions or ""
+        project.resources._items.extend(
+            _resource_record(resource) for resource in created.resources
+        )
 
-    async def rename_project(self, project: Project, title: str) -> None:
+    async def update_project(
+        self,
+        project: Project,
+        *,
+        title: str | None = None,
+        instructions: str | None = None,
+    ) -> None:
         if not project.remote_id:
-            return
+            raise UnsupportedOperationError("Project is not persisted by the provider")
         provider = self._get_provider()
-        if hasattr(provider, "rename_project"):
-            await provider.rename_project(project.remote_id, title)
+        current = await provider.get_project(project.remote_id)
+        updated = replace(
+            current,
+            name=title if title is not None else current.name,
+            instructions=(instructions if instructions is not None else current.instructions),
+        )
+        saved = await provider.update_project(updated)
+        project.title = saved.name
+        project.instruction._text = saved.instructions or ""
 
     async def delete_project(self, project: Project) -> None:
-        if not project.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "delete_project"):
-            await provider.delete_project(project.remote_id)
+        if project.remote_id:
+            await self._get_provider().delete_project(project.remote_id)
 
-    async def update_project_instruction(self, project: Project, instruction: str) -> None:
+    async def add_project_resource(self, project: Project, item: dict[str, Any]) -> dict[str, Any]:
         if not project.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "update_project_instruction"):
-            await provider.update_project_instruction(project.remote_id, instruction)
+            return item
 
-    async def add_project_resource(self, project: Project, item: dict[str, Any]) -> None:
-        if not project.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "add_project_resource"):
-            await provider.add_project_resource(project.remote_id, item)
+        kind = item["type"]
+        data = item.get("data")
+        options: dict[str, Any]
+        if kind == "text" and isinstance(data, str):
+            options = {
+                "name": item.get("name") or item.get("title") or "Text",
+                "text": data,
+            }
+        elif kind == "file":
+            path = item.get("path") or data
+            if not isinstance(path, (str, os.PathLike)):
+                raise ValueError("File resources require a local path")
+            options = {"path": os.fspath(path)}
+        else:
+            raise UnsupportedOperationError(f"Project resource type is unsupported: {kind}")
+
+        known_ids = {record.get("id") for record in project.resources._items}
+        updated = await self._get_provider().add_project_resource(
+            project.remote_id, kind, **options
+        )
+        if not isinstance(updated, ProviderProject):
+            raise ProviderError("Provider returned an invalid project")
+        added = [resource for resource in updated.resources if resource.id not in known_ids]
+        expected_name = options.get("name") or os.path.basename(options.get("path", ""))
+        matching = [resource for resource in added if resource.name == expected_name]
+        resource = matching[-1] if matching else added[0] if len(added) == 1 else None
+        if resource is None:
+            raise ProviderError("Provider did not confirm the created project resource")
+        existing = {record.get("id"): record for record in project.resources._items}
+        project.resources._items = [
+            {
+                **existing.get(remote.id, {}),
+                **_resource_record(remote),
+            }
+            for remote in updated.resources
+            if remote.id != resource.id
+        ]
+        return {
+            **item,
+            "id": resource.id,
+            "name": resource.name,
+            "media_type": resource.media_type,
+            "url": resource.remote_url,
+            "metadata": dict(resource.metadata),
+        }
 
     async def remove_project_resource(self, project: Project, resource_id: str) -> None:
-        if not project.remote_id:
-            return
-        provider = self._get_provider()
-        if hasattr(provider, "remove_project_resource"):
-            await provider.remove_project_resource(project.remote_id, resource_id)
+        if project.remote_id:
+            await self._get_provider().remove_project_resource(project.remote_id, resource_id)
 
     async def execute_stream(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         provider = self._get_provider()
-        msg = operation.message
+        message = operation.message
         chat = operation.chat
 
-        model_name: str | None = None
-        effort_name: str | None = None
-        if msg.model is not None:
+        model: str | None = None
+        effort: str | None = None
+        if message.model is not None:
             if chat.session is None:
                 raise UnsupportedOperationError(
                     "Model selection requires an active provider session"
                 )
-            selection = await chat.session.models.resolve(msg.model)
-            model_name = selection.model.id
-            effort_name = selection.effort.id if selection.effort is not None else None
+            selection = await chat.session.models.resolve(message.model)
+            model = selection.model.id
+            effort = selection.effort.id if selection.effort is not None else None
 
-        attachment_records = []
-        for att in msg.attachments:
-            if att.path is not None:
-                attachment_records.append(
-                    {"path": str(att.path), "name": att.name, "mime": att.mime_type}
-                )
-            elif att._content is not None:
-                attachment_records.append(
-                    {"bytes": att._content, "name": att.name, "mime": att.mime_type}
-                )
+        attachments = tuple(
+            {
+                key: value
+                for key, value in {
+                    "path": str(item.path) if item.path is not None else None,
+                    "bytes": item._content,
+                    "name": item.name,
+                    "mime": item.mime_type,
+                }.items()
+                if value is not None
+            }
+            for item in message.attachments
+        )
+        raw_action = message.metadata.get("action")
+        try:
+            action = MessageAction(raw_action) if raw_action is not None else None
+        except ValueError:
+            raise UnsupportedOperationError("Unsupported message action") from None
 
-        req = SendRequest(
+        request = SendRequest(
             provider_id=self.account.provider,
             account_id=self.account.id,
             chat_id=chat.id,
-            prompt=msg.content,
+            prompt=message.content,
             conversation_id=chat.remote_id,
-            model=model_name,
-            effort=effort_name,
-            attachments=attachment_records,
+            model=model,
+            effort=effort,
             project_id=chat.project_id,
-            action=msg.metadata.get("action"),
-            message_id=msg.metadata.get("parent_message_id"),
+            temporary=bool(message.metadata.get("temporary", False)),
+            attachments=attachments,
+            action=action,
+            message_id=message.metadata.get("parent_message_id"),
         )
+        validate_request(provider, request)
 
         output_started = False
         thinking_started = False
 
         try:
-            async for chunk in provider.stream(req):
-                chunk_type = type(chunk).__name__
+            async for chunk in provider.stream(request):
+                if isinstance(chunk, ConversationBound):
+                    chat.remote_id = chunk.conversation_id
+                    continue
 
-                if hasattr(chunk, "conversation_id") and chunk.conversation_id:
-                    chat.remote_id = str(chunk.conversation_id)
-
-                if "Thought" in chunk_type:
+                if isinstance(chunk, ThoughtDelta):
                     if not thinking_started:
                         thinking_started = True
                         yield ThinkingBegin()
-
-                    text = getattr(chunk, "text", "") or getattr(chunk, "delta", "")
-                    if text:
-                        yield ThinkingDelta(delta=text)
+                    if chunk.text:
+                        yield ThinkingDelta(delta=chunk.text)
                     continue
 
-                if thinking_started and not output_started:
+                if thinking_started:
                     thinking_started = False
                     yield ThinkingEnd()
 
-                if "Replace" in chunk_type:
+                if isinstance(chunk, ReplaceText):
                     if not output_started:
                         output_started = True
                         yield OutputBegin()
-                    text = getattr(chunk, "text", "")
-                    yield OutputReplace(text=text)
+                    yield OutputReplace(text=chunk.text)
                     continue
 
-                delta = getattr(chunk, "delta", None) or getattr(chunk, "text", None)
-                if delta:
-                    if not output_started:
-                        output_started = True
-                        yield OutputBegin()
-                    yield OutputDelta(delta=str(delta))
+                if isinstance(chunk, TextDelta):
+                    if chunk.text:
+                        if not output_started:
+                            output_started = True
+                            yield OutputBegin()
+                        yield OutputDelta(delta=chunk.text)
+                    continue
 
-                if hasattr(chunk, "sources") and chunk.sources:
-                    for s in chunk.sources:
+                if isinstance(chunk, MessageMetadata):
+                    for record in chunk.sources:
                         yield SourceDiscovered(
                             Source(
-                                id=str(getattr(s, "id", "")),
-                                url=str(getattr(s, "url", "")),
-                                title=str(getattr(s, "title", "")),
-                                snippet=str(getattr(s, "snippet", "")),
+                                id=str(record.get("id") or record.get("source_id") or ""),
+                                url=str(record.get("url") or ""),
+                                title=str(record.get("title") or ""),
+                                snippet=str(record.get("snippet") or ""),
+                                kind=str(record.get("kind") or "web"),
+                                metadata=record,
                             )
                         )
-
-                if hasattr(chunk, "files") and chunk.files:
-                    for f in chunk.files:
+                    for record in chunk.files:
+                        size = record.get("size")
                         yield ArtifactDiscovered(
                             Artifact(
-                                id=str(getattr(f, "id", "")),
-                                kind=str(getattr(f, "kind", "file")),
-                                name=str(getattr(f, "name", "")),
-                                download_url=str(getattr(f, "url", "")),
+                                id=str(record.get("id") or record.get("file_id") or ""),
+                                kind=str(record.get("kind") or "file"),
+                                name=str(
+                                    record.get("name")
+                                    or record.get("filename")
+                                    or record.get("file_name")
+                                    or ""
+                                ),
+                                mime_type=str(
+                                    record.get("mime_type") or "application/octet-stream"
+                                ),
+                                size=size if isinstance(size, int) else None,
+                                download_url=record.get("download_url") or record.get("url"),
+                                content=record.get("content"),
+                                metadata=record,
                             )
                         )
+                    continue
+
+                if isinstance(chunk, (ActionBegin, ActionDelta, ActionEnd, ResponseComplete)):
+                    continue
 
             if thinking_started:
                 yield ThinkingEnd()
-
             if output_started:
                 yield OutputEnd()
 
         except ProviderError:
             raise
         except Exception as exc:
-            raise ProviderError(str(exc)) from exc
+            raise ProviderError("Provider request failed") from exc
 
     async def download(
         self,
-        url_or_artifact: Any,
+        url_or_artifact: Artifact | str,
         *,
         conversation_id: str | None = None,
         message_id: str | None = None,
     ) -> bytes:
-        provider = self._get_provider()
         url = (
-            getattr(url_or_artifact, "download_url", None)
-            or getattr(url_or_artifact, "url", None)
-            or str(url_or_artifact)
+            url_or_artifact.download_url
+            if isinstance(url_or_artifact, Artifact)
+            else url_or_artifact
         )
-        if hasattr(provider, "resolve_download"):
-            resolved = await provider.resolve_download(
-                url, conversation_id=conversation_id, message_id=message_id
+        if not url:
+            raise ValueError("Artifact has no download URL")
+
+        source = await self._get_provider().resolve_download(
+            url,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        if not isinstance(source, DownloadSource):
+            raise UnsupportedOperationError(
+                "Provider did not resolve this URL to a safe download source"
             )
-            if resolved is not None:
-                if hasattr(resolved, "headers") and hasattr(resolved, "url"):
-                    import httpx
 
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(resolved.url, headers=resolved.headers)
-                        return resp.content
-        import httpx
+        def read_source() -> bytes:
+            factory = source.client_factory
+            client = (
+                NativeDownloadClient(allow_private=False)
+                if factory is None or factory is NativeDownloadClient
+                else factory()
+            )
+            if not isinstance(client, NativeDownloadClient):
+                raise ProviderError("Provider returned an unsupported download transport")
+            with client:
+                with client.stream("GET", source.url, headers=dict(source.headers)) as response:
+                    if not 200 <= response.status_code < 300:
+                        raise ProviderError(
+                            f"File transfer failed with HTTP {response.status_code}"
+                        )
+                    return b"".join(response.iter_bytes())
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            return resp.content
+        try:
+            return await asyncio.to_thread(read_source)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("File transfer failed") from exc
 
     async def close_session(self, session: ProviderSession) -> None:
         if self._provider_instance is not None:

@@ -54,7 +54,7 @@ class QueryableCollection(Generic[T], ABC):
         for it in self._items:
             if self._extract_id(it) == item_id:
                 return it
-        raise RemoteNotFound(f"Kayıt bulunamadı: {item_id}")
+        raise RemoteNotFound(f"Record was not found: {item_id}")
 
     def find(
         self,
@@ -77,7 +77,7 @@ class QueryableCollection(Generic[T], ABC):
                 return exact_name[0]
             if len(exact_name) > 1:
                 ids = [self._extract_id(it) for it in exact_name]
-                raise AmbiguousMatchError(f"Birden fazla tam eşleşme bulundu: {', '.join(ids)}")
+                raise AmbiguousMatchError(f"Multiple exact matches were found: {', '.join(ids)}")
 
         matches = [
             it
@@ -102,10 +102,10 @@ class QueryableCollection(Generic[T], ABC):
         if len(matches) > 1:
             ids = [self._extract_id(it) for it in matches]
             raise AmbiguousMatchError(
-                f"Arama belirsiz, birden çok eşleşme bulundu: {', '.join(ids)}"
+                f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
             )
 
-        raise RemoteNotFound(f"Aramayla eşleşen kayıt bulunamadı: {query}")
+        raise RemoteNotFound(f"No records matched the search query: {query}")
 
     def search(
         self,

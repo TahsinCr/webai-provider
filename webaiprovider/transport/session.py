@@ -70,17 +70,21 @@ class HttpSession:
     def check(response):
         code = response.status_code
         if code == 401 or code in (301, 302, 303, 307, 308):
-            raise AccountPaused("Sağlayıcı oturumu sona ermiş; Hesaplar bölümünden doğrulayın")
+            raise AccountPaused(
+                "Provider session has expired; verify it through the Accounts section"
+            )
         if code == 403:
-            raise ProviderError("Sağlayıcı bu işleme erişim vermedi (403); istek tekrarlanmadı")
+            raise ProviderError(
+                "Provider denied access to this operation (403); the request was not retried"
+            )
         if code == 404:
-            raise RemoteNotFound("Uzak kayıt bulunamadı")
+            raise RemoteNotFound("Remote record was not found")
         if code == 429:
             value = response.headers.get("retry-after", "")
             delay = parse_retry_after(value, now=time.time())
             raise RateLimited(delay)
         if not 200 <= code < 300:
-            raise ProviderError(f"Sağlayıcı isteği tamamlanamadı (HTTP {code})")
+            raise ProviderError(f"Provider request failed (HTTP {code})")
 
     async def request(self, method, path, **options):
         if _ORIGIN_RESILIENCE.is_rate_limited(self.origin):
@@ -100,13 +104,13 @@ class HttpSession:
         if response.status_code == 204 or not response.content:
             return None
         if len(response.content) > 16 * 1024 * 1024:
-            raise ProviderError("Sağlayıcı yanıtı boyut sınırını aştı")
+            raise ProviderError("Provider response exceeds the size limit")
         try:
             if len(response.content) >= DEFAULT_JSON_OFFLOAD_THRESHOLD:
                 return await asyncio.to_thread(response.json)
             return response.json()
         except ValueError:
-            raise ProviderError("Sağlayıcı yanıt biçimi değişmiş") from None
+            raise ProviderError("Provider response format has changed") from None
 
     async def persist(self):
         if self.client is None or self._saved_cookies is None:
@@ -126,7 +130,9 @@ class HttpSession:
                     await save_session_async(self.path, cookies)
                     self._saved_cookies = cookies
                 except OSError:
-                    self.persistence_warning = "Oturum yenilendi ancak yerel kayıt güncellenemedi"
+                    self.persistence_warning = (
+                        "The session was refreshed, but the local record could not be updated."
+                    )
 
     async def close(self):
         client = self.client

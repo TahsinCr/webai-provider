@@ -6,9 +6,12 @@ import random
 import re
 import time
 import uuid
+from pathlib import Path
 
 from ...accounts import read_session, save_session_async
+from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
+from ...models import Model
 from ...transport import WebSession
 from .errors import GeminiCompatibilityError, GeminiError
 
@@ -48,7 +51,7 @@ def rpc_parts(text, rpc):
 
 
 class GeminiSession:
-    def __init__(self, credential_file, *, http_factory=None):
+    def __init__(self, credential_file: Path | CredentialStore, *, http_factory=None):
         self.credential_file = credential_file
         self.http_factory = http_factory
         self.http = None
@@ -59,7 +62,7 @@ class GeminiSession:
         self.rpc_path_prefix = ""
         self.request_id = random.randint(10000, 99999)
         self.session_id = str(uuid.uuid4()).upper()
-        self.models = ()
+        self.models: tuple[Model, ...] = ()
         self._activity_synced_at: float | None = None
         self._saved = None
         self.verified = False
@@ -79,7 +82,7 @@ class GeminiSession:
             if key not in {"token", "build", "sid", "language", "push_id", "rpc_path_prefix"}
         }
         if not cookies.get("__Secure-1PSID"):
-            raise AccountPaused("Gemini oturum çerezleri eksik")
+            raise AccountPaused("Gemini session cookies are missing")
         self.http = (self.http_factory or AsyncSession)(
             cookies=cookies, impersonate="chrome145", timeout=45
         )
@@ -95,7 +98,7 @@ class GeminiSession:
             self.push_id = fields["qKIAYe"]
             self.rpc_path_prefix = fields["eptZe"]
             if not self.token:
-                raise AccountPaused("Gemini oturumu geçersiz; hesabı doğrulayın")
+                raise AccountPaused("Gemini session is invalid; verify the account")
             self.verified = True
             self._activity_synced_at = time.monotonic()
             await self.persist()
@@ -171,7 +174,7 @@ class GeminiSession:
         prefix = self.rpc_path_prefix
         marker = GRAPHQL_PATH
         if not prefix.startswith("/") or marker not in prefix:
-            raise ProviderError("Gemini web sorgu uç noktası kullanılamıyor")
+            raise ProviderError("Gemini web query endpoint is unavailable")
         base = ORIGIN + prefix[: prefix.index(marker)] + marker + "graphql"
         return (
             f"{base}/schemas/{GRAPHQL_SCHEMA}/executeQuery",
@@ -185,7 +188,7 @@ class GeminiSession:
         if not conversation_id or not 1 <= len(title) <= 100:
             raise ValueError("Gemini chat title must contain 1–100 characters")
         if self.http is None or not self.token:
-            raise AccountPaused("Gemini oturumu hazır değil; hesabı yeniden doğrulayın")
+            raise AccountPaused("Gemini session is not ready; reverify the account")
 
         endpoint, xsrf_endpoint = self.graphql_endpoints()
         headers = {
@@ -217,7 +220,7 @@ class GeminiSession:
             WebSession.check(token_response)
             token = token_response.text.strip()
             if not token:
-                raise ProviderError("Gemini oturum doğrulama belirteci yenilenemedi")
+                raise ProviderError("Gemini session validation token could not be refreshed")
             self.token = token
             response = await self.http.post(
                 endpoint,
@@ -230,7 +233,7 @@ class GeminiSession:
         errors = result.get("errors")
         if errors:
             message = errors[0].get("message") if isinstance(errors[0], dict) else None
-            raise ProviderError(message or "Gemini sohbeti yeniden adlandıramadı")
+            raise ProviderError(message or "Gemini conversation could not be renamed")
         data = result.get("data")
         update = data.get("updateConversation") if isinstance(data, dict) else None
         conversation = update.get("clientConversation") if isinstance(update, dict) else None
@@ -239,7 +242,7 @@ class GeminiSession:
             or conversation.get("conversationId") != conversation_id
             or conversation.get("title") != title
         ):
-            raise ProviderError("Gemini sohbet adı sunucuda doğrulanamadı")
+            raise ProviderError("Gemini conversation rename could not be confirmed by the server")
         await self.persist()
 
     @staticmethod
@@ -270,15 +273,15 @@ class GeminiSession:
         try:
             results = json.loads(payload)
         except (ValueError, TypeError) as error:
-            raise ProviderError("Gemini web sorgusu yanıtı çözümlenemedi") from error
+            raise ProviderError("Gemini web query response could not be parsed") from error
         if not isinstance(results, list):
-            raise ProviderError("Gemini web sorgusu yanıt biçimi değişti")
+            raise ProviderError("Gemini web query response format has changed")
         for result in results:
             if isinstance(result, dict) and isinstance(result.get("data"), dict):
                 return result
             if isinstance(result, dict) and result.get("errors"):
                 return result
-        raise ProviderError("Gemini web sorgusu yanıtı eksik")
+        raise ProviderError("Gemini web query response is incomplete")
 
     async def discover_models(self):
         from ...models import Choice, Model
@@ -313,7 +316,7 @@ class GeminiSession:
                 WebSession.check(token_response)
                 token = token_response.text.strip()
                 if not token:
-                    raise ProviderError("Gemini oturum doğrulama belirteci yenilenemedi")
+                    raise ProviderError("Gemini session validation token could not be refreshed")
                 self.token = token
                 res = await self.http.post(
                     endpoint,
@@ -333,11 +336,11 @@ class GeminiSession:
         viewer = data.get("viewer") or {}
         status = (viewer.get("rpcs") or {}).get("getUserStatus")
         if not isinstance(status, dict):
-            raise ProviderError("Gemini model politikası alınamadı")
+            raise ProviderError("Gemini model policy could not be retrieved")
         native = {item["modeCategory"]: item["id"] for item in status.get("bardModeConfigs") or []}
         policy = status.get("geminiModePolicy")
         if not isinstance(policy, dict) or not isinstance(policy.get("configs"), list):
-            raise GeminiCompatibilityError("Gemini düşünme seçenekleri sözleşmesi değişti")
+            raise GeminiCompatibilityError("Gemini reasoning options contract has changed")
         policies = {}
         for item in policy["configs"]:
             config = item.get("modeConfig") or {}
@@ -359,11 +362,11 @@ class GeminiSession:
 
         parts = list(rpc_parts(rpc_response.text, "otAQ7b"))
         if len(parts) != 1 or nested(parts[0], 14) == 1016:
-            raise AccountPaused("Gemini hesabı doğrulanamadı; misafir moduna geçilmedi")
+            raise AccountPaused("Gemini account could not be verified; guest mode was not used")
         body = parts[0]
         rows = nested(body, 15)
         if not isinstance(rows, list):
-            raise GeminiCompatibilityError("Gemini model kataloğu sözleşmesi değişti")
+            raise GeminiCompatibilityError("Gemini model catalog contract has changed")
         tiers, flags = nested(body, 16, default=[]), nested(body, 17, default=[])
         capacity, slot = (
             (1, 13)
@@ -393,9 +396,7 @@ class GeminiSession:
                 if level == "THINKING_LEVEL_UNSPECIFIED":
                     continue
                 if level not in THINKING_VALUES:
-                    raise GeminiCompatibilityError(
-                        "Gemini bilinmeyen bir düşünme protokolü döndürdü"
-                    )
+                    raise GeminiCompatibilityError("Gemini returned an unknown thinking protocol.")
                 identifier = level.removeprefix("THINKING_LEVEL_").lower()
                 if identifier not in values:
                     efforts.append(Choice(identifier, identifier))
@@ -436,7 +437,7 @@ class GeminiSession:
                 )
             )
         if not models:
-            raise GeminiError("Gemini kullanılabilir model döndürmedi")
+            raise GeminiError("Gemini returned no available models")
         return tuple(models)
 
     async def persist(self):
@@ -458,7 +459,7 @@ class GeminiSession:
                 try:
                     await save_session_async(self.credential_file, record)
                 except (OSError, ValueError):
-                    self.persistence_warning = "Gemini oturum kaydı güncellenemedi"
+                    self.persistence_warning = "Could not update the Gemini session record."
                     return
                 self._saved = record
                 self.persistence_warning = None

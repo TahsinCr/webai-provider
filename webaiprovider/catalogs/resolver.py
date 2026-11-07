@@ -18,12 +18,12 @@ class SelectionResolver:
         default_id: str | None = None,
     ) -> ModelRef | ModelSelection | EffortRef:
         if not candidates:
-            raise RemoteNotFound("Kullanılabilir seçim bulunamadı")
+            raise RemoteNotFound("No available selection was found")
 
         if isinstance(target, ModelSelection):
             model = cls.resolve(target.model, candidates, default_id=default_id)
             if not isinstance(model, ModelRef):
-                raise RemoteNotFound("Model sağlayıcı kataloğunda bulunamadı")
+                raise RemoteNotFound("Model was not found in the provider catalog")
             effort = (
                 cls.resolve(
                     target.effort,
@@ -34,7 +34,7 @@ class SelectionResolver:
                 else None
             )
             if effort is not None and not isinstance(effort, EffortRef):
-                raise RemoteNotFound("Efor sağlayıcı kataloğunda bulunamadı")
+                raise RemoteNotFound("Effort was not found in the provider catalog")
             return ModelSelection(model, effort)
 
         if isinstance(target, EffortRef) and isinstance(candidates[0], ModelRef):
@@ -49,14 +49,14 @@ class SelectionResolver:
                 None,
             )
             if model is None:
-                raise RemoteNotFound(f"{target.provider} modeli bu katalogda bulunmuyor")
+                raise RemoteNotFound(f"{target.provider} model is not available in this catalog")
             effort = cls.resolve(
                 target,
                 model.efforts.list(),
                 default_id=model.default_effort_id,
             )
             if not isinstance(effort, EffortRef):
-                raise RemoteNotFound("Efor sağlayıcı kataloğunda bulunamadı")
+                raise RemoteNotFound("Effort was not found in the provider catalog")
             return ModelSelection(model, effort)
 
         if isinstance(target, Models):
@@ -72,7 +72,7 @@ class SelectionResolver:
                         None,
                     )
                 if selected is None:
-                    raise RemoteNotFound("Sağlayıcı varsayılan modeli kataloğunda bulunamadı")
+                    raise RemoteNotFound("Provider default model was not found in the catalog")
                 return selected
 
             ordered = (
@@ -89,17 +89,17 @@ class SelectionResolver:
 
         if isinstance(target, ModelRef):
             if not isinstance(candidates[0], ModelRef) or target.provider != candidates[0].provider:
-                raise RemoteNotFound(f"{target.provider} modeli bu katalogda bulunmuyor")
+                raise RemoteNotFound(f"{target.provider} model is not available in this catalog")
         elif isinstance(target, EffortRef):
             if not isinstance(candidates[0], EffortRef):
-                raise RemoteNotFound("Efor seçimi model kataloğunda kullanılamaz")
+                raise RemoteNotFound("Effort selection is not available in the model catalog")
             if (
                 target.provider != candidates[0].provider
                 or target.model_id != candidates[0].model_id
             ):
-                raise RemoteNotFound(f"{target.provider} eforu bu katalogda bulunmuyor")
+                raise RemoteNotFound(f"{target.provider} effort is not available in this catalog")
         elif not isinstance(target, str):
-            raise TypeError(f"Desteklenmeyen seçim türü: {type(target).__name__}")
+            raise TypeError(f"Unsupported selection type: {type(target).__name__}")
 
         target_id = target.id if isinstance(target, (ModelRef, EffortRef)) else None
         exact_matches = [
@@ -112,12 +112,12 @@ class SelectionResolver:
             return exact_matches[0]
         if len(exact_matches) > 1:
             names = [item.id for item in exact_matches]
-            raise AmbiguousMatchError(f"Birden fazla seçim eşleşti: {', '.join(names)}")
+            raise AmbiguousMatchError(f"Multiple selections matched: {', '.join(names)}")
 
         if target_id is not None:
-            raise RemoteNotFound(f"Seçim bulunamadı: {target_id}")
+            raise RemoteNotFound(f"Selection was not found: {target_id}")
         if not isinstance(target, str):
-            raise RemoteNotFound("Seçim bulunamadı")
+            raise RemoteNotFound("Selection was not found")
 
         target_lower = target.casefold()
         partial_matches = [
@@ -135,7 +135,7 @@ class SelectionResolver:
                 return preferred
             names = [item.id for item in partial_matches]
             raise AmbiguousMatchError(
-                f"Seçim belirsiz, birden çok aday bulundu: {', '.join(names)}"
+                f"Selection is ambiguous; multiple candidates were found: {', '.join(names)}"
             )
 
-        raise RemoteNotFound(f"Seçim bulunamadı: {target}")
+        raise RemoteNotFound(f"Selection was not found: {target}")

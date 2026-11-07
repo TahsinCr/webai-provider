@@ -51,7 +51,7 @@ class Attachment:
     ) -> Attachment:
         p = Path(path).resolve()
         if not p.exists() or not p.is_file():
-            raise FileNotFoundError(f"Dosya bulunamadı: {p}")
+            raise FileNotFoundError(f"File was not found: {p}")
         return cls(
             id=str(uuid.uuid4()),
             name=name or p.name,
@@ -100,7 +100,7 @@ class Attachments:
             return item
         if isinstance(item, bytes):
             if not name:
-                raise ValueError("Bayt verisi eklendiğinde dosya adı belirtilmelidir")
+                raise ValueError("A filename is required when attaching byte data")
             att = Attachment.from_bytes(item, name, mime_type=mime_type)
             self._items.append(att)
             return att
@@ -108,7 +108,7 @@ class Attachments:
             att = Attachment.from_path(item, name=name, mime_type=mime_type)
             self._items.append(att)
             return att
-        raise TypeError(f"Desteklenmeyen eklenti türü: {type(item)}")
+        raise TypeError(f"Unsupported attachment type: {type(item)}")
 
     def extend(self, items: Iterable[Attachment | Path | str | bytes]) -> list[Attachment]:
         added: list[Attachment] = []

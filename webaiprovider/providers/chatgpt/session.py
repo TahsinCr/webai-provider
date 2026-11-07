@@ -123,7 +123,7 @@ class BrowserSession:
             except (ValueError, AttributeError):
                 token = None
             if not isinstance(token, str) or not token:
-                raise ChatGPTWebError("Oturum doğrulanamadı")
+                raise ChatGPTWebError("Session could not be verified")
             values = dict(cookies)
             for cookie in client.cookies.jar:
                 domain = (cookie.domain or "").lstrip(".")

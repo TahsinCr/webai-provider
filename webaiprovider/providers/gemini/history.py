@@ -97,7 +97,7 @@ def conversations(pages, origin):
         rows = nested(page, 2)
         if not isinstance(rows, list):
             raise GeminiCompatibilityError(
-                "Gemini sohbet listesi sözleşmesi değişti; eşitleme tamamlanmadı"
+                "The Gemini conversation-list contract changed; synchronization was not completed."
             )
         for row in rows:
             cid, title = nested(row, 0), nested(row, 1)
@@ -123,12 +123,12 @@ def conversations(pages, origin):
 def history(data, origin, cid):
     turns = nested(data, 0)
     if not isinstance(turns, list):
-        raise GeminiError("Gemini geçmişi henüz okunamıyor; kayıtlı geçmiş korunuyor")
+        raise GeminiError("Gemini history is temporarily unavailable; saved history was preserved")
     messages = []
     for turn_index, turn in enumerate(reversed(turns)):
         rid = nested(turn, 0, 1)
         if not isinstance(rid, str):
-            raise GeminiCompatibilityError("Gemini geçmişinde yanıt kimliği eksik")
+            raise GeminiCompatibilityError("Gemini history is missing a response ID")
         user = nested(turn, 2, 0, 0)
         if isinstance(user, str) and user:
             messages.append(

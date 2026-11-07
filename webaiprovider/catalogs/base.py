@@ -30,7 +30,7 @@ class StaticModelCatalog:
         for m in cls.list():
             if m.id == model_id:
                 return m
-        raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} kataloğunda bulunamadı")
+        raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} was not found in the catalog")
 
     @classmethod
     def find(cls, query: str) -> ModelRef:

@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit
 
 from .cookies import import_cookies
@@ -17,8 +16,8 @@ _ORIGIN_TO_PROVIDER = {
 
 class CookieReader:
     @staticmethod
-    def default_profile(family: str | None = None) -> BrowserProfile | None:
-        return default_profile(family)
+    def default_profile(browser: str | None = None) -> BrowserProfile | None:
+        return default_profile(browser)
 
     @staticmethod
     def provider_for_origin(origin_or_provider: str) -> str:
@@ -39,17 +38,17 @@ class CookieReader:
     def read_provider_cookies(
         cls,
         origin_or_provider: str,
-        profile: Any = None,
+        profile: BrowserProfile | None = None,
     ) -> dict[str, str]:
         provider = cls.provider_for_origin(origin_or_provider)
-        _family, values = import_cookies(provider)
+        _family, values = import_cookies(provider, profile=profile)
         return values
 
 
 def import_browser_session(
     origin: str,
     target: CredentialStore | Path | str | None = None,
-    profile: Any = None,
+    profile: BrowserProfile | None = None,
     required_cookie: str | None = None,
 ) -> dict[str, str]:
     ProviderCookieFilter.validate_origin(origin)

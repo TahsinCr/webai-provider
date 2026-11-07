@@ -31,7 +31,7 @@ def remote_id(value):
 def organization_from_bootstrap(data, selected):
     account = data.get("account")
     if not isinstance(account, dict):
-        raise AccountPaused("Claude oturumu doğrulanamadı")
+        raise AccountPaused("Claude session could not be verified")
     organizations = [x.get("organization", {}) for x in account.get("memberships", [])]
     available = [x for x in organizations if "chat" in x.get("capabilities", [])]
     org = next((x for x in available if x.get("uuid") == selected), None)
@@ -39,7 +39,7 @@ def organization_from_bootstrap(data, selected):
         if not selected and len(available) == 1:
             org = available[0]
         else:
-            raise ProviderError("Claude çalışma alanı seçimi geçersiz; hesabı tekrar doğrulayın")
+            raise ProviderError("Claude workspace selection is invalid; reverify the account")
     return org["uuid"]
 
 
@@ -177,7 +177,7 @@ class ClaudeTransport:
             }
             or not 0 < path.stat().st_size <= 30 * 1024 * 1024
         ):
-            raise ValueError("Claude dosyaları 30 MB sınırını aşmamalı")
+            raise ValueError("Claude files must not exceed 30 MB")
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         body = CurlMime()
         try:
@@ -346,8 +346,8 @@ class ClaudeTransport:
                         await self.request("delete_chat", conversation_id=cid)
                     except Exception:
                         raise ClaudeRequestNotSent(
-                            "Claude geçici sohbeti doğrulayamadı; mesaj gönderilmedi ve "
-                            "boş sohbet temizliği doğrulanamadı"
+                            "Claude could not verify the temporary conversation; the message was not sent, and "
+                            "cleanup of the empty conversation could not be confirmed"
                         ) from None
                     raise ClaudeRequestNotSent(
                         "Claude temporary conversation could not be verified"
@@ -606,7 +606,9 @@ class ClaudeProjectEditor:
                 None,
             )
             if file is None or not file.get("file_uuid"):
-                raise ValueError("Kaynak bu projeye ait değil veya dosya kimliği eksik")
+                raise ValueError(
+                    "Resource does not belong to this project or its file ID is missing"
+                )
             return await call(
                 "POST", path + "/files/delete_many", json={"file_uuids": [file["file_uuid"]]}
             )

@@ -4,6 +4,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from ..collections.base import ManageableCollection
+from ..errors import UnsupportedOperationError
 
 if TYPE_CHECKING:
     from ..session import ProviderSession
@@ -18,13 +19,12 @@ class ProjectInstruction:
         return self._text
 
     async def edit(self, text: str) -> str:
-        self._text = text
-        if (
-            self.project.session is not None
-            and hasattr(self.project.session, "_bridge")
-            and self.project.session._bridge
-        ):
-            await self.project.session._bridge.update_project_instruction(self.project, text)
+        session = self.project.session
+        bridge = session._bridge if session is not None else None
+        if bridge is not None and self.project.remote_id:
+            await bridge.update_project(self.project, instructions=text)
+        else:
+            self._text = text
         return self._text
 
     async def clear(self) -> None:
@@ -45,29 +45,29 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         return await self.add(data, resource_type=resource_type, **options)
 
     async def add(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
-        item = {"id": str(uuid.uuid4()), "type": resource_type, "data": data, **options}
+        item = {
+            **options,
+            "id": str(uuid.uuid4()),
+            "type": resource_type,
+            "data": data,
+        }
+        session = self.project.session
+        bridge = session._bridge if session is not None else None
+        if bridge is not None and self.project.remote_id:
+            item = await bridge.add_project_resource(self.project, item)
         self._items.append(item)
-        if (
-            self.project.session is not None
-            and hasattr(self.project.session, "_bridge")
-            and self.project.session._bridge
-        ):
-            await self.project.session._bridge.add_project_resource(self.project, item)
         return item
 
     async def remove(self, resource_id: str) -> bool:
-        for i, it in enumerate(self._items):
-            if it.get("id") == resource_id:
-                del self._items[i]
-                if (
-                    self.project.session is not None
-                    and hasattr(self.project.session, "_bridge")
-                    and self.project.session._bridge
-                ):
-                    await self.project.session._bridge.remove_project_resource(
-                        self.project, resource_id
-                    )
-                return True
+        for index, item in enumerate(self._items):
+            if item.get("id") != resource_id:
+                continue
+            session = self.project.session
+            bridge = session._bridge if session is not None else None
+            if bridge is not None and self.project.remote_id:
+                await bridge.remove_project_resource(self.project, resource_id)
+            del self._items[index]
+            return True
         return False
 
     async def delete(self, target: dict[str, Any] | str) -> None:
@@ -81,34 +81,28 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         data: Any = None,
         **options: Any,
     ) -> dict[str, Any]:
-        target = resource if isinstance(resource, dict) else self.get(resource)
+        resource_id = resource if isinstance(resource, str) else self._extract_id(resource)
+        target = self.get(resource_id)
+        if self.project.session is not None and self.project.remote_id:
+            raise UnsupportedOperationError("Updating remote project resources is not supported")
+        updated = dict(target)
         if data is not None:
-            target["data"] = data
-        target.update(options)
-        if (
-            self.project.session is not None
-            and hasattr(self.project.session, "_bridge")
-            and self.project.session._bridge
-        ):
-            await self.project.session._bridge.add_project_resource(self.project, target)
+            updated["data"] = data
+        updated.update(options)
+        target.clear()
+        target.update(updated)
         return target
 
     async def download(self, resource_id: str) -> Any:
         item = self.get(resource_id)
-        if "bytes" in item:
-            return item["bytes"]
-        if "content" in item:
-            return item["content"]
-        if "data" in item:
-            return item["data"]
         url = item.get("url") or item.get("download_url")
-        if (
-            url
-            and self.project.session is not None
-            and hasattr(self.project.session, "_bridge")
-            and self.project.session._bridge
-        ):
-            return await self.project.session._bridge.download(url)
+        session = self.project.session
+        bridge = session._bridge if session is not None else None
+        if url and bridge is not None and self.project.remote_id:
+            return await bridge.download(url)
+        for key in ("bytes", "content", "data"):
+            if key in item:
+                return item[key]
         return item
 
 
@@ -128,17 +122,20 @@ class Project:
         self.instruction = ProjectInstruction(self)
         self.resources = ProjectResources(self)
 
-    async def rename(self, title: str) -> Project:
-        if self.session is not None and hasattr(self.session, "projects"):
-            return await self.session.projects.update(self, title=title)
-        self.title = title
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.rename_project(self, title)
-        return self
+    async def rename(self, title: str) -> None:
+        bridge = self.session._bridge if self.session is not None else None
+        if bridge is not None and self.remote_id:
+            await bridge.update_project(self, title=title)
+        else:
+            self.title = title
 
     async def delete(self) -> None:
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.delete_project(self)
+        session = self.session
+        bridge = session._bridge if session is not None else None
+        if bridge is not None and self.remote_id:
+            await bridge.delete_project(self)
+        if session is not None:
+            session.projects._items = [item for item in session.projects._items if item is not self]
 
     def __repr__(self) -> str:
         return f"<Project id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"

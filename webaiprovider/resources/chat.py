@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..collections.messages import MessagesCollection
     from ..resources.message import Message
-    from .session import ProviderSession
+    from ..session import ProviderSession
 
 
 class Chat:

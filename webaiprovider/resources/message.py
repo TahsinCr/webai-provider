@@ -52,7 +52,9 @@ class Message:
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
-            raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından düzenlenemez")
+            raise UnsupportedOperationError(
+                "Cannot edit a message that does not belong to a conversation"
+            )
         if self not in self.chat.messages._items:
             self.chat.messages._items.append(self)
         return self.chat.messages.edit(
@@ -67,7 +69,9 @@ class Message:
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
-            raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından yeniden denenemez")
+            raise UnsupportedOperationError(
+                "Cannot retry a message that does not belong to a conversation"
+            )
         if self not in self.chat.messages._items:
             self.chat.messages._items.append(self)
         return self.chat.messages.retry(
@@ -77,7 +81,9 @@ class Message:
 
     async def branch(self, title: str | None = None) -> Chat:
         if self.chat is None:
-            raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından dallandırılamaz")
+            raise UnsupportedOperationError(
+                "Cannot branch a message that does not belong to a conversation"
+            )
         return await self.chat.branch(self.id, title=title)
 
     def __repr__(self) -> str:

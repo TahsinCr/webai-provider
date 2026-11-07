@@ -1,6 +1,8 @@
 """Gemini notebook mappings over the account-owned HTTP RPC reader."""
 
 import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 from ...models import Conversation, Origin, Page, Project, Resource
@@ -34,7 +36,7 @@ def project_from_native(row, account_id):
         or not isinstance(field(detail, 0), str)
     ):
         raise GeminiCompatibilityError(
-            "Gemini defter sözleşmesi değişmiş; kayıt eşlemesi güncellenmeli"
+            "The Gemini notebook contract changed; the record mapping must be updated."
         )
     bundle = field(detail, 10, []) or []
     resources = []
@@ -71,7 +73,7 @@ class Notebooks:
     def __init__(self, cdp_url, account_id, *, ensure_ready=None):
         self.cdp_url, self.account_id = cdp_url, account_id
         self.ensure_ready = ensure_ready
-        self.reader = None
+        self.reader: Callable[..., Awaitable[list[Any]]] | None = None
 
     async def read(self, remote=None, mode=None, cursor=None):
         if self.reader is not None:
@@ -81,11 +83,11 @@ class Notebooks:
                 operation=mode or "list",
                 cursor=cursor,
             )
-        raise GeminiError("Gemini defter HTTP okuyucusu yapılandırılmamış")
+        raise GeminiError("Gemini notebook HTTP reader is not configured")
 
     async def list(self, cursor=None):
         if cursor:
-            raise GeminiError("Gemini defter sayfalaması bu sürümde desteklenmiyor")
+            raise GeminiError("Gemini notebook pagination is not supported by this version")
         parts = await self.read()
         rows = [row for part in parts for row in field(part, 2, []) or []]
         return Page(tuple(project_from_native(row, self.account_id) for row in rows))
@@ -97,7 +99,7 @@ class Notebooks:
         conversations = []
         for row in rows:
             if not isinstance(field(row, 0), str) or not isinstance(field(row, 1), str):
-                raise GeminiCompatibilityError("Gemini defter sohbeti eşlemesi değişmiş")
+                raise GeminiCompatibilityError("Gemini notebook conversation mapping has changed")
             conversations.append(
                 Conversation(
                     Origin("gemini", self.account_id, row[0]),
@@ -114,5 +116,5 @@ class Notebooks:
         parts = await self.read(remote)
         rows = [row for part in parts for row in part if field(row, 0) == remote]
         if len(rows) != 1:
-            raise GeminiError("Gemini defter ayrıntıları bulunamadı")
+            raise GeminiError("Gemini notebook details were not found")
         return project_from_native(rows[0], self.account_id)

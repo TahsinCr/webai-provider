@@ -20,6 +20,7 @@ from .profiles import (
     AUTH_COOKIE,
     HOSTS,
     NAMES,
+    BrowserProfile,
     _failure_code,
     _firefox_rows,
     _firefox_session_cookies,
@@ -77,12 +78,17 @@ def select_cookies(jar, provider):
     return values
 
 
-def import_cookies(provider):
+def import_cookies(
+    provider: str,
+    browser: str | None = None,
+    *,
+    profile: BrowserProfile | None = None,
+):
     if provider not in HOSTS:
         raise ValueError("unsupported provider")
     from . import profiles
 
-    profile = profiles.default_profile()
+    profile = profile or profiles.default_profile(browser)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "webaiprovider.accounts.cookies"],

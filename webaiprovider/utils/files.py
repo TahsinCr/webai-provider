@@ -1,6 +1,7 @@
 """Resolved file requests; credentials are transient and never archive metadata."""
 
 import ipaddress
+import socket
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable
@@ -43,15 +44,26 @@ def redact_sensitive_url(url: str) -> str:
         return "[REDACTED_URL]"
 
 
-def validate_network_address(address_str: str, allow_private: bool = True) -> None:
+def validate_network_address(address_str: str, allow_private: bool = False) -> str:
     try:
-        ip = ipaddress.ip_address(address_str)
+        addresses = [ipaddress.ip_address(address_str)]
     except ValueError:
-        return
-    if ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
-        raise ValueError(f"Prohibited destination network address: {address_str}")
-    if not allow_private and (ip.is_private or ip.is_loopback):
-        raise ValueError(f"Prohibited destination network address: {address_str}")
+        try:
+            records = socket.getaddrinfo(address_str, None, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            raise ValueError("Download host could not be resolved") from None
+        addresses = list(
+            dict.fromkeys(ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records)
+        )
+
+    if not addresses:
+        raise ValueError("Download host has no usable network address")
+    for ip in addresses:
+        if ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise ValueError("Prohibited destination network address")
+        if not allow_private and not ip.is_global:
+            raise ValueError("Prohibited destination network address")
+    return str(addresses[0])
 
 
 @dataclass(frozen=True)
@@ -73,7 +85,7 @@ def cookie_header(values, names):
         if value is None:
             continue
         if not isinstance(value, str) or any(char in value for char in "\r\n;"):
-            raise ValueError("Oturum kaydı geçersiz")
+            raise ValueError("Session record is invalid")
         selected.append(f"{key}={value}")
     return "; ".join(selected)
 
@@ -87,7 +99,7 @@ class NativeDownloadClient:
         timeout=None,
         follow_redirects=False,
         trust_env=False,
-        allow_private=True,
+        allow_private=False,
     ):
         from curl_cffi.requests import Session
 
@@ -119,13 +131,22 @@ class NativeDownloadClient:
         target = urlsplit(url)
         if not target.hostname:
             raise ValueError("Download URL has no valid hostname")
-        validate_network_address(target.hostname, allow_private=permit_private)
-        if resolved_address:
+        dns_address = validate_network_address(target.hostname, allow_private=permit_private)
+        pinned_address = (
             validate_network_address(resolved_address, allow_private=permit_private)
+            if resolved_address
+            else dns_address
+        )
+        try:
+            ipaddress.ip_address(target.hostname.split("%", 1)[0])
+            is_ip_literal = True
+        except ValueError:
+            is_ip_literal = False
+        if not is_ip_literal:
             from curl_cffi import CurlOpt
 
             port = target.port or (443 if target.scheme == "https" else 80)
-            address = f"[{resolved_address}]" if ":" in resolved_address else resolved_address
+            address = f"[{pinned_address}]" if ":" in pinned_address else pinned_address
             self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{address}"]
         try:
             with self.client.stream(
@@ -135,7 +156,7 @@ class NativeDownloadClient:
         except RequestException:
             # Transport errors may contain signed URLs or credentials.
             raise ValueError(
-                "Dosya aktarımı kesildi; bağlantıyı kontrol edip yeniden deneyin"
+                "File transfer was interrupted; check your connection and try again."
             ) from None
 
 

@@ -37,7 +37,7 @@ class Frames:
         try:
             self.pending += self.decoder.decode(data, final=final)
         except UnicodeDecodeError as error:
-            raise GeminiStreamError("Gemini akışı geçersiz UTF-8 içeriyor") from error
+            raise GeminiStreamError("Gemini stream contains invalid UTF-8") from error
 
         self._strip_prefix()
         while self.expected_units is not None or self._read_length_marker():
@@ -51,16 +51,16 @@ class Frames:
             try:
                 rows = json.loads(payload)
             except ValueError as error:
-                raise GeminiStreamError("Gemini akış biçimi değişti") from error
+                raise GeminiStreamError("Gemini stream format has changed") from error
             if isinstance(rows, list):
                 yield from rows
             else:
                 yield rows
 
         if len(self.pending) > self._MAX_FRAME_UNITS + 16:
-            raise GeminiStreamError("Gemini akış çerçevesi boyut sınırını aştı")
+            raise GeminiStreamError("Gemini stream frame exceeds the size limit")
         if final and self.pending.strip():
-            raise GeminiStreamError("Gemini akışı tamamlanmamış bir çerçeveyle kesildi")
+            raise GeminiStreamError("Gemini stream ended with an incomplete frame")
 
     def _strip_prefix(self):
         if self.prefix_checked:
@@ -82,12 +82,12 @@ class Frames:
             if self.pending.isdecimal() and len(self.pending) <= 10:
                 return False
             if self.pending[0].isdigit() and "\n" not in self.pending:
-                raise GeminiStreamError("Gemini akış çerçevesinin uzunluğu geçersiz")
-            raise GeminiStreamError("Gemini akış çerçevesinin uzunluk alanı geçersiz")
+                raise GeminiStreamError("Gemini stream frame length is invalid")
+            raise GeminiStreamError("Gemini stream frame length field is invalid")
 
         length = int(match.group(1))
         if not 1 <= length <= self._MAX_FRAME_UNITS:
-            raise GeminiStreamError("Gemini akış çerçevesi boyut sınırını aştı")
+            raise GeminiStreamError("Gemini stream frame exceeds the size limit")
         self.expected_units = length
         # Google counts the newline after the length marker in the UTF-16 size.
         self.payload_start = len(match.group(1))
@@ -110,7 +110,7 @@ class Frames:
         while self.scanned_units < self.expected_units and index < len(self.pending):
             units = 2 if ord(self.pending[index]) > 0xFFFF else 1
             if self.scanned_units + units > self.expected_units:
-                raise GeminiStreamError("Gemini akış çerçevesinin UTF-16 uzunluğu geçersiz")
+                raise GeminiStreamError("Gemini stream frame UTF-16 length is invalid")
             self.scanned_chars += 1
             self.scanned_units += units
             index += 1
@@ -161,10 +161,10 @@ def generation_request(session, request, metadata, files, notebook=None):
         else next(iter(session.models), None)
     )
     if selected is None:
-        raise ValueError("Model bu Gemini hesabında kullanılamıyor")
+        raise ValueError("This model is not available for this Gemini account")
     effort = request.effort or selected.default_effort
     if effort is not None and effort not in {choice.id for choice in selected.efforts}:
-        raise ValueError("Efor bu Gemini modelinde kullanılamıyor")
+        raise ValueError("This effort level is not available for this Gemini model")
     thinking = selected.metadata["effort_values"].get(effort)
     info = selected.metadata
     number = info.get("number")
@@ -287,7 +287,7 @@ async def generate(
                         timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
                 if nested(frame, 5, 2, 0, 1, 0):
                     raise GeminiError(
-                        "Gemini isteği reddetti; kota veya model uygunluğunu kontrol edin"
+                        "Gemini rejected the request; check your quota or model availability."
                     )
                 payload = nested(frame, 2)
                 if not isinstance(payload, str):
@@ -295,7 +295,9 @@ async def generate(
                 try:
                     body = json.loads(payload)
                 except ValueError as error:
-                    raise GeminiCompatibilityError("Gemini yanıt gövdesi değişti") from error
+                    raise GeminiCompatibilityError(
+                        "Gemini response body format has changed"
+                    ) from error
                 returned = nested(body, 1)
                 if isinstance(returned, list) and returned:
                     cand_id = metadata[2] if len(metadata) > 2 else None
@@ -370,12 +372,14 @@ async def generate(
         if error.code != CurlECode.OPERATION_TIMEDOUT:
             raise
         raise GeminiStreamError(
-            "Gemini isteği ağ zaman aşımına uğradı; gönderim otomatik tekrarlanmadı "
-            "ve sohbet geçmişi korundu."
+            "The Gemini request timed out; it was not retried automatically "
+            "and conversation history was preserved."
         ) from None
     if completed and last_event_at is not None and response_opened is not None:
         timing.record("sse_last_event_ms", last_event_at - response_opened)
         timing.record("button_to_last_sse_event_ms", last_event_at - timing.started_ns)
     if not completed:
-        raise GeminiStreamError("Gemini akışı tamamlanmadan kesildi; yeniden gönderilmedi")
+        raise GeminiStreamError(
+            "Gemini stream ended before completion; the request was not retried"
+        )
     await session.persist()

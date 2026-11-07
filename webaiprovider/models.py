@@ -255,7 +255,7 @@ class ProjectOptions:
         )
 
 
-def source_file(path: Any, *, error: str = "Kaynak dosyası en fazla 20 MiB olabilir") -> Path:
+def source_file(path: Any, *, error: str = "Source file must not exceed 20 MiB.") -> Path:
     file = Path(path).expanduser().resolve(strict=True)
     if not file.is_file() or file.stat().st_size > 20 * 1024 * 1024:
         raise ValueError(error)

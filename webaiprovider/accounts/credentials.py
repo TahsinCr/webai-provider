@@ -62,7 +62,7 @@ class FileCredentialStore:
             return value
         except (OSError, ValueError):
             raise AccountPaused(
-                "Kayıtlı oturum yok veya geçersiz; Hesaplar bölümünden doğrulayın"
+                "No saved session was found or the session is invalid; verify it in the Accounts section."
             ) from None
 
     def save(self, value: dict, *, ensure_ascii: bool = False, newline: bool = False) -> None:
@@ -108,7 +108,7 @@ class MemoryCredentialStore:
     def load(self) -> dict:
         with self._lock:
             if self._value is None:
-                raise AccountPaused("Kayıtlı oturum yok veya geçersiz; hesabı doğrulayın")
+                raise AccountPaused("No valid saved session; verify the account")
             return dict(self._value)
 
     def save(self, value: dict) -> None:
@@ -137,7 +137,7 @@ def read_session(path: Any) -> dict:
                 raise ValueError("session shape")
             return value
         except (OSError, ValueError):
-            raise AccountPaused("Kayıtlı oturum yok veya geçersiz; hesabı doğrulayın") from None
+            raise AccountPaused("No valid saved session; verify the account") from None
     return FileCredentialStore(path).load()
 
 

@@ -19,9 +19,9 @@ _MAX_WORKSPACE_FILE_BYTES = 3 * 1024 * 1024
 
 def remote_id(value):
     if not isinstance(value, str) or not value or len(value) > 512:
-        raise ValueError("Grok kayıt kimliği geçersiz")
+        raise ValueError("Grok record ID is invalid")
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise ValueError("Grok kayıt kimliği geçersiz")
+        raise ValueError("Grok record ID is invalid")
     return quote(value, safe="")
 
 
@@ -36,11 +36,11 @@ async def _iter_bounded_lines(response):
     async for chunk in response.aiter_content():
         total += len(chunk)
         if total > _MAX_STREAM_BYTES:
-            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+            raise ProviderError("Grok stream response exceeds the size limit")
         start = 0
         while (end := chunk.find(b"\n", start)) >= 0:
             if len(buffer) + end - start > _MAX_LINE_BYTES:
-                raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+                raise ProviderError("Grok stream response exceeds the size limit")
             buffer.extend(chunk[start:end])
             line = bytes(buffer)
             buffer.clear()
@@ -49,16 +49,16 @@ async def _iter_bounded_lines(response):
             try:
                 yield line.decode("utf-8")
             except UnicodeDecodeError:
-                raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                raise ProviderError("Grok stream response format has changed") from None
             start = end + 1
         if len(buffer) + len(chunk) - start > _MAX_LINE_BYTES:
-            raise ProviderError("Grok akış yanıtı boyut sınırını aştı")
+            raise ProviderError("Grok stream response exceeds the size limit")
         buffer.extend(chunk[start:])
     if buffer:
         try:
             yield bytes(buffer).decode("utf-8")
         except UnicodeDecodeError:
-            raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+            raise ProviderError("Grok stream response format has changed") from None
 
 
 class GrokTransport:
@@ -85,7 +85,7 @@ class GrokTransport:
         if not isinstance(status, dict):
             self.session.authenticated = False
             raise AccountPaused(
-                "Grok oturumu doğrulanamadı; Hesaplar bölümünden yeniden doğrulayın"
+                "The Grok session could not be verified; verify it again in the Accounts section."
             )
         self.session.authenticated = True
         return status
@@ -101,12 +101,12 @@ class GrokTransport:
     async def upload_file(self, path):
         file = source_file(path, error="Grok chat dosyası en fazla 3 MiB olabilir")
         if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
-            raise ValueError("Grok chat dosya türü desteklenmiyor")
+            raise ValueError("Grok chat file type is not supported")
         if not 0 < file.stat().st_size <= GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat dosyası boş veya 3 MiB sınırını aşıyor")
+            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
         content = await asyncio.to_thread(_read_limited, file)
         if not content or len(content) > GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat dosyası boş veya 3 MiB sınırını aşıyor")
+            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
 
         mime_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         result = await self.request(
@@ -130,7 +130,7 @@ class GrokTransport:
             or not isinstance(asset_id, str)
             or not asset_id
         ):
-            raise ProviderError("Grok chat dosya yüklemesi başarısız")
+            raise ProviderError("Grok chat file upload failed")
         return {
             "id": asset_id,
             "name": metadata.get("name") or file.name,
@@ -164,9 +164,11 @@ class GrokTransport:
                             try:
                                 event = json.loads(raw)
                             except ValueError:
-                                raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                                raise ProviderError(
+                                    "Grok stream response format has changed"
+                                ) from None
                             if not isinstance(event, dict):
-                                raise ProviderError("Grok akış yanıtının biçimi değişmiş")
+                                raise ProviderError("Grok stream response format has changed")
                             yield event
                         continue
                     if line.startswith(":"):
@@ -186,9 +188,9 @@ class GrokTransport:
                     try:
                         event = json.loads(line)
                     except ValueError:
-                        raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                        raise ProviderError("Grok stream response format has changed") from None
                     if not isinstance(event, dict):
-                        raise ProviderError("Grok akış yanıtının biçimi değişmiş")
+                        raise ProviderError("Grok stream response format has changed")
                     yield event
                 if payload:
                     raw = "\n".join(payload)
@@ -196,9 +198,9 @@ class GrokTransport:
                         try:
                             event = json.loads(raw)
                         except ValueError:
-                            raise ProviderError("Grok akış yanıtının biçimi değişmiş") from None
+                            raise ProviderError("Grok stream response format has changed") from None
                         if not isinstance(event, dict):
-                            raise ProviderError("Grok akış yanıtının biçimi değişmiş")
+                            raise ProviderError("Grok stream response format has changed")
                         yield event
         except AccountPaused:
             self.session.authenticated = False
@@ -234,30 +236,30 @@ class GrokProjectEditor:
             if "name" in values:
                 name = values["name"]
                 if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
-                    raise ValueError("Proje adı 1–200 karakter olmalıdır")
+                    raise ValueError("Project name must be between 1 and 200 characters")
                 body["name"] = name.strip()
             if "instructions" in values:
                 if not isinstance(values["instructions"], str):
-                    raise ValueError("Proje talimatları metin olmalıdır")
+                    raise ValueError("Project instructions must be text")
                 body["customPersonality"] = values["instructions"]
             if not body:
-                raise ValueError("Grok proje değişikliği gerekir")
+                raise ValueError("A Grok project change is required")
             return await self.transport.request("PUT", project_path, json=body)
         if operation == "add_source":
             if values.get("kind") not in ("text", "file"):
-                raise ValueError("Grok yalnızca metin ve dosya kaynaklarını destekler")
+                raise ValueError("Grok supports only text and file resources")
             if values["kind"] == "text":
                 name, content = values.get("name"), values.get("text")
                 if not isinstance(name, str) or not isinstance(content, str) or not content:
-                    raise ValueError("Kaynak adı ve metin içeriği gerekir")
+                    raise ValueError("Resource name and text content are required")
                 mime_type = "text/plain"
                 content = content.encode("utf-8")
             else:
                 file = source_file(
-                    values["path"], error="Grok çalışma alanı dosyaları en fazla 3 MiB olabilir"
+                    values["path"], error="Grok workspace files must not exceed 3 MiB"
                 )
                 if file.stat().st_size > _MAX_WORKSPACE_FILE_BYTES:
-                    raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
+                    raise ValueError("Grok workspace files must not exceed 3 MiB")
                 content = await asyncio.to_thread(_read_limited, file)
                 name = file.name
                 mime_type = (
@@ -266,15 +268,15 @@ class GrokProjectEditor:
                     else mimetypes.guess_type(file.name)[0] or "text/plain"
                 )
             if not 0 < len(content) <= _MAX_WORKSPACE_FILE_BYTES:
-                raise ValueError("Grok çalışma alanı dosyaları en fazla 3 MiB olabilir")
+                raise ValueError("Grok workspace files must not exceed 3 MiB")
             name = name.strip()
             if not name or len(name) > 255 or any(char in name for char in "/\\\r\n\x00"):
-                raise ValueError("Grok kaynak adı geçersiz")
+                raise ValueError("Grok resource name is invalid")
             if any(
                 (source.metadata.get("path") or source.name).rsplit("/", 1)[-1] == name
                 for source in values.get("existing_resources", ())
             ):
-                raise ValueError("Bu adla bir Grok proje kaynağı zaten var")
+                raise ValueError("A Grok project resource with this name already exists")
             return await self.transport.request(
                 "POST",
                 project_path + "/files/upload",
@@ -287,7 +289,7 @@ class GrokProjectEditor:
         if operation == "remove_source":
             source = values["resource"]
             if source.id != values["resource_id"]:
-                raise ValueError("Grok proje kaynağı bulunamadı")
+                raise ValueError("Grok project resource was not found")
             item = source.metadata
             if item.get("path"):
                 return await self.transport.request(
@@ -299,5 +301,5 @@ class GrokProjectEditor:
                 return await self.transport.request(
                     "DELETE", project_path + "/assets/" + remote_id(item["assetId"])
                 )
-            raise ValueError("Grok proje kaynağı bulunamadı")
-        raise ValueError("Grok proje işlemi desteklenmiyor")
+            raise ValueError("Grok project resource was not found")
+        raise ValueError("Grok project operation is not supported")

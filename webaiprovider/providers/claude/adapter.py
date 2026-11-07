@@ -122,20 +122,20 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
         ):
             return None
         if (parsed.netloc and not direct) or any(part in (".", "..") for part in path.split("/")):
-            raise ValueError("Desteklenmeyen sohbet dosyası yolu")
+            raise ValueError("Unsupported conversation file path")
         if not conversation_id:
-            raise ValueError("Dosyanın sohbet kimliği henüz alınmadı")
+            raise ValueError("Conversation ID is not available for this file yet")
         base = await self.transport.base()
         endpoint = base + "/conversations/" + remote_id(conversation_id) + "/wiggle"
         listing = await self.transport.session.request("GET", endpoint + "/list-files?prefix=")
         files = listing.get("files_metadata", []) if isinstance(listing, dict) else []
         if not any(isinstance(item, dict) and item.get("path") == path for item in files):
-            raise ValueError("Dosya sohbet kaydında bulunamadı veya süresi doldu")
+            raise ValueError("File was not found in the conversation record or has expired")
         saved = read_session(self.credential_file)
         cookies = saved.get("cookies", saved)
         values = {key: cookies.get(key) for key in ("sessionKey", "lastActiveOrg")}
         if not values["sessionKey"]:
-            raise AccountPaused("Claude oturumu doğrulanamadı")
+            raise AccountPaused("Claude session could not be verified")
         headers = {
             "Cookie": cookie_header(values, ("sessionKey", "lastActiveOrg")),
             "Referer": "https://claude.ai/",
@@ -276,7 +276,7 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
                 "projects_not_supported",
             )
         if not session_exists(self.credential_file) and not self.transport.authenticated:
-            raise AccountPaused("Claude hesabını Hesaplar bölümünden doğrulayın")
+            raise AccountPaused("Verify the Claude account in the Accounts section")
         timing = current_send_timing()
         gate_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:

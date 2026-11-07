@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import UnsupportedOperationError
 from ..resources.project import Project
 from .base import ManageableCollection
 
@@ -21,15 +22,12 @@ class ProjectsCollection(ManageableCollection[Project]):
         instruction: str | None = None,
         **options: Any,
     ) -> Project:
-        project = Project(
-            title=title,
-            session=self.session,
-        )
-        if instruction:
+        project = Project(title=title, session=self.session)
+        if instruction is not None:
             project.instruction._text = instruction
-        self._items.insert(0, project)
-        if hasattr(self.session, "_bridge") and self.session._bridge:
+        if self.session._bridge is not None:
             await self.session._bridge.create_project(project, instruction=instruction, **options)
+        self._items.insert(0, project)
         return project
 
     async def refresh(self) -> list[Project]:
@@ -46,20 +44,22 @@ class ProjectsCollection(ManageableCollection[Project]):
         instruction: str | None = None,
         **options: Any,
     ) -> Project:
+        if options:
+            raise UnsupportedOperationError(
+                "Provider-specific project options cannot be updated through this method"
+            )
         target = project if isinstance(project, Project) else self.get(project)
-        if title is not None and title != target.title:
-            target.title = title
-            if (
-                self.session is not None
-                and hasattr(self.session, "_bridge")
-                and self.session._bridge
-            ):
-                await self.session._bridge.rename_project(target, title)
-        if instruction is not None:
-            await target.instruction.edit(instruction)
+        if target.remote_id and self.session._bridge is not None:
+            await self.session._bridge.update_project(target, title=title, instructions=instruction)
+        else:
+            if title is not None:
+                target.title = title
+            if instruction is not None:
+                target.instruction._text = instruction
         return target
 
     async def delete(self, project: Project | str) -> None:
         target = project if isinstance(project, Project) else self.get(project)
-        await target.delete()
-        self._items = [p for p in self._items if p.id != target.id]
+        if target.remote_id and self.session._bridge is not None:
+            await self.session._bridge.delete_project(target)
+        self._items = [item for item in self._items if item is not target]

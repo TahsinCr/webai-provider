@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, AsyncGenerator, Protocol
+from typing import Any, AsyncGenerator, Protocol, cast
 
+from .accounts.status import SessionState, SessionStatus
 from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from .models import (
     Capability,
@@ -17,7 +18,6 @@ from .models import (
     Project,
     ProjectOptions,
     ProviderDescription,
-    SessionStatus,
 )
 
 
@@ -137,6 +137,15 @@ class Provider(Protocol):
     def stream(self, request: SendRequest) -> AsyncGenerator[ProviderEvent, None]: ...
 
 
+class _ProjectEditingHost(Protocol):
+    id: str
+    account_id: str
+    _gate: asyncio.Lock
+    editor: Any
+
+    async def get_project(self, project_id: str) -> Project: ...
+
+
 def validate_request(provider: Provider, request: SendRequest) -> None:
     if request.provider_id != provider.id or request.account_id != provider.account_id:
         raise ValueError("send request belongs to a different provider/account")
@@ -157,27 +166,33 @@ def validate_request(provider: Provider, request: SendRequest) -> None:
 
 
 class ProjectEditing:
+    def _host(self) -> _ProjectEditingHost:
+        return cast(_ProjectEditingHost, self)
+
     async def project_options(self, project_id: str | None = None) -> ProjectOptions:
-        async with self._gate:
-            return await self.editor.options(project_id)
+        host = self._host()
+        async with host._gate:
+            return await host.editor.options(project_id)
 
     async def _project_after_write(self, project_id: str, confirmed: Any) -> Project:
+        host = self._host()
         for _ in range(12):
-            project = await self.get_project(project_id)
+            project = await host.get_project(project_id)
             if confirmed(project):
                 return project
             await asyncio.sleep(0.4)
         raise ProviderError(
-            "Proje değişikliği sunucuda doğrulanamadı; tekrarlamadan önce eşitleyin"
+            "Project change could not be confirmed by the server; sync before retrying"
         )
 
     async def update_project(self, project: Project) -> Project:
-        if project.origin.provider_id != self.id or project.origin.account_id != self.account_id:
-            raise ValueError("Proje başka bir sağlayıcı hesabına ait")
+        host = self._host()
+        if project.origin.provider_id != host.id or project.origin.account_id != host.account_id:
+            raise ValueError("Project belongs to a different provider account")
         remote = project.origin.remote_id
         if not project.name.strip():
-            raise ValueError("Proje adı gerekir")
-        current = await self.get_project(remote)
+            raise ValueError("Project name is required")
+        current = await host.get_project(remote)
         changes = {}
         if current.name != project.name:
             changes["name"] = project.name
@@ -185,33 +200,43 @@ class ProjectEditing:
             changes["instructions"] = project.instructions or ""
         if not changes:
             return current
-        async with self._gate:
-            await self.editor.write("update", remote, **changes)
+        async with host._gate:
+            await host.editor.write("update", remote, **changes)
         return await self._project_after_write(
             remote,
-            lambda p: (
-                p.name == project.name and (p.instructions or "") == (project.instructions or "")
+            lambda current: (
+                current.name == project.name
+                and (current.instructions or "") == (project.instructions or "")
             ),
         )
 
     async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> Project:
-        before = await self.get_project(project_id)
-        ids = {r.id for r in before.resources}
-        async with self._gate:
-            await self.editor.write(
-                "add_source", project_id, kind=kind, existing_resources=before.resources, **values
+        host = self._host()
+        before = await host.get_project(project_id)
+        ids = {resource.id for resource in before.resources}
+        async with host._gate:
+            await host.editor.write(
+                "add_source",
+                project_id,
+                kind=kind,
+                existing_resources=before.resources,
+                **values,
             )
         return await self._project_after_write(
-            project_id, lambda p: any(r.id not in ids for r in p.resources)
+            project_id,
+            lambda project: any(resource.id not in ids for resource in project.resources),
         )
 
     async def remove_project_resource(self, project_id: str, resource_id: str) -> Project:
-        before = await self.get_project(project_id)
-        source = next((r for r in before.resources if r.id == resource_id), None)
+        host = self._host()
+        before = await host.get_project(project_id)
+        source = next(
+            (resource for resource in before.resources if resource.id == resource_id), None
+        )
         if source is None:
-            raise ValueError("Proje kaynağı bulunamadı")
-        async with self._gate:
-            await self.editor.write(
+            raise ValueError("Project resource was not found")
+        async with host._gate:
+            await host.editor.write(
                 "remove_source",
                 project_id,
                 resource_id=resource_id,
@@ -219,7 +244,8 @@ class ProjectEditing:
                 resource=source,
             )
         return await self._project_after_write(
-            project_id, lambda p: all(r.id != resource_id for r in p.resources)
+            project_id,
+            lambda project: all(resource.id != resource_id for resource in project.resources),
         )
 
 
@@ -255,21 +281,13 @@ class ProviderAdapter(Provider):
         return await self.authenticate()
 
     async def authenticate(self) -> SessionStatus:
-        return SessionStatus(
-            getattr(self, "id", ""),
-            getattr(self, "account_id", "default"),
-            authenticated=True,
-        )
+        raise FeatureUnavailable(Capability.AUTH, "not_implemented")
 
     async def session_status(self) -> SessionStatus:
-        return await self.authenticate()
+        return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
 
     async def forget_session(self) -> SessionStatus:
-        return SessionStatus(
-            getattr(self, "id", ""),
-            getattr(self, "account_id", "default"),
-            authenticated=False,
-        )
+        raise FeatureUnavailable(Capability.AUTH, "forget_session_not_implemented")
 
     async def models(self, *, force: bool = False) -> ModelCatalog:
         raise FeatureUnavailable(Capability.MODELS, "not_implemented")
@@ -350,4 +368,6 @@ async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None
             return
         if missing(value):
             return
-    raise ProviderError("Silme sunucuda doğrulanamadı; yerel kayıt korundu. Eşitleyin.")
+    raise ProviderError(
+        "Deletion could not be confirmed by the server; the local record was preserved. Sync before retrying."
+    )

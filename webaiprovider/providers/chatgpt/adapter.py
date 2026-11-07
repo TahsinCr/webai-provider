@@ -530,7 +530,7 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                 or parsed.path
                 or not conversation_id
             ):
-                raise ValueError("Dosya seçili sohbete ait olmalı")
+                raise ValueError("File must belong to the selected conversation")
 
             def resolve_file():
                 with self._client_scope() as client:
@@ -540,7 +540,9 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                         for item in chat.get("messages", ())
                         for file in message_files(item)
                     ):
-                        raise ValueError("Dosya sohbet kaydında bulunamadı veya süresi doldu")
+                        raise ValueError(
+                            "File was not found in the conversation record or has expired"
+                        )
                     result = client.request(
                         "GET",
                         "https://chatgpt.com/backend-api/files/download/" + quote(file_id, safe=""),
@@ -548,7 +550,7 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                     ).json()
                     target = result.get("download_url") if isinstance(result, dict) else None
                     if not target or urlsplit(target).scheme != "https":
-                        raise ValueError("Sağlayıcı dosya indirme adresi döndürmedi")
+                        raise ValueError("Provider did not return a file download URL")
                     headers = (
                         dict(client.headers) if urlsplit(target).netloc == "chatgpt.com" else {}
                     )
@@ -574,10 +576,10 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
         if parsed.scheme != "sandbox":
             return None
         if not conversation_id:
-            raise ValueError("Dosyanın sohbet kimliği henüz alınmadı")
+            raise ValueError("Conversation ID is not available for this file yet")
         sandbox_path = unquote(parsed.path)
         if not sandbox_path.startswith("/mnt/data/"):
-            raise ValueError("Desteklenmeyen sohbet dosyası yolu")
+            raise ValueError("Unsupported conversation file path")
 
         def resolve():
             with self._client_scope() as client:
@@ -602,7 +604,7 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                     matched[0] if len(matched) == 1 else None,
                 )
                 if selected is None or not selected.get("id"):
-                    raise ValueError("Dosya sohbet kaydında bulunamadı veya süresi doldu")
+                    raise ValueError("File was not found in the conversation record or has expired")
                 endpoint = (
                     "https://chatgpt.com/backend-api/conversation/"
                     + quote(conversation_id, safe="")
@@ -615,7 +617,7 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                 ).json()
                 target = result.get("download_url") if isinstance(result, dict) else None
                 if not target or urlsplit(target).scheme != "https":
-                    raise ValueError("Sağlayıcı dosya indirme adresi döndürmedi")
+                    raise ValueError("Provider did not return a file download URL")
                 # Estuary URLs remain authenticated ChatGPT endpoints, unlike signed CDN URLs.
                 headers = dict(client.headers) if urlsplit(target).netloc == "chatgpt.com" else {}
                 return DownloadSource(target, sandbox_path.rsplit("/", 1)[-1], True, headers)

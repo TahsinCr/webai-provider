@@ -117,7 +117,7 @@ class ChatGPTProjectEditor:
                     if not any(
                         (x.get("file_id") or x.get("id")) == rid for x in current["resources"]
                     ):
-                        raise ValueError("Kaynak bu projeye ait değil")
+                        raise ValueError("Resource does not belong to this project")
                     client.request(
                         "DELETE", path + "/files/" + quote(rid, safe=""), expect_json=False
                     )

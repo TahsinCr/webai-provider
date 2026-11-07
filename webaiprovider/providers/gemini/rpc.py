@@ -43,9 +43,7 @@ class NotebookRPC:
                     if row[2] is None:
                         if allow_empty:
                             return []
-                        raise ProviderError(
-                            "Gemini işlem izni vermedi veya RPC sözleşmesi değişmiş"
-                        )
+                        raise ProviderError("Gemini denied permission or the RPC contract changed.")
                     parts.append(json.loads(row[2]))
         if not parts:
             raise ProviderError("Gemini notebook RPC response changed")
@@ -119,7 +117,9 @@ class NotebookEditor:
 
             collect(parts)
             if len(set(matches)) != 1:
-                raise ProviderError("Defter oluşturma kimliği doğrulanamadı; işlem tekrarlanmadı")
+                raise ProviderError(
+                    "Notebook creation could not be confirmed; the operation was not retried"
+                )
             return matches[0]
         remote = notebook_id(project_id)
         path = "/notebook/" + remote.split("/")[1]

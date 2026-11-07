@@ -1,12 +1,21 @@
 """Gemini web provider implementing the shared provider contract."""
 
+from __future__ import annotations
+
 import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .notebooks import Notebooks
+    from .rpc import NotebookEditor, NotebookRPC
+    from .session import GeminiSession
 
 from ...accounts import delete_session, session_exists
+from ...accounts.credentials import CredentialStore
 from ...base import (
     Capability,
     ConversationBound,
@@ -23,6 +32,7 @@ from ...base import (
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...models import (
     FeatureState,
+    Model,
     ModelCatalog,
     Origin,
     Page,
@@ -58,18 +68,18 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
 
     def __init__(
         self,
-        cookie_file: Path,
-        account_id="default",
+        cookie_file: Path | CredentialStore,
+        account_id: str = "default",
         client_factory=None,
         *,
-        notebooks=None,
+        notebooks: Notebooks | None = None,
     ):
         self._media = {}
         self.cookie_file = cookie_file
         self.account_id = account_id
         self._factory = client_factory
-        self._client = None
-        self._cached_models = None
+        self._client: GeminiSession | None = None
+        self._cached_models: tuple[Model, ...] | None = None
         self._catalog_at = None
         self._model_gate = asyncio.Lock()
         self._gate = asyncio.Lock()
@@ -77,14 +87,13 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         self._temporary = {}
         self._chat_metadata = OrderedDict()
         self._chat_metadata_verified_at = {}
-        self.notebooks = notebooks
         from .notebooks import Notebooks
         from .rpc import NotebookEditor, NotebookRPC
 
-        self.rpc = NotebookRPC(self._connect)
-        self.notebooks = notebooks or Notebooks(None, account_id)
+        self.rpc: NotebookRPC = NotebookRPC(self._connect)
+        self.notebooks: Notebooks = notebooks or Notebooks(None, account_id)
         self.notebooks.reader = self.rpc.read
-        self.editor = NotebookEditor(self.rpc, self.notebooks)
+        self.editor: NotebookEditor = NotebookEditor(self.rpc, self.notebooks)
         self.capabilities = self.capabilities | {
             Capability.PROJECTS,
             Capability.PROJECT_CREATE,
@@ -98,12 +107,12 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
 
         path = Path(path).expanduser().resolve(strict=True)
         if not path.is_file():
-            raise ValueError("Dosya bulunamadı")
+            raise ValueError("File was not found")
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         size = path.stat().st_size
         limit = 2 * 1024 * 1024 * 1024 if mime.startswith("video/") else 100 * 1024 * 1024
         if not 0 < size <= limit:
-            raise ValueError("Gemini dosya boyutu sınırı aşıldı")
+            raise ValueError("Gemini file exceeds the size limit")
         return {
             "id": path.name,
             "path": str(path),
@@ -113,15 +122,15 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             "deferred_upload": True,
         }
 
-    async def _connect(self):
+    async def _connect(self) -> GeminiSession:
         async with self._connect_gate:
             return await self._connect_once()
 
-    async def _connect_once(self):
+    async def _connect_once(self) -> GeminiSession:
         if self._client is not None:
             return self._client
         if not session_exists(self.cookie_file):
-            raise AccountPaused("Gemini oturumu yok; Hesaplar bölümünden giriş yapın")
+            raise AccountPaused("No Gemini session; sign in through the Accounts section")
         from .session import GeminiSession
 
         client = (
@@ -135,7 +144,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             and self._catalog_at is not None
             and (time.monotonic() - self._catalog_at < 300)
         ):
-            client.models = list(self._cached_models)
+            client.models = self._cached_models
         self._client = client
         return client
 
@@ -195,7 +204,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 self._catalog_at = None
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
-    async def models(self, *, force: bool = False):
+    async def models(self, *, force: bool = False) -> ModelCatalog:
         async with self._model_gate:
             client = await self._connect()
             if (
@@ -205,14 +214,12 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 or (time.monotonic() - self._catalog_at >= 300)
             ):
                 client.models = await client.discover_models()
-                self._cached_models = list(client.models)
+                self._cached_models = client.models
                 self._catalog_at = time.monotonic()
-            elif not client.models and self._cached_models is not None:
-                client.models = list(self._cached_models)
             return ModelCatalog(FeatureState.AVAILABLE, client.models)
 
-    def _origin(self, remote_id):
-        return Origin(self.id, self.account_id, remote_id)
+    def _origin(self, remote: str) -> Origin:
+        return Origin(self.id, self.account_id, remote)
 
     @staticmethod
     def _usable_chat_metadata(metadata, conversation_id):
@@ -334,7 +341,9 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             if not any(x.origin.remote_id == remote for x in (await self.notebooks.list()).items):
                 return
             await asyncio.sleep(0.25 * 2**attempt)
-        raise GeminiError("Defter silme sunucuda doğrulanamadı; işlem tekrarlanmadı")
+        raise GeminiError(
+            "Notebook deletion could not be confirmed by the server; the operation was not retried"
+        )
 
     async def list_projects(self, cursor=None):
         if self.notebooks is None:
@@ -352,7 +361,9 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         if not hasattr(self, "editor") or visibility != "private" or memory != "default":
             raise FeatureUnavailable(Capability.PROJECT_CREATE)
         if not name.strip() or instructions:
-            raise ValueError("Defter oluştururken yalnız ad girin; talimatları sonra düzenleyin")
+            raise ValueError(
+                "Provide only a name when creating a notebook; edit instructions afterward"
+            )
         async with self._gate:
             remote = await self.editor.write("create", name=name.strip())
         return await self.get_project(remote)
@@ -375,6 +386,8 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         iterator = self._stream(request)
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Gemini streaming requires an active asyncio task")
         deadline_cancel = object()
 
         def cancel_at_deadline() -> None:
@@ -387,7 +400,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         except asyncio.CancelledError as error:
             if not error.args or error.args[0] is not deadline_cancel:
                 raise
-            raise GeminiStreamError("Gemini isteği 10 dakikalık süre sınırını aştı") from None
+            raise GeminiStreamError("Gemini request exceeded the 10-minute time limit") from None
         finally:
             timeout.cancel()
             await iterator.aclose()
@@ -427,11 +440,11 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                     )
                 value = field(field(notebook.metadata.get("native"), 1), 12)
                 if not isinstance(value, list) or not value or value[0] not in (1, 2):
-                    raise ProviderError("Gemini defter bağlamı okunamadı")
+                    raise ProviderError("Gemini notebook context could not be read")
                 context = (project, value)
             metadata = self._temporary.get(request.conversation_id) if request.temporary else None
             if request.temporary and request.conversation_id and metadata is None:
-                raise ProviderError("Geçici Gemini bağlamı artık bellekte değil")
+                raise ProviderError("Temporary Gemini context is no longer in memory")
             if metadata is None:
                 cached = (
                     self._take_chat_metadata(request.conversation_id)
@@ -488,6 +501,8 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                             from ...models import target_message
                             from .history import history
 
+                            if request.message_id is None:
+                                raise ValueError("message action requires a message ID")
                             current = history(parts[0], self._origin, request.conversation_id)
                             role = "user" if request.action == MessageAction.EDIT else "assistant"
                             _, target = target_message(current.messages, request.message_id, role)
@@ -521,7 +536,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                         rcid = nested(turn, 3, 0, 0, 0)
                         if turn is not None and (not rid or not rcid):
                             raise GeminiCompatibilityError(
-                                "Gemini sohbet devam kimlikleri alınamadı"
+                                "Could not retrieve Gemini conversation continuation IDs."
                             )
                         metadata[1:3] = [rid or "", rcid or ""]
             activity_started = time.perf_counter_ns() if timing is not None else None
@@ -589,7 +604,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                     files=output_files,
                 )
         if not visible or not cid:
-            raise GeminiStreamError("Gemini yanıtı tamamlanmadı; yeniden gönderilmedi")
+            raise GeminiStreamError("Gemini response did not complete; the request was not retried")
         if final_metadata:
             yield final_metadata
         if cid and not request.temporary and self._usable_chat_metadata(metadata, cid):
@@ -619,7 +634,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         if target is None and valid_media_url(url):
             target = {"url": url, "name": "image"}
         if not target or not valid_media_url(target["url"]):
-            raise ValueError("Dosyanın gerçek adresi sağlayıcıdan alınamadı; sohbeti eşitleyin")
+            raise ValueError("The provider did not return the file URL; sync the conversation")
         from urllib.parse import urlsplit
 
         headers = {"Referer": "https://gemini.google.com/"}

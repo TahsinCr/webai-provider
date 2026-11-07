@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import UnsupportedOperationError
 from ..resources.chat import Chat
+from ..resources.project import Project
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
@@ -22,15 +24,21 @@ class ChatsCollection(ManageableCollection[Chat]):
         project: Project | str | None = None,
         **options: Any,
     ) -> Chat:
-        project_id = getattr(project, "id", str(project)) if project is not None else None
+        if options:
+            raise UnsupportedOperationError("Provider-specific chat options are not supported")
+        project_id = (
+            (project.remote_id or project.id)
+            if isinstance(project, Project)
+            else str(project)
+            if project is not None
+            else None
+        )
         chat = Chat(
             title=title,
             session=self.session,
             project_id=project_id,
         )
         self._items.insert(0, chat)
-        if hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.create_chat(chat, **options)
         return chat
 
     async def refresh(self) -> list[Chat]:

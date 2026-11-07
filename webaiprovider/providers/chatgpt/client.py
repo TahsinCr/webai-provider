@@ -283,7 +283,9 @@ class ChatGPTClient:
         try:
             self.list_url, self.headers = self.session.load()
         except ChatGPTWebError:
-            raise ChatGPTWebError("Kayıtlı oturum yok; Hesaplar bölümünden doğrulayın") from None
+            raise ChatGPTWebError(
+                "No saved session; verify the account in the Accounts section"
+            ) from None
 
     def refresh_session(self) -> None:
         headers = self.headers.copy()
@@ -339,7 +341,7 @@ class ChatGPTClient:
                 self.refresh_session()
             except ChatGPTWebError:
                 raise ChatGPTWebError(
-                    "Oturum yenilenemedi; Hesaplar bölümünden tekrar doğrulayın"
+                    "The session could not be refreshed; verify it again in the Accounts section."
                 ) from None
         if response.status_code == 429:
             try:
@@ -350,7 +352,7 @@ class ChatGPTClient:
         if response.status_code == 404:
             from ...errors import RemoteNotFound
 
-            raise RemoteNotFound("ChatGPT kaydı artık mevcut değil")
+            raise RemoteNotFound("ChatGPT conversation no longer exists")
         if response.status_code >= 400:
             raise ChatGPTWebError(
                 f"ChatGPT returned HTTP {response.status_code} for {method} {response.url.path}"
@@ -546,7 +548,7 @@ class ChatGPTClient:
             expect_json=False,
         )
         if response.content and response.json().get("success") is False:
-            raise ChatGPTWebError("ChatGPT sohbeti silmeyi reddetti")
+            raise ChatGPTWebError("ChatGPT refused to delete the conversation.")
         self._forget_conversation(conversation_id)
 
     def move_conversation(self, conversation_id: str, project_id: str | None) -> dict[str, Any]:
