@@ -6,7 +6,7 @@ from ..resources.project import Project
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
-    from ..resources.session import ProviderSession
+    from ..session import ProviderSession
 
 
 class ProjectsCollection(ManageableCollection[Project]):

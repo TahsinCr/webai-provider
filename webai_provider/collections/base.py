@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Generic, Sequence, TypeVar
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Sequence
+from typing import Any, Generic, TypeVar
 
 from ..errors import AmbiguousMatchError, RemoteNotFound
 
 T = TypeVar("T")
 
 
-class QueryableCollection(Generic[T]):
+class QueryableCollection(Generic[T], ABC):
+    """Sorgulanabilir koleksiyonlar için generic soyut taban sınıfı."""
+
     def __init__(self, items: Sequence[T] | None = None) -> None:
         self._items: list[T] = list(items) if items is not None else []
 
@@ -46,7 +50,7 @@ class QueryableCollection(Generic[T]):
     def list(self) -> list[T]:
         return list(self._items)
 
-    def get(self, item_id: str) -> T:
+    def get(self, item_id: str, /) -> T:
         for it in self._items:
             if self._extract_id(it) == item_id:
                 return it
@@ -55,6 +59,7 @@ class QueryableCollection(Generic[T]):
     def find(
         self,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,
@@ -105,6 +110,7 @@ class QueryableCollection(Generic[T]):
     def search(
         self,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,
@@ -132,7 +138,7 @@ class QueryableCollection(Generic[T]):
     def __len__(self) -> int:
         return len(self._items)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[T]:
         return iter(self._items)
 
     def __contains__(self, item: Any) -> bool:
@@ -140,16 +146,56 @@ class QueryableCollection(Generic[T]):
         return any(self._extract_id(it) == target_id for it in self._items)
 
 
-class ManageableCollection(QueryableCollection[T]):
+class ManageableCollection(QueryableCollection[T], ABC):
+    """Yönetilebilir (CRUD / yaşam döngüsü destekli) koleksiyonlar için soyut taban sınıfı."""
+
     async def refresh(self) -> list[T]:
         return list(self._items)
 
-    async def delete(self, target: T | str) -> None:
-        target_id = self._extract_id(target) if not isinstance(target, str) else target
-        self._items = [it for it in self._items if self._extract_id(it) != target_id]
+    @abstractmethod
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        """Koleksiyonda yeni bir öğe oluşturur."""
 
-    async def update(self, target: T | str, **fields: Any) -> Any:
-        raise NotImplementedError
+    @abstractmethod
+    async def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
+        """Koleksiyondan ve ilişkili uzak kaynaktan öğeyi siler."""
+
+    @abstractmethod
+    def update(self, target: T | str, /, **fields: Any) -> Any:
+        """Koleksiyondaki bir öğeyi günceller."""
 
 
-ResourceCollection = QueryableCollection
+class AsyncQueryableCollection(Generic[T], ABC):
+    """Asenkron sorgulanabilir koleksiyonlar için generic soyut taban sınıfı."""
+
+    @abstractmethod
+    async def list(self, *args: Any, **kwargs: Any) -> list[T]:
+        """Koleksiyondaki öğelerin listesini asenkron olarak döndürür."""
+
+    @abstractmethod
+    async def get(self, item_id: str, /) -> T:
+        """Belirtilen kimliğe sahip öğeyi asenkron olarak döndürür."""
+
+    @abstractmethod
+    async def find(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> T:
+        """Aramayla tam veya kısmi eşleşen tek bir öğeyi asenkron olarak bulur."""
+
+    @abstractmethod
+    async def search(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> list[T]:
+        """Aramayla eşleşen tüm öğeleri asenkron liste olarak döndürür."""

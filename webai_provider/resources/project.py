@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from ..collections.base import ManageableCollection
 
 if TYPE_CHECKING:
-    from .session import ProviderSession
+    from ..session import ProviderSession
 
 
 class ProjectInstruction:
@@ -31,13 +31,18 @@ class ProjectInstruction:
         await self.edit("")
 
 
-ProjectInstructions = ProjectInstruction
-
-
 class ProjectResources(ManageableCollection[dict[str, Any]]):
     def __init__(self, project: Project) -> None:
         super().__init__()
         self.project = project
+
+    async def create(
+        self,
+        data: Any,
+        resource_type: str = "custom",
+        **options: Any,
+    ) -> dict[str, Any]:
+        return await self.add(data, resource_type=resource_type, **options)
 
     async def add(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
         item = {"id": str(uuid.uuid4()), "type": resource_type, "data": data, **options}
@@ -64,6 +69,10 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
                     )
                 return True
         return False
+
+    async def delete(self, target: dict[str, Any] | str) -> None:
+        resource_id = self._extract_id(target) if not isinstance(target, str) else target
+        await self.remove(resource_id)
 
     async def update(
         self,
@@ -117,7 +126,6 @@ class Project:
         self.session = session
         self.remote_id = remote_id
         self.instruction = ProjectInstruction(self)
-        self.instructions = self.instruction
         self.resources = ProjectResources(self)
 
     async def rename(self, title: str) -> Project:

@@ -6,7 +6,8 @@ from ..resources.chat import Chat
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
-    from ..resources.session import ProviderSession
+    from ..resources.project import Project
+    from ..session import ProviderSession
 
 
 class ChatsCollection(ManageableCollection[Chat]):
@@ -18,7 +19,7 @@ class ChatsCollection(ManageableCollection[Chat]):
         self,
         title: str = "Yeni Sohbet",
         *,
-        project: Any = None,
+        project: Project | str | None = None,
         **options: Any,
     ) -> Chat:
         project_id = getattr(project, "id", str(project)) if project is not None else None

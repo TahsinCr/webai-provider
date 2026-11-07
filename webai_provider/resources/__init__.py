@@ -4,7 +4,7 @@ from .attachments import Attachment, Attachments
 from .chat import Chat
 from .message import Message
 from .operation import MessageOperation, OperationHooks
-from .project import Project, ProjectInstructions, ProjectResources
+from .project import Project, ProjectInstruction, ProjectResources
 from .response import Response
 
 __all__ = [
@@ -15,7 +15,7 @@ __all__ = [
     "MessageOperation",
     "OperationHooks",
     "Project",
-    "ProjectInstructions",
+    "ProjectInstruction",
     "ProjectResources",
     "Response",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import webai_provider
 import webaiprovider
@@ -219,7 +219,6 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         await project.instruction.edit("New instruction")
         mock_bridge.update_project_instruction.assert_awaited_once_with(project, "New instruction")
         self.assertEqual(await project.instruction.get(), "New instruction")
-        self.assertEqual(await project.instructions.get(), "New instruction")
 
         await project.instruction.clear()
         self.assertEqual(await project.instruction.get(), "")
@@ -231,6 +230,9 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["id"], added["id"])
         self.assertEqual(await project.resources.download(added["id"]), "Doc")
 
+        created_res = await project.resources.create("Doc 2", title="res-2")
+        self.assertEqual(created_res["data"], "Doc 2")
+
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
@@ -240,8 +242,11 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         updated_res = await project.resources.update(added["id"], data="Updated Doc")
         self.assertEqual(updated_res["data"], "Updated Doc")
 
+        await project.resources.delete(created_res["id"])
         await project.resources.remove(added["id"])
-        mock_bridge.remove_project_resource.assert_awaited_once_with(project, added["id"])
+        mock_bridge.remove_project_resource.assert_has_awaits(
+            [call(project, created_res["id"]), call(project, added["id"])]
+        )
 
         await project.delete()
         mock_bridge.delete_project.assert_awaited_once_with(project)
@@ -457,6 +462,29 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         await op3.start()
         self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
         await session.close()
+
+    def test_collections_abstract_base_classes_and_no_shims(self) -> None:
+        from abc import ABC
+
+        import webai_provider.collections
+        import webai_provider.resources
+        from webai_provider.collections.base import (
+            AsyncQueryableCollection,
+            ManageableCollection,
+            QueryableCollection,
+        )
+
+        self.assertTrue(issubclass(QueryableCollection, ABC))
+        self.assertTrue(issubclass(ManageableCollection, ABC))
+        self.assertTrue(issubclass(ManageableCollection, QueryableCollection))
+        self.assertTrue(issubclass(AsyncQueryableCollection, ABC))
+
+        with self.assertRaises(TypeError):
+            type("IncompleteManageable", (ManageableCollection,), {})()
+
+        self.assertFalse(hasattr(webai_provider, "ResourceCollection"))
+        self.assertFalse(hasattr(webai_provider.collections, "ResourceCollection"))
+        self.assertFalse(hasattr(webai_provider.resources, "ProjectInstructions"))
 
 
 if __name__ == "__main__":

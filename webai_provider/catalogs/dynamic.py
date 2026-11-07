@@ -3,16 +3,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from ..collections.base import QueryableCollection
+from ..collections.base import AsyncQueryableCollection, QueryableCollection
 from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import RemoteNotFound
 from .policies import Models
 from .resolver import SelectionResolver
 
 
-class ModelsCollection(QueryableCollection[ModelRef]):
+class ModelsCollection(AsyncQueryableCollection[ModelRef]):
     def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
-        super().__init__()
         self._loader = loader
         self._items_tuple: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
@@ -23,14 +22,13 @@ class ModelsCollection(QueryableCollection[ModelRef]):
             if self._items_tuple is None or refresh:
                 loaded = await self._loader(refresh)
                 self._items_tuple = tuple(loaded)
-                self._items = list(self._items_tuple)
-            return list(self._items)
+            return list(self._items_tuple)
 
     async def refresh(self) -> list[ModelRef]:
         """Refresh the account catalog and bypass provider-side cache entries."""
         return await self.list(refresh=True)
 
-    async def get(self, model_id: str) -> ModelRef:
+    async def get(self, model_id: str, /) -> ModelRef:
         models = await self.list()
         for model in models:
             if model.id == model_id:
@@ -40,6 +38,7 @@ class ModelsCollection(QueryableCollection[ModelRef]):
     async def find(
         self,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,
@@ -57,6 +56,7 @@ class ModelsCollection(QueryableCollection[ModelRef]):
     async def search(
         self,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,

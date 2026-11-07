@@ -15,9 +15,9 @@ from .catalogs.grok import GrokModels
 from .catalogs.policies import Models
 from .catalogs.resolver import SelectionResolver
 from .collections.base import (
+    AsyncQueryableCollection,
     ManageableCollection,
     QueryableCollection,
-    ResourceCollection,
 )
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
@@ -99,9 +99,9 @@ __all__ = [
     "ModelsCollection",
     "SelectionResolver",
     "StaticModelCatalog",
+    "AsyncQueryableCollection",
     "QueryableCollection",
     "ManageableCollection",
-    "ResourceCollection",
     "ChatsCollection",
     "ProjectsCollection",
     "MessagesCollection",
