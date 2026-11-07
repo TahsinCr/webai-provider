@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from ..catalogs.policies import Efforts, Models
-from ..contracts import EffortRef, ModelRef, StreamEvent
+from ..catalogs.policies import Models
+from ..contracts import ModelRef, ModelSelection, StreamEvent
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
 from .base import ResourceCollection
@@ -21,8 +21,7 @@ class MessagesCollection(ResourceCollection[Message]):
         self,
         message: Message | str,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
         **metadata: Any,
     ) -> MessageOperation:
@@ -30,7 +29,6 @@ class MessagesCollection(ResourceCollection[Message]):
             msg = Message(
                 content=message,
                 model=model,
-                effort=effort,
                 attachments=attachments,
                 metadata=metadata,
                 chat=self.chat,
@@ -40,8 +38,6 @@ class MessagesCollection(ResourceCollection[Message]):
             msg.chat = self.chat
             if model is not None:
                 msg.model = model
-            if effort is not None:
-                msg.effort = effort
             if attachments is not None:
                 msg.attachments.extend(attachments)
 
@@ -65,15 +61,13 @@ class MessagesCollection(ResourceCollection[Message]):
         message_id: str,
         new_content: str,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
         target = self.get(message_id)
         msg = Message(
             content=new_content,
             model=model if model is not None else target.model,
-            effort=effort if effort is not None else target.effort,
             attachments=target.attachments,
             metadata={
                 **target.metadata,
@@ -90,15 +84,13 @@ class MessagesCollection(ResourceCollection[Message]):
         self,
         message_id: str,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
         target = self.get(message_id)
         msg = Message(
             content=target.content,
             model=model if model is not None else target.model,
-            effort=effort if effort is not None else target.effort,
             attachments=target.attachments,
             metadata={
                 **target.metadata,

@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ..catalogs.policies import Efforts, Models
-from ..contracts import EffortRef, ModelRef
+from ..catalogs.policies import Models
+from ..contracts import ModelRef, ModelSelection
 from ..errors import UnsupportedOperationError
 from .attachments import Attachment, Attachments
 
@@ -22,8 +22,7 @@ class Message:
         id: str | None = None,
         remote_id: str | None = None,
         attachments: Attachments | list[Attachment] | None = None,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         chat: Chat | None = None,
     ) -> None:
@@ -32,7 +31,6 @@ class Message:
         self.content = content
         self.remote_id = remote_id
         self.model = model
-        self.effort = effort
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
         self.chat = chat
 
@@ -51,8 +49,7 @@ class Message:
         self,
         new_content: str,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
             raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından düzenlenemez")
@@ -62,14 +59,12 @@ class Message:
             self.id,
             new_content,
             model=model if model is not None else self.model,
-            effort=effort if effort is not None else self.effort,
         )
 
     def retry(
         self,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
             raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından yeniden denenemez")
@@ -78,7 +73,6 @@ class Message:
         return self.chat.messages.retry(
             self.id,
             model=model if model is not None else self.model,
-            effort=effort if effort is not None else self.effort,
         )
 
     async def branch(self, title: str | None = None) -> Chat:

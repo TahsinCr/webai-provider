@@ -15,7 +15,6 @@ from webai_provider import (
     ChatGPTProvider,
     ClaudeModels,
     ClaudeProvider,
-    Efforts,
     GeminiModels,
     GeminiProvider,
     GrokModels,
@@ -65,14 +64,13 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
 
         op = chat.messages.create(
             "Hello AI",
-            model=ChatGPTModels.GPT_6_INSTANT,
-            effort=Efforts.MEDIUM,
+            model=ChatGPTModels.GPT_6_THINKING.MEDIUM,
         )
 
         self.assertIsInstance(op, MessageOperation)
         self.assertEqual(op.message.content, "Hello AI")
-        self.assertEqual(op.message.model, ChatGPTModels.GPT_6_INSTANT)
-        self.assertEqual(op.message.effort, Efforts.MEDIUM)
+        self.assertEqual(op.message.model.model, ChatGPTModels.GPT_6_THINKING)
+        self.assertEqual(op.message.model.effort.id, "standard")
 
         deltas: list[str] = []
 
@@ -266,18 +264,21 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(GrokModels.GROK_3.id, "fast")
 
         candidates = [
-            ModelRef(provider="test", id="fast", name="Model Fast"),
-            ModelRef(provider="test", id="smart", name="Model Smart"),
-            ModelRef(provider="test", id="expert", name="Model Expert"),
+            ModelRef(provider="test", id="fast", name="Model Fast", rank=0),
+            ModelRef(provider="test", id="smart", name="Model Smart", rank=1),
+            ModelRef(provider="test", id="expert", name="Model Expert", rank=2),
         ]
 
-        self.assertEqual(SelectionResolver.resolve_model(Models.LOW, candidates).id, "fast")
-        self.assertEqual(SelectionResolver.resolve_model(Models.MEDIUM, candidates).id, "smart")
-        self.assertEqual(SelectionResolver.resolve_model(Models.HIGH, candidates).id, "expert")
-        self.assertEqual(SelectionResolver.resolve_model(Models.AUTO, candidates).id, "smart")
+        self.assertEqual(SelectionResolver.resolve(Models.LOW, candidates).id, "fast")
+        self.assertEqual(SelectionResolver.resolve(Models.MEDIUM, candidates).id, "smart")
+        self.assertEqual(SelectionResolver.resolve(Models.HIGH, candidates).id, "expert")
+        self.assertEqual(
+            SelectionResolver.resolve(Models.AUTO, candidates, default_id="smart").id,
+            "smart",
+        )
 
         with self.assertRaises(AmbiguousMatchError):
-            SelectionResolver.resolve_model(
+            SelectionResolver.resolve(
                 "Model",
                 [
                     ModelRef(provider="test", id="m1", name="Model One"),
@@ -364,7 +365,23 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
 
         captured_reqs = []
         mock_provider = MagicMock()
-        mock_provider.models = AsyncMock(return_value=MagicMock(models=[]))
+        from webai_provider.models import Choice, FeatureState, ModelCatalog
+        from webai_provider.models import Model as CatalogModel
+
+        mock_provider.models = AsyncMock(
+            return_value=ModelCatalog(
+                FeatureState.AVAILABLE,
+                (
+                    CatalogModel("gpt-6-instant", "GPT-6 Instant"),
+                    CatalogModel(
+                        "gpt-6-thinking",
+                        "GPT-6 Thinking",
+                        (Choice("standard", "Standard"), Choice("extended", "Extended")),
+                    ),
+                ),
+                default_model="gpt-6-instant",
+            )
+        )
         mock_provider.close = AsyncMock()
 
         async def fake_stream(req):
@@ -387,9 +404,18 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         await op2.start()
         self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
 
+        op2_effort = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.EXTENDED)
+        await op2_effort.start()
+        self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
+        self.assertEqual(captured_reqs[-1].effort, "extended")
+
+        op_auto = chat.messages.create("test", model=Models.AUTO)
+        await op_auto.start()
+        self.assertEqual(captured_reqs[-1].model, "gpt-6-instant")
+
         op3 = chat.messages.create("test", model=Models.HIGH)
         await op3.start()
-        self.assertIsNotNone(captured_reqs[-1].model)
+        self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
         await session.close()
 
 

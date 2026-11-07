@@ -9,9 +9,10 @@ from .accounts.credentials import (
 from .catalogs.base import StaticModelCatalog
 from .catalogs.chatgpt import ChatGPTModels
 from .catalogs.claude import ClaudeModels
+from .catalogs.dynamic import ModelsCollection
 from .catalogs.gemini import GeminiModels
 from .catalogs.grok import GrokModels
-from .catalogs.policies import Efforts, Models
+from .catalogs.policies import Models
 from .catalogs.resolver import SelectionResolver
 from .collections.base import ResourceCollection
 from .collections.chats import ChatsCollection
@@ -21,8 +22,10 @@ from .contracts import (
     Artifact,
     ArtifactDiscovered,
     Attribution,
+    EffortChoices,
     EffortRef,
     ModelRef,
+    ModelSelection,
     OutputBegin,
     OutputDelta,
     OutputEnd,
@@ -88,8 +91,8 @@ __all__ = [
     "ClaudeModels",
     "GeminiModels",
     "GrokModels",
-    "Efforts",
     "Models",
+    "ModelsCollection",
     "SelectionResolver",
     "StaticModelCatalog",
     "ResourceCollection",
@@ -99,8 +102,10 @@ __all__ = [
     "Artifact",
     "ArtifactDiscovered",
     "Attribution",
+    "EffortChoices",
     "EffortRef",
     "ModelRef",
+    "ModelSelection",
     "OutputBegin",
     "OutputDelta",
     "OutputEnd",

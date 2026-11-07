@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .catalogs.dynamic import ModelsCollection
 from .collections.chats import ChatsCollection
 from .collections.projects import ProjectsCollection
 from .contracts import ModelRef
@@ -22,12 +23,13 @@ class ProviderSession:
         self._bridge = bridge
         self.chats = ChatsCollection(self)
         self.projects = ProjectsCollection(self)
+        self.models = ModelsCollection(self._load_models)
 
     @property
     def provider(self) -> str:
         return self.account.provider
 
-    async def models(self) -> list[ModelRef]:
+    async def _load_models(self) -> list[ModelRef]:
         if self._bridge is not None:
             return await self._bridge.list_models(self)
         return []

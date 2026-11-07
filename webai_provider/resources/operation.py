@@ -184,7 +184,6 @@ class MessageOperation:
                 content=full_text,
                 role="assistant",
                 model=self.message.model,
-                effort=self.message.effort,
                 chat=self.chat,
             )
             self._response = Response(

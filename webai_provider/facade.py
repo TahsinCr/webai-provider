@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .accounts.account import Account
-from .catalogs.policies import Efforts, Models
-from .contracts import EffortRef, ModelRef
+from .catalogs.policies import Models
+from .contracts import ModelRef, ModelSelection
 from .resources.response import Response
 
 if TYPE_CHECKING:
@@ -36,8 +36,7 @@ class BaseProvider:
         self,
         prompt: str,
         *,
-        model: Models | ModelRef | str | None = None,
-        effort: Efforts | EffortRef | str | int | None = None,
+        model: Models | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
     ) -> Response:
         session = self.connect()
@@ -46,7 +45,6 @@ class BaseProvider:
             op = chat.messages.create(
                 prompt,
                 model=model,
-                effort=effort,
                 attachments=attachments,
             )
             return await op.start()

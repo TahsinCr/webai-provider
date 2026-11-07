@@ -8,10 +8,3 @@ class Models(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
-
-
-class Efforts(str, Enum):
-    AUTO = "auto"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"

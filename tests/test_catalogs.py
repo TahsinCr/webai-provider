@@ -5,170 +5,178 @@ import unittest
 from webai_provider.catalogs import (
     ChatGPTModels,
     ClaudeModels,
-    Efforts,
     GeminiModels,
     GrokModels,
     Models,
+    ModelsCollection,
     SelectionResolver,
     StaticModelCatalog,
 )
-from webai_provider.contracts import EffortRef, ModelRef
+from webai_provider.contracts import EffortRef, ModelRef, ModelSelection
 from webai_provider.errors import AmbiguousMatchError, RemoteNotFound
 
 
-class CatalogsTests(unittest.TestCase):
+class CatalogTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.models_5 = [
-            ModelRef("chatgpt", "model-1", "Model 1"),
-            ModelRef("chatgpt", "model-2-mini", "Model 2 Mini"),
-            ModelRef("chatgpt", "model-3", "Model 3"),
-            ModelRef("chatgpt", "model-4-mini", "Model 4 Mini"),
-            ModelRef("chatgpt", "model-5", "Model 5"),
+        self.models = [
+            ModelRef("chatgpt", f"model-{index}", f"Model {index}", rank=index - 1)
+            for index in range(1, 6)
         ]
-        self.efforts_3 = [
-            EffortRef("chatgpt", "low", "Low", value=1),
-            EffortRef("chatgpt", "medium", "Medium", value=4),
-            EffortRef("chatgpt", "high", "High", value=8),
-        ]
-
-    def test_mathematical_medium_and_bounds_selection(self) -> None:
-        low = SelectionResolver.resolve_model(Models.LOW, self.models_5)
-        self.assertEqual(low.id, "model-1")
-
-        high = SelectionResolver.resolve_model(Models.HIGH, self.models_5)
-        self.assertEqual(high.id, "model-5")
-
-        med = SelectionResolver.resolve_model(Models.MEDIUM, self.models_5)
-        self.assertEqual(med.id, "model-3")
-
-    def test_even_count_medium_formula(self) -> None:
-        models_4 = self.models_5[:4]
-        med = SelectionResolver.resolve_model(Models.MEDIUM, models_4)
-        self.assertEqual(med.id, "model-3")
-
-    def test_auto_policy_with_default_or_fallback(self) -> None:
-        auto_default = SelectionResolver.resolve_model(
-            Models.AUTO, self.models_5, default_model_id="model-4-mini"
+        self.efforts = tuple(
+            EffortRef("chatgpt", "model-3", level, level.title(), rank=index)
+            for index, level in enumerate(("low", "medium", "high"))
         )
-        self.assertEqual(auto_default.id, "model-4-mini")
+        self.model = ModelRef(
+            "chatgpt",
+            "model-3",
+            "Model 3",
+            efforts=self.efforts,
+            default_effort_id="medium",
+        )
 
-        auto_fallback = SelectionResolver.resolve_model(Models.AUTO, self.models_5)
-        self.assertEqual(auto_fallback.id, "model-3")
-
-    def test_name_and_partial_match(self) -> None:
-        resolved = SelectionResolver.resolve_model("2 Mini", self.models_5)
-        self.assertEqual(resolved.id, "model-2-mini")
-
-    def test_ambiguous_match_error(self) -> None:
-        with self.assertRaises(AmbiguousMatchError):
-            SelectionResolver.resolve_model("mini", self.models_5)
-
-    def test_remote_not_found(self) -> None:
+    def test_policy_resolution_uses_rank_and_explicit_default(self) -> None:
+        self.assertEqual(SelectionResolver.resolve(Models.LOW, self.models).id, "model-1")
+        self.assertEqual(SelectionResolver.resolve(Models.MEDIUM, self.models).id, "model-3")
+        self.assertEqual(SelectionResolver.resolve(Models.HIGH, self.models).id, "model-5")
+        self.assertEqual(
+            SelectionResolver.resolve(Models.AUTO, self.models, default_id="model-4").id,
+            "model-4",
+        )
         with self.assertRaises(RemoteNotFound):
-            SelectionResolver.resolve_model("nonexistent_model", self.models_5)
+            SelectionResolver.resolve(Models.AUTO, self.models)
 
-    def test_effort_resolution(self) -> None:
-        low = SelectionResolver.resolve_effort(Efforts.LOW, self.efforts_3)
-        self.assertIsNotNone(low)
-        self.assertEqual(low.id, "low")
+        self.assertEqual(SelectionResolver.resolve(Models.LOW, self.model.efforts).id, "low")
+        self.assertEqual(SelectionResolver.resolve(Models.MEDIUM, self.model.efforts).id, "medium")
+        self.assertEqual(SelectionResolver.resolve(Models.HIGH, self.model.efforts).id, "high")
 
-        med = SelectionResolver.resolve_effort(Efforts.MEDIUM, self.efforts_3)
-        self.assertIsNotNone(med)
-        self.assertEqual(med.id, "medium")
+    def test_find_search_and_ambiguity(self) -> None:
+        self.assertEqual(SelectionResolver.resolve("Model 2", self.models).id, "model-2")
+        with self.assertRaises(AmbiguousMatchError):
+            SelectionResolver.resolve("Model", self.models)
+        with self.assertRaises(RemoteNotFound):
+            SelectionResolver.resolve("missing", self.models)
+        self.assertEqual(self.model.efforts.find("Medium").id, "medium")
+        self.assertEqual([item.id for item in self.model.efforts.search("i")], ["medium", "high"])
 
-        high = SelectionResolver.resolve_effort(Efforts.HIGH, self.efforts_3)
-        self.assertIsNotNone(high)
-        self.assertEqual(high.id, "high")
+    def test_model_and_effort_form_one_typed_selection(self) -> None:
+        selection = self.model.MEDIUM
+        self.assertIsInstance(selection, ModelSelection)
+        self.assertEqual((selection.model.id, selection.effort.id), ("model-3", "medium"))
+        self.assertEqual(self.model.efforts.MEDIUM, selection)
+        self.assertEqual(self.model.select(Models.HIGH).effort.id, "high")
+        self.assertIsNone(self.model.AUTO.effort)
 
-    def test_static_models_and_updated_catalogs(self) -> None:
-        catalogs = (
-            (
-                ChatGPTModels,
-                {
-                    "gpt-5-6-instant": (),
-                    "gpt-5-6-thinking": ("standard", "extended"),
-                    "gpt-5-6-t-mini": (),
-                    "gpt-6": (),
-                    "gpt-6-instant": (),
-                    "gpt-6-thinking": ("standard", "extended"),
-                    "gpt-6-t-mini": (),
-                },
-            ),
-            (
-                ClaudeModels,
-                {
-                    "claude-sonnet-5-5": ("low", "medium", "high", "xhigh", "max"),
-                    "claude-haiku-5-5": ("low", "medium", "high", "xhigh", "max"),
-                    "claude-sonnet-5": (
-                        "low:auto",
-                        "low:off",
-                        "medium:auto",
-                        "medium:off",
-                        "high:auto",
-                        "high:off",
-                        "xhigh:auto",
-                        "xhigh:off",
-                        "max:auto",
-                        "max:off",
-                    ),
-                    "claude-sonnet-4-6": (
-                        "low:auto",
-                        "low:off",
-                        "medium:auto",
-                        "medium:off",
-                        "high:auto",
-                        "high:off",
-                        "max:auto",
-                        "max:off",
-                    ),
-                },
-            ),
-            (
-                GeminiModels,
-                {
-                    "gemini-flash-lite": ("standard", "medium", "extended"),
-                    "gemini-flash": ("standard", "medium", "extended"),
-                    "gemini-pro": ("standard", "medium", "extended"),
-                    "gemini-argon": ("standard", "medium", "extended"),
-                },
-            ),
-            (GrokModels, {"auto": (), "fast": (), "expert": (), "heavy": ()}),
+        with self.assertRaises(ValueError):
+            ModelRef(
+                "chatgpt",
+                "model-3",
+                efforts=(EffortRef("claude", "model-3", "high", "High"),),
+            )
+
+    def test_static_catalogs_have_subscription_neutral_chat_models(self) -> None:
+        chatgpt_ids = {model.id for model in ChatGPTModels.list()}
+        self.assertTrue(
+            {
+                "gpt-5-6-mini",
+                "gpt-5-6-t-mini",
+                "gpt-5-6-instant",
+                "gpt-5-6",
+                "gpt-5-6-thinking",
+                "gpt-6",
+                "gpt-6-instant",
+                "gpt-6-thinking",
+                "gpt-6-mini",
+                "gpt-6-t-mini",
+            }.issubset(chatgpt_ids)
         )
-        for catalog, expected in catalogs:
-            self.assertEqual({model.id: model.capabilities for model in catalog.list()}, expected)
+        self.assertNotIn("gpt-6-astra-wm", chatgpt_ids)
+        self.assertEqual(ChatGPTModels.GPT_6_THINKING.MEDIUM.effort.id, "standard")
+
+        claude_ids = {model.id for model in ClaudeModels.list()}
+        self.assertTrue(
+            {
+                "claude-opus-5-5",
+                "claude-fable-5-1",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-opus-5",
+                "claude-opus-4-8",
+                "claude-opus-4-7",
+                "claude-opus-4-6",
+                "claude-opus-4-5-20251101",
+                "claude-sonnet-5",
+                "claude-sonnet-4-6",
+                "claude-sonnet-4-5-20250929",
+                "claude-haiku-4-5-20251001",
+            }.issubset(claude_ids)
+        )
+        self.assertEqual(ClaudeModels.FABLE_5_1.MEDIUM.effort.id, "medium")
+        self.assertEqual(ClaudeModels.SONNET_5.MEDIUM.effort.id, "medium:auto")
+
+        for catalog in (ChatGPTModels, ClaudeModels, GeminiModels, GrokModels):
+            self.assertTrue(issubclass(catalog, StaticModelCatalog))
             self.assertTrue(all(model.provider == catalog.provider for model in catalog.list()))
+            self.assertIsInstance(catalog.search(catalog.provider), list)
 
         self.assertEqual(GrokModels.GROK_3.name, "Grok 3")
         self.assertEqual(GrokModels.GROK_3.id, "fast")
         self.assertEqual(GrokModels.GROK_3.metadata["modelName"], "grok-3")
-        self.assertEqual(GrokModels.GROK_4_7_EXPERT.name, "Grok 4.7 Expert")
-        self.assertEqual(GrokModels.GROK_4_7_HEAVY.name, "Grok 4.7 Heavy")
 
     def test_static_catalog_lookup_methods(self) -> None:
-        models = ChatGPTModels.list()
-        self.assertGreaterEqual(len(models), 7)
-        self.assertTrue(all(isinstance(m, ModelRef) for m in models))
-        self.assertTrue(all(m.provider == "chatgpt" for m in models))
-
-        thinking = ChatGPTModels.get("gpt-6-thinking")
-        self.assertEqual(thinking.id, "gpt-6-thinking")
-        self.assertEqual(ChatGPTModels["gpt-6-thinking"].id, "gpt-6-thinking")
-
-        self.assertTrue(ChatGPTModels.contains("gpt-6-thinking"))
-        self.assertTrue(ChatGPTModels.contains(ChatGPTModels.GPT_6_THINKING))
+        model = ChatGPTModels.get("gpt-6-thinking")
+        self.assertIs(model, ChatGPTModels["gpt-6-thinking"])
+        self.assertEqual(ChatGPTModels.find("GPT-6 Thinking"), model)
+        self.assertTrue(ChatGPTModels.contains(model))
+        self.assertTrue(ChatGPTModels.contains(model.MEDIUM))
         self.assertFalse(ChatGPTModels.contains("unknown-model"))
-
-        found = ChatGPTModels.find("gpt-6-thinking")
-        self.assertEqual(found.id, "gpt-6-thinking")
-
-        search_results = ChatGPTModels.search("thinking")
-        self.assertGreaterEqual(len(search_results), 4)
-
         with self.assertRaises(RemoteNotFound):
             ChatGPTModels.get("unknown-model")
 
-    def test_catalog_subclasses_static_catalog_base(self) -> None:
-        for cat in (ChatGPTModels, ClaudeModels, GeminiModels, GrokModels):
-            self.assertTrue(issubclass(cat, StaticModelCatalog))
-            self.assertFalse(issubclass(cat, Models))
-            self.assertGreater(len(cat.list()), 3)
+
+class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_catalog_is_cached_and_returns_same_typed_refs(self) -> None:
+        loads = 0
+        model = ModelRef(
+            "claude",
+            "claude-sonnet-5-5",
+            "Claude Sonnet 5.5",
+            efforts=(EffortRef("claude", "claude-sonnet-5-5", "medium", "Medium"),),
+        )
+
+        async def load() -> list[ModelRef]:
+            nonlocal loads
+            loads += 1
+            return [model]
+
+        catalog = ModelsCollection(load)
+        found = await catalog.find("Sonnet")
+        self.assertEqual(found, model)
+        self.assertEqual((await catalog.get(model.id)).MEDIUM.effort.id, "medium")
+        self.assertEqual([item.id for item in await catalog.search("5.5")], [model.id])
+        self.assertEqual(loads, 1)
+
+        selection = await catalog.resolve(ClaudeModels.SONNET_5_5.MEDIUM)
+        self.assertEqual(selection.model.id, model.id)
+        self.assertEqual(selection.effort.id, "medium")
+
+    async def test_failed_refresh_keeps_the_last_valid_catalog(self) -> None:
+        loads = 0
+        model = ModelRef("grok", "fast", "Grok 3")
+
+        async def load() -> list[ModelRef]:
+            nonlocal loads
+            loads += 1
+            if loads == 2:
+                raise RuntimeError("temporary catalog failure")
+            return [model]
+
+        catalog = ModelsCollection(load)
+        self.assertEqual((await catalog.list())[0], model)
+        with self.assertRaises(RuntimeError):
+            await catalog.refresh()
+        self.assertEqual((await catalog.list())[0], model)
+        self.assertEqual(loads, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

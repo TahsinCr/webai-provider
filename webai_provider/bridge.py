@@ -4,11 +4,10 @@ import asyncio
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .base import SendRequest
-from .catalogs.policies import Efforts, Models
-from .catalogs.resolver import SelectionResolver
 from .contracts import (
     Artifact,
     ArtifactDiscovered,
+    EffortRef,
     ModelRef,
     OutputBegin,
     OutputDelta,
@@ -71,15 +70,41 @@ class ProviderBridge:
         provider = self._get_provider()
         catalog = await provider.models()
         result: list[ModelRef] = []
-        for m in getattr(catalog, "models", ()):
-            efforts = tuple(e.id for e in getattr(m, "efforts", ()))
+        available_models = getattr(catalog, "chat_models", getattr(catalog, "models", ()))
+        default_model = getattr(catalog, "default_chat_model", None)
+        for rank, m in enumerate(available_models):
+            efforts = tuple(
+                EffortRef(
+                    provider=self.account.provider,
+                    model_id=m.id,
+                    id=choice.id,
+                    name=(
+                        {"standard": "Medium", "extended": "High"}.get(
+                            choice.id.casefold(), choice.title
+                        )
+                        if self.account.provider.casefold() == "chatgpt"
+                        else choice.title
+                    ),
+                    rank=index,
+                )
+                for index, choice in enumerate(getattr(m, "efforts", ()))
+            )
+            metadata = dict(getattr(m, "metadata", {}))
+            if default_model is not None and default_model.id == m.id:
+                metadata["default"] = True
             result.append(
                 ModelRef(
                     provider=self.account.provider,
                     id=m.id,
                     name=getattr(m, "title", m.id),
-                    capabilities=efforts,
-                    metadata=getattr(m, "metadata", {}),
+                    efforts=efforts,
+                    default_effort_id=(
+                        getattr(m, "default_effort", None)
+                        if any(e.id == getattr(m, "default_effort", None) for e in efforts)
+                        else None
+                    ),
+                    rank=rank,
+                    metadata=metadata,
                 )
             )
         return result
@@ -221,68 +246,21 @@ class ProviderBridge:
         if hasattr(provider, "remove_project_resource"):
             await provider.remove_project_resource(project.remote_id, resource_id)
 
-    def _get_static_catalog(self) -> Any:
-        p = self.account.provider.lower()
-        if p == "chatgpt":
-            from .catalogs.chatgpt import ChatGPTModels
-
-            return ChatGPTModels
-        if p == "claude":
-            from .catalogs.claude import ClaudeModels
-
-            return ClaudeModels
-        if p == "gemini":
-            from .catalogs.gemini import GeminiModels
-
-            return GeminiModels
-        if p == "grok":
-            from .catalogs.grok import GrokModels
-
-            return GrokModels
-        return None
-
     async def execute_stream(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         provider = self._get_provider()
         msg = operation.message
         chat = operation.chat
 
         model_name: str | None = None
-        if msg.model is not None:
-            if isinstance(msg.model, ModelRef):
-                model_name = msg.model.id
-            elif isinstance(msg.model, Models):
-                candidates = await self.list_models(chat.session) if chat.session else []
-                catalog = self._get_static_catalog()
-                if not candidates and catalog is not None:
-                    candidates = catalog.list()
-                if candidates:
-                    resolved = SelectionResolver.resolve_model(msg.model, candidates)
-                    model_name = resolved.id
-                else:
-                    model_name = msg.model.value
-            elif isinstance(msg.model, str):
-                catalog = self._get_static_catalog()
-                if catalog is not None and catalog.contains(msg.model):
-                    model_name = catalog.get(msg.model).id
-                elif catalog is not None:
-                    try:
-                        resolved = SelectionResolver.resolve_model(msg.model, catalog.list())
-                        model_name = resolved.id
-                    except Exception:
-                        model_name = msg.model
-                else:
-                    model_name = msg.model
-            else:
-                model_name = str(msg.model)
-
         effort_name: str | None = None
-        if msg.effort is not None:
-            if hasattr(msg.effort, "id"):
-                effort_name = str(getattr(msg.effort, "id"))
-            elif isinstance(msg.effort, Efforts):
-                effort_name = msg.effort.value
-            else:
-                effort_name = str(msg.effort)
+        if msg.model is not None:
+            if chat.session is None:
+                raise UnsupportedOperationError(
+                    "Model selection requires an active provider session"
+                )
+            selection = await chat.session.models.resolve(msg.model)
+            model_name = selection.model.id
+            effort_name = selection.effort.id if selection.effort is not None else None
 
         attachment_records = []
         for att in msg.attachments:
