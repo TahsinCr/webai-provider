@@ -13,6 +13,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Make `webaiprovider` the sole import package for the v2 API and remove the `webai_provider` re-export namespace.
 - `chat.messages.create`, edit, retry, and provider `ask` accept one `model=` selection; separate public `effort=` selection was removed. The selected model and effort are checked against that account's live catalog before send, with no silent downgrade.
 - Keep ChatGPT web IDs separate from API IDs. ChatGPT's Pro thinking option is powered by Astra; discover its account-eligible web model and effort references instead of modeling it as API ID `gpt-6-astra` with API-only effort levels.
 - Remove work-only Luna and Sol entries from the ChatGPT web catalog; retain dynamic account discovery as the authority for available web models.

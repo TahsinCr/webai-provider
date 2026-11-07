@@ -7,7 +7,7 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 
-from webai_provider.utils import cdp
+from webaiprovider.utils import cdp
 
 
 class FakeSocket:

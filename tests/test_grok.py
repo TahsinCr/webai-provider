@@ -9,8 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from webai_provider.accounts.cookies import select_cookies
-from webai_provider.base import (
+from webaiprovider.accounts.cookies import select_cookies
+from webaiprovider.base import (
     MessageAction,
     MessageMetadata,
     ReplaceText,
@@ -18,11 +18,11 @@ from webai_provider.base import (
     SendRequest,
     TextDelta,
 )
-from webai_provider.errors import AccountPaused, ProviderError, RateLimited
-from webai_provider.models import Capability, Resource
-from webai_provider.providers.grok import GrokProvider
-from webai_provider.providers.grok.records import GrokTextFilter, active_responses, conversation
-from webai_provider.providers.grok.transport import (
+from webaiprovider.errors import AccountPaused, ProviderError, RateLimited
+from webaiprovider.models import Capability, Resource
+from webaiprovider.providers.grok import GrokProvider
+from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
+from webaiprovider.providers.grok.transport import (
     _MAX_LINE_BYTES,
     GrokProjectEditor,
     GrokTransport,
@@ -168,7 +168,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             check=Mock(side_effect=AccountPaused("expired")),
             persist=AsyncMock(),
         )
-        with patch("webai_provider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
             transport = GrokTransport(Path("unused"))
 
         with self.assertRaises(AccountPaused):
@@ -179,7 +179,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_uses_protected_user_settings_resource(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
-        with patch("webai_provider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
             transport = GrokTransport(Path("unused"))
             status = await transport.authenticate()
 
@@ -189,7 +189,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_rejects_missing_resource_payload(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value=None))
-        with patch("webai_provider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
             transport = GrokTransport(Path("unused"))
             with self.assertRaises(AccountPaused):
                 await transport.authenticate()
@@ -603,7 +603,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         try:
-            with patch("webai_provider.providers.grok.adapter.conversation", return_value=record):
+            with patch("webaiprovider.providers.grok.adapter.conversation", return_value=record):
                 active = await provider.get_chat("chat")
                 idle = await provider.get_chat("chat")
         finally:
@@ -821,7 +821,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
             path.write_bytes(b"# Project notes\n")
 
             with patch(
-                "webai_provider.providers.grok.transport.mimetypes.guess_type",
+                "webaiprovider.providers.grok.transport.mimetypes.guess_type",
                 return_value=("text/plain", None),
             ):
                 await editor.write("add_source", "workspace", kind="file", path=path)

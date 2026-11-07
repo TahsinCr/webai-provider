@@ -4,9 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
-from webai_provider.accounts import Account
-from webai_provider.bridge import ProviderBridge
-from webai_provider.catalogs import (
+from webaiprovider.accounts import Account
+from webaiprovider.bridge import ProviderBridge
+from webaiprovider.catalogs import (
     ChatGPTModels,
     ClaudeModels,
     GeminiModels,
@@ -16,9 +16,9 @@ from webai_provider.catalogs import (
     SelectionResolver,
     StaticModelCatalog,
 )
-from webai_provider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
-from webai_provider.errors import AmbiguousMatchError, RemoteNotFound
-from webai_provider.session import ProviderSession
+from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
+from webaiprovider.errors import AmbiguousMatchError, RemoteNotFound
+from webaiprovider.session import ProviderSession
 
 
 class CatalogTests(unittest.TestCase):

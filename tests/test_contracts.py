@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import FrozenInstanceError
 
-from webai_provider.contracts import (
+from webaiprovider.contracts import (
     Artifact,
     ArtifactDiscovered,
     Attribution,

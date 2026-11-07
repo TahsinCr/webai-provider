@@ -3,18 +3,18 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from webai_provider.core.bridges import SyncPortalBridge
-from webai_provider.core.cache import MultiDimensionBoundedCache
-from webai_provider.core.concurrency import ConcurrencyCoordinator
-from webai_provider.core.resilience import ProviderResilienceRegistry
-from webai_provider.core.scope import ProviderResourceScope
-from webai_provider.core.state import OperationState, OperationStateMachine
-from webai_provider.core.telemetry import (
+from webaiprovider.core.bridges import SyncPortalBridge
+from webaiprovider.core.cache import MultiDimensionBoundedCache
+from webaiprovider.core.concurrency import ConcurrencyCoordinator
+from webaiprovider.core.resilience import ProviderResilienceRegistry
+from webaiprovider.core.scope import ProviderResourceScope
+from webaiprovider.core.state import OperationState, OperationStateMachine
+from webaiprovider.core.telemetry import (
     ProviderTelemetry,
     correlation_context,
     current_correlation_id,
 )
-from webai_provider.errors import RateLimited
+from webaiprovider.errors import RateLimited
 
 
 class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):

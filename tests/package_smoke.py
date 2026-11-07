@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
+import importlib.util
 import tempfile
 from pathlib import Path
 
-import webai_provider
 import webaiprovider
-from webai_provider import Account, ChatGPTProvider
-from webai_provider.providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
+from webaiprovider import Account, ChatGPTProvider
+from webaiprovider.providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
 
 
 def main():
-    if webai_provider.__version__ != "1.3.0b0":
-        raise SystemExit(f"invalid providers version: {webai_provider.__version__}")
-    if webaiprovider.__version__ != webai_provider.__version__:
-        raise SystemExit("package version mismatch between webai_provider and webaiprovider")
+    if importlib.metadata.version("webai-provider") != webaiprovider.__version__:
+        raise SystemExit("package metadata and import version do not match")
+    if importlib.util.find_spec("webai_provider") is not None:
+        raise SystemExit("legacy package namespace is present in the wheel")
 
     with SentinelRuntime(user_agent="Mozilla/5.0 (X11; Linux x86_64)") as runtime:
         initial = runtime.create_initial_proof()

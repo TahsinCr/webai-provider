@@ -7,16 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webai_provider.base import ConversationBound, ReplaceText, SendRequest
-from webai_provider.errors import FeatureUnavailable, ProviderError
-from webai_provider.models import Capability, FeatureState
-from webai_provider.providers.claude import ClaudeProvider
-from webai_provider.providers.claude.records import (
+from webaiprovider.base import ConversationBound, ReplaceText, SendRequest
+from webaiprovider.errors import FeatureUnavailable, ProviderError
+from webaiprovider.models import Capability, FeatureState
+from webaiprovider.providers.claude import ClaudeProvider
+from webaiprovider.providers.claude.records import (
     conversation,
     conversation_attachment_count,
     project,
 )
-from webai_provider.providers.claude.transport import ClaudeTransport
+from webaiprovider.providers.claude.transport import ClaudeTransport
 
 CHAT = "12345678-abcd-1234-abcd-123456789abc"
 PROJECT = "87654321-abcd-1234-abcd-123456789abc"

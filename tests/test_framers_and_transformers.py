@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import unittest
 
-from webai_provider.errors import StreamError
-from webai_provider.framers.jspb import JSPBFramer, parse_jspb_chunks
-from webai_provider.framers.sse import SSEFramer, parse_sse_chunks
-from webai_provider.transformers.citations import extract_citations, sources_from
-from webai_provider.transformers.filters import (
+from webaiprovider.errors import StreamError
+from webaiprovider.framers.jspb import JSPBFramer, parse_jspb_chunks
+from webaiprovider.framers.sse import SSEFramer, parse_sse_chunks
+from webaiprovider.transformers.citations import extract_citations, sources_from
+from webaiprovider.transformers.filters import (
     GrokTextFilter,
     clean_render_markup,
     strip_protocol_tags,
 )
-from webai_provider.transformers.reconciler import StreamReconciler, reconcile_stream_text
+from webaiprovider.transformers.reconciler import StreamReconciler, reconcile_stream_text
 
 
 class SSEFramerTests(unittest.TestCase):

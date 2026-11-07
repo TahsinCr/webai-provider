@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import unittest
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-import webai_provider
 import webaiprovider
-from webai_provider import (
+from webaiprovider import (
     Account,
     AmbiguousMatchError,
     Artifact,
@@ -33,17 +33,18 @@ from webai_provider import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webai_provider.bridge import ProviderBridge
-from webai_provider.contracts import EffortSet, ModelRef
+from webaiprovider.bridge import ProviderBridge
+from webaiprovider.contracts import EffortSet, ModelRef
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
-    def test_package_exports_parity(self) -> None:
-        self.assertEqual(webaiprovider.__version__, webai_provider.__version__)
-        self.assertIs(webaiprovider.Account, webai_provider.Account)
-        self.assertIs(webaiprovider.Message, webai_provider.Message)
-        self.assertIs(webaiprovider.ChatGPTProvider, webai_provider.ChatGPTProvider)
-        self.assertIs(webaiprovider.SelectionResolver, webai_provider.SelectionResolver)
+    def test_canonical_package_namespace(self) -> None:
+        self.assertIsNotNone(importlib.util.find_spec("webaiprovider"))
+        self.assertIsNone(importlib.util.find_spec("webai_provider"))
+        self.assertIs(webaiprovider.Account, Account)
+        self.assertIs(webaiprovider.Message, Message)
+        self.assertIs(webaiprovider.ChatGPTProvider, ChatGPTProvider)
+        self.assertIs(webaiprovider.SelectionResolver, SelectionResolver)
 
     def test_account_creation_and_session(self) -> None:
         acc = Account.from_cookies("chatgpt", {"session_token": "mock-token-xyz"})
@@ -124,7 +125,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def fake_stream(_operation: MessageOperation):
             yield OutputBegin()
             yield OutputDelta(delta="Relativity explained.")
-            from webai_provider.contracts import ArtifactDiscovered, SourceDiscovered
+            from webaiprovider.contracts import ArtifactDiscovered, SourceDiscovered
 
             yield SourceDiscovered(
                 source=Source(
@@ -367,7 +368,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await s_grok.close()
 
     async def test_bridge_preserves_typed_provider_errors(self) -> None:
-        from webai_provider.errors import RateLimited
+        from webaiprovider.errors import RateLimited
 
         p = GrokProvider(cookies={"sso": "grok-tok"})
         session = p.connect()
@@ -399,7 +400,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         mock_bridge.execute_stream = fake_stream
 
-        with patch("webai_provider.bridge.get_bridge", return_value=mock_bridge):
+        with patch("webaiprovider.bridge.get_bridge", return_value=mock_bridge):
             res = await p.ask("What is 2+2?")
             self.assertEqual(res.text, "Direct answer")
             self.assertEqual(res.message.content, "Direct answer")
@@ -410,8 +411,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         captured_reqs = []
         mock_provider = MagicMock()
-        from webai_provider.models import Choice, FeatureState, ModelCatalog
-        from webai_provider.models import Model as CatalogModel
+        from webaiprovider.models import Choice, FeatureState, ModelCatalog
+        from webaiprovider.models import Model as CatalogModel
 
         mock_provider.models = AsyncMock(
             return_value=ModelCatalog(
@@ -466,9 +467,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     def test_collections_abstract_base_classes_and_no_shims(self) -> None:
         from abc import ABC
 
-        import webai_provider.collections
-        import webai_provider.resources
-        from webai_provider.collections.base import (
+        import webaiprovider.collections
+        import webaiprovider.resources
+        from webaiprovider.collections.base import (
             AsyncQueryableCollection,
             ManageableCollection,
             QueryableCollection,
@@ -482,9 +483,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TypeError):
             type("IncompleteManageable", (ManageableCollection,), {})()
 
-        self.assertFalse(hasattr(webai_provider, "ResourceCollection"))
-        self.assertFalse(hasattr(webai_provider.collections, "ResourceCollection"))
-        self.assertFalse(hasattr(webai_provider.resources, "ProjectInstructions"))
+        self.assertFalse(hasattr(webaiprovider, "ResourceCollection"))
+        self.assertFalse(hasattr(webaiprovider.collections, "ResourceCollection"))
+        self.assertFalse(hasattr(webaiprovider.resources, "ProjectInstructions"))
 
 
 if __name__ == "__main__":

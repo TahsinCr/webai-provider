@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import httpx
 
-from webai_provider.accounts import (
+from webaiprovider.accounts import (
     Account,
     FeatureState,
     FileCredentialStore,
@@ -19,23 +19,23 @@ from webai_provider.accounts import (
     save_session,
     session_exists,
 )
-from webai_provider.accounts.filters import (
+from webaiprovider.accounts.filters import (
     ALLOWED_PROVIDER_ORIGINS,
     ProviderCookieFilter,
     filter_provider_cookies,
 )
-from webai_provider.accounts.importer import (
+from webaiprovider.accounts.importer import (
     CookieReader,
     import_browser_session,
 )
-from webai_provider.errors import (
+from webaiprovider.errors import (
     AccountPaused,
     ProviderError,
     RateLimited,
     RemoteNotFound,
 )
-from webai_provider.models import Capability
-from webai_provider.transport import (
+from webaiprovider.models import Capability
+from webaiprovider.transport import (
     BoundedWorkPool,
     HttpSession,
     RetryPolicy,

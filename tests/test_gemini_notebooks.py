@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import AsyncMock
 
-from webai_provider.errors import ProviderError
-from webai_provider.providers.gemini.notebooks import Notebooks, project_from_native
+from webaiprovider.errors import ProviderError
+from webaiprovider.providers.gemini.notebooks import Notebooks, project_from_native
 
 from .fixtures import notebook
 

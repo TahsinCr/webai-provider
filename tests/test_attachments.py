@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from webai_provider.resources.attachments import Attachment, Attachments
+from webaiprovider.resources.attachments import Attachment, Attachments
 
 
 class AttachmentsTests(unittest.TestCase):

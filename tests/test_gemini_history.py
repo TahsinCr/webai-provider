@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webai_provider.providers.gemini import GeminiProvider
+from webaiprovider.providers.gemini import GeminiProvider
 
 
 def message(role, text, **extra):
@@ -54,7 +54,7 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
             patch(
-                "webai_provider.providers.gemini.adapter.asyncio.sleep", new_callable=AsyncMock
+                "webaiprovider.providers.gemini.adapter.asyncio.sleep", new_callable=AsyncMock
             ) as wait,
         ):
             await provider.delete_project("notebooks/abcdef")

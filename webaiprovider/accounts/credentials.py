@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -151,16 +150,8 @@ def save_session(
     FileCredentialStore(path).save(value, ensure_ascii=ensure_ascii, newline=newline)
 
 
-def _resolved_save_session():
-    compat = sys.modules.get("webai_provider.session")
-    if compat is not None and hasattr(compat, "save_session"):
-        return compat.save_session
-    return save_session
-
-
 async def save_session_async(path: Any, value: dict) -> None:
-    writer = _resolved_save_session()
-    worker = asyncio.create_task(asyncio.to_thread(writer, path, value))
+    worker = asyncio.create_task(asyncio.to_thread(save_session, path, value))
     try:
         await asyncio.shield(worker)
     except asyncio.CancelledError:

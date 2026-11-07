@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from webai_provider.base import ReplaceText, SendRequest, TextDelta
-from webai_provider.errors import ProviderError, RateLimited, RemoteNotFound
-from webai_provider.models import (
+from webaiprovider.base import ReplaceText, SendRequest, TextDelta
+from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
+from webaiprovider.models import (
     Capability,
     Choice,
     FeatureState,
@@ -15,10 +15,10 @@ from webai_provider.models import (
     ModelCatalog,
     SessionState,
 )
-from webai_provider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
-from webai_provider.providers.chatgpt.client import ChatGPTClient
-from webai_provider.providers.chatgpt.errors import SentinelCompatibilityError
-from webai_provider.utils.timing import SendTiming, use_send_timing
+from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
+from webaiprovider.providers.chatgpt.client import ChatGPTClient
+from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
+from webaiprovider.utils.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient
 
@@ -183,7 +183,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         real_http_client = httpx.Client
         with (
             patch(
-                "webai_provider.providers.chatgpt.client.httpx.Client", wraps=real_http_client
+                "webaiprovider.providers.chatgpt.client.httpx.Client", wraps=real_http_client
             ) as clients,
             patch.object(ChatGPTClient, "model_catalog", return_value=catalog) as model_catalog,
             patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
@@ -213,7 +213,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(provider._http_client)
 
     async def test_project_file_source_is_streamed_using_a_dedicated_client(self):
-        from webai_provider.providers.chatgpt.projects import ChatGPTProjectEditor
+        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
 
         path = Path(self.directory.name) / "source.txt"
         path.write_text("fixture")
