@@ -168,6 +168,18 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         mock_bridge.rename_chat.assert_awaited_once_with(chat, "Renamed Chat")
         self.assertEqual(chat.title, "Renamed Chat")
 
+        await session.chats.update(chat, title="Updated Via Collection")
+        self.assertEqual(chat.title, "Updated Via Collection")
+
+        await session.chats.update(chat.id, title="Updated Via ID")
+        self.assertEqual(chat.title, "Updated Via ID")
+
+        found_start = session.chats.find("Updated", startswith=True)
+        self.assertEqual(found_start.id, chat.id)
+
+        found_end = session.chats.find("ID", endswith=True)
+        self.assertEqual(found_end.id, chat.id)
+
         mock_bridge.download.return_value = b"file-bytes"
         dl = await chat.download("https://example.com/test.png")
         mock_bridge.download.assert_awaited_once_with(
@@ -215,9 +227,18 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         added = await project.resources.add("Doc", title="res-1")
         mock_bridge.add_project_resource.assert_awaited_once_with(project, added)
 
-        res = await project.resources.get(added["id"])
+        res = project.resources.get(added["id"])
         self.assertEqual(res["id"], added["id"])
         self.assertEqual(await project.resources.download(added["id"]), "Doc")
+
+        await session.projects.update(
+            project, title="Updated Project", instruction="Updated Instruction"
+        )
+        self.assertEqual(project.title, "Updated Project")
+        self.assertEqual(await project.instruction.get(), "Updated Instruction")
+
+        updated_res = await project.resources.update(added["id"], data="Updated Doc")
+        self.assertEqual(updated_res["data"], "Updated Doc")
 
         await project.resources.remove(added["id"])
         mock_bridge.remove_project_resource.assert_awaited_once_with(project, added["id"])
@@ -249,6 +270,11 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(edit_op, MessageOperation)
         self.assertEqual(edit_op.message.content, "Edited prompt")
         self.assertEqual(edit_op.message.metadata.get("action"), "edit")
+
+        update_op = chat.messages.update(msg, content="Updated via messages.update")
+        self.assertIsInstance(update_op, MessageOperation)
+        self.assertEqual(update_op.message.content, "Updated via messages.update")
+        self.assertEqual(update_op.message.metadata.get("action"), "edit")
 
         mock_bridge.branch_chat.return_value = MagicMock(remote_id="branch-chat-id")
         branched_chat = await msg.branch("Dallanmış Sohbet")

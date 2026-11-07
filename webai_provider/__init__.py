@@ -14,7 +14,11 @@ from .catalogs.gemini import GeminiModels
 from .catalogs.grok import GrokModels
 from .catalogs.policies import Models
 from .catalogs.resolver import SelectionResolver
-from .collections.base import ResourceCollection
+from .collections.base import (
+    ManageableCollection,
+    QueryableCollection,
+    ResourceCollection,
+)
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
 from .collections.projects import ProjectsCollection
@@ -95,6 +99,8 @@ __all__ = [
     "ModelsCollection",
     "SelectionResolver",
     "StaticModelCatalog",
+    "QueryableCollection",
+    "ManageableCollection",
     "ResourceCollection",
     "ChatsCollection",
     "ProjectsCollection",

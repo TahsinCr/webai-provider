@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..resources.project import Project
-from .base import ResourceCollection
+from .base import ManageableCollection
 
 if TYPE_CHECKING:
     from ..resources.session import ProviderSession
 
 
-class ProjectsCollection(ResourceCollection[Project]):
+class ProjectsCollection(ManageableCollection[Project]):
     def __init__(self, session: ProviderSession) -> None:
         super().__init__()
         self.session = session
@@ -26,7 +26,7 @@ class ProjectsCollection(ResourceCollection[Project]):
             session=self.session,
         )
         if instruction:
-            project.instructions._text = instruction
+            project.instruction._text = instruction
         self._items.insert(0, project)
         if hasattr(self.session, "_bridge") and self.session._bridge:
             await self.session._bridge.create_project(project, instruction=instruction, **options)
@@ -38,8 +38,28 @@ class ProjectsCollection(ResourceCollection[Project]):
             self._items = list(projects)
         return list(self._items)
 
-    async def delete(self, project_or_id: Project | str) -> None:
-        project_id = project_or_id.id if isinstance(project_or_id, Project) else project_or_id
-        target = self.get(project_id)
+    async def update(
+        self,
+        project: Project | str,
+        *,
+        title: str | None = None,
+        instruction: str | None = None,
+        **options: Any,
+    ) -> Project:
+        target = project if isinstance(project, Project) else self.get(project)
+        if title is not None and title != target.title:
+            target.title = title
+            if (
+                self.session is not None
+                and hasattr(self.session, "_bridge")
+                and self.session._bridge
+            ):
+                await self.session._bridge.rename_project(target, title)
+        if instruction is not None:
+            await target.instruction.edit(instruction)
+        return target
+
+    async def delete(self, project: Project | str) -> None:
+        target = project if isinstance(project, Project) else self.get(project)
         await target.delete()
-        self._items = [p for p in self._items if p.id != project_id]
+        self._items = [p for p in self._items if p.id != target.id]

@@ -6,13 +6,13 @@ from ..catalogs.policies import Models
 from ..contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
-from .base import ResourceCollection
+from .base import ManageableCollection
 
 if TYPE_CHECKING:
     from ..resources.chat import Chat
 
 
-class MessagesCollection(ResourceCollection[Message]):
+class MessagesCollection(ManageableCollection[Message]):
     def __init__(self, chat: Chat) -> None:
         super().__init__()
         self.chat = chat
@@ -55,6 +55,18 @@ class MessagesCollection(ResourceCollection[Message]):
             yield OutputBegin()
             yield OutputDelta(f"Yanıt: {operation.message.content}")
             yield OutputEnd(f"Yanıt: {operation.message.content}")
+
+    def update(
+        self,
+        message: Message | str,
+        *,
+        content: str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        **options: Any,
+    ) -> MessageOperation:
+        target = message if isinstance(message, Message) else self.get(message)
+        new_content = content if content is not None else target.content
+        return self.edit(target.id, new_content, model=model, **options)
 
     def edit(
         self,
@@ -102,6 +114,10 @@ class MessagesCollection(ResourceCollection[Message]):
         )
         self._items.append(msg)
         return MessageOperation(self.chat, msg, executor=self._execute_send)
+
+    async def delete(self, target: Message | str) -> None:
+        target_id = target.id if isinstance(target, Message) else str(target)
+        self._items = [m for m in self._items if m.id != target_id]
 
     async def branch(self, message_id: str, *, title: str | None = None) -> Chat:
         return await self.chat.branch(message_id, title=title)

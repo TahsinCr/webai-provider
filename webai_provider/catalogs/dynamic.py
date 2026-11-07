@@ -3,24 +3,27 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
+from ..collections.base import QueryableCollection
 from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import RemoteNotFound
 from .policies import Models
 from .resolver import SelectionResolver
 
 
-class ModelsCollection:
+class ModelsCollection(QueryableCollection[ModelRef]):
     def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
+        super().__init__()
         self._loader = loader
-        self._items: tuple[ModelRef, ...] | None = None
+        self._items_tuple: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
 
     async def list(self, *, refresh: bool = False) -> list[ModelRef]:
         """Load once to prewarm the account cache; refresh forces a provider fetch."""
         async with self._lock:
-            if self._items is None or refresh:
+            if self._items_tuple is None or refresh:
                 loaded = await self._loader(refresh)
-                self._items = tuple(loaded)
+                self._items_tuple = tuple(loaded)
+                self._items = list(self._items_tuple)
             return list(self._items)
 
     async def refresh(self) -> list[ModelRef]:
@@ -34,19 +37,34 @@ class ModelsCollection:
                 return model
         raise RemoteNotFound(f"Model ID {model_id!r} is not available for this account")
 
-    async def find(self, query: str) -> ModelRef:
-        result = SelectionResolver.resolve(query, await self.list())
-        if not isinstance(result, ModelRef):
-            raise TypeError("Model query did not resolve to a model")
-        return result
+    async def find(
+        self,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        models = await self.list()
+        if not (startswith or endswith or exact):
+            result = SelectionResolver.resolve(query, models)
+            if not isinstance(result, ModelRef):
+                raise TypeError("Model query did not resolve to a model")
+            return result
+        temp = QueryableCollection(models)
+        return temp.find(query, exact=exact, startswith=startswith, endswith=endswith)
 
-    async def search(self, query: str) -> list[ModelRef]:
-        query = query.casefold()
-        return [
-            model
-            for model in await self.list()
-            if query in model.id.casefold() or query in model.name.casefold()
-        ]
+    async def search(
+        self,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> list[ModelRef]:
+        models = await self.list()
+        temp = QueryableCollection(models)
+        return temp.search(query, exact=exact, startswith=startswith, endswith=endswith)
 
     async def resolve(
         self,

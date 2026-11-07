@@ -38,6 +38,8 @@ class Chat:
         return b""
 
     async def rename(self, title: str) -> Chat:
+        if self.session is not None and hasattr(self.session, "chats"):
+            return await self.session.chats.update(self, title=title)
         self.title = title
         if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
             await self.session._bridge.rename_chat(self, title)
