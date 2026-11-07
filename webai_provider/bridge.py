@@ -44,20 +44,23 @@ class ProviderBridge:
 
         if provider_name == "chatgpt":
             from .providers.chatgpt.adapter import ChatGPTProvider
+            from .providers.chatgpt.session import BrowserSession, SessionPaths
 
-            self._provider_instance = ChatGPTProvider(cookie_file=store, account_id=self.account.id)
+            paths = SessionPaths(store)
+            session = BrowserSession(paths)
+            self._provider_instance = ChatGPTProvider(session, account_id=self.account.id)
         elif provider_name == "gemini":
             from .providers.gemini.adapter import GeminiProvider
 
-            self._provider_instance = GeminiProvider(cookie_file=store, account_id=self.account.id)
+            self._provider_instance = GeminiProvider(store, account_id=self.account.id)
         elif provider_name == "claude":
             from .providers.claude.adapter import ClaudeProvider
 
-            self._provider_instance = ClaudeProvider(cookie_file=store, account_id=self.account.id)
+            self._provider_instance = ClaudeProvider(store, account_id=self.account.id)
         elif provider_name == "grok":
             from .providers.grok.adapter import GrokProvider
 
-            self._provider_instance = GrokProvider(cookie_file=store, account_id=self.account.id)
+            self._provider_instance = GrokProvider(store, account_id=self.account.id)
         else:
             raise UnsupportedOperationError(f"Desteklenmeyen sağlayıcı: {provider_name}")
 
@@ -337,6 +340,8 @@ class ProviderBridge:
             if output_started:
                 yield OutputEnd()
 
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(str(exc)) from exc
 

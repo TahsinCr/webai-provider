@@ -217,11 +217,16 @@ class MessageOperation:
             raise
 
     async def _run_internal(self) -> Response:
-        async for _ in self.stream():
+        try:
+            async for _ in self.stream():
+                pass
+        except Exception:
             pass
-        if self._response is None:
-            raise ProviderError("Cevap nesnesi oluşturulamadı")
-        return self._response
+        if self._response is not None:
+            return self._response
+        if self._completion_future is not None and self._completion_future.done():
+            return self._completion_future.result()
+        raise ProviderError("Cevap nesnesi oluşturulamadı")
 
     async def start(self) -> Response:
         if self._response is not None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import webai_provider
 import webaiprovider
@@ -294,6 +294,69 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         msg = Message("With attachment", attachments=attachments)
         self.assertEqual(len(msg.attachments), 1)
         self.assertEqual(msg.attachments[0].name, "hello.txt")
+
+    async def test_bridge_provider_instantiation_for_all_backends(self) -> None:
+        p_chatgpt = ChatGPTProvider(cookies={"session_token": "token-1"})
+        s_chatgpt = p_chatgpt.connect()
+        adapter_chatgpt = s_chatgpt._bridge._get_provider()
+        self.assertEqual(adapter_chatgpt.id, "chatgpt")
+        await s_chatgpt.close()
+
+        p_gemini = GeminiProvider(cookies={"__Secure-1PSID": "token-2"})
+        s_gemini = p_gemini.connect()
+        adapter_gemini = s_gemini._bridge._get_provider()
+        self.assertEqual(adapter_gemini.id, "gemini")
+        await s_gemini.close()
+
+        p_claude = ClaudeProvider(cookies={"sessionKey": "token-3"})
+        s_claude = p_claude.connect()
+        adapter_claude = s_claude._bridge._get_provider()
+        self.assertEqual(adapter_claude.id, "claude")
+        await s_claude.close()
+
+        p_grok = GrokProvider(cookies={"sso": "token-4"})
+        s_grok = p_grok.connect()
+        adapter_grok = s_grok._bridge._get_provider()
+        self.assertEqual(adapter_grok.id, "grok")
+        await s_grok.close()
+
+    async def test_bridge_preserves_typed_provider_errors(self) -> None:
+        from webai_provider.errors import RateLimited
+
+        p = GrokProvider(cookies={"sso": "grok-tok"})
+        session = p.connect()
+        chat = await session.chats.create()
+        op = chat.messages.create("Hello")
+
+        mock_bridge = MagicMock(spec=ProviderBridge)
+
+        async def fail_stream(_op):
+            raise RateLimited(retry_after=42.0)
+            yield OutputBegin()
+
+        mock_bridge.execute_stream = fail_stream
+        session._bridge = mock_bridge
+
+        with self.assertRaises(RateLimited) as ctx:
+            await op.start()
+        self.assertEqual(ctx.exception.retry_after, 42.0)
+        await session.close()
+
+    async def test_provider_ask_convenience_method(self) -> None:
+        p = ChatGPTProvider(cookies={"session_token": "mock-tok"})
+        mock_bridge = MagicMock(spec=ProviderBridge)
+
+        async def fake_stream(_op):
+            yield OutputBegin()
+            yield OutputDelta(delta="Direct answer")
+            yield OutputEnd()
+
+        mock_bridge.execute_stream = fake_stream
+
+        with patch("webai_provider.bridge.get_bridge", return_value=mock_bridge):
+            res = await p.ask("What is 2+2?")
+            self.assertEqual(res.text, "Direct answer")
+            self.assertEqual(res.message.content, "Direct answer")
 
 
 if __name__ == "__main__":
