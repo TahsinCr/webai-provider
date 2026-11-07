@@ -37,7 +37,7 @@ from webai_provider.bridge import ProviderBridge
 from webai_provider.contracts import EffortSet, ModelRef
 
 
-class TestV2Api(unittest.IsolatedAsyncioTestCase):
+class TestApi(unittest.IsolatedAsyncioTestCase):
     def test_package_exports_parity(self) -> None:
         self.assertEqual(webaiprovider.__version__, webai_provider.__version__)
         self.assertIs(webaiprovider.Account, webai_provider.Account)
