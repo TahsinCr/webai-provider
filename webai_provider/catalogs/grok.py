@@ -7,12 +7,16 @@ from .base import StaticModelCatalog
 class GrokModels(StaticModelCatalog):
     provider = "grok"
 
-    AUTO = ModelRef("grok", "auto", "Auto")
-    GROK_3 = ModelRef("grok", "grok-3", "Grok 3")
-    GROK_3_MINI = ModelRef("grok", "grok-3-mini", "Grok 3 Mini")
-    GROK_3_THINK = ModelRef(
-        "grok", "grok-3-think", "Grok 3 (Think)", capabilities=("low", "medium", "high")
+    AUTO = ModelRef("grok", "auto", "Grok Auto", metadata={"modelMode": "MODEL_MODE_AUTO"})
+    GROK_3 = ModelRef(
+        "grok",
+        "fast",
+        "Grok 3",
+        metadata={"modelName": "grok-3", "modelMode": "MODEL_MODE_FAST"},
     )
-    GROK_3_DEEPSEARCH = ModelRef("grok", "grok-3-deepsearch", "Grok 3 (DeepSearch)")
-    GROK_2 = ModelRef("grok", "grok-2", "Grok 2")
-    GROK_2_MINI = ModelRef("grok", "grok-2-mini", "Grok 2 Mini")
+    GROK_4_7_EXPERT = ModelRef(
+        "grok", "expert", "Grok 4.7 Expert", metadata={"modelMode": "MODEL_MODE_EXPERT"}
+    )
+    GROK_4_7_HEAVY = ModelRef(
+        "grok", "heavy", "Grok 4.7 Heavy", metadata={"modelMode": "MODEL_MODE_HEAVY"}
+    )

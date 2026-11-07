@@ -4,6 +4,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh static model catalogs with observed web selector IDs and per-model effort IDs; keep plan-specific availability in live discovery.
+
 ## [1.3-beta] - 2026-11-06
 
 ### Added

@@ -293,7 +293,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
 | **`prompt`** | `str` | *Zorunlu* | Gönderilen metin veya düzenlenen ileti içeriği. |
 | **`conversation_id`** | `str \| None` | `None` | Uzak sohbet kimliği (ilk turda `None`, devam turlarında dolu). |
 | **`model`** | `str \| None` | `None` | Seçilen model tanımlayıcısı (`Model.id`). |
-| **`effort`** | `str \| None` | `None` | Akıl yürütme eforu (`"low"`, `"medium"`, `"high"`). |
+| **`effort`** | `str \| None` | `None` | Canlı katalogda dönen sağlayıcı ve modele özgü efor kimliği. |
 | **`project_id`** | `str \| None` | `None` | Sohbet bir projeye bağlıysa uzak proje kimliği. |
 | **`temporary`** | `bool` | `False` | `True` ise gizli/geçici sohbet olarak yürütülür. |
 | **`attachments`** | `tuple[dict, ...]` | `()` | `upload_file()` çıktısı olan dosya tanımlayıcıları. |
@@ -325,7 +325,7 @@ Dört sağlayıcı adaptörünün tamamı tarafından uygulanan birleşik protok
    - `message_id: str | None`: Asistan mesaj kimliği.<br>
    - `user_message_id: str | None`: Sunucu tarafından onaylanan kullanıcı mesaj kimliği.<br>
    - `model: str | None`: Yanıtı üreten gerçek model.<br>
-   - `effort: str | None`: Doğrulanan akıl yürütme eforu.<br>
+   - `effort: str | None`: Seçilen model için dönen tam efor kimliği.<br>
    - `sources: tuple[dict, ...]`: Web kaynakları ve alıntı bağlantıları.<br>
    - `actions: tuple[str, ...]`: Bu tur için izin verilen eylemler (`"edit"`, `"retry"`).<br>
    - `files: tuple[dict, ...]`: Model tarafından üretilen çıktı dosyaları.
@@ -631,7 +631,7 @@ async def main():
         await account.authenticate()
 
         catalog = await account.models()
-        target_model = catalog.chat_model("o3-mini") or catalog.default_chat_model
+        target_model = catalog.chat_model("gpt-6-thinking") or catalog.default_chat_model
         effort = catalog.effort(target_model.id, preferred="high")
 
         print(f"Model: {target_model.title} | Efor: {effort}")

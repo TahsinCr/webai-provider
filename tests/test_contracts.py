@@ -26,11 +26,11 @@ from webai_provider.contracts import (
 
 class ContractsTests(unittest.TestCase):
     def test_model_and_effort_ref_immutability(self) -> None:
-        model = ModelRef("chatgpt", "gpt-4o", "GPT-4o")
+        model = ModelRef("chatgpt", "model-id", "Test model")
         effort = EffortRef("chatgpt", "medium", "Medium", value=4)
 
         self.assertEqual(model.provider, "chatgpt")
-        self.assertEqual(model.id, "gpt-4o")
+        self.assertEqual(model.id, "model-id")
         self.assertEqual(effort.value, 4)
 
         with self.assertRaises(FrozenInstanceError):

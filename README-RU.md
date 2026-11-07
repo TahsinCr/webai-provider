@@ -293,7 +293,7 @@ def create_provider(
 | **`prompt`** | `str` | *Обязательно* | Текст запроса или отредактированное сообщение. |
 | **`conversation_id`** | `str \| None` | `None` | Удаленный ID диалога (на первом шаге `None`, далее заполняется). |
 | **`model`** | `str \| None` | `None` | Идентификатор выбранной модели (`Model.id`). |
-| **`effort`** | `str \| None` | `None` | Уровень рассуждений (`"low"`, `"medium"`, `"high"`). |
+| **`effort`** | `str \| None` | `None` | Точный идентификатор усилия для провайдера и модели из актуального каталога. |
 | **`project_id`** | `str \| None` | `None` | Удаленный ID проекта, если диалог ведется в контексте проекта. |
 | **`temporary`** | `bool` | `False` | Если `True`, диалог выполняется в приватном режиме без сохранения. |
 | **`attachments`** | `tuple[dict, ...]` | `()` | Дескрипторы загруженных файлов из `upload_file()`. |
@@ -325,7 +325,7 @@ def create_provider(
    - `message_id: str | None`: Идентификатор сообщения ассистента.<br>
    - `user_message_id: str | None`: Подтвержденный сервером ID реплики пользователя.<br>
    - `model: str | None`: Фактическая модель, сформировавшая ответ.<br>
-   - `effort: str | None`: Подтвержденный уровень рассуждений.<br>
+   - `effort: str | None`: Точный идентификатор усилия для выбранной модели.<br>
    - `sources: tuple[dict, ...]`: Источники из веб-поиска и ссылки на цитирования.<br>
    - `actions: tuple[str, ...]`: Допустимые операции для этой реплики (`"edit"`, `"retry"`).<br>
    - `files: tuple[dict, ...]`: Файлы, сгенерированные моделью в процессе ответа.
@@ -631,7 +631,7 @@ async def main():
         await account.authenticate()
 
         catalog = await account.models()
-        target_model = catalog.chat_model("o3-mini") or catalog.default_chat_model
+        target_model = catalog.chat_model("gpt-6-thinking") or catalog.default_chat_model
         effort = catalog.effort(target_model.id, preferred="high")
 
         print(f"Модель: {target_model.title} | Уровень рассуждений: {effort}")
