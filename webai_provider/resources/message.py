@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..catalogs.policies import Models
-from ..contracts import ModelRef, ModelSelection
+from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import UnsupportedOperationError
 from .attachments import Attachment, Attachments
 
@@ -22,7 +22,7 @@ class Message:
         id: str | None = None,
         remote_id: str | None = None,
         attachments: Attachments | list[Attachment] | None = None,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         chat: Chat | None = None,
     ) -> None:
@@ -49,7 +49,7 @@ class Message:
         self,
         new_content: str,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
             raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından düzenlenemez")
@@ -64,7 +64,7 @@ class Message:
     def retry(
         self,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
     ) -> MessageOperation:
         if self.chat is None:
             raise UnsupportedOperationError("Mesaj bir sohbete ait olmadığından yeniden denenemez")

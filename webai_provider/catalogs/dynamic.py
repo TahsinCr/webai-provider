@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from ..contracts import ModelRef, ModelSelection
+from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import RemoteNotFound
 from .policies import Models
 from .resolver import SelectionResolver
@@ -48,7 +48,7 @@ class ModelsCollection:
 
     async def resolve(
         self,
-        target: Models | ModelRef | ModelSelection | str,
+        target: Models | EffortRef | ModelRef | ModelSelection | str,
     ) -> ModelSelection:
         result = SelectionResolver.resolve(target, await self.list())
         if isinstance(result, ModelRef):

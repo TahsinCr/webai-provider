@@ -8,6 +8,7 @@ from webai_provider.contracts import (
     ArtifactDiscovered,
     Attribution,
     EffortRef,
+    EffortSet,
     ModelRef,
     OutputBegin,
     OutputDelta,
@@ -26,7 +27,7 @@ from webai_provider.contracts import (
 
 class ContractsTests(unittest.TestCase):
     def test_model_and_effort_ref_immutability(self) -> None:
-        model = ModelRef("chatgpt", "model-id", "Test model")
+        model = ModelRef("chatgpt", "model-id", "Test model", efforts=EffortSet)
         effort = EffortRef("chatgpt", "model-id", "medium", "Medium", rank=4)
 
         self.assertEqual(model.provider, "chatgpt")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from ..catalogs.policies import Models
-from ..contracts import ModelRef, ModelSelection, StreamEvent
+from ..contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
 from .base import ResourceCollection
@@ -21,7 +21,7 @@ class MessagesCollection(ResourceCollection[Message]):
         self,
         message: Message | str,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
         **metadata: Any,
     ) -> MessageOperation:
@@ -61,7 +61,7 @@ class MessagesCollection(ResourceCollection[Message]):
         message_id: str,
         new_content: str,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
         target = self.get(message_id)
@@ -84,7 +84,7 @@ class MessagesCollection(ResourceCollection[Message]):
         self,
         message_id: str,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
         target = self.get(message_id)

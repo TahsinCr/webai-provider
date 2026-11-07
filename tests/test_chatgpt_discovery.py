@@ -100,7 +100,7 @@ class DiscoveryTests(unittest.TestCase):
         raw = {
             "models": [
                 {"slug": "gpt-future-thinking", "title": "Provider engine name"},
-                {"slug": "gpt-future-sol-wm", "title": "Sol work variant"},
+                {"slug": "gpt-future-work-wm", "title": "Future work model"},
                 {"slug": "research", "title": "Research"},
             ],
             "categories": [
@@ -119,7 +119,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(catalog.chat_models[0].chat_title, "GPT-42 Thinking")
         restored = ModelCatalog.from_dict(asdict(catalog))
         self.assertEqual(restored.chat_models, catalog.chat_models)
-        self.assertEqual(restored.models[1].metadata["title"], "Sol work variant")
+        self.assertEqual(restored.models[1].metadata["title"], "Future work model")
 
     def test_work_variants_stay_hidden_if_an_older_response_has_no_categories(self):
         catalog = model_catalog({"models": [{"slug": "normal"}, {"slug": "private-wm"}]})

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+import re
+from collections.abc import Iterable
+from dataclasses import KW_ONLY, dataclass, field
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Mapping, TypeVar, cast
 
 if TYPE_CHECKING:
     from .catalogs.policies import Models
@@ -18,25 +19,100 @@ class EffortRef:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+class EffortSet:
+    DEFAULT_EFFORT_ID: ClassVar[str | None] = None
+
+    @classmethod
+    def list(cls) -> tuple[EffortRef, ...]:
+        return tuple(value for value in vars(cls).values() if isinstance(value, EffortRef))
+
+    @classmethod
+    def from_refs(
+        cls,
+        refs: Iterable[EffortRef],
+        *,
+        name: str = "DiscoveredEfforts",
+        default_id: str | None = None,
+    ) -> type[EffortSet]:
+        members: dict[str, Any] = {
+            "__module__": cls.__module__,
+            "DEFAULT_EFFORT_ID": default_id,
+        }
+        for ref in refs:
+            key = re.sub(r"\W+", "_", ref.name or ref.id).strip("_").upper() or "EFFORT"
+            if key[0].isdigit():
+                key = f"VALUE_{key}"
+            base = key
+            suffix = 2
+            while key in members:
+                key = f"{base}_{suffix}"
+                suffix += 1
+            members[key] = ref
+
+        class_name = re.sub(r"\W+", "_", name)
+        if not class_name.isidentifier():
+            class_name = "DiscoveredEfforts"
+        return type(class_name, (cls,), members)
+
+    @classmethod
+    def get(cls, effort_id: str) -> EffortRef:
+        for effort in cls.list():
+            if effort.id == effort_id:
+                return effort
+        from .errors import RemoteNotFound
+
+        raise RemoteNotFound(f"Effort ID {effort_id!r} is not available")
+
+    @classmethod
+    def find(cls, query: str) -> EffortRef:
+        from .catalogs.resolver import SelectionResolver
+
+        result = SelectionResolver.resolve(
+            query,
+            cls.list(),
+            default_id=cls.DEFAULT_EFFORT_ID,
+        )
+        if not isinstance(result, EffortRef):
+            raise TypeError("Effort query did not resolve to an effort")
+        return result
+
+    @classmethod
+    def search(cls, query: str) -> list[EffortRef]:
+        query = query.casefold()
+        return [
+            effort
+            for effort in cls.list()
+            if query in effort.id.casefold() or query in effort.name.casefold()
+        ]
+
+
+E = TypeVar("E", bound=EffortSet)
+
+
 @dataclass(frozen=True)
-class ModelRef:
+class ModelRef(Generic[E]):
     provider: str
     id: str
     name: str = ""
-    efforts: Sequence[EffortRef] = field(default=(), repr=False)
-    default_effort_id: str | None = None
+    _: KW_ONLY
+    efforts: type[E] = field(default=cast(type[E], EffortSet), repr=False)
     rank: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        efforts = tuple(self.efforts)
+        if not isinstance(self.efforts, type) or not issubclass(self.efforts, EffortSet):
+            raise TypeError("Model efforts must be an EffortSet class")
+        efforts = self.efforts.list()
         if any(e.provider != self.provider or e.model_id != self.id for e in efforts):
             raise ValueError("Each effort must belong to its model and provider")
         if self.default_effort_id is not None and not any(
             effort.id == self.default_effort_id for effort in efforts
         ):
             raise ValueError("Default effort must be present in the model's effort catalog")
-        object.__setattr__(self, "efforts", EffortChoices(self, efforts))
+
+    @property
+    def default_effort_id(self) -> str | None:
+        return self.efforts.DEFAULT_EFFORT_ID
 
     def select(self, effort: EffortRef | Models | str | None = None) -> ModelSelection:
         if effort is None or (isinstance(effort, str) and effort.casefold() == "auto"):
@@ -49,83 +125,12 @@ class ModelRef:
             return ModelSelection(self)
         resolved = SelectionResolver.resolve(
             effort,
-            self.efforts,
+            self.efforts.list(),
             default_id=self.default_effort_id,
         )
         if not isinstance(resolved, EffortRef):
             raise TypeError("Effort selection did not resolve to an effort")
         return ModelSelection(self, resolved)
-
-    def __getattr__(self, name: str) -> ModelSelection:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        from .errors import RemoteNotFound
-
-        try:
-            return self.select(name.replace("_", " "))
-        except RemoteNotFound as exc:
-            raise AttributeError(name) from exc
-
-
-class EffortChoices(Sequence[EffortRef]):
-    def __init__(self, model: ModelRef, items: Sequence[EffortRef]) -> None:
-        self._model = model
-        self._items = tuple(items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __getitem__(self, index: int | slice) -> EffortRef | tuple[EffortRef, ...]:
-        return self._items[index]
-
-    def __iter__(self):
-        return iter(self._items)
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Sequence):
-            return self._items == tuple(other)
-        return NotImplemented
-
-    def list(self) -> list[EffortRef]:
-        return list(self._items)
-
-    def get(self, effort_id: str) -> EffortRef:
-        for effort in self._items:
-            if effort.id == effort_id:
-                return effort
-        from .errors import RemoteNotFound
-
-        raise RemoteNotFound(f"Effort ID {effort_id!r} is not available for {self._model.id}")
-
-    def find(self, query: str) -> EffortRef:
-        from .catalogs.resolver import SelectionResolver
-
-        result = SelectionResolver.resolve(
-            query,
-            self._items,
-            default_id=self._model.default_effort_id,
-        )
-        if not isinstance(result, EffortRef):
-            raise TypeError("Effort query did not resolve to an effort")
-        return result
-
-    def search(self, query: str) -> list[EffortRef]:
-        query = query.casefold()
-        return [
-            effort
-            for effort in self._items
-            if query in effort.id.casefold() or query in effort.name.casefold()
-        ]
-
-    def __getattr__(self, name: str) -> ModelSelection:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        from .errors import RemoteNotFound
-
-        try:
-            return self._model.select(name.replace("_", " "))
-        except RemoteNotFound as exc:
-            raise AttributeError(name) from exc
 
 
 @dataclass(frozen=True)

@@ -1,25 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import RemoteNotFound
 
 
-def effort_refs(
+def effort_ref(
     provider: str,
     model_id: str,
-    choices: Iterable[str | tuple[str, str]],
-) -> tuple[EffortRef, ...]:
-    return tuple(
-        EffortRef(
-            provider=provider,
-            model_id=model_id,
-            id=choice[0] if isinstance(choice, tuple) else choice,
-            name=choice[1] if isinstance(choice, tuple) else choice.replace(":", " ").title(),
-            rank=rank,
-        )
-        for rank, choice in enumerate(choices)
+    effort_id: str,
+    name: str | None = None,
+) -> EffortRef:
+    return EffortRef(
+        provider,
+        model_id,
+        effort_id,
+        name or effort_id.replace(":", " ").title(),
     )
 
 
@@ -52,10 +47,12 @@ class StaticModelCatalog:
         return [m for m in cls.list() if q in m.id.lower() or q in m.name.lower()]
 
     @classmethod
-    def contains(cls, item: str | ModelRef | ModelSelection) -> bool:
+    def contains(cls, item: str | EffortRef | ModelRef | ModelSelection) -> bool:
         target = (
             item.model.id
             if isinstance(item, ModelSelection)
+            else item.model_id
+            if isinstance(item, EffortRef)
             else item.id
             if isinstance(item, ModelRef)
             else item

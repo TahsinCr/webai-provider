@@ -12,7 +12,7 @@ from webai_provider.catalogs import (
     SelectionResolver,
     StaticModelCatalog,
 )
-from webai_provider.contracts import EffortRef, ModelRef, ModelSelection
+from webai_provider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webai_provider.errors import AmbiguousMatchError, RemoteNotFound
 
 
@@ -26,12 +26,12 @@ class CatalogTests(unittest.TestCase):
             EffortRef("chatgpt", "model-3", level, level.title(), rank=index)
             for index, level in enumerate(("low", "medium", "high"))
         )
+        effort_set = EffortSet.from_refs(self.efforts, name="TestModelEfforts", default_id="medium")
         self.model = ModelRef(
             "chatgpt",
             "model-3",
             "Model 3",
-            efforts=self.efforts,
-            default_effort_id="medium",
+            efforts=effort_set,
         )
 
     def test_policy_resolution_uses_rank_and_explicit_default(self) -> None:
@@ -45,9 +45,10 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(RemoteNotFound):
             SelectionResolver.resolve(Models.AUTO, self.models)
 
-        self.assertEqual(SelectionResolver.resolve(Models.LOW, self.model.efforts).id, "low")
-        self.assertEqual(SelectionResolver.resolve(Models.MEDIUM, self.model.efforts).id, "medium")
-        self.assertEqual(SelectionResolver.resolve(Models.HIGH, self.model.efforts).id, "high")
+        efforts = self.model.efforts.list()
+        self.assertEqual(SelectionResolver.resolve(Models.LOW, efforts).id, "low")
+        self.assertEqual(SelectionResolver.resolve(Models.MEDIUM, efforts).id, "medium")
+        self.assertEqual(SelectionResolver.resolve(Models.HIGH, efforts).id, "high")
 
     def test_find_search_and_ambiguity(self) -> None:
         self.assertEqual(SelectionResolver.resolve("Model 2", self.models).id, "model-2")
@@ -59,28 +60,31 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([item.id for item in self.model.efforts.search("i")], ["medium", "high"])
 
     def test_model_and_effort_form_one_typed_selection(self) -> None:
-        selection = self.model.MEDIUM
+        medium = self.model.efforts.get("medium")
+        selection = self.model.select(medium)
         self.assertIsInstance(selection, ModelSelection)
+        self.assertIsNotNone(selection.effort)
+        assert selection.effort is not None
         self.assertEqual((selection.model.id, selection.effort.id), ("model-3", "medium"))
-        self.assertEqual(self.model.efforts.MEDIUM, selection)
-        self.assertEqual(self.model.select(Models.HIGH).effort.id, "high")
-        self.assertIsNone(self.model.AUTO.effort)
+        self.assertEqual(medium.model_id, selection.model.id)
+        high = self.model.select(Models.HIGH)
+        self.assertIsNotNone(high.effort)
+        assert high.effort is not None
+        self.assertEqual(high.effort.id, "high")
+        self.assertIsNone(self.model.select(Models.AUTO).effort)
 
         with self.assertRaises(ValueError):
             ModelRef(
                 "chatgpt",
                 "model-3",
-                efforts=(EffortRef("claude", "model-3", "high", "High"),),
+                efforts=EffortSet.from_refs((EffortRef("claude", "model-3", "high", "High"),)),
             )
 
     def test_static_catalogs_have_subscription_neutral_chat_models(self) -> None:
         chatgpt_ids = {model.id for model in ChatGPTModels.list()}
         self.assertTrue(
             {
-                "gpt-5-6-mini",
-                "gpt-5-6-t-mini",
                 "gpt-5-6-instant",
-                "gpt-5-6",
                 "gpt-5-6-thinking",
                 "gpt-6",
                 "gpt-6-instant",
@@ -89,8 +93,14 @@ class CatalogTests(unittest.TestCase):
                 "gpt-6-t-mini",
             }.issubset(chatgpt_ids)
         )
+        self.assertNotIn("gpt-5-6-mini", chatgpt_ids)
+        self.assertNotIn("gpt-5-6-t-mini", chatgpt_ids)
+        self.assertNotIn("gpt-5-6", chatgpt_ids)
         self.assertNotIn("gpt-6-astra-wm", chatgpt_ids)
-        self.assertEqual(ChatGPTModels.GPT_6_THINKING.MEDIUM.effort.id, "standard")
+        medium = ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM
+        self.assertIsInstance(medium, EffortRef)
+        self.assertEqual(medium.id, "standard")
+        self.assertEqual(ChatGPTModels.GPT_6_THINKING.select(medium).effort, medium)
 
         claude_ids = {model.id for model in ClaudeModels.list()}
         self.assertTrue(
@@ -110,8 +120,8 @@ class CatalogTests(unittest.TestCase):
                 "claude-haiku-4-5-20251001",
             }.issubset(claude_ids)
         )
-        self.assertEqual(ClaudeModels.FABLE_5_1.MEDIUM.effort.id, "medium")
-        self.assertEqual(ClaudeModels.SONNET_5.MEDIUM.effort.id, "medium:auto")
+        self.assertEqual(ClaudeModels.FABLE_5_1.efforts.MEDIUM.id, "medium")
+        self.assertEqual(ClaudeModels.SONNET_5.efforts.MEDIUM_AUTO.id, "medium:auto")
 
         for catalog in (ChatGPTModels, ClaudeModels, GeminiModels, GrokModels):
             self.assertTrue(issubclass(catalog, StaticModelCatalog))
@@ -127,7 +137,7 @@ class CatalogTests(unittest.TestCase):
         self.assertIs(model, ChatGPTModels["gpt-6-thinking"])
         self.assertEqual(ChatGPTModels.find("GPT-6 Thinking"), model)
         self.assertTrue(ChatGPTModels.contains(model))
-        self.assertTrue(ChatGPTModels.contains(model.MEDIUM))
+        self.assertTrue(ChatGPTModels.contains(model.efforts.MEDIUM))
         self.assertFalse(ChatGPTModels.contains("unknown-model"))
         with self.assertRaises(RemoteNotFound):
             ChatGPTModels.get("unknown-model")
@@ -140,7 +150,10 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             "claude",
             "claude-sonnet-5-5",
             "Claude Sonnet 5.5",
-            efforts=(EffortRef("claude", "claude-sonnet-5-5", "medium", "Medium"),),
+            efforts=EffortSet.from_refs(
+                (EffortRef("claude", "claude-sonnet-5-5", "medium", "Medium"),),
+                name="ClaudeSonnet55Efforts",
+            ),
         )
 
         async def load() -> list[ModelRef]:
@@ -151,12 +164,14 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         catalog = ModelsCollection(load)
         found = await catalog.find("Sonnet")
         self.assertEqual(found, model)
-        self.assertEqual((await catalog.get(model.id)).MEDIUM.effort.id, "medium")
+        self.assertEqual((await catalog.get(model.id)).efforts.get("medium").id, "medium")
         self.assertEqual([item.id for item in await catalog.search("5.5")], [model.id])
         self.assertEqual(loads, 1)
 
-        selection = await catalog.resolve(ClaudeModels.SONNET_5_5.MEDIUM)
+        selection = await catalog.resolve(ClaudeModels.SONNET_5_5.efforts.MEDIUM)
         self.assertEqual(selection.model.id, model.id)
+        self.assertIsNotNone(selection.effort)
+        assert selection.effort is not None
         self.assertEqual(selection.effort.id, "medium")
 
     async def test_failed_refresh_keeps_the_last_valid_catalog(self) -> None:

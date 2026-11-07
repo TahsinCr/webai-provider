@@ -96,7 +96,7 @@ Kütüphane yetenekleri `Capability` numaralandırması üzerinden sunulur. Dü�
 | `PROJECT_DELETE` | ✅ | ✅ | ✅ | ✅ | Sunucudaki projeleri veya çalışma alanlarını silme. |
 | `PROJECT_MEMBERSHIP` | ✅ | ❌ | ✅ | ✅ | Sohbetleri projeye taşıma veya projeden çıkarma (Gemini Notebook sohbetleri sabittir). |
 | `MODELS` | ✅ | ✅ | ✅ | ✅ | Hesaba tanımlı kullanılabilir modelleri dinamik olarak keşfetme. |
-| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Düşünme bütçesi / akıl yürütme eforu (modele bağlıdır; `Model.efforts` ile yapılandırılır). |
+| `EFFORT` | ✅ | ✅ | ✅ | ✅ | Modele bağlı düşünme seçenekleri, her modelin `efforts` alanında türü belirtilmiş referanslar olarak sunulur. |
 | `MESSAGE_EDIT` | ✅ | ✅ | ✅ | ✅ | Mevcut bir kullanıcı iletisini düzenleme ve yeni bir dal üretme. |
 | `MESSAGE_RETRY` | ✅ | ✅* | ✅ | ✅ | Asistan yanıtını yeniden üretme (*Gemini üzerinde retry işlemi üst istem düzenlenerek yürütülür). |
 | `CHAT_BRANCH` | ✅ | ✅ | ❌ | ❌ | Belirli bir turdan bağımsız yeni bir sohbet dallandırma (Claude ve Grok web API'leri desteklemez). |

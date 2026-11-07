@@ -8,6 +8,7 @@ from .contracts import (
     Artifact,
     ArtifactDiscovered,
     EffortRef,
+    EffortSet,
     ModelRef,
     OutputBegin,
     OutputDelta,
@@ -79,16 +80,19 @@ class ProviderBridge:
                     model_id=m.id,
                     id=choice.id,
                     name=(
-                        {"standard": "Medium", "extended": "High"}.get(
-                            choice.id.casefold(), choice.title
-                        )
+                        {"standard": "Medium", "extended": "High"}.get(choice.id.casefold())
                         if self.account.provider.casefold() == "chatgpt"
-                        else choice.title
-                    ),
+                        else None
+                    )
+                    or choice.title
+                    or choice.id,
                     rank=index,
                 )
                 for index, choice in enumerate(getattr(m, "efforts", ()))
             )
+            default_effort_id = getattr(m, "default_effort", None)
+            if default_effort_id not in {effort.id for effort in efforts}:
+                default_effort_id = None
             metadata = dict(getattr(m, "metadata", {}))
             if default_model is not None and default_model.id == m.id:
                 metadata["default"] = True
@@ -96,12 +100,11 @@ class ProviderBridge:
                 ModelRef(
                     provider=self.account.provider,
                     id=m.id,
-                    name=getattr(m, "title", m.id),
-                    efforts=efforts,
-                    default_effort_id=(
-                        getattr(m, "default_effort", None)
-                        if any(e.id == getattr(m, "default_effort", None) for e in efforts)
-                        else None
+                    name=getattr(m, "title", None) or m.id,
+                    efforts=EffortSet.from_refs(
+                        efforts,
+                        name=f"{m.id}_Efforts",
+                        default_id=default_effort_id,
                     ),
                     rank=rank,
                     metadata=metadata,

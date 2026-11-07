@@ -34,7 +34,7 @@ from webai_provider import (
     ThinkingEnd,
 )
 from webai_provider.bridge import ProviderBridge
-from webai_provider.contracts import ModelRef
+from webai_provider.contracts import EffortSet, ModelRef
 
 
 class TestV2Api(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +64,7 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
 
         op = chat.messages.create(
             "Hello AI",
-            model=ChatGPTModels.GPT_6_THINKING.MEDIUM,
+            model=ChatGPTModels.GPT_6_THINKING.select(ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM),
         )
 
         self.assertIsInstance(op, MessageOperation)
@@ -264,9 +264,9 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(GrokModels.GROK_3.id, "fast")
 
         candidates = [
-            ModelRef(provider="test", id="fast", name="Model Fast", rank=0),
-            ModelRef(provider="test", id="smart", name="Model Smart", rank=1),
-            ModelRef(provider="test", id="expert", name="Model Expert", rank=2),
+            ModelRef(provider="test", id="fast", name="Model Fast", rank=0, efforts=EffortSet),
+            ModelRef(provider="test", id="smart", name="Model Smart", rank=1, efforts=EffortSet),
+            ModelRef(provider="test", id="expert", name="Model Expert", rank=2, efforts=EffortSet),
         ]
 
         self.assertEqual(SelectionResolver.resolve(Models.LOW, candidates).id, "fast")
@@ -281,8 +281,8 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
             SelectionResolver.resolve(
                 "Model",
                 [
-                    ModelRef(provider="test", id="m1", name="Model One"),
-                    ModelRef(provider="test", id="m2", name="Model Two"),
+                    ModelRef(provider="test", id="m1", name="Model One", efforts=EffortSet),
+                    ModelRef(provider="test", id="m2", name="Model Two", efforts=EffortSet),
                 ],
             )
 
@@ -404,7 +404,7 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         await op2.start()
         self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
 
-        op2_effort = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.EXTENDED)
+        op2_effort = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH)
         await op2_effort.start()
         self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
         self.assertEqual(captured_reqs[-1].effort, "extended")

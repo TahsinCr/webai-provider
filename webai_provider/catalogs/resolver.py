@@ -25,11 +25,37 @@ class SelectionResolver:
             if not isinstance(model, ModelRef):
                 raise RemoteNotFound("Model sağlayıcı kataloğunda bulunamadı")
             effort = (
-                cls.resolve(target.effort, model.efforts, default_id=model.default_effort_id)
+                cls.resolve(
+                    target.effort,
+                    model.efforts.list(),
+                    default_id=model.default_effort_id,
+                )
                 if target.effort is not None
                 else None
             )
             if effort is not None and not isinstance(effort, EffortRef):
+                raise RemoteNotFound("Efor sağlayıcı kataloğunda bulunamadı")
+            return ModelSelection(model, effort)
+
+        if isinstance(target, EffortRef) and isinstance(candidates[0], ModelRef):
+            model = next(
+                (
+                    item
+                    for item in candidates
+                    if isinstance(item, ModelRef)
+                    and item.provider == target.provider
+                    and item.id == target.model_id
+                ),
+                None,
+            )
+            if model is None:
+                raise RemoteNotFound(f"{target.provider} modeli bu katalogda bulunmuyor")
+            effort = cls.resolve(
+                target,
+                model.efforts.list(),
+                default_id=model.default_effort_id,
+            )
+            if not isinstance(effort, EffortRef):
                 raise RemoteNotFound("Efor sağlayıcı kataloğunda bulunamadı")
             return ModelSelection(model, effort)
 
@@ -50,7 +76,7 @@ class SelectionResolver:
                 return selected
 
             ordered = (
-                sorted(candidates, key=lambda item: item.rank)
+                sorted(candidates, key=lambda item: item.rank if item.rank is not None else 0)
                 if all(item.rank is not None for item in candidates)
                 else candidates
             )
@@ -90,6 +116,8 @@ class SelectionResolver:
 
         if target_id is not None:
             raise RemoteNotFound(f"Seçim bulunamadı: {target_id}")
+        if not isinstance(target, str):
+            raise RemoteNotFound("Seçim bulunamadı")
 
         target_lower = target.casefold()
         partial_matches = [

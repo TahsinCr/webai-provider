@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from .accounts.account import Account
 from .catalogs.policies import Models
-from .contracts import ModelRef, ModelSelection
+from .contracts import EffortRef, ModelRef, ModelSelection
 from .resources.response import Response
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class BaseProvider:
         self,
         prompt: str,
         *,
-        model: Models | ModelRef | ModelSelection | str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
     ) -> Response:
         session = self.connect()
