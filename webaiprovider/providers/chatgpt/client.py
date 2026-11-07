@@ -297,14 +297,14 @@ class ChatGPTClient:
             timeout=30,
         )
         if response.status_code != 200:
-            raise ChatGPTWebError("saved session expired; run siopechat login")
+            raise ChatGPTWebError("Saved ChatGPT session expired; re-authenticate the account")
         try:
             value = response.json()
             token = value.get("accessToken")
         except (ValueError, AttributeError) as error:
             raise ChatGPTWebError("ChatGPT session refresh returned invalid data") from error
         if not isinstance(token, str) or not token:
-            raise ChatGPTWebError("saved session expired; run siopechat login")
+            raise ChatGPTWebError("Saved ChatGPT session expired; re-authenticate the account")
         self.headers["authorization"] = f"Bearer {token}"
         cookie_header = self.headers.get("cookie", "")
         cookies = SimpleCookie()

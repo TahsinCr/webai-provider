@@ -10,7 +10,7 @@ T = TypeVar("T")
 
 
 class QueryableCollection(Generic[T], ABC):
-    """Sorgulanabilir koleksiyonlar için generic soyut taban sınıfı."""
+    """Generic abstract base class for synchronous queryable collections."""
 
     def __init__(self, items: Sequence[T] | None = None) -> None:
         self._items: list[T] = list(items) if items is not None else []
@@ -47,14 +47,99 @@ class QueryableCollection(Generic[T], ABC):
             return t.endswith(q)
         return q in t
 
+    @classmethod
+    def _get_from(cls, items: Sequence[T], item_id: str) -> T:
+        for it in items:
+            if cls._extract_id(it) == item_id:
+                return it
+        raise RemoteNotFound(f"Record was not found: {item_id}")
+
+    @classmethod
+    def _find_in(
+        cls,
+        items: Sequence[T],
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> T:
+        if not (startswith or endswith):
+            exact_id = [it for it in items if cls._extract_id(it) == query]
+            if len(exact_id) == 1:
+                return exact_id[0]
+
+            exact_name = [
+                it for it in items if cls._matches(cls._extract_name(it), query, exact=True)
+            ]
+            if len(exact_name) == 1:
+                return exact_name[0]
+            if len(exact_name) > 1:
+                ids = [cls._extract_id(it) for it in exact_name]
+                raise AmbiguousMatchError(f"Multiple exact matches were found: {', '.join(ids)}")
+
+        matches = [
+            it
+            for it in items
+            if cls._matches(
+                cls._extract_name(it),
+                query,
+                exact=exact,
+                startswith=startswith,
+                endswith=endswith,
+            )
+            or cls._matches(
+                cls._extract_id(it),
+                query,
+                exact=exact,
+                startswith=startswith,
+                endswith=endswith,
+            )
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            ids = [cls._extract_id(it) for it in matches]
+            raise AmbiguousMatchError(
+                f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
+            )
+
+        raise RemoteNotFound(f"No records matched the search query: {query}")
+
+    @classmethod
+    def _search_in(
+        cls,
+        items: Sequence[T],
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> list[T]:
+        return [
+            it
+            for it in items
+            if cls._matches(
+                cls._extract_name(it),
+                query,
+                exact=exact,
+                startswith=startswith,
+                endswith=endswith,
+            )
+            or cls._matches(
+                cls._extract_id(it),
+                query,
+                exact=exact,
+                startswith=startswith,
+                endswith=endswith,
+            )
+        ]
+
     def list(self) -> list[T]:
         return list(self._items)
 
     def get(self, item_id: str, /) -> T:
-        for it in self._items:
-            if self._extract_id(it) == item_id:
-                return it
-        raise RemoteNotFound(f"Record was not found: {item_id}")
+        return self._get_from(self._items, item_id)
 
     def find(
         self,
@@ -65,47 +150,13 @@ class QueryableCollection(Generic[T], ABC):
         startswith: bool = False,
         endswith: bool = False,
     ) -> T:
-        if not (startswith or endswith):
-            exact_id = [it for it in self._items if self._extract_id(it) == query]
-            if len(exact_id) == 1:
-                return exact_id[0]
-
-            exact_name = [
-                it for it in self._items if self._matches(self._extract_name(it), query, exact=True)
-            ]
-            if len(exact_name) == 1:
-                return exact_name[0]
-            if len(exact_name) > 1:
-                ids = [self._extract_id(it) for it in exact_name]
-                raise AmbiguousMatchError(f"Multiple exact matches were found: {', '.join(ids)}")
-
-        matches = [
-            it
-            for it in self._items
-            if self._matches(
-                self._extract_name(it),
-                query,
-                exact=exact,
-                startswith=startswith,
-                endswith=endswith,
-            )
-            or self._matches(
-                self._extract_id(it),
-                query,
-                exact=exact,
-                startswith=startswith,
-                endswith=endswith,
-            )
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            ids = [self._extract_id(it) for it in matches]
-            raise AmbiguousMatchError(
-                f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
-            )
-
-        raise RemoteNotFound(f"No records matched the search query: {query}")
+        return self._find_in(
+            self._items,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
     def search(
         self,
@@ -116,24 +167,13 @@ class QueryableCollection(Generic[T], ABC):
         startswith: bool = False,
         endswith: bool = False,
     ) -> list[T]:
-        return [
-            it
-            for it in self._items
-            if self._matches(
-                self._extract_name(it),
-                query,
-                exact=exact,
-                startswith=startswith,
-                endswith=endswith,
-            )
-            or self._matches(
-                self._extract_id(it),
-                query,
-                exact=exact,
-                startswith=startswith,
-                endswith=endswith,
-            )
-        ]
+        return self._search_in(
+            self._items,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
     def __len__(self) -> int:
         return len(self._items)
@@ -147,36 +187,34 @@ class QueryableCollection(Generic[T], ABC):
 
 
 class ManageableCollection(QueryableCollection[T], ABC):
-    """Yönetilebilir (CRUD / yaşam döngüsü destekli) koleksiyonlar için soyut taban sınıfı."""
+    """Generic abstract base class for collections with CRUD lifecycle operations."""
 
     async def refresh(self) -> list[T]:
         return list(self._items)
 
     @abstractmethod
     def create(self, *args: Any, **kwargs: Any) -> Any:
-        """Koleksiyonda yeni bir öğe oluşturur."""
+        """Create a new item in the collection."""
 
     @abstractmethod
     async def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
-        """Koleksiyondan ve ilişkili uzak kaynaktan öğeyi siler."""
+        """Delete an item from the collection and its remote backend."""
 
     @abstractmethod
     def update(self, target: T | str, /, **fields: Any) -> Any:
-        """Koleksiyondaki bir öğeyi günceller."""
+        """Update an existing item in the collection."""
 
 
 class AsyncQueryableCollection(Generic[T], ABC):
-    """Asenkron sorgulanabilir koleksiyonlar için generic soyut taban sınıfı."""
+    """Generic abstract base class for asynchronous queryable collections."""
 
     @abstractmethod
     async def list(self, *args: Any, **kwargs: Any) -> list[T]:
-        """Koleksiyondaki öğelerin listesini asenkron olarak döndürür."""
+        """Return all items in the collection asynchronously."""
 
-    @abstractmethod
     async def get(self, item_id: str, /) -> T:
-        """Belirtilen kimliğe sahip öğeyi asenkron olarak döndürür."""
+        return QueryableCollection._get_from(await self.list(), item_id)
 
-    @abstractmethod
     async def find(
         self,
         query: str,
@@ -186,9 +224,14 @@ class AsyncQueryableCollection(Generic[T], ABC):
         startswith: bool = False,
         endswith: bool = False,
     ) -> T:
-        """Aramayla tam veya kısmi eşleşen tek bir öğeyi asenkron olarak bulur."""
+        return QueryableCollection._find_in(
+            await self.list(),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
-    @abstractmethod
     async def search(
         self,
         query: str,
@@ -198,4 +241,10 @@ class AsyncQueryableCollection(Generic[T], ABC):
         startswith: bool = False,
         endswith: bool = False,
     ) -> list[T]:
-        """Aramayla eşleşen tüm öğeleri asenkron liste olarak döndürür."""
+        return QueryableCollection._search_in(
+            await self.list(),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )

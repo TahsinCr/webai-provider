@@ -8,6 +8,8 @@ from .accounts.account import Account
 from .catalogs.policies import Models
 from .contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from .core.bridges import SyncPortalBridge
+from .core.state import OperationState
+from .core.telemetry import ProviderTelemetry
 from .models import Page
 from .provider_type import ProviderType
 from .providers.chatgpt.collections import ChatGPTProjectsCollection
@@ -36,6 +38,10 @@ class SyncProvider:
         self.chats = SyncChatsCollection(self)
         self.projects = SyncProjectsCollection(self)
         self.models = SyncModelsCollection(self)
+
+    @property
+    def telemetry(self) -> ProviderTelemetry:
+        return self._provider.telemetry
 
     def _call(self, coroutine: Any) -> Any:
         if self._closed:
@@ -307,6 +313,9 @@ class SyncMessagesCollection(_SyncCollection[Message, Message]):
     def __init__(self, owner: SyncProvider, chat: Chat) -> None:
         super().__init__(owner, chat.messages)
 
+    def refresh(self) -> list[Message]:
+        return self._owner._call(self._collection.refresh())
+
     def create(
         self,
         message: Message | str,
@@ -385,6 +394,10 @@ class SyncMessageOperation:
     @property
     def response(self) -> Response | None:
         return self._operation._response
+
+    @property
+    def state(self) -> OperationState:
+        return self._operation.state
 
     def on(self, event_name: str, handler: Any = None) -> Any:
         return self.hooks.on(event_name, handler)

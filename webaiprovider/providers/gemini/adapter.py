@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,12 +28,12 @@ from ...base import (
     confirm_deleted,
     validate_request,
 )
+from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...models import (
     FeatureState,
     Model,
     ModelCatalog,
-    Origin,
     Page,
     SessionState,
     SessionStatus,
@@ -85,8 +84,11 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         self._gate = asyncio.Lock()
         self._connect_gate = asyncio.Lock()
         self._temporary = {}
-        self._chat_metadata = OrderedDict()
-        self._chat_metadata_verified_at = {}
+        self._chat_metadata = MultiDimensionBoundedCache(
+            max_entries=128,
+            default_ttl=_CHAT_METADATA_TTL_SECONDS,
+            clock=lambda: time.monotonic(),
+        )
         from .notebooks import Notebooks
         from .rpc import NotebookEditor, NotebookRPC
 
@@ -172,7 +174,6 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 self._client = None
             if self._client is None:
                 self._chat_metadata.clear()
-                self._chat_metadata_verified_at.clear()
         if editor_error is not None:
             raise editor_error
 
@@ -218,9 +219,6 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 self._catalog_at = time.monotonic()
             return ModelCatalog(FeatureState.AVAILABLE, client.models)
 
-    def _origin(self, remote: str) -> Origin:
-        return Origin(self.id, self.account_id, remote)
-
     @staticmethod
     def _usable_chat_metadata(metadata, conversation_id):
         return (
@@ -231,26 +229,14 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
         )
 
     def _take_chat_metadata(self, conversation_id):
-        metadata = self._chat_metadata.get(conversation_id)
-        verified_at = self._chat_metadata_verified_at.get(conversation_id)
-        if metadata is None or verified_at is None:
-            return None
-        if time.monotonic() - verified_at > _CHAT_METADATA_TTL_SECONDS:
-            self._chat_metadata.pop(conversation_id, None)
-            self._chat_metadata_verified_at.pop(conversation_id, None)
-            return None
-        return metadata
+        return self._chat_metadata.get(conversation_id)
 
     def prepare_next_turn(self, conversation_id, last_message_id=None):
-        if conversation_id and conversation_id in self._chat_metadata:
+        if conversation_id:
             self._chat_metadata.move_to_end(conversation_id)
 
     def _remember_chat_metadata(self, conversation_id, metadata):
-        self._chat_metadata[conversation_id] = list(metadata)
-        self._chat_metadata_verified_at[conversation_id] = time.monotonic()
-        while len(self._chat_metadata) > 128:
-            oldest, _ = self._chat_metadata.popitem(last=False)
-            self._chat_metadata_verified_at.pop(oldest, None)
+        self._chat_metadata.put(conversation_id, list(metadata))
 
     async def list_chats(self, cursor=None, limit=50):
         try:
@@ -323,7 +309,6 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 lambda parts: not parts,
             )
             self._chat_metadata.pop(conversation_id, None)
-            self._chat_metadata_verified_at.pop(conversation_id, None)
 
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
@@ -657,4 +642,3 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
     async def forget_conversation(self, conversation_id):
         async with self._gate:
             self._chat_metadata.pop(conversation_id, None)
-            self._chat_metadata_verified_at.pop(conversation_id, None)

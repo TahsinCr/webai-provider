@@ -20,6 +20,7 @@ from ..contracts import (
     TerminalStatus,
     TimingMetrics,
 )
+from ..core.state import OperationState, OperationStateMachine
 from ..errors import OperationCancelledError, ProviderError
 from .response import Response
 
@@ -81,6 +82,8 @@ class MessageOperation:
         self.hooks = OperationHooks()
         self._executor = executor
         self._response: Response | None = None
+        self._assistant_message_id: str | None = None
+        self._state_machine = OperationStateMachine()
         self._started = False
         self._completed = False
         self._cancelled = False
@@ -89,10 +92,19 @@ class MessageOperation:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._condition = asyncio.Condition()
 
+    @property
+    def state(self) -> OperationState:
+        return OperationState(self._state_machine.state)
+
+    def _transition_to(self, target: OperationState) -> None:
+        if self._state_machine.can_transition(target):
+            self._state_machine.transition(target)
+
     def cancel(self) -> None:
         if self._completed:
             return
         self._cancelled = True
+        self._transition_to(OperationState.CANCELLED)
         task = self._stream_task
         loop = self._loop
         if task is not None and loop is not None and not task.done():
@@ -118,6 +130,7 @@ class MessageOperation:
                 raise ProviderError("No executor is configured for this operation")
             self._loop = asyncio.get_running_loop()
             self._started = True
+            self._transition_to(OperationState.PREPARING)
             self._stream_task = self._loop.create_task(self._run_internal())
         return self._stream_task
 
@@ -181,20 +194,30 @@ class MessageOperation:
         collected_text: list[str] = []
         collected_sources: list[Any] = []
         collected_artifacts: list[Any] = []
+        telemetry = getattr(getattr(self.chat, "session", None), "telemetry", None)
+        if telemetry is not None:
+            telemetry.record_call()
 
         try:
             assert self._executor is not None
+            self._transition_to(OperationState.SENDING)
             async for event in self._executor(self):
                 if self._cancelled:
                     raise OperationCancelledError("Operation cancelled")
 
+                self._transition_to(OperationState.STREAMING)
+
                 if isinstance(event, OutputDelta):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
+                        if telemetry is not None:
+                            telemetry.record_ttft(first_token_at - started_at)
                     collected_text.append(event.delta)
                 elif isinstance(event, OutputReplace):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
+                        if telemetry is not None:
+                            telemetry.record_ttft(first_token_at - started_at)
                     collected_text = [event.text]
                 elif isinstance(event, OutputEnd) and not collected_text and event.text:
                     collected_text.append(event.text)
@@ -206,6 +229,7 @@ class MessageOperation:
                 await self._publish(event)
 
             completed_at = time.perf_counter()
+            duration_s = completed_at - started_at
             timing = TimingMetrics(
                 started_at=started_at,
                 first_token_at=first_token_at,
@@ -213,7 +237,7 @@ class MessageOperation:
                 first_token_ms=(
                     (first_token_at - started_at) * 1000.0 if first_token_at is not None else None
                 ),
-                duration_ms=(completed_at - started_at) * 1000.0,
+                duration_ms=duration_s * 1000.0,
             )
 
             from .message import Message
@@ -223,23 +247,39 @@ class MessageOperation:
                 content=full_text,
                 role="assistant",
                 model=self.message.model,
+                id=self._assistant_message_id,
                 chat=self.chat,
             )
+            if self.chat is not None and hasattr(self.chat, "messages"):
+                self.chat.messages._items.append(response_message)
             self._response = Response(
                 response_message,
                 sources=collected_sources,
                 artifacts=collected_artifacts,
                 timing=timing,
             )
+            self._transition_to(OperationState.COMPLETED)
+            if telemetry is not None:
+                telemetry.record_success(duration_s)
             await self._finish(TerminalStatus("completed"))
             return self._response
 
-        except asyncio.CancelledError:
-            error = OperationCancelledError("Operation cancelled")
+        except (asyncio.CancelledError, OperationCancelledError) as exc:
+            error = (
+                exc
+                if isinstance(exc, OperationCancelledError)
+                else OperationCancelledError("Operation cancelled")
+            )
             self._cancelled = True
+            self._transition_to(OperationState.CANCELLED)
+            if telemetry is not None:
+                telemetry.record_cancelled()
             await self._finish(TerminalStatus("cancelled", error))
             raise error from None
         except Exception as exc:
+            self._transition_to(OperationState.FAILED)
+            if telemetry is not None:
+                telemetry.record_failure(time.perf_counter() - started_at)
             await self._finish(TerminalStatus("failed", exc))
             raise
         finally:

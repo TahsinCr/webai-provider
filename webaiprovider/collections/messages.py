@@ -18,6 +18,16 @@ class MessagesCollection(ManageableCollection[Message]):
         super().__init__()
         self.chat = chat
 
+    async def refresh(self) -> list[Message]:
+        if not self.chat.remote_id:
+            return list(self._items)
+        session = self.chat.session
+        if session is None:
+            raise ProviderError("Chat is not attached to an open provider")
+        messages = await session._require_bridge().list_messages(self.chat)
+        self._items = list(messages)
+        return list(self._items)
+
     def create(
         self,
         message: Message | str,

@@ -140,7 +140,7 @@ class BrowserSession:
             url = value["url"]
             headers = value["headers"]
         except (FileNotFoundError, AccountPaused) as error:
-            raise ChatGPTWebError("no saved session; run siopechat login") from error
+            raise ChatGPTWebError("No saved ChatGPT session; authenticate the account") from error
         except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
             raise ChatGPTWebError("saved ChatGPT session is invalid") from error
         if not isinstance(url, str):

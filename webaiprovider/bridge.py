@@ -54,6 +54,7 @@ from .utils.files import DownloadSource, NativeDownloadClient
 if TYPE_CHECKING:
     from .accounts.account import Account
     from .resources.chat import Chat
+    from .resources.message import Message
     from .resources.operation import MessageOperation
     from .resources.project import Project
     from .session import Provider
@@ -195,6 +196,34 @@ class ProviderBridge:
             tuple(_chat_from_conversation(item, project.session) for item in page.items),
             page.next_cursor,
         )
+
+    async def list_messages(self, chat: Chat) -> list[Message]:
+        if not chat.remote_id:
+            return list(chat.messages._items)
+        from .resources.message import Message
+
+        conversation = await self._get_provider().get_chat(chat.remote_id)
+        if not isinstance(conversation, Conversation):
+            raise ProviderError("Provider returned an invalid conversation")
+        if conversation.title and not chat.title:
+            chat.title = conversation.title
+        messages: list[Message] = []
+        for item in conversation.messages:
+            if item.channel == "analysis":
+                continue
+            text = "\n".join(
+                part.text for part in item.content if part.kind == "text" and part.text
+            )
+            messages.append(
+                Message(
+                    content=text,
+                    role=item.role,
+                    id=item.id,
+                    metadata={**item.metadata, "actions": item.actions},
+                    chat=chat,
+                )
+            )
+        return messages
 
     async def rename_chat(self, chat: Chat, title: str) -> None:
         if chat.remote_id:
@@ -416,6 +445,7 @@ class ProviderBridge:
 
         output_started = False
         thinking_started = False
+        thinking_text = ""
 
         try:
             async for chunk in provider.stream(request):
@@ -423,19 +453,32 @@ class ProviderBridge:
                     chat.remote_id = chunk.conversation_id
                     continue
 
-                if isinstance(chunk, ThoughtDelta):
+                if isinstance(chunk, ThoughtDelta) or (
+                    isinstance(chunk, (TextDelta, ReplaceText)) and chunk.channel == "analysis"
+                ):
+                    if isinstance(chunk, ReplaceText):
+                        delta = (
+                            chunk.text[len(thinking_text) :]
+                            if chunk.text.startswith(thinking_text)
+                            else chunk.text
+                        )
+                        thinking_text = chunk.text
+                    else:
+                        delta = chunk.text
+                        thinking_text += delta
                     if not thinking_started:
                         thinking_started = True
                         yield ThinkingBegin()
-                    if chunk.text:
-                        yield ThinkingDelta(delta=chunk.text)
+                    if delta:
+                        yield ThinkingDelta(delta=delta)
                     continue
 
-                if thinking_started:
-                    thinking_started = False
-                    yield ThinkingEnd()
-
                 if isinstance(chunk, ReplaceText):
+                    if not chunk.text and not output_started:
+                        continue
+                    if thinking_started:
+                        thinking_started = False
+                        yield ThinkingEnd(text=thinking_text)
                     if not output_started:
                         output_started = True
                         yield OutputBegin()
@@ -444,6 +487,9 @@ class ProviderBridge:
 
                 if isinstance(chunk, TextDelta):
                     if chunk.text:
+                        if thinking_started:
+                            thinking_started = False
+                            yield ThinkingEnd(text=thinking_text)
                         if not output_started:
                             output_started = True
                             yield OutputBegin()
@@ -451,6 +497,10 @@ class ProviderBridge:
                     continue
 
                 if isinstance(chunk, MessageMetadata):
+                    if chunk.user_message_id:
+                        operation.message.id = chunk.user_message_id
+                    if chunk.message_id:
+                        operation._assistant_message_id = chunk.message_id
                     for record in chunk.sources:
                         yield SourceDiscovered(
                             Source(
@@ -489,7 +539,7 @@ class ProviderBridge:
                     continue
 
             if thinking_started:
-                yield ThinkingEnd()
+                yield ThinkingEnd(text=thinking_text)
             if output_started:
                 yield OutputEnd()
 

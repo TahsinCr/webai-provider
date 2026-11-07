@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Callable
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from eventflow import VersionedCache
 
@@ -30,15 +31,18 @@ class MultiDimensionBoundedCache(Generic[K, V]):
         max_bytes: int = 1_000_000,
         default_ttl: float | None = 300.0,
         getsizeof: Callable[[K, V], int] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._sequence: int = 0
         self._default_ttl = default_ttl
         calculator = getsizeof if getsizeof is not None else _default_size_calculator
+        effective_clock = clock if clock is not None else (lambda: time.monotonic())
         self._cache: VersionedCache[K, V] = VersionedCache(
             max_entries=max_entries,
             max_bytes=max_bytes,
             ttl=default_ttl,
             getsizeof=calculator,
+            clock=effective_clock,
         )
 
     def get(self, key: K, default: V | None = None, *, version: int | None = None) -> V | None:
@@ -65,14 +69,27 @@ class MultiDimensionBoundedCache(Generic[K, V]):
         return self._cache.put(key, value, version=effective_version, ttl=effective_ttl)
 
     def remove(self, key: K) -> bool:
-        return self._cache.remove(key)
+        return self._cache.remove(key) is not None
 
     def pop(self, key: K, default: Any = None) -> V | None:
-        val = self._cache.get(key)
-        if val is None:
-            return default
-        self._cache.remove(key)
-        return val
+        val = self._cache.remove(key)
+        return val if val is not None else default
+
+    def move_to_end(self, key: K) -> None:
+        self._cache.get(key)
+
+    def update(self, mapping: Any = None, **kwargs: V) -> None:
+        if mapping is not None:
+            items = mapping.items() if hasattr(mapping, "items") else mapping
+            for k, v in items:
+                self.put(k, v)
+        for k, v in kwargs.items():
+            self.put(cast(K, k), v)
+
+    def keys(self) -> tuple[K, ...]:
+        self._cache.prune()
+        with self._cache._lock:
+            return tuple(self._cache._entries.keys())
 
     def clear(self) -> None:
         self._cache.clear()
@@ -101,6 +118,10 @@ class MultiDimensionBoundedCache(Generic[K, V]):
 
     def __setitem__(self, key: K, value: V) -> None:
         self.put(key, value)
+
+    def __delitem__(self, key: K) -> None:
+        if self._cache.remove(key) is None:
+            raise KeyError(key)
 
     def __eq__(self, other: Any) -> bool:
         if isinstance(other, dict):

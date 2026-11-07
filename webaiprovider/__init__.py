@@ -44,6 +44,8 @@ from .contracts import (
     ThinkingEnd,
     TimingMetrics,
 )
+from .core.state import OperationState
+from .core.telemetry import ProviderTelemetry
 from .errors import (
     AccountPaused,
     AmbiguousMatchError,
@@ -182,7 +184,9 @@ __all__ = [
     "Message",
     "MessageOperation",
     "OperationHooks",
+    "OperationState",
     "Project",
     "Response",
     "Provider",
+    "ProviderTelemetry",
 ]

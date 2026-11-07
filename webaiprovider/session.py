@@ -7,6 +7,8 @@ from .catalogs.policies import Models
 from .collections.chats import ChatsCollection
 from .collections.projects import ProjectsCollection
 from .contracts import EffortRef, ModelRef, ModelSelection
+from .core.scope import ProviderResourceScope
+from .core.telemetry import ProviderTelemetry
 from .errors import ProviderError
 from .provider_type import ProviderType
 from .resources.response import Response
@@ -28,6 +30,8 @@ class Provider:
         if self.type is not account_type:
             raise ValueError("Provider type must match the account provider")
         self.account = account
+        self.telemetry = ProviderTelemetry()
+        self._scope: ProviderResourceScope | None = None
         self._bridge: ProviderBridge | None = None
         self._opened = False
         self.chats = ChatsCollection(self)
@@ -47,6 +51,7 @@ class Provider:
             return self
         from .bridge import ProviderBridge
 
+        scope = ProviderResourceScope()
         bridge = ProviderBridge(self.account)
         try:
             await bridge.open()
@@ -55,7 +60,10 @@ class Provider:
                 await bridge.close()
             except Exception:
                 pass
+            await scope.aclose()
             raise
+        scope.defer(bridge.close)
+        self._scope = scope
         self._bridge = bridge
         self._opened = True
         return self
@@ -66,9 +74,12 @@ class Provider:
         return self._bridge
 
     async def close(self) -> None:
-        if self._bridge is not None:
-            bridge, self._bridge = self._bridge, None
-            self._opened = False
+        scope, self._scope = self._scope, None
+        bridge, self._bridge = self._bridge, None
+        self._opened = False
+        if scope is not None:
+            await scope.aclose()
+        elif bridge is not None:
             await bridge.close()
 
     async def ask(

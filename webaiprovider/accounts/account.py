@@ -41,11 +41,12 @@ class Account:
         import uuid
 
         account_id = id or str(uuid.uuid4())
+        provider_type = ProviderType.parse(provider)
         return cls(
             id=account_id,
-            provider=ProviderType.parse(provider).value,
+            provider=provider_type.value,
             credentials=cookies,
-            name=name or f"{provider.capitalize()} Account",
+            name=name or f"{provider_type.value.capitalize()} Account",
         )
 
     @classmethod

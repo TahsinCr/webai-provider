@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, AsyncGenerator, Protocol, cast
 
 from .accounts.status import SessionState, SessionStatus
@@ -12,6 +11,7 @@ from .models import (
     Conversation,
     Feature,
     FeatureState,
+    MessageAction,
     ModelCatalog,
     Origin,
     Page,
@@ -19,20 +19,6 @@ from .models import (
     ProjectOptions,
     ProviderDescription,
 )
-
-
-class MessageAction(str, Enum):
-    EDIT = "edit"
-    RETRY = "retry"
-    BRANCH = "branch"
-
-    @property
-    def capability(self):
-        return {
-            self.EDIT: Capability.MESSAGE_EDIT,
-            self.RETRY: Capability.MESSAGE_RETRY,
-            self.BRANCH: Capability.CHAT_BRANCH,
-        }[self]
 
 
 @dataclass(frozen=True)
@@ -127,7 +113,7 @@ ProviderEvent = (
 )
 
 
-class Provider(Protocol):
+class AdapterProtocol(Protocol):
     id: str
     account_id: str
     capabilities: frozenset[Capability]
@@ -146,7 +132,7 @@ class _ProjectEditingHost(Protocol):
     async def get_project(self, project_id: str) -> Project: ...
 
 
-def validate_request(provider: Provider, request: SendRequest) -> None:
+def validate_request(provider: AdapterProtocol, request: SendRequest) -> None:
     if request.provider_id != provider.id or request.account_id != provider.account_id:
         raise ValueError("send request belongs to a different provider/account")
     if request.action is not None:
@@ -249,7 +235,7 @@ class ProjectEditing:
         )
 
 
-class ProviderAdapter(Provider):
+class ProviderAdapter(AdapterProtocol):
     account_id: str
 
     async def close(self) -> None:
@@ -276,9 +262,6 @@ class ProviderAdapter(Provider):
                 for c in Capability
             ),
         )
-
-    async def login(self) -> SessionStatus:
-        return await self.authenticate()
 
     async def authenticate(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "not_implemented")

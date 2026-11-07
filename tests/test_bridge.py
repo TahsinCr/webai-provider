@@ -3,18 +3,28 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from webaiprovider import Account, MessageOperation, Provider
+from webaiprovider import Account, MessageOperation, OperationState, Provider
 from webaiprovider.base import (
     ConversationBound,
     MessageMetadata,
+    ReplaceText,
     ResponseComplete,
     TextDelta,
     ThoughtDelta,
 )
 from webaiprovider.bridge import ProviderBridge
-from webaiprovider.contracts import ArtifactDiscovered, SourceDiscovered
+from webaiprovider.contracts import (
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputReplace,
+    SourceDiscovered,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+)
 from webaiprovider.errors import UnsupportedOperationError
-from webaiprovider.models import Conversation, Origin, Page, Resource
+from webaiprovider.models import Content, Conversation, Origin, Page, Resource
+from webaiprovider.models import Message as NativeMessage
 from webaiprovider.models import Project as NativeProject
 
 
@@ -142,6 +152,69 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.provider.resolve_download.assert_awaited_once_with(
             "https://example.test/file", conversation_id=None, message_id=None
         )
+
+    async def test_stream_handles_analysis_channel_and_propagates_message_ids(self) -> None:
+        async def stream(_value):
+            yield ConversationBound("conversation-2")
+            yield ReplaceText("Step 1", "analysis")
+            yield ReplaceText("", "final")
+            yield ReplaceText("Step 1 and Step 2", "analysis")
+            yield ReplaceText("Final output", "final")
+            yield MessageMetadata(
+                message_id="msg-assistant-99",
+                user_message_id="msg-user-99",
+            )
+            yield ResponseComplete()
+
+        self.provider.stream = stream
+        chat = await self.session.chats.create()
+        operation = chat.messages.create("solve")
+        self.assertEqual(operation.state, OperationState.PENDING)
+
+        events = [event async for event in operation.stream()]
+        response = await operation.wait()
+
+        self.assertEqual(operation.state, OperationState.COMPLETED)
+        self.assertEqual(operation.message.id, "msg-user-99")
+        self.assertEqual(response.message.id, "msg-assistant-99")
+        self.assertEqual(response.text, "Final output")
+        self.assertIn(response.message, chat.messages.list())
+        self.assertEqual(self.session.telemetry.snapshot()["successful"], 1)
+        self.assertIsInstance(events[0], ThinkingBegin)
+        self.assertEqual(
+            [e.delta for e in events if isinstance(e, ThinkingDelta)],
+            ["Step 1", " and Step 2"],
+        )
+        thinking_end = next(e for e in events if isinstance(e, ThinkingEnd))
+        self.assertEqual(thinking_end.text, "Step 1 and Step 2")
+        self.assertTrue(any(isinstance(e, OutputBegin) for e in events))
+        self.assertTrue(any(isinstance(e, OutputReplace) for e in events))
+
+    async def test_chat_messages_refresh_loads_remote_history(self) -> None:
+        origin = Origin(self.account.provider, self.account.id, "conv-remote-1")
+        remote_conv = Conversation(
+            origin,
+            "Loaded Title",
+            messages=(
+                NativeMessage("u-1", "user", (Content("text", "Hello"),)),
+                NativeMessage("a-think", "assistant", (Content("text", "Thinking"),), "analysis"),
+                NativeMessage("a-1", "assistant", (Content("text", "Hi there!"),)),
+            ),
+        )
+        self.provider.get_chat = AsyncMock(return_value=remote_conv)
+        chat = await self.session.chats.create(title="")
+        chat.remote_id = "conv-remote-1"
+
+        messages = await chat.messages.refresh()
+
+        self.assertEqual(chat.title, "Loaded Title")
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].id, "u-1")
+        self.assertEqual(messages[0].role, "user")
+        self.assertEqual(messages[0].content, "Hello")
+        self.assertEqual(messages[1].id, "a-1")
+        self.assertEqual(messages[1].role, "assistant")
+        self.assertEqual(messages[1].content, "Hi there!")
 
 
 if __name__ == "__main__":

@@ -50,21 +50,13 @@ class ModelsCollection(AsyncQueryableCollection[ModelRef]):
             if not isinstance(result, ModelRef):
                 raise TypeError("Model query did not resolve to a model")
             return result
-        temp = QueryableCollection(models)
-        return temp.find(query, exact=exact, startswith=startswith, endswith=endswith)
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> list[ModelRef]:
-        models = await self.list()
-        temp = QueryableCollection(models)
-        return temp.search(query, exact=exact, startswith=startswith, endswith=endswith)
+        return QueryableCollection._find_in(
+            models,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
     async def resolve(
         self,

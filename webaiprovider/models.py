@@ -62,6 +62,14 @@ class MessageAction(str, Enum):
     RETRY = "retry"
     BRANCH = "branch"
 
+    @property
+    def capability(self) -> Capability:
+        return {
+            self.EDIT: Capability.MESSAGE_EDIT,
+            self.RETRY: Capability.MESSAGE_RETRY,
+            self.BRANCH: Capability.CHAT_BRANCH,
+        }[self]
+
 
 def actions_for(
     role: str, *, final: bool = True, latest: bool = True, branch: bool = False
@@ -242,17 +250,6 @@ class ProjectOptions:
     sources: tuple[dict, ...] = ()
     remove_sources: bool = False
     source_error: str | None = None
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> ProjectOptions:
-        return cls(
-            tuple(value.get("fields", ())),
-            tuple(Choice(**v) for v in value.get("visibility", ())),
-            tuple(Choice(**v) for v in value.get("memory", ())),
-            tuple(value.get("sources", ())),
-            bool(value.get("remove_sources")),
-            value.get("source_error"),
-        )
 
 
 def source_file(path: Any, *, error: str = "Source file must not exceed 20 MiB.") -> Path:
