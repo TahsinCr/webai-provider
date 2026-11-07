@@ -10,19 +10,21 @@ from .resolver import SelectionResolver
 
 
 class ModelsCollection:
-    def __init__(self, loader: Callable[[], Awaitable[list[ModelRef]]]) -> None:
+    def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
         self._loader = loader
         self._items: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
 
     async def list(self, *, refresh: bool = False) -> list[ModelRef]:
+        """Load once to prewarm the account cache; refresh forces a provider fetch."""
         async with self._lock:
             if self._items is None or refresh:
-                loaded = await self._loader()
+                loaded = await self._loader(refresh)
                 self._items = tuple(loaded)
             return list(self._items)
 
     async def refresh(self) -> list[ModelRef]:
+        """Refresh the account catalog and bypass provider-side cache entries."""
         return await self.list(refresh=True)
 
     async def get(self, model_id: str) -> ModelRef:

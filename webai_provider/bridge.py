@@ -35,6 +35,7 @@ class ProviderBridge:
     def __init__(self, account: Account) -> None:
         self.account = account
         self._provider_instance: Any = None
+        self._models_cache: tuple[ModelRef, ...] | None = None
 
     def _get_provider(self) -> Any:
         if self._provider_instance is not None:
@@ -67,9 +68,11 @@ class ProviderBridge:
 
         return self._provider_instance
 
-    async def list_models(self, session: ProviderSession) -> list[ModelRef]:
+    async def list_models(self, *, refresh: bool = False) -> list[ModelRef]:
+        if self._models_cache is not None and not refresh:
+            return list(self._models_cache)
         provider = self._get_provider()
-        catalog = await provider.models()
+        catalog = await provider.models(force=refresh)
         result: list[ModelRef] = []
         available_models = getattr(catalog, "chat_models", getattr(catalog, "models", ()))
         default_model = getattr(catalog, "default_chat_model", None)
@@ -110,7 +113,8 @@ class ProviderBridge:
                     metadata=metadata,
                 )
             )
-        return result
+        self._models_cache = tuple(result)
+        return list(self._models_cache)
 
     async def list_chats(self, session: ProviderSession) -> list[Chat]:
         provider = self._get_provider()

@@ -29,9 +29,9 @@ class ProviderSession:
     def provider(self) -> str:
         return self.account.provider
 
-    async def _load_models(self) -> list[ModelRef]:
+    async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
         if self._bridge is not None:
-            return await self._bridge.list_models(self)
+            return await self._bridge.list_models(refresh=refresh)
         return []
 
     async def close(self) -> None:

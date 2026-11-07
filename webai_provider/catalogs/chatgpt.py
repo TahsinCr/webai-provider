@@ -18,14 +18,6 @@ class GPT6ThinkingEfforts(EffortSet):
     HIGH: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-thinking", "extended", "High", rank=1)
 
 
-class GPT6AstraEfforts(EffortSet):
-    LOW: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-astra", "low", "Low", rank=0)
-    MEDIUM: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-astra", "medium", "Medium", rank=1)
-    HIGH: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-astra", "high", "High", rank=2)
-    XHIGH: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-astra", "xhigh", "Extra High", rank=3)
-    MAX: ClassVar[EffortRef] = EffortRef("chatgpt", "gpt-6-astra", "max", "Max", rank=4)
-
-
 class ChatGPTModels(StaticModelCatalog):
     provider = "chatgpt"
 
@@ -46,12 +38,6 @@ class ChatGPTModels(StaticModelCatalog):
     )
     GPT_6_THINKING: ClassVar[ModelRef[GPT6ThinkingEfforts]] = ModelRef(
         "chatgpt", "gpt-6-thinking", "GPT-6 Thinking", efforts=GPT6ThinkingEfforts
-    )
-    GPT_6_ASTRA: ClassVar[ModelRef[GPT6AstraEfforts]] = ModelRef(
-        "chatgpt",
-        "gpt-6-astra",
-        "GPT-6 Astra",
-        efforts=GPT6AstraEfforts,
     )
     GPT_6_MINI: ClassVar[ModelRef[EffortSet]] = ModelRef(
         "chatgpt", "gpt-6-mini", "GPT-6 Mini", efforts=EffortSet

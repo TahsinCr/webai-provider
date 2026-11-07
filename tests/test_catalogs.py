@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, call
 
+from webai_provider.accounts import Account
+from webai_provider.bridge import ProviderBridge
 from webai_provider.catalogs import (
     ChatGPTModels,
     ClaudeModels,
@@ -14,6 +18,7 @@ from webai_provider.catalogs import (
 )
 from webai_provider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webai_provider.errors import AmbiguousMatchError, RemoteNotFound
+from webai_provider.session import ProviderSession
 
 
 class CatalogTests(unittest.TestCase):
@@ -96,7 +101,7 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("gpt-5-6-mini", chatgpt_ids)
         self.assertNotIn("gpt-5-6-t-mini", chatgpt_ids)
         self.assertNotIn("gpt-5-6", chatgpt_ids)
-        self.assertNotIn("gpt-6-astra-wm", chatgpt_ids)
+        self.assertNotIn("gpt-6-astra", chatgpt_ids)
         medium = ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM
         self.assertIsInstance(medium, EffortRef)
         self.assertEqual(medium.id, "standard")
@@ -144,6 +149,23 @@ class CatalogTests(unittest.TestCase):
 
 
 class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_model_cache_is_shared_across_sessions_and_refreshable(self) -> None:
+        account = Account("account-1", "chatgpt", {"session_token": "test"})
+        model = SimpleNamespace(id="gpt-6-pro", title="GPT-6 Pro", efforts=(), metadata={})
+        catalog = SimpleNamespace(chat_models=(model,), default_chat_model=None)
+        provider = SimpleNamespace(models=AsyncMock(return_value=catalog))
+        bridge = ProviderBridge(account)
+        bridge._provider_instance = provider
+        first = ProviderSession(account, bridge=bridge)
+        second = ProviderSession(account, bridge=bridge)
+
+        self.assertEqual((await first.models.list())[0].id, "gpt-6-pro")
+        self.assertEqual((await second.models.list())[0].id, "gpt-6-pro")
+        provider.models.assert_awaited_once_with(force=False)
+
+        await second.models.refresh()
+        self.assertEqual(provider.models.await_args_list, [call(force=False), call(force=True)])
+
     async def test_account_catalog_is_cached_and_returns_same_typed_refs(self) -> None:
         loads = 0
         model = ModelRef(
@@ -156,7 +178,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        async def load() -> list[ModelRef]:
+        async def load(_refresh: bool = False) -> list[ModelRef]:
             nonlocal loads
             loads += 1
             return [model]
@@ -178,7 +200,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         loads = 0
         model = ModelRef("grok", "fast", "Grok 3")
 
-        async def load() -> list[ModelRef]:
+        async def load(_refresh: bool = False) -> list[ModelRef]:
             nonlocal loads
             loads += 1
             if loads == 2:

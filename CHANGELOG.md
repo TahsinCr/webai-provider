@@ -9,12 +9,12 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Model-specific typed effort namespaces; a static choice is available as `ChatGPTModels.GPT_5_6_THINKING.efforts.MEDIUM` and each value is an `EffortRef`.
 - Account-scoped `session.models` discovery with `list`, `get`, `find`, `search`, and explicit `refresh`; the valid catalog is cached for the session and retained if a refresh fails.
 - Active Claude Opus and Fable catalog entries using first-party model IDs, alongside models available on other subscription tiers.
-- GPT-6 Astra's documented `gpt-6-astra` model ID and reasoning effort references, with explicit ChatGPT model/effort types for IDE completion.
+- Account model catalogs are cached in memory across sessions; `await session.models.list()` can preload them, while `refresh()` forces a fresh provider request.
 
 ### Changed
 
 - `chat.messages.create`, edit, retry, and provider `ask` accept one `model=` selection; separate public `effort=` selection was removed. The selected model and effort are checked against that account's live catalog before send, with no silent downgrade.
-- Static catalogs describe known Chat models across tiers; the dynamic account catalog remains the authority for entitlement. Astra's public API ID is known, while ChatGPT web usage still requires the active account catalog to expose the same model and effort IDs.
+- Keep ChatGPT web IDs separate from API IDs. ChatGPT's Pro thinking option is powered by Astra; discover its account-eligible web model and effort references instead of modeling it as API ID `gpt-6-astra` with API-only effort levels.
 - Remove work-only Luna and Sol entries from the ChatGPT web catalog; retain dynamic account discovery as the authority for available web models.
 - Represent effort options as each model's typed `Efforts` class across static provider catalogs. Account-discovered efforts use the same class-based interface, and an `EffortRef` can be passed through `model=` when the active account exposes it.
 - Use a single resolver for model policies, model references, and model-bound effort references; `AUTO` uses the provider-reported default.
