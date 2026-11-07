@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .base import StaticModelCatalog
 from .chatgpt import ChatGPTModels
 from .claude import ClaudeModels
 from .gemini import GeminiModels
@@ -15,4 +16,5 @@ __all__ = [
     "GrokModels",
     "Models",
     "SelectionResolver",
+    "StaticModelCatalog",
 ]

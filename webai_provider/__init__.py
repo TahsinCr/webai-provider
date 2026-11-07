@@ -6,6 +6,7 @@ from .accounts.credentials import (
     FileCredentialStore,
     MemoryCredentialStore,
 )
+from .catalogs.base import StaticModelCatalog
 from .catalogs.chatgpt import ChatGPTModels
 from .catalogs.claude import ClaudeModels
 from .catalogs.gemini import GeminiModels
@@ -90,6 +91,7 @@ __all__ = [
     "Efforts",
     "Models",
     "SelectionResolver",
+    "StaticModelCatalog",
     "ResourceCollection",
     "ChatsCollection",
     "ProjectsCollection",

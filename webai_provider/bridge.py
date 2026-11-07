@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .base import SendRequest
@@ -220,6 +221,26 @@ class ProviderBridge:
         if hasattr(provider, "remove_project_resource"):
             await provider.remove_project_resource(project.remote_id, resource_id)
 
+    def _get_static_catalog(self) -> Any:
+        p = self.account.provider.lower()
+        if p == "chatgpt":
+            from .catalogs.chatgpt import ChatGPTModels
+
+            return ChatGPTModels
+        if p == "claude":
+            from .catalogs.claude import ClaudeModels
+
+            return ClaudeModels
+        if p == "gemini":
+            from .catalogs.gemini import GeminiModels
+
+            return GeminiModels
+        if p == "grok":
+            from .catalogs.grok import GrokModels
+
+            return GrokModels
+        return None
+
     async def execute_stream(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         provider = self._get_provider()
         msg = operation.message
@@ -231,11 +252,26 @@ class ProviderBridge:
                 model_name = msg.model.id
             elif isinstance(msg.model, Models):
                 candidates = await self.list_models(chat.session) if chat.session else []
+                catalog = self._get_static_catalog()
+                if not candidates and catalog is not None:
+                    candidates = catalog.list()
                 if candidates:
                     resolved = SelectionResolver.resolve_model(msg.model, candidates)
                     model_name = resolved.id
                 else:
                     model_name = msg.model.value
+            elif isinstance(msg.model, str):
+                catalog = self._get_static_catalog()
+                if catalog is not None and catalog.contains(msg.model):
+                    model_name = catalog.get(msg.model).id
+                elif catalog is not None:
+                    try:
+                        resolved = SelectionResolver.resolve_model(msg.model, catalog.list())
+                        model_name = resolved.id
+                    except Exception:
+                        model_name = msg.model
+                else:
+                    model_name = msg.model
             else:
                 model_name = str(msg.model)
 
@@ -348,7 +384,9 @@ class ProviderBridge:
     async def close_session(self, session: ProviderSession) -> None:
         if self._provider_instance is not None:
             if hasattr(self._provider_instance, "close"):
-                await self._provider_instance.close()
+                res = self._provider_instance.close()
+                if asyncio.iscoroutine(res):
+                    await res
             self._provider_instance = None
 
 

@@ -358,6 +358,40 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.text, "Direct answer")
             self.assertEqual(res.message.content, "Direct answer")
 
+    async def test_bridge_model_resolution_from_string_and_policy(self) -> None:
+        acc = Account.from_cookies("chatgpt", {"session_token": "tok"})
+        bridge = ProviderBridge(acc)
+
+        captured_reqs = []
+        mock_provider = MagicMock()
+        mock_provider.models = AsyncMock(return_value=MagicMock(models=[]))
+        mock_provider.close = AsyncMock()
+
+        async def fake_stream(req):
+            captured_reqs.append(req)
+            yield OutputBegin()
+            yield OutputDelta("hi")
+            yield OutputEnd()
+
+        mock_provider.stream = fake_stream
+        bridge._provider_instance = mock_provider
+
+        session = ProviderSession(acc, bridge=bridge)
+        chat = await session.chats.create()
+
+        op1 = chat.messages.create("test", model="gpt-4o")
+        await op1.start()
+        self.assertEqual(captured_reqs[-1].model, "gpt-4o")
+
+        op2 = chat.messages.create("test", model=ChatGPTModels.O3_MINI)
+        await op2.start()
+        self.assertEqual(captured_reqs[-1].model, "o3-mini")
+
+        op3 = chat.messages.create("test", model=Models.HIGH)
+        await op3.start()
+        self.assertIsNotNone(captured_reqs[-1].model)
+        await session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

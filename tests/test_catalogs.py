@@ -10,6 +10,7 @@ from webai_provider.catalogs import (
     GrokModels,
     Models,
     SelectionResolver,
+    StaticModelCatalog,
 )
 from webai_provider.contracts import EffortRef, ModelRef
 from webai_provider.errors import AmbiguousMatchError, RemoteNotFound
@@ -69,18 +70,55 @@ class CatalogsTests(unittest.TestCase):
     def test_effort_resolution(self) -> None:
         low = SelectionResolver.resolve_effort(Efforts.LOW, self.efforts_3)
         self.assertIsNotNone(low)
-        self.assertEqual(low.id, "low")  # type: ignore[union-attr]
+        self.assertEqual(low.id, "low")
 
         med = SelectionResolver.resolve_effort(Efforts.MEDIUM, self.efforts_3)
         self.assertIsNotNone(med)
-        self.assertEqual(med.id, "medium")  # type: ignore[union-attr]
+        self.assertEqual(med.id, "medium")
 
         high = SelectionResolver.resolve_effort(Efforts.HIGH, self.efforts_3)
         self.assertIsNotNone(high)
-        self.assertEqual(high.id, "high")  # type: ignore[union-attr]
+        self.assertEqual(high.id, "high")
 
-    def test_static_models(self) -> None:
+    def test_static_models_and_updated_catalogs(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_4O.id, "gpt-4o")
+        self.assertEqual(ChatGPTModels.O3_MINI.id, "o3-mini")
+        self.assertEqual(ChatGPTModels.GPT_4_5.id, "gpt-4.5-preview")
+
+        self.assertEqual(ClaudeModels.CLAUDE_3_7_SONNET.id, "claude-3-7-sonnet")
         self.assertEqual(ClaudeModels.CLAUDE_3_5_SONNET.provider, "claude")
-        self.assertEqual(GeminiModels.GEMINI_ARGON.id, "gemini-argon")
+
+        self.assertEqual(GeminiModels.GEMINI_2_5_PRO.id, "gemini-2.5-pro")
+        self.assertEqual(GeminiModels.GEMINI_2_0_FLASH_THINKING.id, "gemini-2.0-flash-thinking")
+
         self.assertEqual(GrokModels.GROK_3.id, "grok-3")
+        self.assertEqual(GrokModels.GROK_3_THINK.id, "grok-3-think")
+
+    def test_static_catalog_lookup_methods(self) -> None:
+        models = ChatGPTModels.list()
+        self.assertGreater(len(models), 5)
+        self.assertTrue(all(isinstance(m, ModelRef) for m in models))
+        self.assertTrue(all(m.provider == "chatgpt" for m in models))
+
+        gpt4o = ChatGPTModels.get("gpt-4o")
+        self.assertEqual(gpt4o.id, "gpt-4o")
+        self.assertEqual(ChatGPTModels["gpt-4o"].id, "gpt-4o")
+
+        self.assertTrue(ChatGPTModels.contains("gpt-4o"))
+        self.assertTrue(ChatGPTModels.contains(ChatGPTModels.GPT_4O))
+        self.assertFalse(ChatGPTModels.contains("unknown-model"))
+
+        found = ChatGPTModels.find("o3-mini")
+        self.assertEqual(found.id, "o3-mini")
+
+        search_results = ChatGPTModels.search("mini")
+        self.assertGreaterEqual(len(search_results), 2)
+
+        with self.assertRaises(RemoteNotFound):
+            ChatGPTModels.get("unknown-model")
+
+    def test_catalog_subclasses_static_catalog_base(self) -> None:
+        for cat in (ChatGPTModels, ClaudeModels, GeminiModels, GrokModels):
+            self.assertTrue(issubclass(cat, StaticModelCatalog))
+            self.assertFalse(issubclass(cat, Models))
+            self.assertGreater(len(cat.list()), 3)
