@@ -14,5 +14,3 @@ class ClaudeModels(StaticModelCatalog):
     CLAUDE_3_5_SONNET = ModelRef("claude", "claude-3-5-sonnet", "Claude 3.5 Sonnet")
     CLAUDE_3_5_HAIKU = ModelRef("claude", "claude-3-5-haiku", "Claude 3.5 Haiku")
     CLAUDE_3_OPUS = ModelRef("claude", "claude-3-opus", "Claude 3 Opus")
-    CLAUDE_3_SONNET = ModelRef("claude", "claude-3-sonnet", "Claude 3 Sonnet")
-    CLAUDE_3_HAIKU = ModelRef("claude", "claude-3-haiku", "Claude 3 Haiku")

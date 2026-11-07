@@ -262,7 +262,7 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
     def test_catalogs_and_selection_resolver(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_4O.id, "gpt-4o")
         self.assertEqual(ClaudeModels.CLAUDE_3_5_SONNET.id, "claude-3-5-sonnet")
-        self.assertEqual(GeminiModels.GEMINI_2_5_PRO.id, "gemini-2.5-pro")
+        self.assertEqual(GeminiModels.GEMINI_2_0_FLASH.id, "gemini-2.0-flash")
         self.assertEqual(GrokModels.GROK_3.id, "grok-3")
 
         candidates = [

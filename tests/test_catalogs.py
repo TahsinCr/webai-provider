@@ -83,12 +83,14 @@ class CatalogsTests(unittest.TestCase):
     def test_static_models_and_updated_catalogs(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_4O.id, "gpt-4o")
         self.assertEqual(ChatGPTModels.O3_MINI.id, "o3-mini")
-        self.assertEqual(ChatGPTModels.GPT_4_5.id, "gpt-4.5-preview")
+        self.assertEqual(ChatGPTModels.O1_PRO.id, "o1-pro")
+        self.assertEqual(ChatGPTModels.INSTANT.id, "instant")
 
         self.assertEqual(ClaudeModels.CLAUDE_3_7_SONNET.id, "claude-3-7-sonnet")
         self.assertEqual(ClaudeModels.CLAUDE_3_5_SONNET.provider, "claude")
 
-        self.assertEqual(GeminiModels.GEMINI_2_5_PRO.id, "gemini-2.5-pro")
+        self.assertEqual(GeminiModels.GEMINI_2_0_FLASH.id, "gemini-2.0-flash")
+        self.assertEqual(GeminiModels.GEMINI_ADVANCED.id, "gemini-advanced")
         self.assertEqual(GeminiModels.GEMINI_2_0_FLASH_THINKING.id, "gemini-2.0-flash-thinking")
 
         self.assertEqual(GrokModels.GROK_3.id, "grok-3")
