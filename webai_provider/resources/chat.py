@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..collections.messages import MessagesCollection
+    from ..resources.message import Message
     from .session import ProviderSession
 
 
@@ -28,6 +29,14 @@ class Chat:
 
         self.messages: MessagesCollection = MessagesCollection(self)
 
+    def get(self, message_id: str) -> Message:
+        return self.messages.get(message_id)
+
+    async def download(self, target: Any) -> bytes:
+        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
+            return await self.session._bridge.download(target, conversation_id=self.remote_id)
+        return b""
+
     async def rename(self, title: str) -> Chat:
         self.title = title
         if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
@@ -46,12 +55,6 @@ class Chat:
             session=self.session,
             project_id=self.project_id,
         )
-
-    async def move_to(self, project: Any) -> None:
-        target_project_id = getattr(project, "id", str(project)) if project is not None else None
-        self.project_id = target_project_id
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.move_chat(self, target_project_id)
 
     def __repr__(self) -> str:
         return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"

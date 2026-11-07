@@ -168,9 +168,15 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         mock_bridge.rename_chat.assert_awaited_once_with(chat, "Renamed Chat")
         self.assertEqual(chat.title, "Renamed Chat")
 
-        await chat.move_to("proj-456")
-        mock_bridge.move_chat.assert_awaited_once_with(chat, "proj-456")
-        self.assertEqual(chat.project_id, "proj-456")
+        mock_bridge.download.return_value = b"file-bytes"
+        dl = await chat.download("https://example.com/test.png")
+        mock_bridge.download.assert_awaited_once_with(
+            "https://example.com/test.png", conversation_id=chat.remote_id
+        )
+        self.assertEqual(dl, b"file-bytes")
+
+        op = chat.messages.create("Hello test")
+        self.assertEqual(chat.get(op.message.id).content, "Hello test")
 
         mock_bridge.branch_chat.return_value = MagicMock(
             remote_id="branch-789", title="Branch Chat"
@@ -198,14 +204,22 @@ class TestV2Api(unittest.IsolatedAsyncioTestCase):
         mock_bridge.rename_project.assert_awaited_once_with(project, "Renamed Project")
         self.assertEqual(project.title, "Renamed Project")
 
-        await project.set_instruction("New instruction")
+        await project.instruction.edit("New instruction")
         mock_bridge.update_project_instruction.assert_awaited_once_with(project, "New instruction")
+        self.assertEqual(await project.instruction.get(), "New instruction")
         self.assertEqual(await project.instructions.get(), "New instruction")
 
-        added = await project.add_resource("Doc", title="res-1")
+        await project.instruction.clear()
+        self.assertEqual(await project.instruction.get(), "")
+
+        added = await project.resources.add("Doc", title="res-1")
         mock_bridge.add_project_resource.assert_awaited_once_with(project, added)
 
-        await project.remove_resource(added["id"])
+        res = await project.resources.get(added["id"])
+        self.assertEqual(res["id"], added["id"])
+        self.assertEqual(await project.resources.download(added["id"]), "Doc")
+
+        await project.resources.remove(added["id"])
         mock_bridge.remove_project_resource.assert_awaited_once_with(project, added["id"])
 
         await project.delete()

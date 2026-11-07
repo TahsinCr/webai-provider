@@ -366,6 +366,36 @@ class ProviderBridge:
         except Exception as exc:
             raise ProviderError(str(exc)) from exc
 
+    async def download(
+        self,
+        url_or_artifact: Any,
+        *,
+        conversation_id: str | None = None,
+        message_id: str | None = None,
+    ) -> bytes:
+        provider = self._get_provider()
+        url = (
+            getattr(url_or_artifact, "download_url", None)
+            or getattr(url_or_artifact, "url", None)
+            or str(url_or_artifact)
+        )
+        if hasattr(provider, "resolve_download"):
+            resolved = await provider.resolve_download(
+                url, conversation_id=conversation_id, message_id=message_id
+            )
+            if resolved is not None:
+                if hasattr(resolved, "headers") and hasattr(resolved, "url"):
+                    import httpx
+
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(resolved.url, headers=resolved.headers)
+                        return resp.content
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            return resp.content
+
     async def close_session(self, session: ProviderSession) -> None:
         if self._provider_instance is not None:
             if hasattr(self._provider_instance, "close"):
