@@ -9,11 +9,12 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Typed `ModelSelection` values; static and account-specific model references now expose model-bound effort choices such as `ClaudeModels.SONNET_5_5.MEDIUM`.
 - Account-scoped `session.models` discovery with `list`, `get`, `find`, `search`, and explicit `refresh`; the valid catalog is cached for the session and retained if a refresh fails.
 - Active Claude Opus and Fable catalog entries using first-party model IDs, alongside models available on other subscription tiers.
+- GPT-6 Astra's documented `gpt-6-astra` model ID and reasoning effort references, with explicit ChatGPT model/effort types for IDE completion.
 
 ### Changed
 
 - `chat.messages.create`, edit, retry, and provider `ask` accept one `model=` selection; separate public `effort=` selection was removed. The selected model and effort are checked against that account's live catalog before send, with no silent downgrade.
-- Static catalogs describe known Chat models across tiers; the dynamic account catalog remains the authority for entitlement. GPT-6 Pro/Astra is only discoverable dynamically until its native ChatGPT web selector ID is verified.
+- Static catalogs describe known Chat models across tiers; the dynamic account catalog remains the authority for entitlement. Astra's public API ID is known, while ChatGPT web usage still requires the active account catalog to expose the same model and effort IDs.
 - Use a single resolver for model policies, model references, and model-bound effort references; `AUTO` uses the provider-reported default.
 
 ## [1.3-beta] - 2026-11-06
