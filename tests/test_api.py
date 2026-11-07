@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import threading
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +14,7 @@ from webaiprovider import (
     Attachment,
     Attachments,
     ChatGPTModels,
+    ChatGPTProjectsCollection,
     ChatGPTProvider,
     ClaudeModels,
     ClaudeProvider,
@@ -26,10 +28,13 @@ from webaiprovider import (
     OutputBegin,
     OutputDelta,
     OutputEnd,
-    ProviderSession,
+    Provider,
+    ProviderType,
     Response,
     SelectionResolver,
     Source,
+    SyncChatGPTProvider,
+    SyncProvider,
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
@@ -37,6 +42,13 @@ from webaiprovider import (
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
+
+
+def _provider_for(account: Account, bridge: ProviderBridge | None = None) -> Provider:
+    provider = Provider(account)
+    provider._bridge = bridge or ProviderBridge(account)
+    provider._opened = True
+    return provider
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
@@ -53,9 +65,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(acc.provider, "chatgpt")
         self.assertTrue(acc.is_active)
         self.assertIn("session_token", acc.store().read())
+        self.assertFalse(hasattr(acc, "connect"))
 
-        session = acc.connect()
-        self.assertIsInstance(session, ProviderSession)
+        session = Provider(acc, type=ProviderType.CHATGPT)
+        self.assertIsInstance(session, Provider)
         self.assertEqual(session.provider, "chatgpt")
         self.assertIsNotNone(session.chats)
         self.assertIsNotNone(session.projects)
@@ -71,7 +84,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_lazy_message_creation_and_hooks(self) -> None:
         acc = Account.from_cookies("chatgpt", {"cookie": "val"})
-        session = acc.connect()
+        session = _provider_for(acc)
         chat = await session.chats.create(title="Test Chat")
 
         op = chat.messages.create(
@@ -126,7 +139,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.message.role, "assistant")
 
     async def test_operation_uses_one_send_across_entrypoints(self) -> None:
-        session = Account.from_cookies("chatgpt", {"cookie": "val"}).connect()
+        session = _provider_for(Account.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await session.chats.create()
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -170,7 +183,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_count, 1)
 
     async def test_message_send_requires_provider_session(self) -> None:
-        session = Account.from_cookies("chatgpt", {"cookie": "val"}).connect()
+        session = _provider_for(Account.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await session.chats.create()
         session._bridge = None
 
@@ -179,7 +192,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_response_with_sources_and_artifacts(self) -> None:
         acc = Account.from_cookies("gemini", {"cookie": "gemini-val"})
-        session = acc.connect()
+        session = _provider_for(acc)
         chat = await session.chats.create()
         op = chat.messages.create("Explain relativity")
 
@@ -220,7 +233,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_lifecycle_methods(self) -> None:
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
-        session = acc.connect()
+        session = _provider_for(acc)
 
         mock_bridge = AsyncMock(spec=ProviderBridge)
         session._bridge = mock_bridge
@@ -266,7 +279,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_project_lifecycle_methods(self) -> None:
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
-        session = acc.connect()
+        session = _provider_for(acc)
 
         mock_bridge = AsyncMock(spec=ProviderBridge)
         session._bridge = mock_bridge
@@ -334,8 +347,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_message_branch_retry_edit(self) -> None:
         acc = Account.from_cookies("grok", {"sso": "grok-sso"})
-        session = acc.connect()
+        session = _provider_for(acc)
         chat = await session.chats.create()
+        chat.remote_id = "remote-chat-id"
 
         mock_bridge = AsyncMock(spec=ProviderBridge)
         session._bridge = mock_bridge
@@ -370,18 +384,57 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(branched_chat)
 
     def test_provider_facades(self) -> None:
-        p1 = ChatGPTProvider(cookies={"token": "t1"})
-        self.assertEqual(p1.provider_id, "chatgpt")
+        p1 = ChatGPTProvider(Account.from_cookies("chatgpt", {"token": "t1"}))
+        self.assertEqual(p1.type, ProviderType.CHATGPT)
         self.assertEqual(p1.account.provider, "chatgpt")
+        self.assertIsInstance(p1.projects, ChatGPTProjectsCollection)
 
-        p2 = ClaudeProvider(cookies={"token": "t2"})
-        self.assertEqual(p2.provider_id, "claude")
+        p2 = ClaudeProvider(Account.from_cookies("claude", {"token": "t2"}))
+        self.assertEqual(p2.type, ProviderType.CLAUDE)
 
-        p3 = GeminiProvider(cookies={"token": "t3"})
-        self.assertEqual(p3.provider_id, "gemini")
+        p3 = GeminiProvider(Account.from_cookies("gemini", {"token": "t3"}))
+        self.assertEqual(p3.type, ProviderType.GEMINI)
 
-        p4 = GrokProvider(cookies={"token": "t4"})
-        self.assertEqual(p4.provider_id, "grok")
+        p4 = GrokProvider(Account.from_cookies("grok", {"token": "t4"}))
+        self.assertEqual(p4.type, ProviderType.GROK)
+        with self.assertRaisesRegex(ValueError, "must match"):
+            Provider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
+
+    async def test_provider_open_is_explicit_idempotent_and_closes_owned_bridge(self) -> None:
+        account = Account.from_cookies("gemini", {"cookie": "test"})
+        bridge = MagicMock(spec=ProviderBridge)
+        bridge.open = AsyncMock()
+        bridge.close = AsyncMock()
+        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge) as create_bridge:
+            provider = Provider(account, type=ProviderType.GEMINI)
+            self.assertIs(await provider.open(), provider)
+            self.assertIs(await provider.open(), provider)
+            create_bridge.assert_called_once_with(account)
+            bridge.open.assert_awaited_once_with()
+            await provider.close()
+            bridge.close.assert_awaited_once_with()
+
+    async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        bridge = MagicMock(spec=ProviderBridge)
+        bridge.create_chatgpt_project = AsyncMock()
+        provider = ChatGPTProvider(account)
+        provider._bridge = bridge
+        provider._opened = True
+
+        project = await provider.projects.create("Private notes", memory_share=False)
+
+        self.assertEqual(project.title, "Private notes")
+        self.assertEqual(
+            bridge.create_chatgpt_project.await_args.kwargs["memory_share"],
+            False,
+        )
+
+    async def test_sync_provider_rejects_blocking_inside_running_loop(self) -> None:
+        provider = SyncProvider(Account.from_cookies("chatgpt", {"cookie": "test"}))
+        with self.assertRaisesRegex(RuntimeError, "cannot block an event loop"):
+            provider.open()
+        provider.close()
 
     def test_catalogs_and_selection_resolver(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_6_INSTANT.id, "gpt-6-instant")
@@ -423,35 +476,39 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(msg.attachments[0].name, "hello.txt")
 
     async def test_bridge_provider_instantiation_for_all_backends(self) -> None:
-        p_chatgpt = ChatGPTProvider(cookies={"session_token": "token-1"})
-        s_chatgpt = p_chatgpt.connect()
-        adapter_chatgpt = s_chatgpt._bridge._get_provider()
+        p_chatgpt = ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"}))
+        p_chatgpt._bridge = ProviderBridge(p_chatgpt.account)
+        p_chatgpt._opened = True
+        adapter_chatgpt = p_chatgpt._bridge._get_provider()
         self.assertEqual(adapter_chatgpt.id, "chatgpt")
-        await s_chatgpt.close()
+        await p_chatgpt.close()
 
-        p_gemini = GeminiProvider(cookies={"__Secure-1PSID": "token-2"})
-        s_gemini = p_gemini.connect()
-        adapter_gemini = s_gemini._bridge._get_provider()
+        p_gemini = GeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"}))
+        p_gemini._bridge = ProviderBridge(p_gemini.account)
+        p_gemini._opened = True
+        adapter_gemini = p_gemini._bridge._get_provider()
         self.assertEqual(adapter_gemini.id, "gemini")
-        await s_gemini.close()
+        await p_gemini.close()
 
-        p_claude = ClaudeProvider(cookies={"sessionKey": "token-3"})
-        s_claude = p_claude.connect()
-        adapter_claude = s_claude._bridge._get_provider()
+        p_claude = ClaudeProvider(Account.from_cookies("claude", {"sessionKey": "token-3"}))
+        p_claude._bridge = ProviderBridge(p_claude.account)
+        p_claude._opened = True
+        adapter_claude = p_claude._bridge._get_provider()
         self.assertEqual(adapter_claude.id, "claude")
-        await s_claude.close()
+        await p_claude.close()
 
-        p_grok = GrokProvider(cookies={"sso": "token-4"})
-        s_grok = p_grok.connect()
-        adapter_grok = s_grok._bridge._get_provider()
+        p_grok = GrokProvider(Account.from_cookies("grok", {"sso": "token-4"}))
+        p_grok._bridge = ProviderBridge(p_grok.account)
+        p_grok._opened = True
+        adapter_grok = p_grok._bridge._get_provider()
         self.assertEqual(adapter_grok.id, "grok")
-        await s_grok.close()
+        await p_grok.close()
 
     async def test_bridge_preserves_typed_provider_errors(self) -> None:
         from webaiprovider.errors import RateLimited
 
-        p = GrokProvider(cookies={"sso": "grok-tok"})
-        session = p.connect()
+        p = GrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
+        session = p
         chat = await session.chats.create()
         op = chat.messages.create("Hello")
 
@@ -470,7 +527,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await session.close()
 
     async def test_provider_ask_convenience_method(self) -> None:
-        p = ChatGPTProvider(cookies={"session_token": "mock-tok"})
+        p = ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
         mock_bridge = MagicMock(spec=ProviderBridge)
 
         async def fake_stream(_op):
@@ -480,10 +537,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         mock_bridge.execute_stream = fake_stream
 
-        with patch("webaiprovider.bridge.get_bridge", return_value=mock_bridge):
-            res = await p.ask("What is 2+2?")
-            self.assertEqual(res.text, "Direct answer")
-            self.assertEqual(res.message.content, "Direct answer")
+        p._bridge = mock_bridge
+        p._opened = True
+        res = await p.ask("What is 2+2?")
+        self.assertEqual(res.text, "Direct answer")
+        self.assertEqual(res.message.content, "Direct answer")
 
     async def test_bridge_model_resolution_from_string_and_policy(self) -> None:
         acc = Account.from_cookies("chatgpt", {"session_token": "tok"})
@@ -521,7 +579,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         mock_provider.stream = fake_stream
         bridge._provider_instance = mock_provider
 
-        session = ProviderSession(acc, bridge=bridge)
+        session = _provider_for(acc, bridge)
         chat = await session.chats.create()
 
         op1 = chat.messages.create("test", model="gpt-6-instant")
@@ -568,6 +626,54 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(webaiprovider, "ResourceCollection"))
         self.assertFalse(hasattr(webaiprovider.collections, "ResourceCollection"))
         self.assertFalse(hasattr(webaiprovider.resources, "ProjectInstructions"))
+
+
+class TestSyncApi(unittest.TestCase):
+    def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
+        class Bridge:
+            def __init__(self) -> None:
+                self.thread_ids: list[int] = []
+                self.memory_share = None
+
+            async def open(self) -> None:
+                self.thread_ids.append(threading.get_ident())
+
+            async def create_chatgpt_project(
+                self, project, instruction=None, *, memory_share=True
+            ) -> None:
+                self.thread_ids.append(threading.get_ident())
+                self.memory_share = memory_share
+                project.remote_id = "project-1"
+
+            async def execute_stream(self, operation):
+                self.thread_ids.append(threading.get_ident())
+                yield OutputBegin()
+                yield OutputDelta(delta="done")
+                yield OutputEnd()
+
+            async def close(self) -> None:
+                self.thread_ids.append(threading.get_ident())
+
+        bridge = Bridge()
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+            with SyncChatGPTProvider(account) as provider:
+                project = provider.projects.create("Notes", memory_share=False)
+                chat = provider.chats.create("Draft", project=project)
+                operation = chat.messages.create("hello")
+                events = list(operation.stream())
+                response = operation.wait()
+
+        self.assertEqual(response.text, "done")
+        self.assertEqual(events[0].event, "output.begin")
+        self.assertEqual(events[1].event, "output.delta")
+        self.assertEqual(events[2].event, "output.end")
+        self.assertEqual(
+            bridge.memory_share,
+            False,
+        )
+        self.assertTrue(bridge.thread_ids)
+        self.assertEqual(len(set(bridge.thread_ids)), 1)
 
 
 if __name__ == "__main__":

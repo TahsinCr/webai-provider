@@ -6,10 +6,12 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Add provider-specific async and sync provider facades, explicit `open()`/`close()` lifecycle, and paginated project chat access with chat moves.
+- Add ChatGPT project memory selection as `memory_share: bool`; `True` uses the provider's default/global memory scope and `False` selects project-only memory.
 - Model-specific typed effort namespaces; a static choice is available as `ChatGPTModels.GPT_5_6_THINKING.efforts.MEDIUM` and each value is an `EffortRef`.
-- Account-scoped `session.models` discovery with `list`, `get`, `find`, `search`, and explicit `refresh`; the valid catalog is cached for the session and retained if a refresh fails.
+- Account-scoped `provider.models` discovery with `list`, `get`, `find`, `search`, and explicit `refresh`; the valid catalog is cached for the session and retained if a refresh fails.
 - Active Claude Opus and Fable catalog entries using first-party model IDs, alongside models available on other subscription tiers.
-- `await session.models.list()` preloads and caches the account's catalog for the current session; `refresh()` forces a fresh provider request.
+- `await provider.models.list()` preloads and caches the account's catalog for the current session; `refresh()` forces a fresh provider request.
 
 ### Changed
 
@@ -27,7 +29,6 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Translate provider, profile, catalog, timeout, and persistence exception messages to English.
-- Correct the type-checking-only `ProviderSession` import used by `Chat`.
 
 ### Security
 

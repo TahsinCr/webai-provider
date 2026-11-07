@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from webaiprovider import Account, MessageOperation, ProviderSession
+from webaiprovider import Account, MessageOperation, Provider
 from webaiprovider.base import (
     ConversationBound,
     MessageMetadata,
@@ -14,7 +14,7 @@ from webaiprovider.base import (
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import ArtifactDiscovered, SourceDiscovered
 from webaiprovider.errors import UnsupportedOperationError
-from webaiprovider.models import Origin, Page, Resource
+from webaiprovider.models import Conversation, Origin, Page, Resource
 from webaiprovider.models import Project as NativeProject
 
 
@@ -26,7 +26,9 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.provider.account_id = self.account.id
         self.bridge = ProviderBridge(self.account)
         self.bridge._provider_instance = self.provider
-        self.session = ProviderSession(self.account, bridge=self.bridge)
+        self.session = Provider(self.account)
+        self.session._bridge = self.bridge
+        self.session._opened = True
 
     async def test_project_actions_map_native_ids_and_instructions(self) -> None:
         original = NativeProject(
@@ -76,6 +78,29 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.remote_id, "project-1")
         self.assertEqual(await loaded.instruction.get(), "Be concise")
         self.assertEqual(loaded.resources._items[0]["id"], "resource-1")
+
+    async def test_project_chat_pages_and_move_actions_use_provider_bridge(self) -> None:
+        from webaiprovider.resources.chat import Chat
+        from webaiprovider.resources.project import Project
+
+        conversation = Conversation(
+            Origin(self.account.provider, self.account.id, "chat-1"),
+            "Project chat",
+            project_id="project-1",
+        )
+        self.provider.list_project_chats = AsyncMock(return_value=Page((conversation,), "cursor-2"))
+        self.provider.move_chat = AsyncMock()
+        project = Project(title="Research", session=self.session, remote_id="project-1")
+
+        page = await project.chats.refresh()
+        self.assertEqual(page.items[0].remote_id, "chat-1")
+        self.assertIs(page.items[0].session, self.session)
+        self.assertEqual(project.chats.next_cursor, "cursor-2")
+
+        chat = Chat(title="Loose chat", session=self.session, remote_id="chat-2")
+        await self.session.chats.move(chat, project)
+        self.provider.move_chat.assert_awaited_once_with("chat-2", "project-1")
+        self.assertEqual(chat.project_id, "project-1")
 
     async def test_stream_maps_typed_events_and_remote_identity(self) -> None:
         request = None

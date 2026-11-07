@@ -3,10 +3,13 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ProviderError
+
 if TYPE_CHECKING:
     from ..collections.messages import MessagesCollection
     from ..resources.message import Message
-    from ..session import ProviderSession
+    from ..resources.project import Project
+    from ..session import Provider
 
 
 class Chat:
@@ -15,7 +18,7 @@ class Chat:
         id: str | None = None,
         title: str = "",
         *,
-        session: ProviderSession | None = None,
+        session: Provider | None = None,
         remote_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -33,8 +36,12 @@ class Chat:
         return self.messages.get(message_id)
 
     async def download(self, target: Any) -> bytes:
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            return await self.session._bridge.download(target, conversation_id=self.remote_id)
+        if self.remote_id:
+            if self.session is None:
+                raise ProviderError("Chat is not attached to an open provider")
+            return await self.session._require_bridge().download(
+                target, conversation_id=self.remote_id
+            )
         return b""
 
     async def rename(self, title: str) -> Chat:
@@ -46,12 +53,21 @@ class Chat:
         return self
 
     async def delete(self) -> None:
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.delete_chat(self)
+        if self.remote_id:
+            if self.session is None:
+                raise ProviderError("Chat is not attached to an open provider")
+            await self.session._require_bridge().delete_chat(self)
+
+    async def move_to(self, project: Project | str | None) -> Chat:
+        if self.session is None:
+            raise ProviderError("Chat is not attached to a provider session")
+        return await self.session.chats.move(self, project)
 
     async def branch(self, message_id: str, *, title: str | None = None) -> Chat:
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            return await self.session._bridge.branch_chat(self, message_id, title=title)
+        if self.remote_id:
+            if self.session is None:
+                raise ProviderError("Chat is not attached to an open provider")
+            return await self.session._require_bridge().branch_chat(self, message_id, title=title)
         return Chat(
             title=title or f"{self.title} (Branch)",
             session=self.session,

@@ -4,10 +4,10 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from ..collections.base import ManageableCollection
-from ..errors import UnsupportedOperationError
+from ..errors import ProviderError, UnsupportedOperationError
 
 if TYPE_CHECKING:
-    from ..session import ProviderSession
+    from ..session import Provider
 
 
 class ProjectInstruction:
@@ -20,9 +20,10 @@ class ProjectInstruction:
 
     async def edit(self, text: str) -> str:
         session = self.project.session
-        bridge = session._bridge if session is not None else None
-        if bridge is not None and self.project.remote_id:
-            await bridge.update_project(self.project, instructions=text)
+        if self.project.remote_id:
+            if session is None:
+                raise ProviderError("Project is not attached to an open provider")
+            await session._require_bridge().update_project(self.project, instructions=text)
         else:
             self._text = text
         return self._text
@@ -52,9 +53,10 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
             "data": data,
         }
         session = self.project.session
-        bridge = session._bridge if session is not None else None
-        if bridge is not None and self.project.remote_id:
-            item = await bridge.add_project_resource(self.project, item)
+        if self.project.remote_id:
+            if session is None:
+                raise ProviderError("Project is not attached to an open provider")
+            item = await session._require_bridge().add_project_resource(self.project, item)
         self._items.append(item)
         return item
 
@@ -63,9 +65,10 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
             if item.get("id") != resource_id:
                 continue
             session = self.project.session
-            bridge = session._bridge if session is not None else None
-            if bridge is not None and self.project.remote_id:
-                await bridge.remove_project_resource(self.project, resource_id)
+            if self.project.remote_id:
+                if session is None:
+                    raise ProviderError("Project is not attached to an open provider")
+                await session._require_bridge().remove_project_resource(self.project, resource_id)
             del self._items[index]
             return True
         return False
@@ -97,9 +100,10 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         item = self.get(resource_id)
         url = item.get("url") or item.get("download_url")
         session = self.project.session
-        bridge = session._bridge if session is not None else None
-        if url and bridge is not None and self.project.remote_id:
-            return await bridge.download(url)
+        if url and self.project.remote_id:
+            if session is None:
+                raise ProviderError("Project is not attached to an open provider")
+            return await session._require_bridge().download(url)
         for key in ("bytes", "content", "data"):
             if key in item:
                 return item[key]
@@ -112,7 +116,7 @@ class Project:
         id: str | None = None,
         title: str = "",
         *,
-        session: ProviderSession | None = None,
+        session: Provider | None = None,
         remote_id: str | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
@@ -121,19 +125,24 @@ class Project:
         self.remote_id = remote_id
         self.instruction = ProjectInstruction(self)
         self.resources = ProjectResources(self)
+        from ..collections.project_chats import ProjectChatsCollection
+
+        self.chats = ProjectChatsCollection(self)
 
     async def rename(self, title: str) -> None:
-        bridge = self.session._bridge if self.session is not None else None
-        if bridge is not None and self.remote_id:
-            await bridge.update_project(self, title=title)
+        if self.remote_id:
+            if self.session is None:
+                raise ProviderError("Project is not attached to an open provider")
+            await self.session._require_bridge().update_project(self, title=title)
         else:
             self.title = title
 
     async def delete(self) -> None:
         session = self.session
-        bridge = session._bridge if session is not None else None
-        if bridge is not None and self.remote_id:
-            await bridge.delete_project(self)
+        if self.remote_id:
+            if session is None:
+                raise ProviderError("Project is not attached to an open provider")
+            await session._require_bridge().delete_project(self)
         if session is not None:
             session.projects._items = [item for item in session.projects._items if item is not self]
 

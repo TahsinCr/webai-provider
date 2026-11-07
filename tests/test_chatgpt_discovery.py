@@ -87,13 +87,16 @@ class DiscoveryTests(unittest.TestCase):
             }
         )
         with patch("subprocess.run", side_effect=AssertionError("browser")):
-            value = self.client.create_project("Demo", memory="project_only")
+            value = self.client.create_project("Demo", memory_share=False)
         self.assertEqual(value["id"], "g-p-created")
         self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "project_v2")
         self.client.get_project.assert_called_once_with("g-p-created")
         self.client.request.reset_mock()
-        with self.assertRaises(ValueError):
-            self.client.create_project("Demo", visibility="public")
+        self.client.create_project("Demo")
+        self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "global")
+        self.client.request.reset_mock()
+        with self.assertRaises(TypeError):
+            self.client.create_project("Demo", memory_share=1)
         self.client.request.assert_not_called()
 
     def test_chat_picker_uses_categories_without_exposing_work_variants_or_pinning_versions(self):

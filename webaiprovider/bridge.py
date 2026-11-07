@@ -41,6 +41,7 @@ from .errors import ProviderError, UnsupportedOperationError
 from .models import (
     Conversation,
     ModelCatalog,
+    Page,
 )
 from .models import (
     Project as ProviderProject,
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
     from .resources.chat import Chat
     from .resources.operation import MessageOperation
     from .resources.project import Project
-    from .session import ProviderSession
+    from .session import Provider
 
 
 def _resource_record(resource: ProviderResource) -> dict[str, Any]:
@@ -69,11 +70,26 @@ def _resource_record(resource: ProviderResource) -> dict[str, Any]:
     }
 
 
+def _chat_from_conversation(item: Conversation, session: Provider) -> Chat:
+    from .resources.chat import Chat
+
+    return Chat(
+        title=item.title,
+        remote_id=item.origin.remote_id,
+        project_id=item.project_id,
+        session=session,
+    )
+
+
 class ProviderBridge:
     def __init__(self, account: Account) -> None:
         self.account = account
         self._provider_instance: ProviderAdapter | None = None
         self._models_cache: tuple[ModelRef, ...] | None = None
+
+    async def open(self) -> None:
+        provider = self._get_provider()
+        await provider.prepare()
 
     def _get_provider(self) -> ProviderAdapter:
         if self._provider_instance is not None:
@@ -156,24 +172,29 @@ class ProviderBridge:
         self._models_cache = tuple(result)
         return list(self._models_cache)
 
-    async def list_chats(self, session: ProviderSession) -> list[Chat]:
+    async def list_chats(self, session: Provider) -> list[Chat]:
         provider = self._get_provider()
-        from .resources.chat import Chat
-
         chats_data = await provider.list_chats()
-        result: list[Chat] = []
-        for item in chats_data.items:
-            if not isinstance(item, Conversation):
-                raise ProviderError("Provider returned an invalid conversation")
-            result.append(
-                Chat(
-                    title=item.title,
-                    remote_id=item.origin.remote_id,
-                    project_id=item.project_id,
-                    session=session,
-                )
-            )
-        return result
+        if not isinstance(chats_data, Page) or any(
+            not isinstance(item, Conversation) for item in chats_data.items
+        ):
+            raise ProviderError("Provider returned an invalid conversation page")
+        return [_chat_from_conversation(item, session) for item in chats_data.items]
+
+    async def list_project_chats(self, project: Project, cursor: str | None = None) -> Page[Chat]:
+        if project.session is None:
+            raise ProviderError("Project is not attached to a provider session")
+        if not project.remote_id:
+            return Page(())
+        page = await self._get_provider().list_project_chats(project.remote_id, cursor)
+        if not isinstance(page, Page) or any(
+            not isinstance(item, Conversation) for item in page.items
+        ):
+            raise ProviderError("Provider returned an invalid project conversation page")
+        return Page(
+            tuple(_chat_from_conversation(item, project.session) for item in page.items),
+            page.next_cursor,
+        )
 
     async def rename_chat(self, chat: Chat, title: str) -> None:
         if chat.remote_id:
@@ -202,7 +223,7 @@ class ProviderBridge:
         if chat.remote_id:
             await self._get_provider().move_chat(chat.remote_id, project_id)
 
-    async def list_projects(self, session: ProviderSession) -> list[Project]:
+    async def list_projects(self, session: Provider) -> list[Project]:
         from .resources.project import Project
 
         result: list[Project] = []
@@ -222,13 +243,39 @@ class ProviderBridge:
         return result
 
     async def create_project(
-        self, project: Project, instruction: str | None = None, **options: Any
+        self,
+        project: Project,
+        instruction: str | None = None,
     ) -> None:
         created = await self._get_provider().create_project(
             project.title,
             instructions=instruction or "",
-            **options,
         )
+        self._apply_created_project(project, created)
+
+    async def create_chatgpt_project(
+        self,
+        project: Project,
+        instruction: str | None = None,
+        *,
+        memory_share: bool = True,
+    ) -> None:
+        if self.account.provider != "chatgpt":
+            raise UnsupportedOperationError("ChatGPT project settings require a ChatGPT provider")
+        from .providers.chatgpt.adapter import ChatGPTProvider as ChatGPTAdapter
+
+        adapter = self._get_provider()
+        if not isinstance(adapter, ChatGPTAdapter):
+            raise UnsupportedOperationError("ChatGPT project settings require a ChatGPT provider")
+        created = await adapter.create_project(
+            project.title,
+            instructions=instruction or "",
+            memory_share=memory_share,
+        )
+        self._apply_created_project(project, created)
+
+    @staticmethod
+    def _apply_created_project(project: Project, created: ProviderProject) -> None:
         if not isinstance(created, ProviderProject):
             raise ProviderError("Provider returned an invalid project")
         project.remote_id = created.origin.remote_id
@@ -500,20 +547,10 @@ class ProviderBridge:
         except Exception as exc:
             raise ProviderError("File transfer failed") from exc
 
-    async def close_session(self, session: ProviderSession) -> None:
+    async def close(self) -> None:
         if self._provider_instance is not None:
             if hasattr(self._provider_instance, "close"):
                 res = self._provider_instance.close()
                 if asyncio.iscoroutine(res):
                     await res
             self._provider_instance = None
-
-
-_BRIDGES: dict[tuple[str, str], ProviderBridge] = {}
-
-
-def get_bridge(provider_name: str, account: Account) -> ProviderBridge:
-    key = (provider_name.lower(), account.id)
-    if key not in _BRIDGES:
-        _BRIDGES[key] = ProviderBridge(account)
-    return _BRIDGES[key]

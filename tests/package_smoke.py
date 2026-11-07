@@ -41,11 +41,10 @@ def main():
             acc = Account.from_cookies("chatgpt", session_file)
             if acc.provider != "chatgpt":
                 raise SystemExit("Account did not preserve provider identity")
-            provider = ChatGPTProvider(account=acc)
-            session = provider.connect()
-            if session.provider != "chatgpt":
-                raise SystemExit("ProviderSession did not preserve provider identity")
-            await session.close()
+            provider = ChatGPTProvider(acc)
+            if provider.provider != "chatgpt":
+                raise SystemExit("Provider did not preserve provider identity")
+            await provider.close()
 
     asyncio.run(verify_v2_session())
 

@@ -133,7 +133,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             "instructions": instructions,
             "metadata": options,
         }
-        created = await self.provider.create_project("New project", memory="project_only")
+        created = await self.provider.create_project("New project")
         self.assertEqual(created.name, "New project")
         project_reads = iter([{"id": "g-p-created", "name": "Fixture"}, RemoteNotFound("deleted")])
 
@@ -154,6 +154,27 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.client.deleted,
                 ("DELETE", "https://chatgpt.com/backend-api/gizmos/g-p-created"),
             )
+
+    async def test_project_memory_share_maps_boolean_to_web_setting(self):
+        memory_values = []
+
+        def create_project(name, instructions, **options):
+            memory_values.append(options["memory_share"])
+            return {
+                "id": name,
+                "name": name,
+                "instructions": instructions,
+                "metadata": options,
+            }
+
+        self.client.create_project = create_project
+
+        await self.provider.create_project("Shared")
+        await self.provider.create_project("Private", memory_share=False)
+        with self.assertRaises(TypeError):
+            await self.provider.create_project("Invalid", memory_share=1)
+
+        self.assertEqual(memory_values, [True, False])
 
     async def test_request_waits_for_background_preparation(self):
         ready, release = threading.Event(), threading.Event()

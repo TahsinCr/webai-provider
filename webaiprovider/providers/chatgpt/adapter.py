@@ -327,13 +327,18 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
         return Page(tuple(self._project(item) for item in raw["items"]), raw.get("cursor"))
 
     async def create_project(
-        self, name: str, instructions: str = "", *, visibility="private", memory="default"
+        self,
+        name: str,
+        instructions: str = "",
+        *,
+        memory_share: bool = True,
     ) -> Project:
+        if type(memory_share) is not bool:
+            raise TypeError("memory_share must be a bool")
+
         def create():
             with self._client_scope() as client:
-                return client.create_project(
-                    name, instructions, visibility=visibility, memory=memory
-                )
+                return client.create_project(name, instructions, memory_share=memory_share)
 
         async with self._gate:
             return self._project(await asyncio.to_thread(create))

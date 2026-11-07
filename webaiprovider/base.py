@@ -328,9 +328,6 @@ class ProviderAdapter(Provider):
         self,
         name: str,
         instructions: str = "",
-        *,
-        visibility: str = "private",
-        memory: str = "default",
     ) -> Project:
         raise FeatureUnavailable(Capability.PROJECT_CREATE, "not_implemented")
 

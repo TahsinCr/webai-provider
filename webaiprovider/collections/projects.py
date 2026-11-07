@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from ..errors import UnsupportedOperationError
 from ..resources.project import Project
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
-    from ..session import ProviderSession
+    from ..session import Provider
 
 
 class ProjectsCollection(ManageableCollection[Project]):
-    def __init__(self, session: ProviderSession) -> None:
+    def __init__(self, session: Provider) -> None:
         super().__init__()
         self.session = session
 
@@ -20,20 +19,17 @@ class ProjectsCollection(ManageableCollection[Project]):
         title: str,
         *,
         instruction: str | None = None,
-        **options: Any,
     ) -> Project:
         project = Project(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
-        if self.session._bridge is not None:
-            await self.session._bridge.create_project(project, instruction=instruction, **options)
+        await self.session._require_bridge().create_project(project, instruction=instruction)
         self._items.insert(0, project)
         return project
 
     async def refresh(self) -> list[Project]:
-        if hasattr(self.session, "_bridge") and self.session._bridge:
-            projects = await self.session._bridge.list_projects(self.session)
-            self._items = list(projects)
+        projects = await self.session._require_bridge().list_projects(self.session)
+        self._items = list(projects)
         return list(self._items)
 
     async def update(
@@ -42,15 +38,12 @@ class ProjectsCollection(ManageableCollection[Project]):
         *,
         title: str | None = None,
         instruction: str | None = None,
-        **options: Any,
     ) -> Project:
-        if options:
-            raise UnsupportedOperationError(
-                "Provider-specific project options cannot be updated through this method"
-            )
         target = project if isinstance(project, Project) else self.get(project)
-        if target.remote_id and self.session._bridge is not None:
-            await self.session._bridge.update_project(target, title=title, instructions=instruction)
+        if target.remote_id:
+            await self.session._require_bridge().update_project(
+                target, title=title, instructions=instruction
+            )
         else:
             if title is not None:
                 target.title = title
@@ -60,6 +53,6 @@ class ProjectsCollection(ManageableCollection[Project]):
 
     async def delete(self, project: Project | str) -> None:
         target = project if isinstance(project, Project) else self.get(project)
-        if target.remote_id and self.session._bridge is not None:
-            await self.session._bridge.delete_project(target)
+        if target.remote_id:
+            await self.session._require_bridge().delete_project(target)
         self._items = [item for item in self._items if item is not target]

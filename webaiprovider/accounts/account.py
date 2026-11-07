@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..models import Capability
+from ..provider_type import ProviderType
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
-
-if TYPE_CHECKING:
-    from ..session import ProviderSession
 
 
 @dataclass(frozen=True)
@@ -21,6 +19,9 @@ class Account:
     name: str | None = None
     is_active: bool = True
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provider", ProviderType.parse(self.provider).value)
+
     def store(self) -> CredentialStore:
         if isinstance(self.credentials, CredentialStore):
             return self.credentials
@@ -31,7 +32,7 @@ class Account:
     @classmethod
     def from_cookies(
         cls,
-        provider: str,
+        provider: ProviderType | str,
         cookies: dict[str, Any] | Path | str,
         *,
         id: str | None = None,
@@ -42,7 +43,7 @@ class Account:
         account_id = id or str(uuid.uuid4())
         return cls(
             id=account_id,
-            provider=provider.lower(),
+            provider=ProviderType.parse(provider).value,
             credentials=cookies,
             name=name or f"{provider.capitalize()} Account",
         )
@@ -50,7 +51,7 @@ class Account:
     @classmethod
     def from_browser(
         cls,
-        provider: str,
+        provider: ProviderType | str,
         *,
         browser: str | None = None,
         id: str | None = None,
@@ -58,15 +59,9 @@ class Account:
     ) -> Account:
         from .importer import import_cookies
 
-        _, cookies = import_cookies(provider.lower(), browser=browser)
+        provider_type = ProviderType.parse(provider)
+        _, cookies = import_cookies(provider_type.value, browser=browser)
         return cls.from_cookies(provider, cookies, id=id, name=name)
-
-    def connect(self) -> ProviderSession:
-        from ..bridge import get_bridge
-        from ..session import ProviderSession
-
-        bridge = get_bridge(self.provider, self)
-        return ProviderSession(self, bridge=bridge)
 
     def to_dict(self) -> dict[str, Any]:
         data = {

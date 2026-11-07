@@ -355,10 +355,8 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             return await ProviderAdapter.project_options(self, project_id)
         return await ProjectEditing.project_options(self, project_id)
 
-    async def create_project(
-        self, name, instructions="", *, visibility="private", memory="default"
-    ):
-        if not hasattr(self, "editor") or visibility != "private" or memory != "default":
+    async def create_project(self, name, instructions=""):
+        if not hasattr(self, "editor"):
             raise FeatureUnavailable(Capability.PROJECT_CREATE)
         if not name.strip() or instructions:
             raise ValueError(

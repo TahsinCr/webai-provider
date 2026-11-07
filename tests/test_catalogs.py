@@ -18,7 +18,7 @@ from webaiprovider.catalogs import (
 )
 from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webaiprovider.errors import AmbiguousMatchError, RemoteNotFound
-from webaiprovider.session import ProviderSession
+from webaiprovider.session import Provider
 
 
 class CatalogTests(unittest.TestCase):
@@ -158,8 +158,12 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         provider = SimpleNamespace(models=AsyncMock(return_value=catalog))
         bridge = ProviderBridge(account)
         bridge._provider_instance = provider
-        first = ProviderSession(account, bridge=bridge)
-        second = ProviderSession(account, bridge=bridge)
+        first = Provider(account)
+        first._bridge = bridge
+        first._opened = True
+        second = Provider(account)
+        second._bridge = bridge
+        second._opened = True
 
         self.assertEqual((await first.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await second.models.list())[0].id, "gpt-6-pro")

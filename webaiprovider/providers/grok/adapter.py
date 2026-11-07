@@ -355,13 +355,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
             data.get("nextPageToken"),
         )
 
-    async def create_project(
-        self, name, instructions="", *, visibility="private", memory="default"
-    ):
-        if visibility != "private" or memory != "default":
-            raise FeatureUnavailable(
-                Capability.PROJECT_CREATE, "Grok privacy or memory options are unavailable"
-            )
+    async def create_project(self, name, instructions=""):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Project name must be between 1 and 200 characters")
         if not isinstance(instructions, str):

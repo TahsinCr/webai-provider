@@ -411,18 +411,18 @@ class ChatGPTClient:
         projects = [value for item in items if (value := parse_project(item)) is not None]
         return {"items": projects, "cursor": next_cursor}
 
-    def create_project(self, name, instructions="", *, visibility="private", memory="default"):
+    def create_project(self, name, instructions="", *, memory_share=True):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
             raise ValueError("project name must contain 1–80 characters")
-        if visibility != "private" or memory not in ("default", "project_only"):
-            raise ValueError("unsupported project privacy or memory option")
+        if type(memory_share) is not bool:
+            raise TypeError("memory_share must be a bool")
         raw = self.request(
             "POST",
             urljoin(CHATGPT_ORIGIN, "/backend-api/projects"),
             json={
                 "name": name.strip(),
                 "instructions": instructions,
-                "memory_scope": "project_v2" if memory == "project_only" else "global",
+                "memory_scope": "global" if memory_share else "project_v2",
             },
         ).json()
         if raw.get("error") or not isinstance(raw.get("resource"), dict):

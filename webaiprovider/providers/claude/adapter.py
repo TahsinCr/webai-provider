@@ -229,13 +229,7 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
                 )
             )
 
-    async def create_project(
-        self, name, instructions="", *, visibility="private", memory="default"
-    ):
-        if visibility != "private" or memory != "default":
-            raise FeatureUnavailable(
-                Capability.PROJECT_CREATE, "Claude privacy/memory override is not available"
-            )
+    async def create_project(self, name, instructions=""):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Project name must contain 1–200 characters")
         async with self._gate:

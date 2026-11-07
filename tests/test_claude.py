@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from webaiprovider.base import ConversationBound, ReplaceText, SendRequest
-from webaiprovider.errors import FeatureUnavailable, ProviderError
+from webaiprovider.errors import ProviderError
 from webaiprovider.models import Capability, FeatureState
 from webaiprovider.providers.claude import ClaudeProvider
 from webaiprovider.providers.claude.records import (
@@ -281,9 +281,9 @@ class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             "project_chats", project_id=PROJECT
         )
 
-    async def test_unsupported_creation_options_fail_before_remote_write(self):
-        with self.assertRaises(FeatureUnavailable):
-            await self.provider.create_project("Name", visibility="shared")
+    async def test_chatgpt_project_option_is_not_exposed_by_claude(self):
+        with self.assertRaises(TypeError):
+            await self.provider.create_project("Name", memory_share=False)
         self.provider.transport.request.assert_not_awaited()
 
     async def test_delete_and_move_do_not_retry_mutations(self):

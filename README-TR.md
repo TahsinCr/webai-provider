@@ -1,6 +1,6 @@
 # webai-provider
 
-ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. v2 API; hesap kapsamlı asenkron oturumlar, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri üzerine kuruludur.
+ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. v2 API; eşdeğer asenkron ve senkron arayüzler, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri sunar.
 
 > **Beta:** Sağlayıcıların web siteleri ve özel web protokolleri önceden haber verilmeksizin değişebilir. Bu proje bağımsızdır ve sağlayıcılarla bağlantılı değildir.
 
@@ -21,19 +21,18 @@ Kimlik bilgilerini işletim sisteminin varsayılan tarayıcısından alabilir ve
 ```python
 import asyncio
 
-from webaiprovider import Account, OutputDelta
+from webaiprovider import Account, OutputDelta, Provider, ProviderType
 
 
 async def main() -> None:
-    account = Account.from_browser("chatgpt", browser="firefox")
-    session = account.connect()
+    account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
 
-    async with session:
-        models = await session.models.list()
+    async with Provider(account, type=ProviderType.CHATGPT) as provider:
+        models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
 
-        chat = await session.chats.create("Hızlı başlangıç")
+        chat = await provider.chats.create("Hızlı başlangıç")
         operation = chat.messages.create("Merhaba!", model=models[0])
 
         async for event in operation.stream():
@@ -46,11 +45,22 @@ asyncio.run(main())
 
 `browser` verilmezse `Account.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `Account.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
 
+Bloklayan kodlarda aynı hesabı `SyncProvider` ile kullanabilirsiniz. Sağlayıcı açık kaldığı sürece tek bir event loop portalı kullanılır:
+
+```python
+from webaiprovider import Account, ProviderType, SyncProvider
+
+account = Account.from_browser(ProviderType.CHATGPT)
+with SyncProvider(account, type=ProviderType.CHATGPT) as provider:
+    chat = provider.chats.create("Hızlı başlangıç")
+    response = chat.messages.create("Merhaba!").start()
+```
+
 ## Temel API
 
-- `Account`, bir sağlayıcının kimlik bilgilerini tutar ve `account.connect()` ile `ProviderSession` oluşturur.
-- `ProviderSession`; hesaba ait `chats`, `projects` ve `models` koleksiyonlarını yönetir, `async with` ile güvenli biçimde kapatılabilir.
-- `session.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `session.models.refresh()` kullanın. `find()`, `search()` ve `get()` bu katalogda seçim yapar.
+- `Account` yalnızca kimlik bilgilerini saklar. `Provider(account, type=ProviderType.CHATGPT)` asenkron oturumu, `SyncProvider` ise bloklayan eşdeğerini yönetir. İkisi de bağlam yöneticisiyle güvenli biçimde kapatılır.
+- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir.
+- `provider.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `provider.models.refresh()` kullanın. `find()`, `search()` ve `get()` bu katalogda seçim yapar.
 - `chat.messages.create()`, `edit()` ve `retry()` birer `MessageOperation` döndürür. Akış olayları için `operation.stream()` kullanın veya tamamlanmış yanıtı `operation.wait()` ile alın. Bu yöntemler aynı gönderim işlemini paylaşır.
 - Proje, ek, yeniden deneme, düzenleme ve dallandırma özellikleri sağlayıcıya göre değişir. Desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
 
@@ -61,7 +71,7 @@ Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri su
 - Tarayıcı kimlik bilgileri yerel olarak okunur. Kütüphane bunları SiopeChat sunucusuna göndermez.
 - Çerezleri ve kimlik bilgisi dosyalarını koruyun; günlüklerde, hata bildirimlerinde veya kaynak kontrolünde paylaşmayın.
 - İndirme işlemleri yalnızca sağlayıcının verdiği `DownloadSource` değerlerini kabul eder; herkese açık ağ hedeflerini doğrular, çözümlenen IP adresini sabitler ve yönlendirmeleri izlemez.
-- Sağlayıcı hataları İngilizce mesajlı, tipli istisnalar olarak fırlatılır. Sağlayıcı oturumu bağlı olmayan sohbet, sahte yanıt döndürmek yerine açıkça hata verir.
+- Sağlayıcı hataları İngilizce mesajlı, tipli istisnalar olarak fırlatılır. Açık bir sağlayıcı oturumu olmadan mesaj göndermek sahte yanıt üretmek yerine açıkça hata verir.
 
 ## Geliştirme
 

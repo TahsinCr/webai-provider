@@ -21,6 +21,7 @@ from .collections.base import (
 )
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
+from .collections.project_chats import ProjectChatsCollection
 from .collections.projects import ProjectsCollection
 from .contracts import (
     Artifact,
@@ -58,18 +59,14 @@ from .errors import (
     UnsupportedOperationError,
 )
 from .facade import (
-    AsyncChatGPTProvider,
-    AsyncClaudeProvider,
-    AsyncGeminiProvider,
-    AsyncGrokProvider,
-    BaseAsyncProvider,
-    BaseProvider,
     ChatGPTProvider,
     ClaudeProvider,
     GeminiProvider,
     GrokProvider,
 )
 from .models import Capability
+from .provider_type import ProviderType
+from .providers.chatgpt.collections import ChatGPTProjectsCollection
 from .providers.chatgpt.errors import (
     ChatGPTWebError,
     SentinelCompatibilityError,
@@ -80,7 +77,25 @@ from .resources.message import Message
 from .resources.operation import MessageOperation, OperationHooks
 from .resources.project import Project
 from .resources.response import Response
-from .session import ProviderSession
+from .session import Provider
+from .sync import (
+    SyncChat,
+    SyncChatGPTProjectsCollection,
+    SyncChatGPTProvider,
+    SyncChatsCollection,
+    SyncClaudeProvider,
+    SyncGeminiProvider,
+    SyncGrokProvider,
+    SyncMessageOperation,
+    SyncMessagesCollection,
+    SyncModelsCollection,
+    SyncProject,
+    SyncProjectChatsCollection,
+    SyncProjectInstruction,
+    SyncProjectResources,
+    SyncProjectsCollection,
+    SyncProvider,
+)
 
 __version__ = "1.3.0b0"
 
@@ -104,6 +119,7 @@ __all__ = [
     "ManageableCollection",
     "ChatsCollection",
     "ProjectsCollection",
+    "ProjectChatsCollection",
     "MessagesCollection",
     "Artifact",
     "ArtifactDiscovered",
@@ -138,16 +154,28 @@ __all__ = [
     "RemoteNotFound",
     "SentinelCompatibilityError",
     "UnsupportedOperationError",
-    "AsyncChatGPTProvider",
-    "AsyncClaudeProvider",
-    "AsyncGeminiProvider",
-    "AsyncGrokProvider",
-    "BaseAsyncProvider",
-    "BaseProvider",
     "ChatGPTProvider",
     "ClaudeProvider",
     "GeminiProvider",
     "GrokProvider",
+    "SyncProvider",
+    "SyncChatGPTProvider",
+    "SyncChatGPTProjectsCollection",
+    "SyncClaudeProvider",
+    "SyncGeminiProvider",
+    "SyncGrokProvider",
+    "SyncChat",
+    "SyncChatsCollection",
+    "SyncMessageOperation",
+    "SyncMessagesCollection",
+    "SyncModelsCollection",
+    "SyncProject",
+    "SyncProjectChatsCollection",
+    "SyncProjectInstruction",
+    "SyncProjectsCollection",
+    "SyncProjectResources",
+    "ProviderType",
+    "ChatGPTProjectsCollection",
     "Attachment",
     "Attachments",
     "Chat",
@@ -156,5 +184,5 @@ __all__ = [
     "OperationHooks",
     "Project",
     "Response",
-    "ProviderSession",
+    "Provider",
 ]
