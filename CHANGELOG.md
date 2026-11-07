@@ -9,7 +9,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Model-specific typed effort namespaces; a static choice is available as `ChatGPTModels.GPT_5_6_THINKING.efforts.MEDIUM` and each value is an `EffortRef`.
 - Account-scoped `session.models` discovery with `list`, `get`, `find`, `search`, and explicit `refresh`; the valid catalog is cached for the session and retained if a refresh fails.
 - Active Claude Opus and Fable catalog entries using first-party model IDs, alongside models available on other subscription tiers.
-- Account model catalogs are cached in memory across sessions; `await session.models.list()` can preload them, while `refresh()` forces a fresh provider request.
+- `await session.models.list()` preloads and caches the account's catalog for the current session; `refresh()` forces a fresh provider request.
 
 ### Changed
 
@@ -19,6 +19,19 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Remove work-only Luna and Sol entries from the ChatGPT web catalog; retain dynamic account discovery as the authority for available web models.
 - Represent effort options as each model's typed `Efforts` class across static provider catalogs. Account-discovered efforts use the same class-based interface, and an `EffortRef` can be passed through `model=` when the active account exposes it.
 - Use a single resolver for model policies, model references, and model-bound effort references; `AUTO` uses the provider-reported default.
+- Route an explicit `browser=` choice from `Account.from_browser()` through profile discovery and cookie import; an omitted choice still uses the operating system's default browser.
+- Type the bridge surface around provider events and domain models, keeping provider-specific transports isolated behind the adapter contract.
+- Run only one producer task for each message operation so `stream()`, `wait()`, `start()`, and `wait_for()` cannot submit duplicate requests.
+- Require an attached provider session before sending a message; detached chats now raise a `ProviderError` instead of producing a local echo as if it were a provider response.
+
+### Fixed
+
+- Translate provider, profile, catalog, timeout, and persistence exception messages to English.
+- Correct the type-checking-only `ProviderSession` import used by `Chat`.
+
+### Security
+
+- Restrict downloads to provider-supplied `DownloadSource` values, reject non-public resolved addresses, pin the selected address for the request, and disable redirects.
 
 ## [1.3-beta] - 2026-11-06
 
