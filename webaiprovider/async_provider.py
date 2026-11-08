@@ -10,7 +10,7 @@ from .contracts import EffortRef, ModelRef, ModelSelection
 from .core.scope import ProviderResourceScope
 from .core.telemetry import ProviderTelemetry
 from .errors import ProviderError
-from .provider_type import ProviderType
+from .provider import ProviderType
 from .providers import create_adapter
 from .providers.base import ProviderAdapter
 from .resources.chat import Chat

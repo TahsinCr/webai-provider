@@ -1,10 +1,11 @@
 """Bundled provider backends."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from ..errors import UnsupportedOperationError
-from ..provider_type import ProviderType
+from ..provider import ProviderType
 
 if TYPE_CHECKING:
     from ..accounts.account import Account

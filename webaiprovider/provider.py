@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from typing import Any, Generic, TypeVar
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from .accounts.account import Account
-from .async_provider import AsyncProvider
 from .base import BaseProvider
 from .catalogs import Models
 from .contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
@@ -13,7 +12,6 @@ from .core.bridges import SyncPortalBridge
 from .core.state import OperationState
 from .core.telemetry import ProviderTelemetry
 from .models import Page
-from .provider_type import ProviderType
 from .resources.chat import Chat
 from .resources.message import Message
 from .resources.operation import MessageOperation
@@ -24,10 +22,30 @@ T = TypeVar("T")
 U = TypeVar("U")
 
 
+class ProviderType(str, Enum):
+    CHATGPT = "chatgpt"
+    CLAUDE = "claude"
+    GEMINI = "gemini"
+    GROK = "grok"
+
+    @classmethod
+    def parse(cls, value: ProviderType | str) -> ProviderType:
+        try:
+            return value if isinstance(value, cls) else cls(value.casefold())
+        except (AttributeError, ValueError):
+            supported = ", ".join(item.value for item in cls)
+            raise ValueError(f"Unsupported provider type; expected one of: {supported}") from None
+
+
+if TYPE_CHECKING:
+    from .accounts.account import Account
+    from .async_provider import AsyncProvider
+
+
 class Provider(BaseProvider):
     """Synchronous provider API backed by one persistent async runtime."""
 
-    async_provider_type = AsyncProvider
+    async_provider_type: type[AsyncProvider] | None = None
     chat_wrapper_type = None
     project_wrapper_type = None
     projects_collection_type = None
@@ -35,7 +53,12 @@ class Provider(BaseProvider):
 
     def __init__(self, account: Account, *, type: ProviderType | str | None = None) -> None:
         super().__init__(account, type=type)
-        self._provider = self.async_provider_type(account, type=self.type)
+        provider_type = self.async_provider_type
+        if provider_type is None:
+            from .async_provider import AsyncProvider
+
+            provider_type = AsyncProvider
+        self._provider = provider_type(account, type=self.type)
         self._portal = SyncPortalBridge()
         self._portal_started = False
         self._opened = False

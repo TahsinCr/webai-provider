@@ -3,11 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...async_provider import AsyncProvider
-from ...provider import Provider, SyncChat
-from ...provider_type import ProviderType
+from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
 from .resources import AsyncClaudeChat
-
 
 if TYPE_CHECKING:
     from ...accounts.account import Account

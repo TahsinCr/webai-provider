@@ -5,18 +5,17 @@ from typing import TYPE_CHECKING, cast
 from ...async_provider import AsyncProvider
 from ...provider import (
     Provider,
+    ProviderType,
     SyncChat,
     SyncProject,
     SyncProjectsCollection,
 )
-from ...provider_type import ProviderType
 from ...resources.chat import (
     BranchableChat,
     MovableChat,
 )
 from .collections import AsyncChatGPTProjectsCollection
 from .resources import AsyncChatGPTChat
-
 
 if TYPE_CHECKING:
     from ...accounts.account import Account

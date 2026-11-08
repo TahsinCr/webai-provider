@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-from .accounts.account import Account
-from .provider_type import ProviderType
+if TYPE_CHECKING:
+    from .accounts.account import Account
+    from .provider import ProviderType
 
 
 class BaseProvider:
@@ -17,6 +18,8 @@ class BaseProvider:
         *,
         type: ProviderType | str | None = None,
     ) -> None:
+        from .provider import ProviderType
+
         account_type = ProviderType.parse(account.provider)
         expected_type = self.provider_type
         requested_type = ProviderType.parse(type) if type is not None else expected_type

@@ -15,6 +15,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Define `ProviderType` in the canonical `webaiprovider.provider` module and remove the separate `provider_type.py` module.
 - Give `Attachments` the collection-style `create`, metadata-only `update`, and local `delete` API.
 - Place `Attachments` in the collections package and use the shared queryable collection behavior; keep `Attachment` as a resource value.
 - Split the public API into shared `BaseProvider`, async `AsyncProvider`, blocking `Provider`, and provider-specific sync/async classes. Provider-only chat operations are exposed by the corresponding provider chat types.

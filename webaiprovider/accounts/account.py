@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import Capability
-from ..provider_type import ProviderType
+from ..provider import ProviderType
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 
 

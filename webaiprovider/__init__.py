@@ -50,6 +50,7 @@ from .errors import (
 from .models import Capability
 from .provider import (
     Provider,
+    ProviderType,
     SyncChat,
     SyncChatsCollection,
     SyncMessageOperation,
@@ -61,7 +62,6 @@ from .provider import (
     SyncProjectResources,
     SyncProjectsCollection,
 )
-from .provider_type import ProviderType
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
 from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
