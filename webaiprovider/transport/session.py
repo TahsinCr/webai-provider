@@ -142,6 +142,3 @@ class HttpSession:
             finally:
                 self.client = None
                 await client.close()
-
-
-WebSession = HttpSession

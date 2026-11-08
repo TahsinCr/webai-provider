@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ...transport import WebSession
+from ...transport import HttpSession
 from ...utils.timing import current_send_timing
 from ..base import MessageAction
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
@@ -147,7 +147,7 @@ async def upload_files(session, paths):
                 multipart=mime,
                 allow_redirects=False,
             )
-            WebSession.check(response)
+            HttpSession.check(response)
             files.append([[response.text], path.name])
         finally:
             mime.close()
@@ -268,7 +268,7 @@ async def generate(
         if sse_connect_started is not None:
             timing.record("sse_connect_ms", response_opened - sse_connect_started)
         try:
-            WebSession.check(response)
+            HttpSession.check(response)
 
             async def parts():
                 async for chunk in response.aiter_content():

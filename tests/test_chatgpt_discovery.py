@@ -22,7 +22,7 @@ from webaiprovider.providers.chatgpt import (
 )
 from webaiprovider.providers.chatgpt.client import _sse_data
 from webaiprovider.providers.chatgpt.discovery import model_catalog
-from webaiprovider.providers.chatgpt.errors import ChatGPTWebError
+from webaiprovider.providers.chatgpt.errors import ChatGPTError
 from webaiprovider.providers.chatgpt.formats import normalize_conversation
 
 from .fixtures import CATALOG
@@ -170,13 +170,13 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):
         for value in ({}, {"models": {}}, {"models": [None]}, {"models": [{"title": "No slug"}]}):
-            with self.subTest(value=value), self.assertRaises(ChatGPTWebError):
+            with self.subTest(value=value), self.assertRaises(ChatGPTError):
                 model_catalog(value)
         self.client.http.close()
         self.client.http = httpx.Client(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"unexpected": []}))
         )
-        with self.assertRaisesRegex(ChatGPTWebError, "items"):
+        with self.assertRaisesRegex(ChatGPTError, "items"):
             self.client.list_projects()
 
     def test_direct_send_applies_selected_model_effort_and_keeps_project(self):
@@ -199,7 +199,7 @@ class DiscoveryTests(unittest.TestCase):
         ):
             self.client.send_prompt("chat", "hello", model="account-thinking", effort="standard")
         self.assertEqual(send.call_args.args[-2:], ("account-thinking", "standard"))
-        with self.assertRaisesRegex(ChatGPTWebError, "not offered"):
+        with self.assertRaisesRegex(ChatGPTError, "not offered"):
             self.client.send_prompt(None, "hello", model="account-instant", effort="extended")
 
     def test_truncated_or_malformed_chatgpt_stream_cannot_succeed(self):
@@ -217,7 +217,7 @@ class DiscoveryTests(unittest.TestCase):
                 )
             )
             with patch.object(self.client, "create_sentinel_headers", return_value={}):
-                with self.assertRaises(ChatGPTWebError):
+                with self.assertRaises(ChatGPTError):
                     self.client.send_prompt_direct(None, "hello", [])
 
     def test_timezone_uses_a_real_iana_name_or_omits_the_optional_field(self):
@@ -244,7 +244,7 @@ class DiscoveryTests(unittest.TestCase):
             transport=httpx.MockTransport(lambda _: httpx.Response(204))
         )
         self.client.delete_conversation("chat")
-        with self.assertRaises(ChatGPTWebError):
+        with self.assertRaises(ChatGPTError):
             self.client.request("GET", "https://chatgpt.com/backend-api/test")
 
     def test_model_and_effort_reach_the_actual_stream_request(self):
@@ -342,7 +342,7 @@ class DiscoveryTests(unittest.TestCase):
             b"\n\n",
         )
 
-        with self.assertRaisesRegex(ChatGPTWebError, "2 MB"):
+        with self.assertRaisesRegex(ChatGPTError, "2 MB"):
             list(_sse_data(chunks))
 
     def test_sse_parser_handles_split_data_prefix_and_crlf(self):
@@ -355,7 +355,7 @@ class DiscoveryTests(unittest.TestCase):
 
         with (
             patch("webaiprovider.providers.chatgpt.client._SSE_MAX_EVENT_DATA_LINES", 2),
-            self.assertRaisesRegex(ChatGPTWebError, "data line limit"),
+            self.assertRaisesRegex(ChatGPTError, "data line limit"),
         ):
             list(_sse_data((chunks,)))
 
@@ -369,7 +369,7 @@ class DiscoveryTests(unittest.TestCase):
                 consumed += 1
                 yield b"x" * (64 * 1024)
 
-        with self.assertRaisesRegex(ChatGPTWebError, "2 MB"):
+        with self.assertRaisesRegex(ChatGPTError, "2 MB"):
             list(_sse_data(chunks()))
 
         self.assertLess(consumed, 100)
@@ -405,7 +405,7 @@ class DiscoveryTests(unittest.TestCase):
         with patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer):
             with (
                 patch.object(self.client, "create_sentinel_headers", return_value={}),
-                self.assertRaisesRegex(ChatGPTWebError, "stream failed"),
+                self.assertRaisesRegex(ChatGPTError, "stream failed"),
             ):
                 self.client.send_prompt_direct(None, "hello", [])
 

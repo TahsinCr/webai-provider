@@ -8,7 +8,7 @@ from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
-from webaiprovider.providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
+from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from webaiprovider.providers.chatgpt.sentinel import (
     DEFAULT_SENTINEL_SPEC,
     SentinelRuntime,
@@ -525,7 +525,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         client = make_client()
         self.addCleanup(client.close)
         client.request = Mock(
-            side_effect=ChatGPTWebError(
+            side_effect=ChatGPTError(
                 "ChatGPT returned HTTP 403 for POST /backend-api/sentinel/chat-requirements/prepare"
             )
         )

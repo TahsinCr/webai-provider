@@ -32,7 +32,7 @@ from .discovery import (
 from .discovery import (
     project_id as extract_project_id,
 )
-from .errors import ChatGPTWebError, SentinelCompatibilityError
+from .errors import ChatGPTError, SentinelCompatibilityError
 from .formats import message_parts, text_from_parts
 from .sentinel import SentinelRuntime
 from .session import BrowserSession
@@ -98,9 +98,9 @@ def _sse_data(chunks: Iterable[bytes]):
                     added_value = added_value[1:]
                 current_value_bytes = 0
             if total_bytes + current_value_bytes + len(added_value) > _SSE_MAX_EVENT_BYTES:
-                raise ChatGPTWebError("ChatGPT event payload exceeded the 2 MB limit")
+                raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
         if line_length + len(piece) > _SSE_MAX_LINE_BYTES:
-            raise ChatGPTWebError("ChatGPT event payload exceeded the 2 MB limit")
+            raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
         line.extend(piece)
 
     def consume_line(raw_line: bytes):
@@ -120,9 +120,9 @@ def _sse_data(chunks: Iterable[bytes]):
         if separator and value.startswith(b" "):
             value = value[1:]
         if data_line_count >= _SSE_MAX_EVENT_DATA_LINES:
-            raise ChatGPTWebError("ChatGPT event payload exceeded the data line limit")
+            raise ChatGPTError("ChatGPT event payload exceeded the data line limit")
         if total_bytes + len(value) > _SSE_MAX_EVENT_BYTES:
-            raise ChatGPTWebError("ChatGPT event payload exceeded the 2 MB limit")
+            raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
         data.append(value.decode("utf-8", errors="replace"))
         total_bytes += len(value)
         data_line_count += 1
@@ -282,8 +282,8 @@ class ChatGPTClient:
             return
         try:
             self.list_url, self.headers = self.session.load()
-        except ChatGPTWebError:
-            raise ChatGPTWebError(
+        except ChatGPTError:
+            raise ChatGPTError(
                 "No saved session; verify the account in the Accounts section"
             ) from None
 
@@ -297,14 +297,14 @@ class ChatGPTClient:
             timeout=30,
         )
         if response.status_code != 200:
-            raise ChatGPTWebError("Saved ChatGPT session expired; re-authenticate the account")
+            raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
         try:
             value = response.json()
             token = value.get("accessToken")
         except (ValueError, AttributeError) as error:
-            raise ChatGPTWebError("ChatGPT session refresh returned invalid data") from error
+            raise ChatGPTError("ChatGPT session refresh returned invalid data") from error
         if not isinstance(token, str) or not token:
-            raise ChatGPTWebError("Saved ChatGPT session expired; re-authenticate the account")
+            raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
         self.headers["authorization"] = f"Bearer {token}"
         cookie_header = self.headers.get("cookie", "")
         cookies = SimpleCookie()
@@ -321,7 +321,7 @@ class ChatGPTClient:
     ) -> httpx.Response:
         target = urlsplit(url)
         if target.scheme != "https" or target.netloc != "chatgpt.com":
-            raise ChatGPTWebError("authenticated requests must stay on the ChatGPT origin")
+            raise ChatGPTError("authenticated requests must stay on the ChatGPT origin")
         for attempt in range(2):
             request_headers = self.headers.copy()
             # httpx only decodes Brotli and Zstandard when optional packages are
@@ -339,8 +339,8 @@ class ChatGPTClient:
                 break
             try:
                 self.refresh_session()
-            except ChatGPTWebError:
-                raise ChatGPTWebError(
+            except ChatGPTError:
+                raise ChatGPTError(
                     "The session could not be refreshed; verify it again in the Accounts section."
                 ) from None
         if response.status_code == 429:
@@ -354,7 +354,7 @@ class ChatGPTClient:
 
             raise RemoteNotFound("ChatGPT conversation no longer exists")
         if response.status_code >= 400:
-            raise ChatGPTWebError(
+            raise ChatGPTError(
                 f"ChatGPT returned HTTP {response.status_code} for {method} {response.url.path}"
             )
         content_type = response.headers.get("content-type", "")
@@ -365,7 +365,7 @@ class ChatGPTClient:
         ):
             return response
         if "application/json" not in content_type:
-            raise ChatGPTWebError(
+            raise ChatGPTError(
                 f"ChatGPT returned unexpected content type {content_type or '<missing>'}"
             )
         return response
@@ -426,10 +426,10 @@ class ChatGPTClient:
             },
         ).json()
         if raw.get("error") or not isinstance(raw.get("resource"), dict):
-            raise ChatGPTWebError("Project creation response changed; request was not replayed")
+            raise ChatGPTError("Project creation response changed; request was not replayed")
         project = parse_project(raw["resource"])
         if project is None:
-            raise ChatGPTWebError("Project creation returned no project")
+            raise ChatGPTError("Project creation returned no project")
         return self.get_project(project["id"])
 
     def get_project(self, project_id: str) -> dict[str, Any]:
@@ -438,7 +438,7 @@ class ChatGPTClient:
         ).json()
         value = parse_project(raw)
         if value is None:
-            raise ChatGPTWebError("Requested gizmo is not a project")
+            raise ChatGPTError("Requested gizmo is not a project")
         return value
 
     def list_project_chats(self, project_id: str, cursor: str | None = None) -> dict[str, Any]:
@@ -488,7 +488,7 @@ class ChatGPTClient:
             ).json()
             items = response.get("items", [])
             if not isinstance(items, list):
-                raise ChatGPTWebError("conversation list did not contain an items array")
+                raise ChatGPTError("conversation list did not contain an items array")
             fresh = [
                 item for item in items if isinstance(item, dict) and item.get("id") not in seen
             ]
@@ -526,7 +526,7 @@ class ChatGPTClient:
             result = response.json()
             break
         if not isinstance(result, dict):
-            raise ChatGPTWebError("conversation response was not an object")
+            raise ChatGPTError("conversation response was not an object")
         self._remember_conversation(result)
         return result
 
@@ -548,7 +548,7 @@ class ChatGPTClient:
             expect_json=False,
         )
         if response.content and response.json().get("success") is False:
-            raise ChatGPTWebError("ChatGPT refused to delete the conversation.")
+            raise ChatGPTError("ChatGPT refused to delete the conversation.")
         self._forget_conversation(conversation_id)
 
     def move_conversation(self, conversation_id: str, project_id: str | None) -> dict[str, Any]:
@@ -566,7 +566,7 @@ class ChatGPTClient:
         )
         conversation = self.get_conversation(conversation_id)
         if extract_project_id(conversation) != project_id:
-            raise ChatGPTWebError(
+            raise ChatGPTError(
                 "Server did not confirm project membership; refresh this conversation"
             )
         return conversation
@@ -588,16 +588,16 @@ class ChatGPTClient:
             project_id is not None
             and (not isinstance(project_id, str) or not project_id.startswith("g-p-"))
         ):
-            raise ChatGPTWebError("invalid conversation options")
+            raise ChatGPTError("invalid conversation options")
         if temporary and project_id:
-            raise ChatGPTWebError("temporary conversations cannot belong to a project")
+            raise ChatGPTError("temporary conversations cannot belong to a project")
         previous_ids: set[str] = set()
         previous: dict[str, Any] | None = None
         if conversation_id:
             if temporary:
                 previous = self.temporary_conversations.get(conversation_id)
                 if previous is None:
-                    raise ChatGPTWebError(
+                    raise ChatGPTError(
                         "temporary conversation expired locally; start a new temporary chat"
                     )
             else:
@@ -635,7 +635,7 @@ class ChatGPTClient:
 
         if project_id:
             if previous and extract_project_id(previous) not in (None, project_id):
-                raise ChatGPTWebError("conversation belongs to another project")
+                raise ChatGPTError("conversation belongs to another project")
             previous = dict(previous or {}, project_id=project_id)
             if action is not None and conversation_id:
                 self._forget_conversation(conversation_id)
@@ -651,9 +651,9 @@ class ChatGPTClient:
         )
         selected = next((item for item in catalog.models if item.id == model), None)
         if selected is None:
-            raise ChatGPTWebError("Select a model from the current account catalog before sending")
+            raise ChatGPTError("Select a model from the current account catalog before sending")
         if effort is not None and effort not in {item.id for item in selected.efforts}:
-            raise ChatGPTWebError(f"Effort '{effort}' is not offered for model '{model}'")
+            raise ChatGPTError(f"Effort '{effort}' is not offered for model '{model}'")
 
         try:
             resolved_id, submitted_message_id, submitted_message, streamed_messages = (
@@ -696,13 +696,13 @@ class ChatGPTClient:
                 "temporary": True,
             }
             if not conversation["current_node"]:
-                raise ChatGPTWebError("temporary response has no continuation cursor")
+                raise ChatGPTError("temporary response has no continuation cursor")
             size = sum(
                 len(text_from_parts(message_parts(item.get("content"))))
                 for item in conversation["messages"]
             )
             if size > 2_000_000:
-                raise ChatGPTWebError(
+                raise ChatGPTError(
                     "temporary conversation reached the local memory limit; start a new one"
                 )
             self.temporary_conversations[resolved_id] = conversation
@@ -763,9 +763,7 @@ class ChatGPTClient:
         if not attached:
             if not temporary:
                 self._forget_conversation(resolved_id)
-            raise ChatGPTWebError(
-                "ChatGPT did not attach the submitted message to the conversation"
-            )
+            raise ChatGPTError("ChatGPT did not attach the submitted message to the conversation")
         if not temporary:
             self._remember_conversation(conversation)
             self.trigger_sentinel_prewarm()
@@ -801,13 +799,13 @@ class ChatGPTClient:
                 (i for i, item in enumerate(items) if item.get("id") == message_id), None
             )
             if target_index is None or (conversation or {}).get("is_read_only"):
-                raise ChatGPTWebError("The selected message is no longer editable")
+                raise ChatGPTError("The selected message is no longer editable")
             target = items[target_index]
             expected_role = "user" if action == MessageAction.EDIT else "assistant"
             if target.get("channel") == "analysis" or target.get("recipient") not in (None, "all"):
-                raise ChatGPTWebError("Only visible messages can be changed")
+                raise ChatGPTError("Only visible messages can be changed")
             if (target.get("author") or {}).get("role") != expected_role:
-                raise ChatGPTWebError("The message role does not match the requested action")
+                raise ChatGPTError("The message role does not match the requested action")
             if action == MessageAction.RETRY:
                 user = next(
                     (
@@ -818,12 +816,12 @@ class ChatGPTClient:
                     None,
                 )
                 if user is None:
-                    raise ChatGPTWebError("The original prompt is unavailable")
+                    raise ChatGPTError("The original prompt is unavailable")
                 body.update(action="variant", messages=[], parent_message_id=user["id"])
                 submitted_message_id = user["id"]
             elif action == MessageAction.EDIT:
                 if target_index == 0:
-                    raise ChatGPTWebError("The original message parent is unavailable")
+                    raise ChatGPTError("The original message parent is unavailable")
                 body["parent_message_id"] = items[target_index - 1]["id"]
                 original = target.get("content") or {}
                 resource_parts = [
@@ -837,7 +835,7 @@ class ChatGPTClient:
                     "attachments", []
                 )
             else:
-                raise ChatGPTWebError("Unsupported message action")
+                raise ChatGPTError("Unsupported message action")
         # Apply the provider-owned choices to this request; never retain an
         # effort preference captured from a different model.
         if model:
@@ -856,7 +854,7 @@ class ChatGPTClient:
         body["supported_encodings"] = []
         body["supports_buffering"] = False
         if not isinstance(submitted_message_id, str) or not submitted_message_id:
-            raise ChatGPTWebError("conversation request has no user message ID")
+            raise ChatGPTError("conversation request has no user message ID")
         submitted_message = (
             body["messages"][0]
             if body.get("messages") and isinstance(body["messages"][0], dict)
@@ -886,12 +884,12 @@ class ChatGPTClient:
             if response.status_code == 429:
                 retry_after = response.headers.get("retry-after")
                 suffix = f"; retry after {retry_after} seconds" if retry_after else ""
-                raise ChatGPTWebError(f"ChatGPT web rate limit reached{suffix}")
+                raise ChatGPTError(f"ChatGPT web rate limit reached{suffix}")
             if response.status_code >= 400:
-                raise ChatGPTWebError(f"ChatGPT submission returned HTTP {response.status_code}")
+                raise ChatGPTError(f"ChatGPT submission returned HTTP {response.status_code}")
             content_type = response.headers.get("content-type", "")
             if "text/event-stream" not in content_type:
-                raise ChatGPTWebError(
+                raise ChatGPTError(
                     f"ChatGPT returned unexpected content type {content_type or '<missing>'}"
                 )
             for payload in _sse_data(response.iter_bytes()):
@@ -912,13 +910,13 @@ class ChatGPTClient:
                 try:
                     event = json.loads(payload)
                 except json.JSONDecodeError:
-                    raise ChatGPTWebError(
+                    raise ChatGPTError(
                         "ChatGPT stream protocol changed; request not retried"
                     ) from None
                 if not isinstance(event, dict):
                     continue
                 if event.get("error"):
-                    raise ChatGPTWebError("ChatGPT stream failed; request not retried")
+                    raise ChatGPTError("ChatGPT stream failed; request not retried")
                 event_id = event.get("conversation_id")
                 if isinstance(event_id, str) and event_id:
                     resolved_id = event_id
@@ -980,11 +978,11 @@ class ChatGPTClient:
                     on_event({"type": "response_complete"})
                     completion_notified = True
         if not terminal_seen or not final_seen:
-            raise ChatGPTWebError(
+            raise ChatGPTError(
                 "ChatGPT response incomplete; remote outcome unknown; request not retried"
             )
         if not isinstance(resolved_id, str) or not resolved_id:
-            raise ChatGPTWebError("ChatGPT did not return a conversation ID")
+            raise ChatGPTError("ChatGPT did not return a conversation ID")
         return (
             resolved_id,
             submitted_message_id,
@@ -1021,7 +1019,7 @@ class ChatGPTClient:
             requirements = prepare_response.json()
         except SentinelCompatibilityError:
             raise
-        except ChatGPTWebError as error:
+        except ChatGPTError as error:
             message = str(error)
             if any(code in message for code in ("HTTP 400", "HTTP 403", "HTTP 422")):
                 raise SentinelCompatibilityError(
@@ -1152,11 +1150,11 @@ class ChatGPTClient:
             for attachment in attachments:
                 file_id = attachment.get("id")
                 if not isinstance(file_id, str) or not file_id.startswith(("file-", "file_")):
-                    raise ChatGPTWebError("invalid uploaded image ID")
+                    raise ChatGPTError("invalid uploaded image ID")
                 size = attachment.get("size_bytes")
                 if attachment.get("mime_type") != "image/png" and "width" not in attachment:
                     if type(size) is not int or size <= 0:
-                        raise ChatGPTWebError("invalid file size")
+                        raise ChatGPTError("invalid file size")
                     attachment_metadata.append(
                         {
                             "id": file_id,
@@ -1169,7 +1167,7 @@ class ChatGPTClient:
                 width = attachment.get("width")
                 height = attachment.get("height")
                 if not all(isinstance(value, int) and value > 0 for value in (size, width, height)):
-                    raise ChatGPTWebError("invalid uploaded image dimensions")
+                    raise ChatGPTError("invalid uploaded image dimensions")
                 content_parts.append(
                     {
                         "content_type": "image_asset_pointer",
@@ -1253,15 +1251,15 @@ class ChatGPTClient:
             if Path(file_name).suffix.lower() in {".csv", ".tsv", ".xls", ".xlsx"}:
                 max_bytes = min(max_bytes, 50 * 1024 * 1024)
             if not 0 < size <= max_bytes:
-                raise ChatGPTWebError("file exceeds the ChatGPT web upload size limit")
+                raise ChatGPTError("file exceeds the ChatGPT web upload size limit")
 
             deadline = time.monotonic() + max(60, min(3600, size / (512 * 1024)))
 
             def ensure_active():
                 if cancel_event is not None and cancel_event.is_set():
-                    raise ChatGPTWebError("file upload cancelled")
+                    raise ChatGPTError("file upload cancelled")
                 if time.monotonic() >= deadline:
-                    raise ChatGPTWebError("file upload timed out")
+                    raise ChatGPTError("file upload timed out")
 
             ensure_active()
             if mime_type == "image/png" and project_id is None:
@@ -1269,7 +1267,7 @@ class ChatGPTClient:
                     data = stream.read()
                 ensure_active()
                 if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) < 24:
-                    raise ChatGPTWebError("invalid PNG file")
+                    raise ChatGPTError("invalid PNG file")
                 return self.upload_image(
                     file_name,
                     mime_type,
@@ -1292,7 +1290,7 @@ class ChatGPTClient:
             ensure_active()
             file_id, upload_url = slot.get("file_id"), slot.get("upload_url")
             if not isinstance(file_id, str) or not isinstance(upload_url, str):
-                raise ChatGPTWebError("invalid file upload slot")
+                raise ChatGPTError("invalid file upload slot")
             headers = {"content-type": mime_type, "x-ms-blob-type": "BlockBlob"}
             if stream is not None:
                 headers["content-length"] = str(size)
@@ -1327,7 +1325,7 @@ class ChatGPTClient:
                     )
 
                 if signature(before) != signature(after):
-                    raise ChatGPTWebError("file changed while it was being uploaded")
+                    raise ChatGPTError("file changed while it was being uploaded")
             result = self.request(
                 "POST",
                 urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
@@ -1343,7 +1341,7 @@ class ChatGPTClient:
                 else {},
             ).json()
             if result.get("status") != "success":
-                raise ChatGPTWebError("provider did not finalize the file upload")
+                raise ChatGPTError("provider did not finalize the file upload")
             return {"id": file_id, "name": file_name, "mime_type": mime_type, "size_bytes": size}
         finally:
             if stream is not None:
@@ -1358,9 +1356,9 @@ class ChatGPTClient:
         height: int,
     ) -> dict[str, Any]:
         if mime_type != "image/png" or not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise ChatGPTWebError("only PNG clipboard images are currently supported")
+            raise ChatGPTError("only PNG clipboard images are currently supported")
         if not data or len(data) > 20 * 1024 * 1024:
-            raise ChatGPTWebError("clipboard image must be smaller than 20 MiB")
+            raise ChatGPTError("clipboard image must be smaller than 20 MiB")
         slot = self.request(
             "POST",
             urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
@@ -1373,7 +1371,7 @@ class ChatGPTClient:
         file_id = slot.get("file_id")
         upload_url = slot.get("upload_url")
         if not isinstance(file_id, str) or not isinstance(upload_url, str):
-            raise ChatGPTWebError("ChatGPT returned an invalid image upload slot")
+            raise ChatGPTError("ChatGPT returned an invalid image upload slot")
         upload = self.http.put(
             upload_url,
             content=data,
@@ -1387,7 +1385,7 @@ class ChatGPTClient:
             json={},
         ).json()
         if finalized.get("status") != "success":
-            raise ChatGPTWebError("ChatGPT did not finalize the image upload")
+            raise ChatGPTError("ChatGPT did not finalize the image upload")
         return {
             "id": file_id,
             "name": file_name,

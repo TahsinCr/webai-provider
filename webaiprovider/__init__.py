@@ -63,7 +63,7 @@ from .provider import (
 from .provider_type import ProviderType
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
-from .providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
+from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from .providers.chatgpt.provider import AsyncChatGPTProvider, ChatGPTProvider
 from .providers.chatgpt.resources import AsyncChatGPTChat
 from .providers.claude.catalogs import ClaudeModels
@@ -140,7 +140,7 @@ __all__ = [
     "TimingMetrics",
     "AccountPaused",
     "AmbiguousMatchError",
-    "ChatGPTWebError",
+    "ChatGPTError",
     "ConfigurationError",
     "ContentError",
     "FeatureUnavailable",

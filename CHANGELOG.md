@@ -31,6 +31,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Removed
 
 - Remove the former top-level `session.py`, `sync.py`, `facade.py`, and `catalogs/` package layout; no compatibility imports are provided for the new API.
+- Remove the `WebSession` and `ChatGPTWebError` aliases; use `HttpSession` and `ChatGPTError` directly.
 - Remove generic message branching and project/chat collection move helpers; use `Chat.branch()` or `Chat.move_to()` on provider-specific chat types that support them.
 - Remove the `CapabilityError` alias and capability-enum compatibility branch; compatibility errors now accept a message, and bounded caches use explicit cache operations instead of dictionary emulation.
 - Remove the legacy adapter request/event interface and bridge fallback; message sends now flow through the v2 `execute_stream` contract, with provider wire events confined to transport internals.

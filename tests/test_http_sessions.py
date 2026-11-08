@@ -19,7 +19,7 @@ from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, Remo
 from webaiprovider.providers.claude.errors import ClaudeRequestNotSent
 from webaiprovider.providers.claude.transport import ClaudeTransport, organization_from_bootstrap
 from webaiprovider.providers.gemini.rpc import NotebookEditor, NotebookRPC
-from webaiprovider.transport import WebSession
+from webaiprovider.transport import HttpSession
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
@@ -34,7 +34,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             close=AsyncMock(),
         )
         self.factory = Mock(return_value=self.client)
-        self.session = WebSession(
+        self.session = HttpSession(
             "https://claude.ai", self.path, "sessionKey", client_factory=self.factory
         )
         self.addAsyncCleanup(self.session.close)
@@ -105,7 +105,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             (429, RateLimited),
         ]:
             with self.subTest(status=status), self.assertRaises(kind):
-                WebSession.check(httpx.Response(status, headers={"retry-after": "2"}))
+                HttpSession.check(httpx.Response(status, headers={"retry-after": "2"}))
 
     def test_rate_limit_accepts_http_date_retry_after(self):
         now = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -115,12 +115,12 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("webaiprovider.transport.session.time.time", return_value=now.timestamp()):
             with self.assertRaises(RateLimited) as error:
-                WebSession.check(response)
+                HttpSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
 
         response = httpx.Response(429, headers={"retry-after": "not-a-date"})
         with self.assertRaises(RateLimited) as error:
-            WebSession.check(response)
+            HttpSession.check(response)
         self.assertIsNone(error.exception.retry_after)
 
     def test_invalid_credentials_are_rejected(self):

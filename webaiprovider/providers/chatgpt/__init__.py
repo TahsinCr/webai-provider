@@ -7,7 +7,7 @@ _EXPORTS = {
     "BrowserSession": "session",
     "SessionPaths": "session",
     "ChatGPTClient": "client",
-    "ChatGPTWebError": "errors",
+    "ChatGPTError": "errors",
     "SentinelCompatibilityError": "errors",
     "ChatGPTModels": "catalogs",
     "ChatGPTAdapter": "adapter",

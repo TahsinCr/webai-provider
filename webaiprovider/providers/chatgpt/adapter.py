@@ -47,7 +47,7 @@ from ..base import (
 )
 from .client import ChatGPTClient
 from .discovery import project_id
-from .errors import ChatGPTWebError
+from .errors import ChatGPTError
 from .formats import message_files, message_parts
 from .projects import ChatGPTProjectEditor
 from .session import BrowserSession
@@ -835,7 +835,7 @@ class ChatGPTAdapter(ProjectEditing, ProviderAdapter):
                     publish(
                         (
                             "error",
-                            ChatGPTWebError(
+                            ChatGPTError(
                                 "ChatGPT request failed; remote outcome is unknown and the request was not retried"
                             ),
                         )

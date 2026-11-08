@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
 from ...models import ProjectOptions, source_file
-from ...transport import WebSession
+from ...transport import HttpSession
 from ...utils.attachments import GROK_ATTACHMENTS
 
 ORIGIN = "https://grok.com"
@@ -63,7 +63,7 @@ async def _iter_bounded_lines(response):
 
 class GrokTransport:
     def __init__(self, credential_file, *, client_factory=None):
-        self.session = WebSession(ORIGIN, credential_file, None, client_factory=client_factory)
+        self.session = HttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
         self._auth_lock = asyncio.Lock()
 
     async def authenticate(self):

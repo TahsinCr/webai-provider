@@ -11,7 +11,7 @@ import httpx
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
 from webaiprovider.providers.chatgpt.discovery import model_catalog
-from webaiprovider.providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
+from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 
 from .fixtures import CATALOG
 
@@ -207,11 +207,11 @@ class SendOptionsTests(unittest.TestCase):
 
         def fail_after_content(*args, **kwargs):
             args[3]({"type": "delta", "text": "partial"})
-            raise ChatGPTWebError("stream interrupted")
+            raise ChatGPTError("stream interrupted")
 
         self.client.send_prompt_direct = Mock(side_effect=fail_after_content)
         self.client.get_conversation = Mock()
-        with self.assertRaisesRegex(ChatGPTWebError, "stream interrupted"):
+        with self.assertRaisesRegex(ChatGPTError, "stream interrupted"):
             self.client.send_prompt(
                 "remote", "Continue", model="account-thinking", on_event=events.append
             )
@@ -286,7 +286,7 @@ class SendOptionsTests(unittest.TestCase):
 
     def test_missing_temporary_context_never_falls_back_to_saved_chat(self):
         self.client.get_conversation = Mock(side_effect=AssertionError("no fallback GET"))
-        with self.assertRaises(ChatGPTWebError):
+        with self.assertRaises(ChatGPTError):
             self.client.send_prompt("expired", "Q", temporary=True)
         self.client.get_conversation.assert_not_called()
         self.assertEqual(self.requests, [])
@@ -298,12 +298,12 @@ class SendOptionsTests(unittest.TestCase):
         self.client.capture_send_recipe = Mock(
             side_effect=AssertionError("no private browser draft")
         )
-        with self.assertRaises(ChatGPTWebError):
+        with self.assertRaises(ChatGPTError):
             self.client.send_prompt(None, "Private", model="account-thinking", temporary=True)
         self.client.capture_send_recipe.assert_not_called()
         self.assertEqual(self.requests, [])
 
     def test_temporary_project_fails_before_network(self):
-        with self.assertRaises(ChatGPTWebError):
+        with self.assertRaises(ChatGPTError):
             self.client.send_prompt(None, "Q", temporary=True, project_id="g-p-work")
         self.assertEqual(self.requests, [])

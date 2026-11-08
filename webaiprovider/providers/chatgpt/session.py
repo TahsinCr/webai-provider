@@ -19,7 +19,7 @@ from ...accounts import CredentialStore, read_session, save_session
 from ...errors import AccountPaused
 from ...utils.cdp import DevToolsError, capture_chatgpt_auth, is_devtools_available
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
-from .errors import ChatGPTWebError
+from .errors import ChatGPTError
 
 CHATGPT_ROOT = Path(__file__).resolve().parent
 
@@ -115,7 +115,7 @@ class BrowserSession:
                 "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
             )
             if response.status_code != 200:
-                raise ChatGPTWebError(
+                raise ChatGPTError(
                     f"ChatGPT profile verification returned HTTP {response.status_code}"
                 )
             try:
@@ -123,7 +123,7 @@ class BrowserSession:
             except (ValueError, AttributeError):
                 token = None
             if not isinstance(token, str) or not token:
-                raise ChatGPTWebError("Session could not be verified")
+                raise ChatGPTError("Session could not be verified")
             values = dict(cookies)
             for cookie in client.cookies.jar:
                 domain = (cookie.domain or "").lstrip(".")
@@ -140,28 +140,28 @@ class BrowserSession:
             url = value["url"]
             headers = value["headers"]
         except (FileNotFoundError, AccountPaused) as error:
-            raise ChatGPTWebError("No saved ChatGPT session; authenticate the account") from error
+            raise ChatGPTError("No saved ChatGPT session; authenticate the account") from error
         except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
-            raise ChatGPTWebError("saved ChatGPT session is invalid") from error
+            raise ChatGPTError("saved ChatGPT session is invalid") from error
         if not isinstance(url, str):
-            raise ChatGPTWebError("saved ChatGPT session has an invalid origin")
+            raise ChatGPTError("saved ChatGPT session has an invalid origin")
         try:
             parsed = urlsplit(url)
         except ValueError as error:
-            raise ChatGPTWebError("saved ChatGPT session has an invalid origin") from error
+            raise ChatGPTError("saved ChatGPT session has an invalid origin") from error
         if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
-            raise ChatGPTWebError("saved ChatGPT session has an invalid origin")
+            raise ChatGPTError("saved ChatGPT session has an invalid origin")
         if not isinstance(headers, dict) or not all(
             isinstance(key, str) and isinstance(item, str) for key, item in headers.items()
         ):
-            raise ChatGPTWebError("saved ChatGPT session has invalid headers")
+            raise ChatGPTError("saved ChatGPT session has invalid headers")
         return url, {key.lower(): value for key, value in headers.items()}
 
     def capture_auth(self) -> tuple[str, dict[str, str]]:
         try:
             url, captured_headers = capture_chatgpt_auth(self.cdp_url)
         except DevToolsError as error:
-            raise ChatGPTWebError(str(error)) from error
+            raise ChatGPTError(str(error)) from error
         headers = {
             key.lower(): value
             for key, value in captured_headers.items()
@@ -181,11 +181,11 @@ class BrowserSession:
             return {"browser": "already_running", "cdp_url": self.cdp_url}
         parsed = urlsplit(self.cdp_url)
         if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
-            raise ChatGPTWebError("automatic browser launch requires a local HTTP CDP URL")
+            raise ChatGPTError("automatic browser launch requires a local HTTP CDP URL")
         port = parsed.port or 9222
         browser = find_chrome_executable()
         if not browser:
-            raise ChatGPTWebError("Chrome or Chromium was not found")
+            raise ChatGPTError("Chrome or Chromium was not found")
         profile = self.paths.profile
         profile.mkdir(mode=0o700, parents=True, exist_ok=True)
         _private(profile, 0o700)
@@ -216,12 +216,12 @@ class BrowserSession:
                     "login_required": True,
                 }
             time.sleep(0.1)
-        raise ChatGPTWebError("Chrome started but its debugger did not become ready")
+        raise ChatGPTError("Chrome started but its debugger did not become ready")
 
     def open_login(self) -> dict[str, Any]:
         opened = webbrowser.open("https://chatgpt.com/", new=2)
         if not opened:
-            raise ChatGPTWebError("default browser could not be opened")
+            raise ChatGPTError("default browser could not be opened")
         return {
             "browser": "default",
             "opened": True,

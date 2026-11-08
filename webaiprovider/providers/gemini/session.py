@@ -12,7 +12,7 @@ from ...accounts import read_session, save_session_async
 from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...models import Model
-from ...transport import WebSession
+from ...transport import HttpSession
 from .errors import GeminiCompatibilityError, GeminiError
 
 ORIGIN = "https://gemini.google.com"
@@ -88,7 +88,7 @@ class GeminiSession:
         )
         try:
             response = await self.http.get(ORIGIN + "/app", headers=HEADERS, allow_redirects=False)
-            WebSession.check(response)
+            HttpSession.check(response)
             fields = {}
             for name in ("SNlM0e", "cfb2h", "FdrFJe", "TuX5cc", "qKIAYe", "eptZe"):
                 match = re.search(r'"' + name + r'"\s*:\s*"([^"\\]*)"', response.text)
@@ -152,7 +152,7 @@ class GeminiSession:
             data={"at": self.token, "f.req": json.dumps([[p.serialize() for p in payloads]])},
             allow_redirects=False,
         )
-        WebSession.check(response)
+        HttpSession.check(response)
         await self.persist()
         return response
 
@@ -217,7 +217,7 @@ class GeminiSession:
                 headers={**HEADERS, "Accept": "text/plain"},
                 allow_redirects=False,
             )
-            WebSession.check(token_response)
+            HttpSession.check(token_response)
             token = token_response.text.strip()
             if not token:
                 raise ProviderError("Gemini session validation token could not be refreshed")
@@ -228,7 +228,7 @@ class GeminiSession:
                 data=body,
                 allow_redirects=False,
             )
-        WebSession.check(response)
+        HttpSession.check(response)
         result = self._decode_graphql(response.text)
         errors = result.get("errors")
         if errors:
@@ -313,7 +313,7 @@ class GeminiSession:
                     headers={**HEADERS, "Accept": "text/plain"},
                     allow_redirects=False,
                 )
-                WebSession.check(token_response)
+                HttpSession.check(token_response)
                 token = token_response.text.strip()
                 if not token:
                     raise ProviderError("Gemini session validation token could not be refreshed")
@@ -324,7 +324,7 @@ class GeminiSession:
                     data=body,
                     allow_redirects=False,
                 )
-            WebSession.check(res)
+            HttpSession.check(res)
             return res
 
         response, rpc_response = await asyncio.gather(
@@ -483,7 +483,7 @@ class GeminiSession:
                     failures += 1
                     interval = min(15 * (2 ** min(failures - 1, 6)), 900)
                     continue
-                WebSession.check(response)
+                HttpSession.check(response)
                 await self.persist()
                 failures = 0
                 interval = 600

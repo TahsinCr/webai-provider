@@ -12,7 +12,7 @@ from ...accounts import read_session
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
 from ...models import ProjectOptions, source_file
-from ...transport import WebSession
+from ...transport import HttpSession
 from ...utils.timing import current_send_timing
 from ..base import MessageAction, confirm_deleted
 from .catalogs import selector_catalog
@@ -45,7 +45,7 @@ def organization_from_bootstrap(data, selected):
 
 class ClaudeTransport:
     def __init__(self, credential_file, *, session=None):
-        self.session = session or WebSession("https://claude.ai", credential_file, "sessionKey")
+        self.session = session or HttpSession("https://claude.ai", credential_file, "sessionKey")
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
         self._coordinator = ConcurrencyCoordinator()

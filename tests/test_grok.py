@@ -168,7 +168,7 @@ class GrokAdapterTests(unittest.IsolatedAsyncioTestCase):
             check=Mock(side_effect=AccountPaused("expired")),
             persist=AsyncMock(),
         )
-        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.HttpSession", return_value=session):
             transport = GrokTransport(Path("unused"))
 
         with self.assertRaises(AccountPaused):
@@ -179,7 +179,7 @@ class GrokAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_uses_protected_user_settings_resource(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
-        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.HttpSession", return_value=session):
             transport = GrokTransport(Path("unused"))
             status = await transport.authenticate()
 
@@ -189,7 +189,7 @@ class GrokAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_rejects_missing_resource_payload(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value=None))
-        with patch("webaiprovider.providers.grok.transport.WebSession", return_value=session):
+        with patch("webaiprovider.providers.grok.transport.HttpSession", return_value=session):
             transport = GrokTransport(Path("unused"))
             with self.assertRaises(AccountPaused):
                 await transport.authenticate()

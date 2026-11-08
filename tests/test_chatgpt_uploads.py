@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
-from webaiprovider.providers.chatgpt.errors import ChatGPTWebError
+from webaiprovider.providers.chatgpt.errors import ChatGPTError
 from webaiprovider.utils.attachments import policy_for
 
 
@@ -67,12 +67,12 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                 chunks = iter(content)
                 self.assertEqual(len(next(chunks)), 256 * 1024)
                 cancel_event.set()
-                with self.assertRaisesRegex(ChatGPTWebError, "cancelled"):
+                with self.assertRaisesRegex(ChatGPTError, "cancelled"):
                     next(chunks)
                 return SimpleNamespace(raise_for_status=Mock())
 
             client.http = SimpleNamespace(put=Mock(side_effect=put))
-            with self.assertRaisesRegex(ChatGPTWebError, "cancelled"):
+            with self.assertRaisesRegex(ChatGPTError, "cancelled"):
                 client.upload_file(path.name, "text/plain", path, cancel_event=cancel_event)
             self.assertEqual(client.request.call_count, 1)
             client.http.put.assert_called_once()
@@ -84,6 +84,6 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             path = Path(folder) / "too-large.txt"
             with path.open("wb") as stream:
                 stream.truncate(512 * 1024 * 1024 + 1)
-            with self.assertRaisesRegex(ChatGPTWebError, "size limit"):
+            with self.assertRaisesRegex(ChatGPTError, "size limit"):
                 client.upload_file(path.name, "text/plain", path)
         client.request.assert_not_called()
