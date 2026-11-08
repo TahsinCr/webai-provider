@@ -21,7 +21,6 @@ from webaiprovider.providers.chatgpt import (
     ChatGPTClient,
     SessionPaths,
 )
-from webaiprovider.providers.chatgpt.client import _sse_data
 from webaiprovider.providers.chatgpt.discovery import model_catalog
 from webaiprovider.providers.chatgpt.errors import ChatGPTError
 from webaiprovider.providers.chatgpt.formats import normalize_conversation
@@ -300,12 +299,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result[0], "chat")
         self.assertEqual(result[3][0]["content"]["parts"], ["Answer"])
 
-    def test_sse_parser_keeps_valid_json_data_lines_in_one_event(self):
-        from webaiprovider.providers.chatgpt.client import _sse_data
-
-        payload = b'data: {"a":1}\ndata: {"b":2}\n\n'
-        self.assertEqual(list(_sse_data([payload])), ['{"a":1}\n{"b":2}'])
-
     def test_chatgpt_stream_delivers_first_text_before_next_network_chunk(self):
         events = []
         case = self
@@ -334,48 +327,6 @@ class DiscoveryTests(unittest.TestCase):
         )
         with patch.object(self.client, "create_sentinel_headers", return_value={}):
             self.client.send_prompt_direct(None, "hello", [], on_event=events.append)
-
-    def test_sse_event_limit_counts_utf8_bytes(self):
-        chunks = (
-            b"data: ",
-            ("é" * 600_000).encode(),
-            b"\n",
-            b"data: ",
-            ("é" * 400_001).encode(),
-            b"\n\n",
-        )
-
-        with self.assertRaisesRegex(ChatGPTError, "2 MB"):
-            list(_sse_data(chunks))
-
-    def test_sse_parser_handles_split_data_prefix_and_crlf(self):
-        chunks = (b"da", b'ta:{"text":"hello"}\r', b"\n\r", b"\n")
-
-        self.assertEqual(list(_sse_data(chunks)), ['{"text":"hello"}'])
-
-    def test_sse_event_line_limit_bounds_empty_data_lines(self):
-        chunks = (b"data:\n" * 4) + b"\n"
-
-        with (
-            patch("webaiprovider.providers.chatgpt.client._SSE_MAX_EVENT_DATA_LINES", 2),
-            self.assertRaisesRegex(ChatGPTError, "data line limit"),
-        ):
-            list(_sse_data((chunks,)))
-
-    def test_sse_event_limit_stops_before_consuming_an_unbounded_line(self):
-        consumed = 0
-
-        def chunks():
-            nonlocal consumed
-            yield b"data: "
-            for _ in range(100):
-                consumed += 1
-                yield b"x" * (64 * 1024)
-
-        with self.assertRaisesRegex(ChatGPTError, "2 MB"):
-            list(_sse_data(chunks()))
-
-        self.assertLess(consumed, 100)
 
     def test_failed_sse_releases_the_partial_message_buffer(self):
         message = {

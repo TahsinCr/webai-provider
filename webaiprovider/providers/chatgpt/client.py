@@ -11,13 +11,14 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 from http.cookies import SimpleCookie
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
 from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
+from ...frames import SSEFrameDecoder
 from ...utils.timing import SendTiming, current_send_timing
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (
@@ -41,9 +42,6 @@ _CONTINUATION_CACHE_TTL_SECONDS = 60.0
 _CONTINUATION_CACHE_MAX_ITEMS = 8
 _CONTINUATION_CACHE_MAX_MESSAGES = 2_000
 _CONTINUATION_CACHE_MAX_TEXT_CHARS = 1_000_000
-_SSE_MAX_EVENT_BYTES = 2_000_000
-_SSE_MAX_EVENT_DATA_LINES = 65_536
-_SSE_MAX_LINE_BYTES = _SSE_MAX_EVENT_BYTES + len(b"data: ")
 
 
 def system_timezone():
@@ -68,93 +66,6 @@ def system_timezone():
         except (ValueError, ZoneInfoNotFoundError):
             pass
     return None
-
-
-def _sse_data(chunks: Iterable[bytes]):
-    """Yield Server-Sent Events data fields, including valid multiline payloads."""
-    data: list[str] = []
-    total_bytes = 0
-    data_line_count = 0
-    line = bytearray()
-    skip_lf = False
-
-    def append_line_piece(piece: bytes) -> None:
-        line_length = len(line)
-        data_line = line.startswith(b"data:")
-        if not data_line and line_length < len(b"data:"):
-            prefix = bytes(line) + piece[: len(b"data:") - line_length]
-            data_line = prefix == b"data:"
-        if data_line:
-            if line_length >= len(b"data:"):
-                current_value_bytes = line_length - len(b"data:")
-                if line[len(b"data:") : len(b"data:") + 1] == b" ":
-                    current_value_bytes -= 1
-                added_value = piece
-                if line_length == len(b"data:") and added_value.startswith(b" "):
-                    added_value = added_value[1:]
-            else:
-                added_value = piece[len(b"data:") - line_length :]
-                if added_value.startswith(b" "):
-                    added_value = added_value[1:]
-                current_value_bytes = 0
-            if total_bytes + current_value_bytes + len(added_value) > _SSE_MAX_EVENT_BYTES:
-                raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
-        if line_length + len(piece) > _SSE_MAX_LINE_BYTES:
-            raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
-        line.extend(piece)
-
-    def consume_line(raw_line: bytes):
-        nonlocal data_line_count, total_bytes
-        if raw_line == b"":
-            if data:
-                yield "\n".join(data)
-                data.clear()
-                total_bytes = 0
-                data_line_count = 0
-            return
-        if raw_line.startswith(b":"):
-            return
-        field, separator, value = raw_line.partition(b":")
-        if field != b"data":
-            return
-        if separator and value.startswith(b" "):
-            value = value[1:]
-        if data_line_count >= _SSE_MAX_EVENT_DATA_LINES:
-            raise ChatGPTError("ChatGPT event payload exceeded the data line limit")
-        if total_bytes + len(value) > _SSE_MAX_EVENT_BYTES:
-            raise ChatGPTError("ChatGPT event payload exceeded the 2 MB limit")
-        data.append(value.decode("utf-8", errors="replace"))
-        total_bytes += len(value)
-        data_line_count += 1
-
-    for chunk in chunks:
-        offset = 0
-        while offset < len(chunk):
-            if skip_lf:
-                skip_lf = False
-                if chunk[offset] == 10:
-                    offset += 1
-                    continue
-            line_feed = chunk.find(b"\n", offset)
-            carriage_return = chunk.find(b"\r", offset)
-            delimiters = [index for index in (line_feed, carriage_return) if index >= 0]
-            if not delimiters:
-                append_line_piece(chunk[offset:])
-                break
-            delimiter = min(delimiters)
-            append_line_piece(chunk[offset:delimiter])
-            yield from consume_line(bytes(line))
-            line.clear()
-            offset = delimiter + 1
-            if chunk[delimiter] == 13:
-                if offset < len(chunk) and chunk[offset] == 10:
-                    offset += 1
-                else:
-                    skip_lf = True
-    if line:
-        yield from consume_line(bytes(line))
-    if data:
-        yield "\n".join(data)
 
 
 class ChatGPTClient:
@@ -892,7 +803,8 @@ class ChatGPTClient:
                 raise ChatGPTError(
                     f"ChatGPT returned unexpected content type {content_type or '<missing>'}"
                 )
-            for payload in _sse_data(response.iter_bytes()):
+            for frame in SSEFrameDecoder().decode(response.iter_bytes()):
+                payload = frame.data
                 event_at = time.perf_counter_ns() if timing is not None else None
                 if timing is not None and not first_sse_event:
                     first_sse_event = True

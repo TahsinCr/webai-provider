@@ -1,125 +1,19 @@
 """Bounded Gemini generation protocol and streaming disk uploads."""
 
 import asyncio
-import codecs
 import json
 import mimetypes
-import re
 import time
 import uuid
 from pathlib import Path
 
+from ...frames import JSPBFrameDecoder
 from ...models import MessageAction
 from ...transport import HttpSession
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
 from .session import BASE, HEADERS, nested
-
-
-class Frames:
-    """Decode Gemini's length-prefixed JSPB stream incrementally."""
-
-    _MAX_FRAME_UNITS = 8 * 1024 * 1024
-    _LENGTH_MARKER = re.compile(r"(\d+)\n")
-    _ANTI_XSSI = ")]}'"
-
-    def __init__(self):
-        self.decoder = codecs.getincrementaldecoder("utf-8")()
-        self.pending = ""
-        self.expected_units = None
-        self.payload_start = 0
-        self.scanned_chars = 0
-        self.scanned_units = 0
-        self.prefix_checked = False
-
-    def feed(self, data, final=False):
-        try:
-            self.pending += self.decoder.decode(data, final=final)
-        except UnicodeDecodeError as error:
-            raise GeminiStreamError("Gemini stream contains invalid UTF-8") from error
-
-        self._strip_prefix()
-        while self.expected_units is not None or self._read_length_marker():
-            self._scan_payload()
-            if self.scanned_units < self.expected_units:
-                break
-
-            end = self.payload_start + self.scanned_chars
-            payload, self.pending = self.pending[self.payload_start : end], self.pending[end:]
-            self._reset_frame()
-            try:
-                rows = json.loads(payload)
-            except ValueError as error:
-                raise GeminiStreamError("Gemini stream format has changed") from error
-            if isinstance(rows, list):
-                yield from rows
-            else:
-                yield rows
-
-        if len(self.pending) > self._MAX_FRAME_UNITS + 16:
-            raise GeminiStreamError("Gemini stream frame exceeds the size limit")
-        if final and self.pending.strip():
-            raise GeminiStreamError("Gemini stream ended with an incomplete frame")
-
-    def _strip_prefix(self):
-        if self.prefix_checked:
-            return
-        if len(self.pending) < len(self._ANTI_XSSI) and self._ANTI_XSSI.startswith(self.pending):
-            return
-        if self.pending.startswith(self._ANTI_XSSI):
-            self.pending = self.pending[len(self._ANTI_XSSI) :].lstrip()
-        self.prefix_checked = True
-
-    def _read_length_marker(self):
-        if not self.prefix_checked:
-            return False
-        self.pending = self.pending.lstrip()
-        if not self.pending:
-            return False
-        match = self._LENGTH_MARKER.match(self.pending)
-        if match is None:
-            if self.pending.isdecimal() and len(self.pending) <= 10:
-                return False
-            if self.pending[0].isdigit() and "\n" not in self.pending:
-                raise GeminiStreamError("Gemini stream frame length is invalid")
-            raise GeminiStreamError("Gemini stream frame length field is invalid")
-
-        length = int(match.group(1))
-        if not 1 <= length <= self._MAX_FRAME_UNITS:
-            raise GeminiStreamError("Gemini stream frame exceeds the size limit")
-        self.expected_units = length
-        # Google counts the newline after the length marker in the UTF-16 size.
-        self.payload_start = len(match.group(1))
-        self.scanned_chars = 0
-        self.scanned_units = 0
-        return True
-
-    def _scan_payload(self):
-        index = self.payload_start + self.scanned_chars
-        needed_units = self.expected_units - self.scanned_units
-        remaining_chars = len(self.pending) - index
-        if remaining_chars > 0 and needed_units > 0:
-            take_candidate = min(remaining_chars, needed_units)
-            chunk = self.pending[index : index + take_candidate]
-            if max(chunk) <= "\uffff":
-                take_chars = len(chunk)
-                self.scanned_chars += take_chars
-                self.scanned_units += take_chars
-                index += take_chars
-        while self.scanned_units < self.expected_units and index < len(self.pending):
-            units = 2 if ord(self.pending[index]) > 0xFFFF else 1
-            if self.scanned_units + units > self.expected_units:
-                raise GeminiStreamError("Gemini stream frame UTF-16 length is invalid")
-            self.scanned_chars += 1
-            self.scanned_units += units
-            index += 1
-
-    def _reset_frame(self):
-        self.expected_units = None
-        self.payload_start = 0
-        self.scanned_chars = 0
-        self.scanned_units = 0
 
 
 async def upload_files(session, paths):
@@ -244,7 +138,7 @@ async def generate(
     if files is None:
         files = await upload_files(session, [item["path"] for item in request.attachments])
     headers, data = generation_request(session, request, metadata, files, notebook)
-    frames = Frames()
+    frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
     completed = False
     last_text = last_thoughts = ""
     timing = current_send_timing()
@@ -272,10 +166,12 @@ async def generate(
 
             async def parts():
                 async for chunk in response.aiter_content():
-                    for frame in frames.feed(chunk):
+                    for packet in frames.feed(chunk):
+                        for frame in packet if isinstance(packet, list) else (packet,):
+                            yield frame
+                for packet in frames.feed(b"", final=True):
+                    for frame in packet if isinstance(packet, list) else (packet,):
                         yield frame
-                for frame in frames.feed(b"", final=True):
-                    yield frame
 
             async for frame in parts():
                 event_at = time.perf_counter_ns() if timing is not None else None

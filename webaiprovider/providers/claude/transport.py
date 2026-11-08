@@ -12,6 +12,7 @@ from ...accounts import read_session
 from ...async_provider import confirm_deleted
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
+from ...frames import SSEFrameDecoder
 from ...models import MessageAction, ProjectOptions, source_file
 from ...transport import HttpSession
 from ...utils.timing import current_send_timing
@@ -406,21 +407,9 @@ class ClaudeTransport:
             if sse_started is not None:
                 timing.record("sse_connect_ms", response_opened - sse_started)
             self.session.check(response)
-            payload = []
-            payload_size = 0
-            async for line in response.aiter_lines():
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8")
-                if line.startswith("data:"):
-                    payload.append(line[5:].lstrip())
-                    payload_size += len(payload[-1])
-                    if payload_size > 1_048_576:
-                        raise ClaudeStreamError("Claude stream event exceeded its size limit")
-                    continue
-                if line or not payload:
-                    continue
-                raw, payload = "\n".join(payload), []
-                payload_size = 0
+            decoder = SSEFrameDecoder(max_event_bytes=1_048_576, utf8_errors="strict")
+            async for frame in decoder.decode_lines(response.aiter_lines()):
+                raw = frame.data
                 if raw == "[DONE]":
                     continue
                 event = json.loads(raw)

@@ -7,6 +7,7 @@ import mimetypes
 from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
+from ...frames import SSEFrameDecoder
 from ...models import ProjectOptions, source_file
 from ...transport import HttpSession
 from ...utils.attachments import GROK_ATTACHMENTS
@@ -152,56 +153,27 @@ class GrokTransport:
                 timeout=600,
             ) as response:
                 self.session.check(response)
-                payload = []
-                async for line in _iter_bounded_lines(response):
-                    line = line.strip()
-                    if not line:
-                        if payload:
-                            raw = "\n".join(payload)
-                            payload.clear()
-                            if raw == "[DONE]":
-                                continue
-                            try:
-                                event = json.loads(raw)
-                            except ValueError:
-                                raise ProviderError(
-                                    "Grok stream response format has changed"
-                                ) from None
-                            if not isinstance(event, dict):
-                                raise ProviderError("Grok stream response format has changed")
-                            yield event
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    if line == "[DONE]":
-                        continue
-                    if line.startswith("data:"):
-                        line = line[5:].lstrip()
-                        if not line:
-                            continue
-                        if line == "[DONE]":
-                            continue
-                        payload.append(line)
-                        continue
-                    if line.startswith(("event:", "id:", "retry:")):
-                        continue
+                decoder = SSEFrameDecoder(max_event_bytes=_MAX_LINE_BYTES, utf8_errors="strict")
+
+                def parse(raw):
                     try:
-                        event = json.loads(line)
+                        event = json.loads(raw)
                     except ValueError:
                         raise ProviderError("Grok stream response format has changed") from None
                     if not isinstance(event, dict):
                         raise ProviderError("Grok stream response format has changed")
-                    yield event
-                if payload:
-                    raw = "\n".join(payload)
-                    if raw != "[DONE]":
-                        try:
-                            event = json.loads(raw)
-                        except ValueError:
-                            raise ProviderError("Grok stream response format has changed") from None
-                        if not isinstance(event, dict):
-                            raise ProviderError("Grok stream response format has changed")
-                        yield event
+                    return event
+
+                async for line in _iter_bounded_lines(response):
+                    if line.startswith(("data:", "event:", "id:", "retry:", ":")) or not line:
+                        for frame in decoder.feed_line(line):
+                            if frame.data != "[DONE]":
+                                yield parse(frame.data)
+                    elif line.strip() != "[DONE]":
+                        yield parse(line)
+                for frame in decoder.feed(b"", final=True):
+                    if frame.data != "[DONE]":
+                        yield parse(frame.data)
         except AccountPaused:
             self.session.authenticated = False
             raise

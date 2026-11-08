@@ -16,7 +16,7 @@ from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.models import Choice, Model
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.gemini.session import GeminiSession
-from webaiprovider.providers.gemini.transport import Frames, generation_request, upload_files
+from webaiprovider.providers.gemini.transport import generation_request, upload_files
 
 
 async def delayed_response(_request):
@@ -240,32 +240,6 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             await session.close()
         self.assertEqual([v["__Secure-1PSID"] for v in writes], ["first", "rotated", "last"])
         self.assertIsNone(session.http)
-
-    def test_frames_handle_utf8_boundaries_lengths_and_multiple_packets(self):
-        frames = [
-            [["wrb.fr", None, json.dumps(["Türkçe 🛰️"])]],
-            [["wrb.fr", None, json.dumps(["ikinci çerçeve"])]],
-        ]
-
-        def encode(rows):
-            payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-            size = len(("\n" + payload).encode("utf-16-le")) // 2
-            return f"{size}\n{payload}"
-
-        wire = (")]}'\n\n" + "".join(encode(frame) for frame in frames) + "\n").encode()
-        parser = Frames()
-        output = []
-        for byte in wire:
-            output.extend(parser.feed(bytes([byte])))
-        output.extend(parser.feed(b"", final=True))
-        self.assertEqual(output, frames[0] + frames[1])
-        self.assertEqual(parser.pending, "")
-
-    def test_frame_size_and_invalid_json_are_rejected(self):
-        with self.assertRaises(ProviderError):
-            list(Frames().feed(b"8388609\n"))
-        with self.assertRaises(ProviderError):
-            list(Frames().feed(b"10\n[[invalid", final=True))
 
     def test_model_selection_notebook_temporary_and_effort_are_native(self):
         model = Model(
@@ -796,21 +770,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(provider._chat_metadata.get("c1"))
         self.assertIsNone(provider._chat_metadata.get("c2"))
         self.assertIsNotNone(provider._chat_metadata.get("c3"))
-
-    def test_frames_fast_path_and_astral_planes(self):
-        from webaiprovider.providers.gemini.transport import Frames
-
-        def encode(rows):
-            payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-            size = len(("\n" + payload).encode("utf-16-le")) // 2
-            return f"{size}\n{payload}"
-
-        frames = Frames()
-        frame = [["test", "Merhaba dünya! 🚀"]]
-        wire = (")]}'\n\n" + encode(frame) + "\n").encode()
-        parsed = list(frames.feed(wire, final=True))
-        self.assertEqual(len(parsed), 1)
-        self.assertEqual(parsed[0][1], "Merhaba dünya! 🚀")
 
     async def test_flash_variants_distinguish_default_fast_and_specialized_models(self):
         fast_row = [None] * 18

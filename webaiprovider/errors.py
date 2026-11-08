@@ -25,6 +25,10 @@ class StreamError(ProviderError):
     code = "stream_error"
 
 
+class FrameDecodeError(StreamError):
+    code = "frame_decode_error"
+
+
 class AuthenticationError(ProviderError):
     code = "authentication_error"
 
