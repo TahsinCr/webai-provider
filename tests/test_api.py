@@ -465,8 +465,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_bridge_provider_instantiation_for_all_backends(self) -> None:
         providers = (
-            (ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"})), "chatgpt"),
-            (GeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"})), "gemini"),
+            (
+                ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"})),
+                "chatgpt",
+            ),
+            (
+                GeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"})),
+                "gemini",
+            ),
             (ClaudeProvider(Account.from_cookies("claude", {"sessionKey": "token-3"})), "claude"),
             (GrokProvider(Account.from_cookies("grok", {"sso": "token-4"})), "grok"),
         )

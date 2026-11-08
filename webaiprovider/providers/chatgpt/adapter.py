@@ -7,7 +7,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
-from typing import Callable
+from typing import Any, AsyncIterator, Callable
 
 from ...accounts import delete_session, session_exists
 from ...base import (
@@ -21,7 +21,22 @@ from ...base import (
     SendRequest,
     TextDelta,
     confirm_deleted,
+    prepare_operation,
     validate_request,
+)
+from ...contracts import (
+    Artifact,
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    Source,
+    SourceDiscovered,
+    StreamEvent,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
 )
 from ...errors import (
     FeatureUnavailable,
@@ -875,3 +890,269 @@ class ChatGPTProvider(ProjectEditing, ProviderAdapter):
                 await asyncio.shield(worker)
                 if self._persistent_client and not stream_finished:
                     await self._discard_http_client()
+
+    async def execute_stream(self, operation: Any) -> AsyncIterator[StreamEvent]:
+        from .formats import message_parts, text_from_parts
+
+        req = await prepare_operation(operation)
+        request = req.to_send_request(self.id, self.account_id, operation.chat.id)
+
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue(maxsize=32)
+        stopped = threading.Event()
+        holder = []
+
+        def publish(item):
+            if stopped.is_set():
+                raise _Stopped()
+            future = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
+            while True:
+                try:
+                    future.result(timeout=0.1)
+                    return
+                except concurrent.futures.TimeoutError:
+                    if stopped.is_set():
+                        future.cancel()
+                        raise _Stopped()
+
+        def event(value):
+            kind = value.get("type")
+            if kind == "delta":
+                publish(("delta", value.get("text", ""), value.get("channel")))
+            elif kind == "replace":
+                publish(("replace", value.get("text", ""), value.get("channel")))
+            elif kind == "response_complete":
+                publish(("response_complete", None, None))
+
+        def work():
+            try:
+                timing = current_send_timing()
+                scope_started = time.perf_counter_ns() if timing is not None else None
+                with self._client_scope() as client:
+                    if scope_started is not None:
+                        timing.record(
+                            "provider_client_ready_ms", time.perf_counter_ns() - scope_started
+                        )
+                    client.temporary_conversations = self._temporary_conversations
+                    holder.append(client)
+                    if stopped.is_set():
+                        return
+                    remote_id, completed, previous = client.send_prompt(
+                        request.conversation_id,
+                        request.prompt,
+                        on_event=event,
+                        **(
+                            {"attachments": list(request.attachments)}
+                            if request.attachments
+                            else {}
+                        ),
+                        **({"model": request.model} if request.model is not None else {}),
+                        **({"effort": request.effort} if request.effort is not None else {}),
+                        **({"project_id": request.project_id} if request.project_id else {}),
+                        **({"temporary": True} if request.temporary else {}),
+                        **(
+                            {"action": request.action, "message_id": request.message_id}
+                            if request.action
+                            else {}
+                        ),
+                        **({"branch": request.branch} if request.branch else {}),
+                    )
+
+                    summaries = []
+                    previous_set = set(previous or ())
+                    for item in completed.get("messages", []):
+                        if item.get("id") in previous_set or item.get("recipient") not in (
+                            None,
+                            "all",
+                        ):
+                            continue
+                        if (item.get("metadata") or {}).get("is_visually_hidden_from_conversation"):
+                            continue
+                        if (item.get("author") or {}).get("role") != "assistant":
+                            continue
+                        content = item.get("content") or {}
+                        if item.get("channel") == "analysis" or content.get("content_type") in (
+                            "thoughts",
+                            "reasoning_recap",
+                            "reasoning_summary",
+                        ):
+                            text = text_from_parts(message_parts(content))
+                            if text:
+                                summaries.append(text)
+                    if summaries:
+                        publish(("replace", "\n\n".join(summaries), "analysis"))
+
+                    final = next(
+                        (
+                            item
+                            for item in reversed(completed.get("messages", []))
+                            if (item.get("author") or {}).get("role") == "assistant"
+                            and item.get("channel") != "analysis"
+                            and item.get("recipient") in (None, "all")
+                        ),
+                        None,
+                    )
+                    if final:
+                        response_messages = completed.get("messages", [])
+                        turn_start = next(
+                            (
+                                index + 1
+                                for index in range(len(response_messages) - 1, -1, -1)
+                                if (response_messages[index].get("author") or {}).get("role")
+                                == "user"
+                            ),
+                            0,
+                        )
+                        user = next(
+                            (
+                                item
+                                for item in reversed(completed.get("messages", []))
+                                if (item.get("author") or {}).get("role") == "user"
+                            ),
+                            {},
+                        )
+                        publish(
+                            (
+                                "metadata",
+                                final.get("id"),
+                                user.get("id"),
+                                sources_from(final),
+                                message_files(*response_messages[turn_start:]),
+                            )
+                        )
+                    publish(("bound", remote_id, None))
+            except _Stopped:
+                return
+            except ProviderError as error:
+                if not stopped.is_set():
+                    publish(("error", error, None))
+            except Exception:
+                if not stopped.is_set():
+                    publish(
+                        (
+                            "error",
+                            ChatGPTWebError(
+                                "ChatGPT request failed; remote outcome is unknown and the request was not retried"
+                            ),
+                            None,
+                        )
+                    )
+            finally:
+                if not stopped.is_set():
+                    publish(("done", None, None))
+
+        timing = current_send_timing()
+        gate_wait_started = time.perf_counter_ns() if timing is not None else None
+        output_started = False
+        thinking_started = False
+        thinking_text = ""
+
+        async with self._gate:
+            if gate_wait_started is not None:
+                timing.record(
+                    "provider_send_gate_wait_ms", time.perf_counter_ns() - gate_wait_started
+                )
+            worker = asyncio.create_task(asyncio.to_thread(work))
+            stream_finished = False
+            try:
+                while True:
+                    tag, val1, *rest = await queue.get()
+                    if tag == "done":
+                        stream_finished = True
+                        break
+                    if tag == "error":
+                        raise val1
+                    if tag == "bound":
+                        operation.chat.remote_id = val1
+                    elif tag == "delta":
+                        channel = rest[0] if rest else None
+                        if channel == "analysis":
+                            thinking_text += val1
+                            if not thinking_started:
+                                thinking_started = True
+                                yield ThinkingBegin()
+                            if val1:
+                                yield ThinkingDelta(delta=val1)
+                        else:
+                            if thinking_started:
+                                thinking_started = False
+                                yield ThinkingEnd(text=thinking_text)
+                            if not output_started:
+                                output_started = True
+                                yield OutputBegin()
+                            if val1:
+                                yield OutputDelta(delta=val1)
+                    elif tag == "replace":
+                        channel = rest[0] if rest else None
+                        if channel == "analysis":
+                            delta = (
+                                val1[len(thinking_text) :]
+                                if val1.startswith(thinking_text)
+                                else val1
+                            )
+                            thinking_text = val1
+                            if not thinking_started:
+                                thinking_started = True
+                                yield ThinkingBegin()
+                            if delta:
+                                yield ThinkingDelta(delta=delta)
+                        else:
+                            if not val1 and not output_started:
+                                continue
+                            if thinking_started:
+                                thinking_started = False
+                                yield ThinkingEnd(text=thinking_text)
+                            if not output_started:
+                                output_started = True
+                                yield OutputBegin()
+                            yield OutputReplace(text=val1)
+                    elif tag == "metadata":
+                        final_id, user_id, sources, files = val1, rest[0], rest[1], rest[2]
+                        if user_id:
+                            operation.message.id = user_id
+                        if final_id:
+                            operation._assistant_message_id = final_id
+                        for record in sources:
+                            yield SourceDiscovered(
+                                Source(
+                                    id=str(record.get("id") or record.get("source_id") or ""),
+                                    url=str(record.get("url") or ""),
+                                    title=str(record.get("title") or ""),
+                                    snippet=str(record.get("snippet") or ""),
+                                    kind=str(record.get("kind") or "web"),
+                                    metadata=record,
+                                )
+                            )
+                        for record in files:
+                            size = record.get("size")
+                            yield ArtifactDiscovered(
+                                Artifact(
+                                    id=str(record.get("id") or record.get("file_id") or ""),
+                                    kind=str(record.get("kind") or "file"),
+                                    name=str(
+                                        record.get("name")
+                                        or record.get("filename")
+                                        or record.get("file_name")
+                                        or ""
+                                    ),
+                                    mime_type=str(
+                                        record.get("mime_type") or "application/octet-stream"
+                                    ),
+                                    size=size if isinstance(size, int) else None,
+                                    download_url=record.get("download_url") or record.get("url"),
+                                    content=record.get("content"),
+                                    metadata=record,
+                                )
+                            )
+            finally:
+                stopped.set()
+                if holder and (not self._persistent_client or not stream_finished):
+                    await asyncio.to_thread(holder[0].close)
+                await asyncio.shield(worker)
+                if self._persistent_client and not stream_finished:
+                    await self._discard_http_client()
+
+        if thinking_started:
+            yield ThinkingEnd(text=thinking_text)
+        if output_started:
+            yield OutputEnd()

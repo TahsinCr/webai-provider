@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from webaiprovider import Account, Chat, Message, MessageOperation, Provider
+from webaiprovider.contracts import (
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    SourceDiscovered,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+)
+from webaiprovider.errors import AccountPaused, RateLimited
+from webaiprovider.models import Choice, FeatureState, ModelCatalog
+from webaiprovider.models import Model as CatalogModel
+from webaiprovider.providers.chatgpt.adapter import ChatGPTProvider
+from webaiprovider.providers.claude.adapter import ClaudeProvider
+from webaiprovider.providers.gemini.adapter import GeminiProvider
+from webaiprovider.providers.grok.adapter import GrokProvider
+
+
+def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> Provider:
+    account = Account.from_cookies(provider_name, {"session": "token"}, id=account_id)
+    session = Provider(account)
+    models_catalog = [
+        CatalogModel(
+            "default-model",
+            "Default Model",
+            (Choice("standard", "Standard"), Choice("high", "High")),
+            default_effort="standard",
+        )
+    ]
+    session.models.list = AsyncMock(
+        return_value=ModelCatalog(FeatureState.AVAILABLE, tuple(models_catalog), "default-model")
+    )
+    return session
+
+
+class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_v2_events_and_updates_operation(self) -> None:
+        session = _create_mock_session("claude")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Claude", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter.transport.authenticated = True
+
+        async def fake_events(*args, **kwargs):
+            yield {"type": "bound", "id": "claude-conv-123"}
+            yield {"type": "delta", "text": "Analyzing query", "channel": "analysis"}
+            yield {"type": "delta", "text": "Hello ", "channel": "final"}
+            yield {"type": "delta", "text": "human!", "channel": "final"}
+            yield {
+                "type": "metadata",
+                "message_id": "claude-asst-msg-1",
+                "user_message_id": "claude-user-msg-1",
+                "sources": [{"id": "s1", "url": "https://claude.ai/doc", "title": "Doc"}],
+                "files": [{"id": "f1", "name": "result.pdf", "size": 1024}],
+            }
+            yield {"type": "done"}
+
+        adapter.transport.events = fake_events
+
+        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=True):
+            events = [event async for event in adapter.execute_stream(operation)]
+
+        self.assertEqual(chat.remote_id, "claude-conv-123")
+        self.assertEqual(operation.message.id, "claude-user-msg-1")
+        self.assertEqual(operation._assistant_message_id, "claude-asst-msg-1")
+
+        event_types = [type(e) for e in events]
+        self.assertIn(ThinkingBegin, event_types)
+        self.assertIn(ThinkingDelta, event_types)
+        self.assertIn(ThinkingEnd, event_types)
+        self.assertIn(OutputBegin, event_types)
+        self.assertIn(OutputDelta, event_types)
+        self.assertIn(SourceDiscovered, event_types)
+        self.assertIn(ArtifactDiscovered, event_types)
+        self.assertIn(OutputEnd, event_types)
+
+        source_event = next(e for e in events if isinstance(e, SourceDiscovered))
+        self.assertEqual(source_event.source.id, "s1")
+        self.assertEqual(source_event.source.url, "https://claude.ai/doc")
+
+        artifact_event = next(e for e in events if isinstance(e, ArtifactDiscovered))
+        self.assertEqual(artifact_event.artifact.id, "f1")
+        self.assertEqual(artifact_event.artifact.name, "result.pdf")
+
+    async def test_execute_stream_rejects_unauthenticated_session(self) -> None:
+        session = _create_mock_session("claude")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Claude", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter.transport.authenticated = False
+
+        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=False):
+            with self.assertRaises(AccountPaused):
+                _ = [event async for event in adapter.execute_stream(operation)]
+
+
+class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_v2_events_and_caches_continuation(self) -> None:
+        session = _create_mock_session("grok")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Grok", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = GrokProvider("cred_file", account_id="acc-test")
+        catalog = ModelCatalog(
+            FeatureState.AVAILABLE,
+            (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
+            "grok-3",
+        )
+        adapter.models = AsyncMock(return_value=catalog)
+
+        async def fake_events(*args, **kwargs):
+            yield {
+                "result": {
+                    "conversation": {"conversationId": "grok-conv-456"},
+                    "response": {
+                        "userResponse": {"responseId": "grok-user-456"},
+                        "modelResponse": {
+                            "responseId": "grok-resp-456",
+                            "model": "grok-3",
+                            "webSearchResults": [{"url": "https://x.com", "title": "X"}],
+                        },
+                        "token": "Grok answering",
+                        "done": True,
+                    },
+                }
+            }
+
+        adapter.transport.events = fake_events
+
+        events = [event async for event in adapter.execute_stream(operation)]
+
+        self.assertEqual(chat.remote_id, "grok-conv-456")
+        self.assertEqual(operation.message.id, "grok-user-456")
+        self.assertEqual(operation._assistant_message_id, "grok-resp-456")
+        self.assertEqual(adapter._take_continuation("grok-conv-456"), "grok-resp-456")
+
+        event_types = [type(e) for e in events]
+        self.assertIn(OutputBegin, event_types)
+        self.assertIn(OutputDelta, event_types)
+        self.assertIn(SourceDiscovered, event_types)
+        self.assertIn(OutputEnd, event_types)
+
+    async def test_execute_stream_raises_on_rate_limit(self) -> None:
+        session = _create_mock_session("grok")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Grok", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = GrokProvider("cred_file", account_id="acc-test")
+        catalog = ModelCatalog(
+            FeatureState.AVAILABLE,
+            (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
+            "grok-3",
+        )
+        adapter.models = AsyncMock(return_value=catalog)
+
+        async def fake_events(*args, **kwargs):
+            yield {
+                "result": {
+                    "conversationId": "grok-conv-789",
+                    "error": {"code": "RATE_LIMIT_EXCEEDED", "retryAfter": 12.5},
+                }
+            }
+
+        adapter.transport.events = fake_events
+
+        with self.assertRaises(RateLimited) as cm:
+            _ = [event async for event in adapter.execute_stream(operation)]
+        self.assertEqual(cm.exception.retry_after, 12.5)
+
+
+class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_v2_events_and_resolves_image_links(self) -> None:
+        session = _create_mock_session("gemini")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Gemini", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = GeminiProvider("cookie_file", account_id="acc-test")
+        adapter._connect = AsyncMock()
+
+        mock_client = MagicMock()
+        mock_client.models = ("gemini-2.5-flash",)
+        mock_client.sync_activity = AsyncMock()
+
+        async def fake_prepare(req):
+            return mock_client, req, ["", "", ""], None, None
+
+        adapter._prepare_send_context = fake_prepare
+
+        async def fake_generate(*args, **kwargs):
+            yield {
+                "cid": "gemini-conv-321",
+                "metadata": ["gemini-conv-321", "rc_turn_1", "rc_cid_1"],
+                "thoughts": "Thinking deeply",
+                "text": "Check image: http://google.com/image.png",
+                "files": [
+                    {
+                        "alias": "http://google.com/image.png",
+                        "name": "photo.png",
+                        "url": "https://lh3.googleusercontent.com/blob",
+                        "media_type": "image/png",
+                    }
+                ],
+                "sources": [{"id": "g-src-1", "url": "https://google.com", "title": "Google"}],
+                "response_complete": True,
+            }
+
+        with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
+            events = [event async for event in adapter.execute_stream(operation)]
+
+        self.assertEqual(chat.remote_id, "gemini-conv-321")
+        self.assertEqual(operation.message.id, "rc_turn_1:user")
+        self.assertEqual(operation._assistant_message_id, "rc_turn_1:model")
+
+        event_types = [type(e) for e in events]
+        self.assertIn(ThinkingBegin, event_types)
+        self.assertIn(ThinkingDelta, event_types)
+        self.assertIn(ThinkingEnd, event_types)
+        self.assertIn(OutputBegin, event_types)
+        self.assertIn(OutputReplace, event_types)
+        self.assertIn(SourceDiscovered, event_types)
+        self.assertIn(ArtifactDiscovered, event_types)
+        self.assertIn(OutputEnd, event_types)
+
+
+class ChatGPTAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_v2_events_and_updates_remote_ids(self) -> None:
+        session = _create_mock_session("chatgpt")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello ChatGPT", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=None)
+
+        def fake_send_prompt(*args, on_event=None, **kwargs):
+            if on_event:
+                on_event({"type": "delta", "text": "Reasoning step", "channel": "analysis"})
+                on_event({"type": "delta", "text": "Output step", "channel": "final"})
+            completed = {
+                "messages": [
+                    {"id": "chatgpt-u1", "author": {"role": "user"}},
+                    {
+                        "id": "chatgpt-a1",
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Output step"]},
+                        "metadata": {"model_slug": "gpt-4o"},
+                    },
+                ]
+            }
+            return "chatgpt-conv-999", completed, ()
+
+        mock_client.send_prompt = fake_send_prompt
+
+        class DummyBrowserSession:
+            def client_session(self):
+                return mock_client
+
+        adapter = ChatGPTProvider(
+            DummyBrowserSession(), account_id="acc-test", client_factory=lambda _: mock_client
+        )
+
+        events = [event async for event in adapter.execute_stream(operation)]
+
+        self.assertEqual(chat.remote_id, "chatgpt-conv-999")
+        self.assertEqual(operation.message.id, "chatgpt-u1")
+        self.assertEqual(operation._assistant_message_id, "chatgpt-a1")
+
+        event_types = [type(e) for e in events]
+        self.assertIn(ThinkingBegin, event_types)
+        self.assertIn(ThinkingDelta, event_types)
+        self.assertIn(ThinkingEnd, event_types)
+        self.assertIn(OutputBegin, event_types)
+        self.assertIn(OutputDelta, event_types)
+        self.assertIn(OutputEnd, event_types)
+
+
+class BridgeDirectDelegationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bridge_execute_stream_delegates_directly_to_provider_execute_stream(
+        self,
+    ) -> None:
+        session = _create_mock_session("claude")
+        chat = Chat(title="Test Chat", session=session)
+        message = Message("Hello Claude", chat=chat)
+        operation = MessageOperation(chat, message)
+
+        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter.transport.authenticated = True
+
+        async def fake_events(*args, **kwargs):
+            yield {"type": "bound", "id": "direct-conv-1"}
+            yield {"type": "delta", "text": "Direct response", "channel": "final"}
+            yield {"type": "done"}
+
+        adapter.transport.events = fake_events
+
+        from webaiprovider.bridge import ProviderBridge
+
+        bridge = ProviderBridge(session.account)
+        bridge._provider_instance = adapter
+
+        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=True):
+            events = [event async for event in bridge.execute_stream(operation)]
+
+        self.assertEqual(chat.remote_id, "direct-conv-1")
+        self.assertTrue(
+            any(isinstance(e, OutputDelta) and e.delta == "Direct response" for e in events)
+        )

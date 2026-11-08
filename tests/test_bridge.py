@@ -76,7 +76,9 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(added["id"], "resource-2")
 
-        await self.provider.projects.update(project, title="Updated", instruction="New instructions")
+        await self.provider.projects.update(
+            project, title="Updated", instruction="New instructions"
+        )
         self.adapter.update_project.assert_awaited_once()
         submitted = self.adapter.update_project.await_args.args[0]
         self.assertEqual(submitted.name, "Updated")

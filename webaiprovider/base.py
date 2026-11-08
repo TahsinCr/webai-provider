@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Protocol, cast
 
 from .accounts.status import SessionState, SessionStatus
-from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
+from .errors import FeatureUnavailable, ProviderError, RemoteNotFound, UnsupportedOperationError
 from .models import (
     Capability,
     Conversation,
@@ -42,6 +42,88 @@ class SendRequest:
     action: MessageAction | None = None
     message_id: str | None = None
     branch: BranchContext | None = None
+
+
+@dataclass(slots=True)
+class OperationRequest:
+    prompt: str
+    model: str | None
+    effort: str | None
+    attachments: tuple[dict[str, Any], ...]
+    action: MessageAction | None
+    message_id: str | None
+    temporary: bool
+    conversation_id: str | None
+    project_id: str | None
+
+    def to_send_request(
+        self,
+        provider_id: str,
+        account_id: str,
+        chat_id: str,
+        *,
+        branch: BranchContext | None = None,
+    ) -> SendRequest:
+        return SendRequest(
+            provider_id=provider_id,
+            account_id=account_id,
+            chat_id=chat_id,
+            prompt=self.prompt,
+            conversation_id=self.conversation_id,
+            model=self.model,
+            effort=self.effort,
+            project_id=self.project_id,
+            temporary=self.temporary,
+            attachments=self.attachments,
+            action=self.action,
+            message_id=self.message_id,
+            branch=branch,
+        )
+
+
+async def prepare_operation(operation: Any) -> OperationRequest:
+    message = operation.message
+    chat = operation.chat
+
+    model: str | None = None
+    effort: str | None = None
+    if message.model is not None:
+        if chat.session is None:
+            raise UnsupportedOperationError("Model selection requires an active provider session")
+        selection = await chat.session.models.resolve(message.model)
+        model = selection.model.id
+        effort = selection.effort.id if selection.effort is not None else None
+
+    attachments = tuple(
+        {
+            key: value
+            for key, value in {
+                "path": str(item.path) if item.path is not None else None,
+                "bytes": item._content,
+                "name": item.name,
+                "mime": item.mime_type,
+            }.items()
+            if value is not None
+        }
+        for item in message.attachments
+    )
+    raw_action = message.metadata.get("action")
+    try:
+        action = MessageAction(raw_action) if raw_action is not None else None
+    except ValueError:
+        raise UnsupportedOperationError("Unsupported message action") from None
+
+    return OperationRequest(
+        prompt=message.content,
+        model=model,
+        effort=effort,
+        attachments=attachments,
+        action=action,
+        message_id=message.metadata.get("parent_message_id"),
+        temporary=bool(message.metadata.get("temporary", False)),
+        conversation_id=chat.remote_id,
+        project_id=chat.project_id,
+    )
 
 
 @dataclass(frozen=True)

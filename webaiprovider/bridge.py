@@ -10,14 +10,13 @@ from .base import (
     ActionDelta,
     ActionEnd,
     ConversationBound,
-    MessageAction,
     MessageMetadata,
     ProviderAdapter,
     ReplaceText,
     ResponseComplete,
-    SendRequest,
     TextDelta,
     ThoughtDelta,
+    prepare_operation,
     validate_request,
 )
 from .contracts import (
@@ -394,52 +393,22 @@ class ProviderBridge:
 
     async def execute_stream(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         provider = self._get_provider()
-        message = operation.message
+        execute_stream_fn = getattr(provider, "execute_stream", None)
+        if (
+            execute_stream_fn is not None
+            and callable(execute_stream_fn)
+            and not type(execute_stream_fn).__name__.endswith("Mock")
+        ):
+            async for event in provider.execute_stream(operation):
+                yield event
+            return
+
         chat = operation.chat
-
-        model: str | None = None
-        effort: str | None = None
-        if message.model is not None:
-            if chat.session is None:
-                raise UnsupportedOperationError(
-                    "Model selection requires an active provider session"
-                )
-            selection = await chat.session.models.resolve(message.model)
-            model = selection.model.id
-            effort = selection.effort.id if selection.effort is not None else None
-
-        attachments = tuple(
-            {
-                key: value
-                for key, value in {
-                    "path": str(item.path) if item.path is not None else None,
-                    "bytes": item._content,
-                    "name": item.name,
-                    "mime": item.mime_type,
-                }.items()
-                if value is not None
-            }
-            for item in message.attachments
-        )
-        raw_action = message.metadata.get("action")
-        try:
-            action = MessageAction(raw_action) if raw_action is not None else None
-        except ValueError:
-            raise UnsupportedOperationError("Unsupported message action") from None
-
-        request = SendRequest(
-            provider_id=self.account.provider,
-            account_id=self.account.id,
-            chat_id=chat.id,
-            prompt=message.content,
-            conversation_id=chat.remote_id,
-            model=model,
-            effort=effort,
-            project_id=chat.project_id,
-            temporary=bool(message.metadata.get("temporary", False)),
-            attachments=attachments,
-            action=action,
-            message_id=message.metadata.get("parent_message_id"),
+        req = await prepare_operation(operation)
+        request = req.to_send_request(
+            self.account.provider,
+            self.account.id,
+            chat.id,
         )
         validate_request(provider, request)
 
