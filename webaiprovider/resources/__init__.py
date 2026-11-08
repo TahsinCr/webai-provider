@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .attachments import Attachment, Attachments
+from .attachment import Attachment
 from .chat import Chat
 from .message import Message
 from .operation import MessageOperation, OperationHooks
@@ -9,7 +9,6 @@ from .response import Response
 
 __all__ = [
     "Attachment",
-    "Attachments",
     "Chat",
     "Message",
     "MessageOperation",

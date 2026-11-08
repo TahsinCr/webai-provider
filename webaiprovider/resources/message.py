@@ -4,9 +4,10 @@ import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..catalogs import Models
+from ..collections.attachments import Attachments
 from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import UnsupportedOperationError
-from .attachments import Attachment, Attachments
+from .attachment import Attachment
 
 if TYPE_CHECKING:
     from .chat import Chat

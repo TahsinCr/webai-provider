@@ -7,6 +7,7 @@ _EXPORTS = {
     "AsyncQueryableCollection": "base",
     "ManageableCollection": "base",
     "QueryableCollection": "base",
+    "Attachments": "attachments",
     "ChatsCollection": "chats",
     "MessagesCollection": "messages",
     "ProjectChatsCollection": "project_chats",

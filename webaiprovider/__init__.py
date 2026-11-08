@@ -5,6 +5,7 @@ from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCr
 from .async_provider import AsyncProvider
 from .base import BaseProvider
 from .catalogs import Models, ModelsCollection, SelectionResolver, StaticModelCatalog
+from .collections.attachments import Attachments
 from .collections.base import AsyncQueryableCollection, ManageableCollection, QueryableCollection
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
@@ -75,8 +76,8 @@ from .providers.gemini.resources import AsyncGeminiChat
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import AsyncGrokProvider, GrokProvider
 from .providers.grok.resources import AsyncGrokChat
-from .resources.attachments import Attachment, Attachments
 from .resources.chat import Chat
+from .resources.attachment import Attachment
 from .resources.message import Message
 from .resources.operation import MessageOperation, OperationHooks
 from .resources.project import Project
