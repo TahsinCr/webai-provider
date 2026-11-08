@@ -410,6 +410,23 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         session.branch_chat.assert_awaited_once_with("remote-chat-id", "msg-orig-1")
         self.assertEqual(branched_chat.remote_id, "branch-chat-id")
 
+    def test_generic_constructors_select_native_provider_classes(self) -> None:
+        for kind, title in (
+            ("chatgpt", "ChatGPT"),
+            ("claude", "Claude"),
+            ("gemini", "Gemini"),
+            ("grok", "Grok"),
+        ):
+            account = Account.from_cookies(kind, {})
+            with self.subTest(provider=kind):
+                native_async = getattr(webaiprovider, f"Async{title}Provider")
+                native_sync = getattr(webaiprovider, f"{title}Provider")
+                self.assertIs(type(AsyncProvider(account)), native_async)
+                provider = Provider(account, type=ProviderType.parse(kind))
+                self.assertIs(type(provider), native_sync)
+                self.assertIs(type(provider._provider), native_async)
+                provider.close()
+
     def test_provider_facades(self) -> None:
         from webaiprovider.collections.chats import ChatsCollection
         from webaiprovider.collections.messages import MessagesCollection

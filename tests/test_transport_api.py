@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
-from webaiprovider import Account, Provider
+from webaiprovider import Account, AsyncProvider, Provider
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
@@ -261,7 +261,14 @@ class BlockingTransportTests(unittest.TestCase):
             ),
         )
         account = Account.from_cookies("claude", {})
-        with Provider(account, transport=transport) as provider:
+
+        class CommonAsyncProvider(AsyncProvider):
+            pass
+
+        class CommonProvider(Provider):
+            async_provider_type = CommonAsyncProvider
+
+        with CommonProvider(account, transport=transport) as provider:
             self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
             with provider.transport.stream("GET", "/stream") as response:
                 self.assertEqual(list(response.iter_bytes()), [b"stream"])

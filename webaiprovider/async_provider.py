@@ -42,7 +42,7 @@ from .models import (
     ProjectOptions,
     ProviderDescription,
 )
-from .provider import ProviderType
+from .provider import ProviderType, _provider_class
 from .resources.chat import Chat
 from .resources.project import Project as ProjectResource
 from .resources.response import Response
@@ -173,6 +173,16 @@ _ProviderEvent = (
 
 
 class AsyncProvider(BaseProvider):
+    def __new__(cls, *args, **options):
+        if cls is AsyncProvider:
+            if not args and "account" not in options:
+                raise TypeError("A provider account is required")
+            account = args[0] if args else options["account"]
+            requested = options.get("type")
+            selected = ProviderType.parse(account.provider if requested is None else requested)
+            return object.__new__(_provider_class(selected, asynchronous=True))
+        return object.__new__(cls)
+
     _chat_type = Chat
     _project_type = ProjectResource
     _projects_collection_type = ProjectsCollection

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from enum import Enum
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .base import BaseProvider
@@ -38,6 +39,17 @@ class ProviderType(str, Enum):
             raise ValueError(f"Unsupported provider type; expected one of: {supported}") from None
 
 
+def _provider_class(provider_type: ProviderType, *, asynchronous: bool):
+    names = {
+        ProviderType.CHATGPT: "ChatGPT",
+        ProviderType.CLAUDE: "Claude",
+        ProviderType.GEMINI: "Gemini",
+        ProviderType.GROK: "Grok",
+    }
+    module = import_module(f".providers.{provider_type.value}.provider", __package__)
+    return getattr(module, ("Async" if asynchronous else "") + names[provider_type] + "Provider")
+
+
 if TYPE_CHECKING:
     from .accounts.account import Account
     from .async_provider import AsyncProvider
@@ -45,6 +57,16 @@ if TYPE_CHECKING:
 
 class Provider(BaseProvider):
     """Synchronous provider API backed by one persistent async runtime."""
+
+    def __new__(cls, *args, **options):
+        if cls is Provider:
+            if not args and "account" not in options:
+                raise TypeError("A provider account is required")
+            account = args[0] if args else options["account"]
+            requested = options.get("type")
+            selected = ProviderType.parse(account.provider if requested is None else requested)
+            return object.__new__(_provider_class(selected, asynchronous=False))
+        return object.__new__(cls)
 
     async_provider_type: type[AsyncProvider] | None = None
     chat_wrapper_type = None

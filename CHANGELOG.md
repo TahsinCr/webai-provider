@@ -17,6 +17,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Make generic `Provider` and `AsyncProvider` constructors select the concrete provider class directly, preserving provider-specific behavior when switching `ProviderType`.
+
 - Route provider HTTP streams through the shared transport contract; keep provider protocol clients in their own `client.py` modules and move generic work pools to `core`. Rate-limit cooldowns are isolated per transport session.
 
 - Flatten reference normalization into `webaiprovider.normalizers` and use direct imports instead of routing normalization helpers through data models.
