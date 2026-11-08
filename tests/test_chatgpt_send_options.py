@@ -4,7 +4,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
@@ -230,7 +229,7 @@ class SendOptionsTests(unittest.TestCase):
 
         self.assertIsNone(self.client._cached_conversation("remote"))
 
-    def test_actions_and_branch_sends_bypass_reusable_snapshot(self):
+    def test_actions_bypass_reusable_snapshot(self):
         previous = {
             "id": "remote",
             "current_node": "old-assistant",
@@ -246,25 +245,21 @@ class SendOptionsTests(unittest.TestCase):
             "messages": previous["messages"]
             + [submitted, {"id": "new-assistant", "author": {"role": "assistant"}}],
         }
-        operations = (
-            ({"action": "retry", "message_id": "old-assistant"}, [previous, updated]),
-            (
-                {"branch": SimpleNamespace(conversation_id="remote", message_id="old-assistant")},
-                [updated],
-            ),
-        )
 
-        for operation, conversation_reads in operations:
-            with self.subTest(operation=tuple(operation)):
+        for operation in (
+            {"action": "retry", "message_id": "old-assistant"},
+            {"action": "edit", "message_id": "old-user"},
+        ):
+            with self.subTest(action=operation["action"]):
                 self.client._remember_conversation(previous)
                 with (
                     patch.object(
                         self.client,
                         "_cached_conversation",
-                        side_effect=AssertionError("action/branch must read the provider"),
+                        side_effect=AssertionError("message actions must read the provider"),
                     ),
                     patch.object(
-                        self.client, "get_conversation", side_effect=conversation_reads
+                        self.client, "get_conversation", side_effect=[previous, updated]
                     ) as get_conversation,
                     patch.object(
                         self.client,
@@ -276,7 +271,7 @@ class SendOptionsTests(unittest.TestCase):
                         "remote", "Continue", model="account-thinking", **operation
                     )
 
-                self.assertEqual(get_conversation.call_count, len(conversation_reads))
+                self.assertEqual(get_conversation.call_count, 2)
                 self.client._forget_conversation("remote")
 
     def test_uncertain_send_invalidates_the_reusable_snapshot(self):

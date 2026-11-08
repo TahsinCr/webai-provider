@@ -5,6 +5,20 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Protocol, cast
 
 from .accounts.status import SessionState, SessionStatus
+from .contracts import (
+    Artifact,
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    Source,
+    SourceDiscovered,
+    StreamEvent,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+)
 from .errors import FeatureUnavailable, ProviderError, RemoteNotFound, UnsupportedOperationError
 from .models import (
     Capability,
@@ -22,16 +36,7 @@ from .models import (
 
 
 @dataclass(frozen=True)
-class BranchContext:
-    conversation_id: str
-    message_id: str
-
-
-@dataclass(frozen=True)
-class SendRequest:
-    provider_id: str
-    account_id: str
-    chat_id: str
+class _ProviderRequest:
     prompt: str
     conversation_id: str | None = None
     model: str | None = None
@@ -41,49 +46,29 @@ class SendRequest:
     attachments: tuple[dict, ...] = ()
     action: MessageAction | None = None
     message_id: str | None = None
-    branch: BranchContext | None = None
 
 
-@dataclass(slots=True)
-class OperationRequest:
-    prompt: str
-    model: str | None
-    effort: str | None
-    attachments: tuple[dict[str, Any], ...]
-    action: MessageAction | None
-    message_id: str | None
-    temporary: bool
-    conversation_id: str | None
-    project_id: str | None
-
-    def to_send_request(
-        self,
-        provider_id: str,
-        account_id: str,
-        chat_id: str,
-        *,
-        branch: BranchContext | None = None,
-    ) -> SendRequest:
-        return SendRequest(
-            provider_id=provider_id,
-            account_id=account_id,
-            chat_id=chat_id,
-            prompt=self.prompt,
-            conversation_id=self.conversation_id,
-            model=self.model,
-            effort=self.effort,
-            project_id=self.project_id,
-            temporary=self.temporary,
-            attachments=self.attachments,
-            action=self.action,
-            message_id=self.message_id,
-            branch=branch,
-        )
-
-
-async def prepare_operation(operation: Any) -> OperationRequest:
+async def _prepare_operation(operation: Any, provider: Any) -> _ProviderRequest:
     message = operation.message
     chat = operation.chat
+    raw_action = message.metadata.get("action")
+    try:
+        action = MessageAction(raw_action) if raw_action is not None else None
+    except ValueError:
+        raise UnsupportedOperationError("Unsupported message action") from None
+
+    message_id = message.metadata.get("parent_message_id")
+    if action is not None:
+        if action not in (MessageAction.EDIT, MessageAction.RETRY):
+            raise UnsupportedOperationError("Unsupported message action")
+        if not chat.remote_id or not message_id:
+            raise UnsupportedOperationError("Message actions require remote message identities")
+
+    session_account = getattr(getattr(chat, "session", None), "account", None)
+    if session_account is not None and (
+        session_account.provider != provider.id or session_account.id != provider.account_id
+    ):
+        raise ValueError("message operation belongs to a different provider account")
 
     model: str | None = None
     effort: str | None = None
@@ -98,28 +83,25 @@ async def prepare_operation(operation: Any) -> OperationRequest:
         {
             key: value
             for key, value in {
+                "id": item.id,
                 "path": str(item.path) if item.path is not None else None,
                 "bytes": item._content,
                 "name": item.name,
                 "mime": item.mime_type,
+                "size_bytes": getattr(item, "size", None),
+                "grok_file": getattr(item, "grok_file", None),
             }.items()
             if value is not None
         }
         for item in message.attachments
     )
-    raw_action = message.metadata.get("action")
-    try:
-        action = MessageAction(raw_action) if raw_action is not None else None
-    except ValueError:
-        raise UnsupportedOperationError("Unsupported message action") from None
-
-    return OperationRequest(
+    return _ProviderRequest(
         prompt=message.content,
         model=model,
         effort=effort,
         attachments=attachments,
         action=action,
-        message_id=message.metadata.get("parent_message_id"),
+        message_id=message_id,
         temporary=bool(message.metadata.get("temporary", False)),
         conversation_id=chat.remote_id,
         project_id=chat.project_id,
@@ -127,71 +109,49 @@ async def prepare_operation(operation: Any) -> OperationRequest:
 
 
 @dataclass(frozen=True)
-class TextDelta:
+class _TextDelta:
     text: str
     channel: str | None = None
 
 
 @dataclass(frozen=True)
-class ThoughtDelta:
+class _ThoughtDelta:
     text: str
 
 
 @dataclass(frozen=True)
-class ActionBegin:
-    action_id: str
-    kind: str
-    title: str = ""
-
-
-@dataclass(frozen=True)
-class ActionDelta:
-    action_id: str
-    text: str
-
-
-@dataclass(frozen=True)
-class ActionEnd:
-    action_id: str
-
-
-@dataclass(frozen=True)
-class ReplaceText:
+class _ReplaceText:
     text: str
     channel: str | None = None
 
 
 @dataclass(frozen=True)
-class ResponseComplete:
+class _ResponseComplete:
     pass
 
 
 @dataclass(frozen=True)
-class ConversationBound:
+class _ConversationBound:
     conversation_id: str
 
 
 @dataclass(frozen=True)
-class MessageMetadata:
+class _MessageMetadata:
     message_id: str | None = None
     user_message_id: str | None = None
     model: str | None = None
     effort: str | None = None
     sources: tuple[dict, ...] = ()
-    actions: tuple[str, ...] = ()
     files: tuple[dict, ...] = ()
 
 
-ProviderEvent = (
-    TextDelta
-    | ThoughtDelta
-    | ActionBegin
-    | ActionDelta
-    | ActionEnd
-    | ReplaceText
-    | ResponseComplete
-    | ConversationBound
-    | MessageMetadata
+_ProviderEvent = (
+    _TextDelta
+    | _ThoughtDelta
+    | _ReplaceText
+    | _ResponseComplete
+    | _ConversationBound
+    | _MessageMetadata
 )
 
 
@@ -202,7 +162,7 @@ class AdapterProtocol(Protocol):
 
     async def prepare(self) -> None: ...
 
-    def stream(self, request: SendRequest) -> AsyncGenerator[ProviderEvent, None]: ...
+    def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]: ...
 
 
 class _ProjectEditingHost(Protocol):
@@ -212,25 +172,6 @@ class _ProjectEditingHost(Protocol):
     editor: Any
 
     async def get_project(self, project_id: str) -> Project: ...
-
-
-def validate_request(provider: AdapterProtocol, request: SendRequest) -> None:
-    if request.provider_id != provider.id or request.account_id != provider.account_id:
-        raise ValueError("send request belongs to a different provider/account")
-    if request.action is not None:
-        if request.action not in (MessageAction.EDIT, MessageAction.RETRY):
-            raise ValueError("unsupported generation action")
-        if not request.conversation_id or not request.message_id:
-            raise ValueError("message actions require a conversation and message identity")
-    if request.branch is not None:
-        if request.action is not None or request.temporary:
-            raise ValueError("a branch continuation requires a new persistent turn")
-        if not request.branch.conversation_id or not request.branch.message_id:
-            raise ValueError("a branch continuation requires its source identities")
-        if provider.id != "chatgpt":
-            raise ValueError(
-                "this provider creates branches immediately; no continuation context is needed"
-            )
 
 
 class ProjectEditing:
@@ -322,6 +263,100 @@ class ProviderAdapter(AdapterProtocol):
 
     async def close(self) -> None:
         pass
+
+    def _stream_request(self, request: _ProviderRequest) -> AsyncGenerator[_ProviderEvent, None]:
+        raise NotImplementedError
+
+    async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
+        request = await _prepare_operation(operation, self)
+        output_started = thinking_started = False
+        thinking_text = ""
+        try:
+            async for event in self._stream_request(request):
+                if isinstance(event, _ConversationBound):
+                    operation.chat.remote_id = event.conversation_id
+                elif isinstance(event, _ThoughtDelta) or (
+                    isinstance(event, (_TextDelta, _ReplaceText)) and event.channel == "analysis"
+                ):
+                    delta = event.text
+                    if isinstance(event, _ReplaceText):
+                        delta = (
+                            event.text[len(thinking_text) :]
+                            if event.text.startswith(thinking_text)
+                            else event.text
+                        )
+                        thinking_text = event.text
+                    else:
+                        thinking_text += delta
+                    if not thinking_started:
+                        thinking_started = True
+                        yield ThinkingBegin()
+                    if delta:
+                        yield ThinkingDelta(delta=delta)
+                elif isinstance(event, _ReplaceText):
+                    if not event.text and not output_started:
+                        continue
+                    if thinking_started:
+                        thinking_started = False
+                        yield ThinkingEnd(text=thinking_text)
+                    if not output_started:
+                        output_started = True
+                        yield OutputBegin()
+                    yield OutputReplace(text=event.text)
+                elif isinstance(event, _TextDelta) and event.text:
+                    if thinking_started:
+                        thinking_started = False
+                        yield ThinkingEnd(text=thinking_text)
+                    if not output_started:
+                        output_started = True
+                        yield OutputBegin()
+                    yield OutputDelta(delta=event.text)
+                elif isinstance(event, _MessageMetadata):
+                    if event.user_message_id:
+                        operation.message.id = event.user_message_id
+                    if event.message_id:
+                        operation._assistant_message_id = event.message_id
+                    for record in event.sources:
+                        yield SourceDiscovered(
+                            Source(
+                                id=str(record.get("id") or record.get("source_id") or ""),
+                                url=str(record.get("url") or ""),
+                                title=str(record.get("title") or ""),
+                                snippet=str(record.get("snippet") or ""),
+                                kind=str(record.get("kind") or "web"),
+                                metadata=record,
+                            )
+                        )
+                    for record in event.files:
+                        size = record.get("size")
+                        yield ArtifactDiscovered(
+                            Artifact(
+                                id=str(record.get("id") or record.get("file_id") or ""),
+                                kind=str(record.get("kind") or "file"),
+                                name=str(
+                                    record.get("name")
+                                    or record.get("filename")
+                                    or record.get("file_name")
+                                    or ""
+                                ),
+                                mime_type=str(
+                                    record.get("mime_type") or "application/octet-stream"
+                                ),
+                                size=size if isinstance(size, int) else None,
+                                download_url=record.get("download_url") or record.get("url"),
+                                content=record.get("content"),
+                                metadata=record,
+                            )
+                        )
+
+            if thinking_started:
+                yield ThinkingEnd(text=thinking_text)
+            if output_started:
+                yield OutputEnd()
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("Provider request failed") from exc
 
     def attachment_policy(self) -> dict | None:
         from .utils.attachments import policy_for

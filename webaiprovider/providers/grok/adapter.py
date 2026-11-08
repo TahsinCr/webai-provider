@@ -3,33 +3,18 @@
 import asyncio
 import time
 from io import StringIO
-from typing import Any, AsyncIterator
 
 from ...accounts import delete_session, session_exists
 from ...base import (
     Capability,
-    ConversationBound,
     MessageAction,
-    MessageMetadata,
     ProjectEditing,
     ProviderAdapter,
-    ReplaceText,
-    ResponseComplete,
-    TextDelta,
-    prepare_operation,
-    validate_request,
-)
-from ...contracts import (
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    Source,
-    SourceDiscovered,
-    StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
 )
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
@@ -424,8 +409,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
             "Grok conversation project membership could not be confirmed by the server"
         )
 
-    async def stream(self, request):
-        validate_request(self, request)
+    async def _stream_request(self, request):
         if request.effort is not None:
             raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
         if len(request.attachments) > GROK_ATTACHMENTS.max_files:
@@ -461,10 +445,6 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
             and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
         ):
             raise ValueError("Grok chat attachments exceed the total size limit")
-        if request.branch:
-            raise FeatureUnavailable(
-                Capability.CHAT_BRANCH, "Grok native chat branching is unavailable"
-            )
         if request.temporary and request.project_id:
             raise FeatureUnavailable(
                 Capability.TEMPORARY, "Temporary chats cannot belong to a project"
@@ -622,7 +602,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                 remainder = cleaner.feed(final=True)
                 if remainder:
                     output.write(remainder)
-                    yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
+                    yield _TextDelta(remainder, channel) if channel else _TextDelta(remainder)
 
         def reconcile_native():
             resolved_analysis = (
@@ -637,7 +617,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                     output.seek(0)
                     output.truncate()
                     output.write(native)
-                    yield ReplaceText(native, channel) if channel else ReplaceText(native)
+                    yield _ReplaceText(native, channel) if channel else _ReplaceText(native)
 
         async for chunk in self.transport.events(path, body):
             result = chunk.get("result")
@@ -650,12 +630,12 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
             if not conversation_id and isinstance(native_conversation, dict):
                 conversation_id = native_conversation.get("conversationId")
                 if conversation_id and not bound:
-                    yield ConversationBound(conversation_id)
+                    yield _ConversationBound(conversation_id)
                     bound = True
             if not conversation_id and not request.conversation_id:
                 conversation_id = result.get("conversationId") or response.get("conversationId")
                 if conversation_id and not bound:
-                    yield ConversationBound(conversation_id)
+                    yield _ConversationBound(conversation_id)
                     bound = True
             error = response.get("error") or result.get("error") or chunk.get("error")
             if error:
@@ -710,7 +690,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                 visible = cleaner.feed(token)
                 if visible:
                     (streamed_analysis if analysis else streamed_text).write(visible)
-                    yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
+                    yield _TextDelta(visible, "analysis") if analysis else _TextDelta(visible)
             if response.get("responseId") and not response_id:
                 response_id = response["responseId"]
             if response.get("done") is True or response.get("finished") is True:
@@ -725,7 +705,7 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
                     yield event
                 for event in reconcile_native():
                     yield event
-                yield ResponseComplete()
+                yield _ResponseComplete()
                 completion_notified = True
         resolve_sources()
         for event in flush_text_filters():
@@ -739,368 +719,14 @@ class GrokProvider(ProjectEditing, ProviderAdapter):
         if response_id:
             self._remember_continuation(conversation_id, response_id)
         if not bound and not request.conversation_id:
-            yield ConversationBound(conversation_id)
+            yield _ConversationBound(conversation_id)
         if response_id and streamed_text.tell():
-            yield MessageMetadata(
+            yield _MessageMetadata(
                 message_id=response_id,
                 user_message_id=user_response_id,
                 model=response_model,
                 effort=None,
                 sources=sources,
-                actions=() if request.temporary else (MessageAction.RETRY.value,),
             )
         if not completion_notified:
-            yield ResponseComplete()
-
-    async def execute_stream(self, operation: Any) -> AsyncIterator[StreamEvent]:
-        req = await prepare_operation(operation)
-        if req.effort is not None:
-            raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
-        if len(req.attachments) > GROK_ATTACHMENTS.max_files:
-            raise ValueError("Too many Grok chat attachments")
-        file_attachments = []
-        image_attachments = []
-        total_attachment_bytes = 0
-        for attachment in req.attachments:
-            metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
-            asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
-            size = attachment.get("size_bytes") if isinstance(attachment, dict) else None
-            if (
-                not isinstance(asset_id, str)
-                or not asset_id
-                or asset_id != attachment.get("id")
-                or not isinstance(size, int)
-                or isinstance(size, bool)
-                or not 0 < size <= GROK_ATTACHMENTS.max_bytes
-            ):
-                raise ValueError("Grok chat attachment metadata is invalid")
-            total_attachment_bytes += size
-            mime = str(
-                attachment.get("mime_type")
-                or (metadata.get("mimeType") if isinstance(metadata, dict) else "")
-                or ""
-            ).lower()
-            if mime.startswith("image/"):
-                image_attachments.append(metadata)
-            else:
-                file_attachments.append(metadata)
-        if (
-            GROK_ATTACHMENTS.max_total_bytes
-            and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
-        ):
-            raise ValueError("Grok chat attachments exceed the total size limit")
-        if req.temporary and req.project_id:
-            raise FeatureUnavailable(
-                Capability.TEMPORARY, "Temporary chats cannot belong to a project"
-            )
-        if req.action not in (None, MessageAction.RETRY, MessageAction.EDIT):
-            raise FeatureUnavailable(req.action.capability)
-        if req.action == MessageAction.RETRY and not req.message_id:
-            raise ValueError("Grok retry requires the selected assistant response")
-        if req.action == MessageAction.EDIT and not req.message_id:
-            raise ValueError("Grok edit requires the selected user prompt")
-
-        catalog = await self.models()
-        selected = catalog.chat_model(req.model) if req.model else None
-        if selected is None and req.model:
-            catalog = await self.models(force=True)
-            selected = catalog.chat_model(req.model)
-        if selected is None and not req.model:
-            selected = catalog.chat_model(catalog.default_model)
-        if selected is None:
-            raise ProviderError("Selected Grok model is unavailable for this account")
-        model = selected.metadata.get("modelName")
-        model_mode = selected.metadata.get("modelMode")
-        if not isinstance(model_mode, str) or not model_mode:
-            model_mode = None
-
-        async with self._gate:
-            conversation_id = req.conversation_id
-            parent_response_id = ""
-            is_retry = req.action == MessageAction.RETRY
-            is_edit = req.action == MessageAction.EDIT
-            if conversation_id:
-                cached_parent = None
-                if is_retry or is_edit:
-                    self._continuations.pop(conversation_id, None)
-                    history = await self._history(conversation_id)
-                else:
-                    cached_parent = self._take_continuation(conversation_id)
-                    history = (
-                        None
-                        if cached_parent is not None
-                        else await self._response_nodes(conversation_id)
-                    )
-                if cached_parent is not None:
-                    parent_response_id = cached_parent
-                else:
-                    if not isinstance(history, dict):
-                        raise ProviderError("Grok conversation history response contract changed")
-                    if (
-                        not is_retry
-                        and not is_edit
-                        and not isinstance(history.get("responseNodes"), list)
-                    ):
-                        raise ProviderError("Grok conversation node response contract changed")
-                    if history.get("inflightResponses"):
-                        raise ProviderError("Grok conversation already has a response in progress")
-                    active = active_responses(history)
-                    if is_retry:
-                        target = next(
-                            (item for item in active if item.get("responseId") == req.message_id),
-                            None,
-                        )
-                        if target is None or str(target.get("sender", "")).lower() not in (
-                            "assistant",
-                            "model",
-                            "grok",
-                        ):
-                            raise ProviderError(
-                                "Grok retry target is no longer on the active conversation path"
-                            )
-                        parent_response_id = target.get("parentResponseId") or ""
-                    elif is_edit:
-                        target = next(
-                            (item for item in active if item.get("responseId") == req.message_id),
-                            None,
-                        )
-                        if target is None or str(target.get("sender", "")).lower() not in (
-                            "human",
-                            "user",
-                        ):
-                            raise ProviderError(
-                                "Grok edit target is no longer on the active conversation path"
-                            )
-                        parent_response_id = target.get("parentResponseId") or ""
-                        if not file_attachments and not image_attachments:
-                            seen_assets = set()
-                            for item in list(target.get("fileAttachments") or ()) + list(
-                                target.get("imageAttachments") or ()
-                            ):
-                                if isinstance(item, dict):
-                                    aid = item.get("assetId") or item.get("id")
-                                    if aid and aid in seen_assets:
-                                        continue
-                                    if aid:
-                                        seen_assets.add(aid)
-                                    mime = str(
-                                        item.get("mimeType") or item.get("fileMimeType") or ""
-                                    ).lower()
-                                    if mime.startswith("image/"):
-                                        image_attachments.append(item)
-                                    else:
-                                        file_attachments.append(item)
-                    elif active:
-                        parent_response_id = active[-1].get("responseId") or ""
-
-            body = {
-                "message": "" if is_retry else req.prompt,
-                "parentResponseId": parent_response_id,
-                "fileAttachments": file_attachments,
-                "imageAttachments": image_attachments,
-                "disableSearch": False,
-                "temporary": req.temporary,
-                "isRegenRequest": is_retry,
-            }
-            if model_mode:
-                body["modelMode"] = model_mode
-            if model or not model_mode:
-                body["modelName"] = model or selected.id
-            if req.project_id:
-                body["workspaceIds"] = [req.project_id]
-            path = (
-                "/rest/app-chat/conversations/new"
-                if not conversation_id
-                else "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses"
-            )
-
-        response_id = user_response_id = None
-        streamed_text, streamed_analysis = StringIO(), StringIO()
-        raw_native_text = raw_native_analysis = None
-        sources = ()
-        raw_search_results = []
-        seen_search_keys = set()
-        complete = False
-        bound = False
-        text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
-        output_started = False
-        thinking_started = False
-        thinking_text = ""
-        discovered_source_ids = set()
-
-        def resolve_sources():
-            nonlocal sources
-            if raw_search_results and not sources:
-                sources = sources_from({"sources": raw_search_results})
-
-        async for chunk in self.transport.events(path, body):
-            result = chunk.get("result")
-            if not isinstance(result, dict):
-                result = chunk
-            native_conversation = result.get("conversation")
-            response = result.get("response")
-            if not isinstance(response, dict):
-                response = result
-            if not conversation_id and isinstance(native_conversation, dict):
-                conversation_id = native_conversation.get("conversationId")
-                if conversation_id and not bound:
-                    operation.chat.remote_id = conversation_id
-                    bound = True
-            if not conversation_id and not req.conversation_id:
-                conversation_id = result.get("conversationId") or response.get("conversationId")
-                if conversation_id and not bound:
-                    operation.chat.remote_id = conversation_id
-                    bound = True
-            error = response.get("error") or result.get("error") or chunk.get("error")
-            if error:
-                code = str(error.get("code") or "").upper() if isinstance(error, dict) else ""
-                msg = str(error.get("message") or "") if isinstance(error, dict) else str(error)
-                if code in ("UNAUTHORIZED", "AUTH_REQUIRED"):
-                    self.transport.session.authenticated = False
-                    raise AccountPaused("Grok session expired; verify the account again")
-                if (
-                    "RATE_LIMIT" in code
-                    or "QUOTA" in code
-                    or "TOO_MANY_REQUESTS" in code
-                    or "rate limit" in msg.lower()
-                    or "too many requests" in msg.lower()
-                ):
-                    retry_after = error.get("retryAfter") if isinstance(error, dict) else None
-                    try:
-                        delay = float(retry_after) if retry_after is not None else None
-                    except (ValueError, TypeError):
-                        delay = None
-                    raise RateLimited(delay)
-                raise ProviderError("Grok stream reported an error; the request was not resent")
-            user = response.get("userResponse")
-            if isinstance(user, dict) and user.get("responseId"):
-                user_response_id = user["responseId"]
-                operation.message.id = user_response_id
-            native = response.get("modelResponse")
-            if isinstance(native, dict):
-                response_id = native.get("responseId") or response_id
-                if response_id:
-                    operation._assistant_message_id = response_id
-                if isinstance(native.get("webSearchResults"), list):
-                    for item in native["webSearchResults"]:
-                        if isinstance(item, dict):
-                            key = item.get("url") or item.get("title")
-                            if key and key not in seen_search_keys:
-                                seen_search_keys.add(key)
-                                raw_search_results.append(item)
-                            elif not key and item not in raw_search_results:
-                                raw_search_results.append(item)
-                if isinstance(native.get("message"), str):
-                    raw_native_text = native["message"]
-                if native.get("thinkingTrace") is not None:
-                    raw_native_analysis = native["thinkingTrace"]
-                if native.get("partial") is False:
-                    complete = True
-            token = response.get("token")
-            if isinstance(token, str) and token:
-                analysis = response.get("isThinking") or response.get("messageTag") in (
-                    "header",
-                    "summary",
-                )
-                cleaner = analysis_filter if analysis else text_filter
-                visible = cleaner.feed(token)
-                if visible:
-                    if analysis:
-                        streamed_analysis.write(visible)
-                        thinking_text += visible
-                        if not thinking_started:
-                            thinking_started = True
-                            yield ThinkingBegin()
-                        yield ThinkingDelta(delta=visible)
-                    else:
-                        streamed_text.write(visible)
-                        if thinking_started:
-                            thinking_started = False
-                            yield ThinkingEnd(text=thinking_text)
-                        if not output_started:
-                            output_started = True
-                            yield OutputBegin()
-                        yield OutputDelta(delta=visible)
-            if response.get("responseId") and not response_id:
-                response_id = response["responseId"]
-                operation._assistant_message_id = response_id
-            if response.get("done") is True or response.get("finished") is True:
-                complete = True
-
-        resolve_sources()
-        for cleaner, output, is_analysis in (
-            (text_filter, streamed_text, False),
-            (analysis_filter, streamed_analysis, True),
-        ):
-            remainder = cleaner.feed(final=True)
-            if remainder:
-                output.write(remainder)
-                if is_analysis:
-                    thinking_text += remainder
-                    if not thinking_started:
-                        thinking_started = True
-                        yield ThinkingBegin()
-                    yield ThinkingDelta(delta=remainder)
-                else:
-                    if thinking_started:
-                        thinking_started = False
-                        yield ThinkingEnd(text=thinking_text)
-                    if not output_started:
-                        output_started = True
-                        yield OutputBegin()
-                    yield OutputDelta(delta=remainder)
-
-        resolved_analysis = (
-            clean_text(raw_native_analysis) if raw_native_analysis is not None else None
-        )
-        resolved_text = clean_text(raw_native_text) if raw_native_text is not None else None
-        if resolved_analysis is not None and resolved_analysis != streamed_analysis.getvalue():
-            streamed_analysis.seek(0)
-            streamed_analysis.truncate()
-            streamed_analysis.write(resolved_analysis)
-            thinking_text = resolved_analysis
-            if not thinking_started:
-                thinking_started = True
-                yield ThinkingBegin()
-            yield ThinkingDelta(delta=resolved_analysis)
-        if resolved_text is not None and resolved_text != streamed_text.getvalue():
-            streamed_text.seek(0)
-            streamed_text.truncate()
-            streamed_text.write(resolved_text)
-            if thinking_started:
-                thinking_started = False
-                yield ThinkingEnd(text=thinking_text)
-            if not output_started:
-                output_started = True
-                yield OutputBegin()
-            yield OutputReplace(text=resolved_text)
-
-        if not conversation_id:
-            raise ProviderError("Grok did not return a conversation ID")
-        if not complete:
-            raise ProviderError("Grok stream ended before response completion; it was not resent")
-        if response_id:
-            self._remember_continuation(conversation_id, response_id)
-            operation._assistant_message_id = response_id
-        if user_response_id:
-            operation.message.id = user_response_id
-
-        for record in sources:
-            source_id = str(record.get("id") or record.get("source_id") or record.get("url") or "")
-            if source_id and source_id not in discovered_source_ids:
-                discovered_source_ids.add(source_id)
-                yield SourceDiscovered(
-                    Source(
-                        id=source_id,
-                        url=str(record.get("url") or ""),
-                        title=str(record.get("title") or ""),
-                        snippet=str(record.get("snippet") or ""),
-                        kind=str(record.get("kind") or "web"),
-                        metadata=record,
-                    )
-                )
-
-        if thinking_started:
-            yield ThinkingEnd(text=thinking_text)
-        if output_started:
-            yield OutputEnd()
+            yield _ResponseComplete()

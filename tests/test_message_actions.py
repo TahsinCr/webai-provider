@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
-from webaiprovider.base import BranchContext, MessageAction, SendRequest
-from webaiprovider.models import Model, Origin
+from webaiprovider.base import _ProviderRequest
+from webaiprovider.models import MessageAction, Model, Origin
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.transport import ClaudeTransport
 from webaiprovider.providers.gemini.history import history
@@ -68,7 +68,7 @@ class ChatGPTActionsTests(unittest.TestCase):
             (),
         )
 
-    def run_request(self, action, target, *, model="account-model", branch=None):
+    def run_request(self, action, target, *, model="account-model"):
         sent = []
 
         def accept(request):
@@ -122,7 +122,6 @@ class ChatGPTActionsTests(unittest.TestCase):
                 model=model,
                 action=action,
                 message_id=target,
-                branch=branch,
             )
         return sent, result
 
@@ -146,13 +145,6 @@ class ChatGPTActionsTests(unittest.TestCase):
         )
         self.assertEqual(body["messages"][0]["metadata"]["attachments"][0]["id"], "file-image")
         self.assertNotEqual(result[1], "user")
-
-    def test_branch_first_turn_uses_source_identities_without_sending_the_preview_id(self):
-        sent, _ = self.run_request(None, None, branch=BranchContext("source", "branch-point"))
-        self.assertNotIn("conversation_id", sent[0])
-        self.assertEqual(sent[0]["branching_from_conversation_id"], "source")
-        self.assertEqual(sent[0]["branching_from_message_id"], "branch-point")
-        self.assertEqual(sent[0]["parent_message_id"], "branch-point")
 
     def test_foreign_or_removed_message_cannot_trigger_a_generation(self):
         with self.assertRaisesRegex(Exception, "no longer editable"):
@@ -203,10 +195,7 @@ class GeminiActionsTests(unittest.TestCase):
             session_id="fixture",
         )
         for action, mode, reason in ((MessageAction.EDIT, 0, 2), (MessageAction.RETRY, 2, 7)):
-            request = SendRequest(
-                "gemini",
-                "account",
-                "local",
+            request = _ProviderRequest(
                 "Prompt",
                 "c_fixture",
                 action=action,

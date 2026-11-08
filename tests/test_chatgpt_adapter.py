@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from webaiprovider.base import ReplaceText, SendRequest, TextDelta
+from webaiprovider.base import _ProviderRequest, _ReplaceText, _TextDelta
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.models import (
     Capability,
@@ -254,13 +254,8 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             "content_type": "thoughts",
             "thoughts": [{"summary": "Published summary"}],
         }
-        events = [
-            event
-            async for event in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            )
-        ]
-        self.assertIn(ReplaceText("Published summary", "analysis"), events)
+        events = [event async for event in self.provider._stream_request(_ProviderRequest("hello"))]
+        self.assertIn(_ReplaceText("Published summary", "analysis"), events)
 
     async def test_completion_does_not_publish_hidden_or_tool_directed_analysis(self):
         self.client.closed.set()
@@ -280,14 +275,9 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
                 "content": {"parts": ["Tool protocol"]},
             },
         ]
-        events = [
-            event
-            async for event in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            )
-        ]
+        events = [event async for event in self.provider._stream_request(_ProviderRequest("hello"))]
         self.assertFalse(
-            any(isinstance(event, ReplaceText) and event.channel == "analysis" for event in events)
+            any(isinstance(event, _ReplaceText) and event.channel == "analysis" for event in events)
         )
 
     async def test_stream_produces_common_events_and_releases_transport(self):
@@ -297,9 +287,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             with use_send_timing(timing):
                 return [
                     event
-                    async for event in self.provider.stream(
-                        SendRequest("chatgpt", "default", "local", "hello")
-                    )
+                    async for event in self.provider._stream_request(_ProviderRequest("hello"))
                 ]
 
         timing = SendTiming()
@@ -309,7 +297,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stream.done())
         self.provider._gate.release()
         events = await stream
-        self.assertEqual(events[0], TextDelta("partial"))
+        self.assertEqual(events[0], _TextDelta("partial"))
         self.assertEqual(events[-1].conversation_id, "remote")
         self.assertTrue(self.client.closed.is_set())
         self.assertGreater(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
@@ -358,9 +346,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.client.closed.set()
         self.client.failure = RateLimited(30)
         with self.assertRaises(RateLimited) as raised:
-            async for _ in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            ):
+            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
                 pass
         self.assertEqual(raised.exception.retry_after, 30)
 
@@ -369,9 +355,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.client.failure = ValueError("secret transport detail")
 
         with self.assertRaises(ProviderError) as raised:
-            async for _ in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            ):
+            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
                 pass
 
         self.assertEqual(raised.exception.code, "chatgpt_error")
@@ -383,9 +367,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         failure = SentinelCompatibilityError("private signer detail")
         self.client.failure = failure
         with self.assertRaises(SentinelCompatibilityError) as raised:
-            async for _ in self.provider.stream(
-                SendRequest("chatgpt", "default", "local", "hello")
-            ):
+            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
                 pass
         self.assertIs(raised.exception, failure)
         self.assertEqual(raised.exception.code, "chatgpt_sentinel_incompatible")

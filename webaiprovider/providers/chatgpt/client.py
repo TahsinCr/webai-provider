@@ -583,7 +583,6 @@ class ChatGPTClient:
         temporary: bool = False,
         action=None,
         message_id: str | None = None,
-        branch=None,
     ) -> tuple[str, dict[str, Any], set[str]]:
         if type(temporary) is not bool or (
             project_id is not None
@@ -594,9 +593,7 @@ class ChatGPTClient:
             raise ChatGPTWebError("temporary conversations cannot belong to a project")
         previous_ids: set[str] = set()
         previous: dict[str, Any] | None = None
-        if branch is not None:
-            previous = {"current_node": branch.message_id}
-        elif conversation_id:
+        if conversation_id:
             if temporary:
                 previous = self.temporary_conversations.get(conversation_id)
                 if previous is None:
@@ -605,7 +602,7 @@ class ChatGPTClient:
                     )
             else:
                 timing = current_send_timing()
-                may_reuse_snapshot = action is None and branch is None
+                may_reuse_snapshot = action is None
                 cache_lookup_started = (
                     time.perf_counter_ns() if timing is not None and may_reuse_snapshot else None
                 )
@@ -669,7 +666,6 @@ class ChatGPTClient:
                     effort,
                     **({"temporary": True} if temporary else {}),
                     **({"action": action, "message_id": message_id} if action else {}),
-                    **({"branch": branch} if branch else {}),
                 )
             )
         except Exception:
@@ -725,7 +721,6 @@ class ChatGPTClient:
             current_node = last_message.get("id") if isinstance(last_message, dict) else None
             can_build_from_stream = (
                 (conversation_id is None or resolved_id == conversation_id)
-                and branch is None
                 and action is None
                 and (conversation_id is None or isinstance(previous_messages, list))
                 and isinstance(submitted_message, dict)
@@ -771,12 +766,6 @@ class ChatGPTClient:
             raise ChatGPTWebError(
                 "ChatGPT did not attach the submitted message to the conversation"
             )
-        if branch is not None:
-            for item in messages:
-                if item.get("id") == submitted_message_id:
-                    break
-                if item.get("id"):
-                    previous_ids.add(item["id"])
         if not temporary:
             self._remember_conversation(conversation)
             self.trigger_sentinel_prewarm()
@@ -793,7 +782,6 @@ class ChatGPTClient:
         temporary: bool = False,
         action=None,
         message_id: str | None = None,
-        branch=None,
     ) -> tuple[str, str, dict[str, Any] | None, list[dict[str, Any]]]:
         conversation_id = None
         if conversation:
@@ -804,14 +792,6 @@ class ChatGPTClient:
         url = urljoin(CHATGPT_ORIGIN, "/backend-api/f/conversation")
         headers = self.headers.copy()
         body = self.create_conversation_body(conversation, prompt, attachments)
-        if branch is not None:
-            body.pop("conversation_id", None)
-            conversation_id = None
-            body.update(
-                branching_from_conversation_id=branch.conversation_id,
-                branching_from_message_id=branch.message_id,
-                parent_message_id=branch.message_id,
-            )
         submitted_message_id = body["messages"][0]["id"]
         if action:
             from ...base import MessageAction

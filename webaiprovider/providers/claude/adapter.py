@@ -2,34 +2,17 @@
 
 import asyncio
 import time
-from typing import Any, AsyncIterator
 
 from ...accounts import delete_session, session_exists
 from ...base import (
     Capability,
-    ConversationBound,
-    MessageMetadata,
     ProjectEditing,
     ProviderAdapter,
-    ReplaceText,
-    ResponseComplete,
-    TextDelta,
-    prepare_operation,
-    validate_request,
-)
-from ...contracts import (
-    Artifact,
-    ArtifactDiscovered,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    Source,
-    SourceDiscovered,
-    StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
 )
 from ...errors import AccountPaused, FeatureUnavailable
 from ...models import (
@@ -278,8 +261,7 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
                 "move_chat", conversation_id=conversation_id, project_id=project_id
             )
 
-    async def stream(self, request):
-        validate_request(self, request)
+    async def _stream_request(self, request):
         if request.temporary and request.project_id:
             raise FeatureUnavailable(
                 Capability.TEMPORARY,
@@ -309,141 +291,24 @@ class ClaudeProvider(ProjectEditing, ProviderAdapter):
                 ),
             ):
                 if event["type"] == "bound":
-                    yield ConversationBound(event["id"])
+                    yield _ConversationBound(event["id"])
                 elif event["type"] in ("replace", "delta"):
-                    event_type = TextDelta if event["type"] == "delta" else ReplaceText
+                    event_type = _TextDelta if event["type"] == "delta" else _ReplaceText
                     yield event_type(event["text"], event.get("channel", "final"))
                 elif event["type"] == "done":
                     completed = True
                 elif event["type"] == "response_complete":
-                    yield ResponseComplete()
+                    yield _ResponseComplete()
                 elif event["type"] == "metadata":
-                    yield MessageMetadata(
+                    yield _MessageMetadata(
                         message_id=event.get("message_id"),
                         user_message_id=event.get("user_message_id"),
                         model=event.get("model") or request.model,
                         effort=request.effort,
                         sources=tuple(event.get("sources", ())),
-                        actions=() if request.temporary else tuple(event.get("actions", ())),
                         files=tuple(event.get("files", ())),
                     )
             if not completed:
                 raise ClaudeStreamError(
                     "Claude response ended before completion; it was not resent"
                 )
-
-    async def execute_stream(self, operation: Any) -> AsyncIterator[StreamEvent]:
-        req = await prepare_operation(operation)
-        if req.temporary and req.project_id:
-            raise FeatureUnavailable(
-                Capability.TEMPORARY,
-                "projects_not_supported",
-            )
-        if not session_exists(self.credential_file) and not self.transport.authenticated:
-            raise AccountPaused("Verify the Claude account in the Accounts section")
-
-        timing = current_send_timing()
-        gate_started = time.perf_counter_ns() if timing is not None else None
-        output_started = False
-        thinking_started = False
-        thinking_text = ""
-        completed = False
-
-        async with self._gate:
-            if gate_started is not None:
-                timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
-
-            async for event in self.transport.events(
-                "send",
-                prompt=req.prompt,
-                conversation_id=req.conversation_id,
-                project_id=req.project_id,
-                model=req.model,
-                effort=req.effort,
-                temporary=req.temporary,
-                attachments=req.attachments,
-                **({"action": req.action, "message_id": req.message_id} if req.action else {}),
-            ):
-                event_type = event.get("type")
-                if event_type == "bound":
-                    operation.chat.remote_id = event["id"]
-                elif event_type in ("replace", "delta"):
-                    channel = event.get("channel", "final")
-                    text = event.get("text", "")
-                    if channel == "analysis":
-                        if event_type == "replace":
-                            delta = (
-                                text[len(thinking_text) :]
-                                if text.startswith(thinking_text)
-                                else text
-                            )
-                            thinking_text = text
-                        else:
-                            delta = text
-                            thinking_text += delta
-                        if not thinking_started:
-                            thinking_started = True
-                            yield ThinkingBegin()
-                        if delta:
-                            yield ThinkingDelta(delta=delta)
-                    else:
-                        if thinking_started:
-                            thinking_started = False
-                            yield ThinkingEnd(text=thinking_text)
-                        if not output_started:
-                            output_started = True
-                            yield OutputBegin()
-                        if event_type == "delta":
-                            if text:
-                                yield OutputDelta(delta=text)
-                        else:
-                            yield OutputReplace(text=text)
-                elif event_type == "done":
-                    completed = True
-                elif event_type == "metadata":
-                    if event.get("user_message_id"):
-                        operation.message.id = event["user_message_id"]
-                    if event.get("message_id"):
-                        operation._assistant_message_id = event["message_id"]
-                    for record in event.get("sources", ()):
-                        yield SourceDiscovered(
-                            Source(
-                                id=str(record.get("id") or record.get("source_id") or ""),
-                                url=str(record.get("url") or ""),
-                                title=str(record.get("title") or ""),
-                                snippet=str(record.get("snippet") or ""),
-                                kind=str(record.get("kind") or "web"),
-                                metadata=record,
-                            )
-                        )
-                    for record in event.get("files", ()):
-                        size = record.get("size")
-                        yield ArtifactDiscovered(
-                            Artifact(
-                                id=str(record.get("id") or record.get("file_id") or ""),
-                                kind=str(record.get("kind") or "file"),
-                                name=str(
-                                    record.get("name")
-                                    or record.get("filename")
-                                    or record.get("file_name")
-                                    or ""
-                                ),
-                                mime_type=str(
-                                    record.get("mime_type") or "application/octet-stream"
-                                ),
-                                size=size if isinstance(size, int) else None,
-                                download_url=record.get("download_url") or record.get("url"),
-                                content=record.get("content"),
-                                metadata=record,
-                            )
-                        )
-
-            if not completed:
-                raise ClaudeStreamError(
-                    "Claude response ended before completion; it was not resent"
-                )
-
-        if thinking_started:
-            yield ThinkingEnd(text=thinking_text)
-        if output_started:
-            yield OutputEnd()

@@ -3,15 +3,16 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from tests.streaming_support import StreamTestAdapter
 from webaiprovider import Account, MessageOperation, OperationState, Provider
 from webaiprovider.base import (
-    ConversationBound,
-    MessageMetadata,
     ProviderAdapter,
-    ReplaceText,
-    ResponseComplete,
-    TextDelta,
-    ThoughtDelta,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
+    _ThoughtDelta,
 )
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import (
@@ -119,28 +120,28 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.project_id, "project-1")
 
     async def test_stream_maps_typed_events_and_remote_identity(self) -> None:
-        request = None
-
-        async def stream(value):
-            nonlocal request
-            request = value
-            yield ConversationBound("conversation-1")
-            yield ThoughtDelta("reasoning")
-            yield TextDelta("answer")
-            yield MessageMetadata(
-                sources=({"id": "source-1", "url": "https://example.test"},),
-                files=({"id": "file-1", "name": "result.txt", "url": "https://files.test"},),
-            )
-            yield ResponseComplete()
-
-        self.adapter.stream = stream
+        adapter = StreamTestAdapter(
+            self.account.provider,
+            self.account.id,
+            (
+                _ConversationBound("conversation-1"),
+                _ThoughtDelta("reasoning"),
+                _TextDelta("answer"),
+                _MessageMetadata(
+                    sources=({"id": "source-1", "url": "https://example.test"},),
+                    files=({"id": "file-1", "name": "result.txt", "url": "https://files.test"},),
+                ),
+                _ResponseComplete(),
+            ),
+        )
+        self.bridge._provider_instance = adapter
         chat = await self.provider.chats.create()
         operation = chat.messages.create("prompt")
 
         events = [event async for event in self.bridge.execute_stream(operation)]
 
         self.assertIsInstance(operation, MessageOperation)
-        self.assertEqual(request.provider_id, self.account.provider)
+        self.assertEqual(adapter.requests[0].prompt, "prompt")
         self.assertEqual(chat.remote_id, "conversation-1")
         self.assertTrue(any(isinstance(event, SourceDiscovered) for event in events))
         self.assertTrue(any(isinstance(event, ArtifactDiscovered) for event in events))
@@ -160,19 +161,22 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_stream_handles_analysis_channel_and_propagates_message_ids(self) -> None:
-        async def stream(_value):
-            yield ConversationBound("conversation-2")
-            yield ReplaceText("Step 1", "analysis")
-            yield ReplaceText("", "final")
-            yield ReplaceText("Step 1 and Step 2", "analysis")
-            yield ReplaceText("Final output", "final")
-            yield MessageMetadata(
-                message_id="msg-assistant-99",
-                user_message_id="msg-user-99",
-            )
-            yield ResponseComplete()
-
-        self.adapter.stream = stream
+        self.bridge._provider_instance = StreamTestAdapter(
+            self.account.provider,
+            self.account.id,
+            (
+                _ConversationBound("conversation-2"),
+                _ReplaceText("Step 1", "analysis"),
+                _ReplaceText("", "final"),
+                _ReplaceText("Step 1 and Step 2", "analysis"),
+                _ReplaceText("Final output", "final"),
+                _MessageMetadata(
+                    message_id="msg-assistant-99",
+                    user_message_id="msg-user-99",
+                ),
+                _ResponseComplete(),
+            ),
+        )
         chat = await self.provider.chats.create()
         operation = chat.messages.create("solve")
         self.assertEqual(operation.state, OperationState.PENDING)

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import webaiprovider
+from tests.streaming_support import StreamTestAdapter
 from webaiprovider import (
     Account,
     AmbiguousMatchError,
@@ -39,6 +40,7 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
+from webaiprovider.base import _TextDelta
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
@@ -527,15 +529,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_model_resolution_from_string_and_policy(self) -> None:
         acc = Account.from_cookies("chatgpt", {"session_token": "tok"})
         bridge = ProviderBridge(acc)
-
-        captured_reqs = []
-        mock_provider = MagicMock()
-        mock_provider.id = acc.provider
-        mock_provider.account_id = acc.id
         from webaiprovider.models import Choice, FeatureState, ModelCatalog
         from webaiprovider.models import Model as CatalogModel
 
-        mock_provider.models = AsyncMock(
+        adapter = StreamTestAdapter(acc.provider, acc.id, (_TextDelta("hi"),))
+        adapter.models = AsyncMock(
             return_value=ModelCatalog(
                 FeatureState.AVAILABLE,
                 (
@@ -549,41 +547,32 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 default_model="gpt-6-instant",
             )
         )
-        mock_provider.close = AsyncMock()
-
-        async def fake_stream(req):
-            captured_reqs.append(req)
-            yield OutputBegin()
-            yield OutputDelta("hi")
-            yield OutputEnd()
-
-        mock_provider.stream = fake_stream
-        bridge._provider_instance = mock_provider
+        bridge._provider_instance = adapter
         bridge.open = AsyncMock()
 
         session, _ = await self.open_provider(acc, bridge)
         chat = await session.chats.create()
 
-        op1 = chat.messages.create("test", model="gpt-6-instant")
-        await op1.start()
-        self.assertEqual(captured_reqs[-1].model, "gpt-6-instant")
+        operation = chat.messages.create("test", model="gpt-6-instant")
+        await operation.start()
+        self.assertEqual(adapter.requests[-1].model, "gpt-6-instant")
 
-        op2 = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
-        await op2.start()
-        self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
+        operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
+        await operation.start()
+        self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
 
-        op2_effort = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH)
-        await op2_effort.start()
-        self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
-        self.assertEqual(captured_reqs[-1].effort, "extended")
+        operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH)
+        await operation.start()
+        self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
+        self.assertEqual(adapter.requests[-1].effort, "extended")
 
-        op_auto = chat.messages.create("test", model=Models.AUTO)
-        await op_auto.start()
-        self.assertEqual(captured_reqs[-1].model, "gpt-6-instant")
+        operation = chat.messages.create("test", model=Models.AUTO)
+        await operation.start()
+        self.assertEqual(adapter.requests[-1].model, "gpt-6-instant")
 
-        op3 = chat.messages.create("test", model=Models.HIGH)
-        await op3.start()
-        self.assertEqual(captured_reqs[-1].model, "gpt-6-thinking")
+        operation = chat.messages.create("test", model=Models.HIGH)
+        await operation.start()
+        self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
         await session.close()
 
     def test_collections_abstract_base_classes_and_no_shims(self) -> None:

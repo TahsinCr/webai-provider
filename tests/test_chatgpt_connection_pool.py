@@ -3,7 +3,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from webaiprovider.base import ConversationBound, SendRequest, TextDelta
+from webaiprovider.base import _ConversationBound, _ProviderRequest, _TextDelta
 from webaiprovider.providers.chatgpt.adapter import ChatGPTProvider
 
 
@@ -36,17 +36,15 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
             pass
         self.assertEqual(len(PersistentClient.instances), 1)
 
-        request = SendRequest("chatgpt", "default", "local", "hello", temporary=True)
-        events = [event async for event in provider.stream(request)]
-        self.assertTrue(any(isinstance(event, ConversationBound) for event in events))
+        request = _ProviderRequest("hello", temporary=True)
+        events = [event async for event in provider._stream_request(request)]
+        self.assertTrue(any(isinstance(event, _ConversationBound) for event in events))
         self.assertIs(provider._http_client, prepared_client)
         self.assertFalse(prepared_client.closed.is_set())
 
-        cancelled = provider.stream(
-            SendRequest("chatgpt", "default", "local", "cancel me", temporary=True)
-        )
+        cancelled = provider._stream_request(_ProviderRequest("cancel me", temporary=True))
         first = await asyncio.wait_for(anext(cancelled), timeout=1)
-        self.assertIsInstance(first, TextDelta)
+        self.assertIsInstance(first, _TextDelta)
         await asyncio.wait_for(cancelled.aclose(), timeout=2)
         self.assertTrue(prepared_client.closed.is_set())
         self.assertIsNone(provider._http_client)

@@ -6,7 +6,7 @@ import asyncio
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .notebooks import Notebooks
@@ -17,30 +17,15 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import CredentialStore
 from ...base import (
     Capability,
-    ConversationBound,
     MessageAction,
-    MessageMetadata,
     ProjectEditing,
     ProviderAdapter,
-    ReplaceText,
-    ResponseComplete,
-    SendRequest,
+    _ConversationBound,
+    _MessageMetadata,
+    _ProviderRequest,
+    _ReplaceText,
+    _ResponseComplete,
     confirm_deleted,
-    prepare_operation,
-    validate_request,
-)
-from ...contracts import (
-    Artifact,
-    ArtifactDiscovered,
-    OutputBegin,
-    OutputEnd,
-    OutputReplace,
-    Source,
-    SourceDiscovered,
-    StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
 )
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
@@ -378,8 +363,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
     stream_idle_timeout = 120
     stream_total_timeout = 600
 
-    async def stream(self, request: SendRequest):
-        validate_request(self, request)
+    async def _stream_request(self, request: _ProviderRequest):
         iterator = self._stream(request)
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
@@ -402,146 +386,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             timeout.cancel()
             await iterator.aclose()
 
-    async def execute_stream(self, operation: Any) -> AsyncIterator[StreamEvent]:
-        iterator = self._execute_stream(operation)
-        loop = asyncio.get_running_loop()
-        task = asyncio.current_task()
-        if task is None:
-            raise RuntimeError("Gemini streaming requires an active asyncio task")
-        deadline_cancel = object()
-
-        def cancel_at_deadline() -> None:
-            task.cancel(deadline_cancel)
-
-        timeout = loop.call_later(self.stream_total_timeout, cancel_at_deadline)
-        try:
-            async for event in iterator:
-                yield event
-        except asyncio.CancelledError as error:
-            if not error.args or error.args[0] is not deadline_cancel:
-                raise
-            raise GeminiStreamError("Gemini request exceeded the 10-minute time limit") from None
-        finally:
-            timeout.cancel()
-            await iterator.aclose()
-
-    async def _execute_stream(self, operation: Any) -> AsyncIterator[StreamEvent]:
-        from .media import resolve_image_links
-        from .transport import generate
-
-        req = await prepare_operation(operation)
-        raw_request = req.to_send_request(self.id, self.account_id, operation.chat.id)
-        client, request, metadata, context, action_files = await self._prepare_send_context(
-            raw_request
-        )
-
-        bound = bool(request.conversation_id)
-        visible = False
-        cid = request.conversation_id
-        output_started = False
-        thinking_started = False
-        thinking_text = ""
-        seen_source_urls = set()
-        seen_artifact_ids = set()
-
-        async for chunk in generate(
-            client,
-            request,
-            metadata,
-            context,
-            files=action_files,
-            request_timeout=(15, self.stream_idle_timeout + 10),
-        ):
-            cid = chunk.get("cid") or cid
-            metadata = chunk["metadata"]
-            if cid and not bound and cid != request.conversation_id:
-                operation.chat.remote_id = cid
-                bound = True
-            if chunk.get("context_only"):
-                continue
-
-            images = chunk["files"]
-            visible = visible or bool(chunk["text"] or images)
-
-            for image in images:
-                self._media[cid, image["alias"]] = image
-                self._media[cid, image["url"]] = image
-                art_id = image.get("alias") or image.get("name")
-                if art_id not in seen_artifact_ids:
-                    seen_artifact_ids.add(art_id)
-                    yield ArtifactDiscovered(
-                        Artifact(
-                            id=art_id,
-                            kind="image",
-                            name=image.get("name", ""),
-                            mime_type=image.get("media_type") or "image/png",
-                            download_url=image.get("url"),
-                            metadata=image,
-                        )
-                    )
-            while len(self._media) > 256:
-                self._media.pop(next(iter(self._media)))
-
-            for src in chunk.get("sources", ()):
-                src_url = src.get("url", "")
-                if src_url and src_url not in seen_source_urls:
-                    seen_source_urls.add(src_url)
-                    yield SourceDiscovered(
-                        Source(
-                            id=str(src.get("id") or src_url),
-                            url=src_url,
-                            title=str(src.get("title") or ""),
-                            snippet=str(src.get("snippet") or ""),
-                            kind="web",
-                            metadata=src,
-                        )
-                    )
-
-            if chunk["thoughts"]:
-                delta = (
-                    chunk["thoughts"][len(thinking_text) :]
-                    if chunk["thoughts"].startswith(thinking_text)
-                    else chunk["thoughts"]
-                )
-                thinking_text = chunk["thoughts"]
-                if not thinking_started:
-                    thinking_started = True
-                    yield ThinkingBegin()
-                if delta:
-                    yield ThinkingDelta(delta=delta)
-
-            if chunk["text"] or images:
-                if thinking_started:
-                    thinking_started = False
-                    yield ThinkingEnd(text=thinking_text)
-                if not output_started:
-                    output_started = True
-                    yield OutputBegin()
-                resolved = resolve_image_links(chunk["text"], images)
-                yield OutputReplace(text=resolved)
-
-            rid = metadata[1] if len(metadata) > 1 else None
-            if rid:
-                operation.message.id = rid + ":user"
-                operation._assistant_message_id = rid + ":model"
-
-        if not visible or not cid:
-            raise GeminiStreamError("Gemini response did not complete; the request was not retried")
-
-        if thinking_started:
-            yield ThinkingEnd(text=thinking_text)
-        if output_started:
-            yield OutputEnd()
-
-        if cid and not request.temporary and self._usable_chat_metadata(metadata, cid):
-            self._remember_chat_metadata(cid, metadata)
-        if request.temporary:
-            self._temporary[cid] = metadata
-            while len(self._temporary) > 32:
-                oldest = next(iter(self._temporary))
-                self._temporary.pop(oldest)
-
-    async def _prepare_send_context(self, request: SendRequest):
+    async def _prepare_send_context(self, request: _ProviderRequest):
         from .notebooks import field, notebook_id
 
         project = notebook_id(request.project_id) if request.project_id else None
@@ -677,9 +522,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
                 )
         return client, request, metadata, context, action_files
 
-    async def _stream(self, request: SendRequest):
-        if request.provider_id != self.id or request.account_id != self.account_id:
-            raise ValueError("request belongs to another provider/account")
+    async def _stream(self, request: _ProviderRequest):
         from .media import resolve_image_links
         from .transport import generate
 
@@ -698,7 +541,7 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             cid = chunk.get("cid") or cid
             metadata = chunk["metadata"]
             if cid and not bound and cid != request.conversation_id:
-                yield ConversationBound(cid)
+                yield _ConversationBound(cid)
                 bound = True
             if chunk.get("context_only"):
                 continue
@@ -722,24 +565,23 @@ class GeminiProvider(ProjectEditing, ProviderAdapter):
             )
             visible = visible or bool(chunk["text"] or images)
             if chunk["thoughts"]:
-                yield ReplaceText(chunk["thoughts"], "analysis")
+                yield _ReplaceText(chunk["thoughts"], "analysis")
             for image in images:
                 self._media[cid, image["alias"]] = image
                 self._media[cid, image["url"]] = image
             while len(self._media) > 256:
                 self._media.pop(next(iter(self._media)))
-            yield ReplaceText(resolve_image_links(chunk["text"], images), "final")
+            yield _ReplaceText(resolve_image_links(chunk["text"], images), "final")
             if chunk.get("response_complete"):
-                yield ResponseComplete()
+                yield _ResponseComplete()
             rid = metadata[1] if len(metadata) > 1 else None
             if rid:
-                final_metadata = MessageMetadata(
+                final_metadata = _MessageMetadata(
                     message_id=rid + ":model",
                     user_message_id=rid + ":user",
                     model=request.model,
                     effort=request.effort,
                     sources=published_sources,
-                    actions=() if request.temporary else ("retry", "branch"),
                     files=output_files,
                 )
         if not visible or not cid:

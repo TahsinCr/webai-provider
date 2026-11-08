@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from webaiprovider.base import MessageAction, ReplaceText, SendRequest
+from webaiprovider.base import MessageAction, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.models import Choice, Model
 from webaiprovider.providers.gemini import GeminiProvider
@@ -20,7 +20,7 @@ from webaiprovider.providers.gemini.transport import Frames, generation_request,
 
 async def delayed_response(_request):
     await asyncio.sleep(0.02)
-    yield ReplaceText("answer")
+    yield _ReplaceText("answer")
 
 
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
@@ -139,7 +139,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 "thoughts": "",
             }
 
-        request = SendRequest("gemini", "test", None, "question")
+        request = _ProviderRequest("question")
         with patch("webaiprovider.providers.gemini.transport.generate", generate):
             _ = [event async for event in provider._stream(request)]
 
@@ -151,12 +151,9 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         provider.stream_total_timeout = 0.5
 
         provider._stream = delayed_response
-        events = [
-            event
-            async for event in provider.stream(SendRequest("gemini", "test", "local", "question"))
-        ]
+        events = [event async for event in provider._stream_request(_ProviderRequest("question"))]
 
-        self.assertEqual(events, [ReplaceText("answer")])
+        self.assertEqual(events, [_ReplaceText("answer")])
 
     async def test_stream_still_enforces_the_total_request_deadline(self):
         provider = GeminiProvider(Path("unused"), "test")
@@ -164,12 +161,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
 
         provider._stream = delayed_response
         with self.assertRaisesRegex(ProviderError, "10-minute time limit"):
-            _ = [
-                event
-                async for event in provider.stream(
-                    SendRequest("gemini", "test", "local", "question")
-                )
-            ]
+            _ = [event async for event in provider._stream_request(_ProviderRequest("question"))]
 
     async def test_activity_sync_uses_the_web_preference_rpc(self):
         session = GeminiSession(Path("unused"))
@@ -287,10 +279,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         session = SimpleNamespace(
             models=(model,), language="en", token="test", session_id="session"
         )
-        request = SendRequest(
-            "gemini",
-            "test",
-            "local",
+        request = _ProviderRequest(
             "hello",
             model="dynamic",
             effort="extended",
@@ -309,7 +298,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             generation_request(
                 session,
-                SendRequest("gemini", "test", "local", "hello", model="unavailable"),
+                _ProviderRequest("hello", model="unavailable"),
                 [],
                 [],
             )
@@ -359,7 +348,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.default_effort, "medium")
         self.assertEqual(model.title, "Provider model")
         session.token, session.session_id = "token", "session"
-        request = SendRequest("gemini", "default", "local", "hello", model=model.id)
+        request = _ProviderRequest("hello", model=model.id)
         headers, data = generation_request(session, request, [], [])
         self.assertEqual(json.loads(json.loads(data["f.req"])[1])[80], 4)
         self.assertEqual(json.loads(headers["x-goog-ext-525001261-jspb"])[-2], 4)
@@ -568,12 +557,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         session = self.session(response)
         timing = SendTiming("gemini")
         with use_send_timing(timing):
-            result = [
-                c
-                async for c in generate(
-                    session, SendRequest("gemini", "test", "local", "question"), []
-                )
-            ]
+            result = [c async for c in generate(session, _ProviderRequest("question"), [])]
         self.assertEqual(
             (result[1]["cid"], result[1]["text"], result[1]["thoughts"]),
             ("c_new", "answer", "thought\nSearching the web"),
@@ -637,7 +621,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             with patch(
                 "webaiprovider.providers.gemini.transport.BASE", f"http://127.0.0.1:{port}/"
             ):
-                stream = generate(session, SendRequest("gemini", "test", "local", "question"), [])
+                stream = generate(session, _ProviderRequest("question"), [])
                 pending = asyncio.create_task(anext(stream))
                 await asyncio.wait_for(accepted.wait(), 2)
                 pending.cancel()
@@ -661,12 +645,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         response = self.response([b""])
         session = self.session(response)
         with self.assertRaises(ProviderError):
-            _ = [
-                c
-                async for c in generate(
-                    session, SendRequest("gemini", "test", "local", "question"), []
-                )
-            ]
+            _ = [c async for c in generate(session, _ProviderRequest("question"), [])]
         self.assertTrue(response.closed)
         session.persist.assert_not_awaited()
 
@@ -685,10 +664,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
         async def consume():
             return [
-                c
-                async for c in generate(
-                    self.session(response), SendRequest("gemini", "test", "local", "question"), []
-                )
+                c async for c in generate(self.session(response), _ProviderRequest("question"), [])
             ]
 
         task = asyncio.create_task(consume())
@@ -716,7 +692,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         session = SimpleNamespace(
             models=(flash,), language="en", token="test", session_id="session"
         )
-        request = SendRequest("gemini", "test", "local", "hello", model="gemini-flash")
+        request = _ProviderRequest("hello", model="gemini-flash")
         headers, data = generation_request(session, request, ["cid", "", ""], [])
         body = json.loads(json.loads(data["f.req"])[1])
         selector = json.loads(headers["x-goog-ext-525001261-jspb"])
@@ -759,8 +735,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
             _ = [
                 e
-                async for e in provider.stream(
-                    SendRequest("gemini", "test", "local", "first message", model="gemini-flash")
+                async for e in provider._stream_request(
+                    _ProviderRequest("first message", model="gemini-flash")
                 )
             ]
             self.assertEqual(provider.rpc.call.await_count, 0)
@@ -768,11 +744,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
             _ = [
                 e
-                async for e in provider.stream(
-                    SendRequest(
-                        "gemini",
-                        "test",
-                        "conv_1",
+                async for e in provider._stream_request(
+                    _ProviderRequest(
                         "second message",
                         model="gemini-flash",
                         conversation_id="conv_1",
@@ -932,11 +905,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
                 return [
                     event
-                    async for event in provider.stream(
-                        SendRequest(
-                            "gemini",
-                            "test",
-                            "local",
+                    async for event in provider._stream_request(
+                        _ProviderRequest(
                             "",
                             conversation_id="conv_1",
                             action=MessageAction.RETRY,

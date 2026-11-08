@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webaiprovider.base import ConversationBound, ReplaceText, SendRequest
+from webaiprovider.base import _ConversationBound, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import ProviderError
 from webaiprovider.models import Capability, FeatureState
 from webaiprovider.providers.claude import ClaudeProvider
@@ -304,12 +304,7 @@ class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.provider.transport.events = events
         with self.assertRaises(ProviderError):
-            _ = [
-                x
-                async for x in self.provider.stream(
-                    SendRequest("claude", "account", "local", "Question")
-                )
-            ]
+            _ = [x async for x in self.provider._stream_request(_ProviderRequest("Question"))]
 
     async def test_transport_attaches_web_search_results_and_citations(self):
         frames = [
@@ -414,14 +409,9 @@ class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "done"}
 
         self.provider.transport.events = events
-        result = [
-            x
-            async for x in self.provider.stream(
-                SendRequest("claude", "account", "local", "Question")
-            )
-        ]
-        self.assertIsInstance(result[0], ConversationBound)
-        self.assertIsInstance(result[1], ReplaceText)
+        result = [x async for x in self.provider._stream_request(_ProviderRequest("Question"))]
+        self.assertIsInstance(result[0], _ConversationBound)
+        self.assertIsInstance(result[1], _ReplaceText)
         self.assertEqual(result[1].channel, "analysis")
 
     async def test_attachments_are_forwarded_as_provider_file_ids(self):
@@ -435,8 +425,8 @@ class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.provider.transport.events = events
         _ = [
             x
-            async for x in self.provider.stream(
-                SendRequest("claude", "account", "local", "Q", attachments=({"id": "file-id"},))
+            async for x in self.provider._stream_request(
+                _ProviderRequest("Q", attachments=({"id": "file-id"},))
             )
         ]
         self.assertIn(Capability.ATTACHMENTS, self.provider.capabilities)

@@ -5,36 +5,13 @@ import os
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from .base import (
-    ActionBegin,
-    ActionDelta,
-    ActionEnd,
-    ConversationBound,
-    MessageMetadata,
-    ProviderAdapter,
-    ReplaceText,
-    ResponseComplete,
-    TextDelta,
-    ThoughtDelta,
-    prepare_operation,
-    validate_request,
-)
+from .base import ProviderAdapter
 from .contracts import (
     Artifact,
-    ArtifactDiscovered,
     EffortRef,
     EffortSet,
     ModelRef,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    Source,
-    SourceDiscovered,
     StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
 )
 from .errors import ProviderError, UnsupportedOperationError
 from .models import (
@@ -392,130 +369,8 @@ class ProviderBridge:
             await self._get_provider().remove_project_resource(project.remote_id, resource_id)
 
     async def execute_stream(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
-        provider = self._get_provider()
-        execute_stream_fn = getattr(provider, "execute_stream", None)
-        if (
-            execute_stream_fn is not None
-            and callable(execute_stream_fn)
-            and not type(execute_stream_fn).__name__.endswith("Mock")
-        ):
-            async for event in provider.execute_stream(operation):
-                yield event
-            return
-
-        chat = operation.chat
-        req = await prepare_operation(operation)
-        request = req.to_send_request(
-            self.account.provider,
-            self.account.id,
-            chat.id,
-        )
-        validate_request(provider, request)
-
-        output_started = False
-        thinking_started = False
-        thinking_text = ""
-
-        try:
-            async for chunk in provider.stream(request):
-                if isinstance(chunk, ConversationBound):
-                    chat.remote_id = chunk.conversation_id
-                    continue
-
-                if isinstance(chunk, ThoughtDelta) or (
-                    isinstance(chunk, (TextDelta, ReplaceText)) and chunk.channel == "analysis"
-                ):
-                    if isinstance(chunk, ReplaceText):
-                        delta = (
-                            chunk.text[len(thinking_text) :]
-                            if chunk.text.startswith(thinking_text)
-                            else chunk.text
-                        )
-                        thinking_text = chunk.text
-                    else:
-                        delta = chunk.text
-                        thinking_text += delta
-                    if not thinking_started:
-                        thinking_started = True
-                        yield ThinkingBegin()
-                    if delta:
-                        yield ThinkingDelta(delta=delta)
-                    continue
-
-                if isinstance(chunk, ReplaceText):
-                    if not chunk.text and not output_started:
-                        continue
-                    if thinking_started:
-                        thinking_started = False
-                        yield ThinkingEnd(text=thinking_text)
-                    if not output_started:
-                        output_started = True
-                        yield OutputBegin()
-                    yield OutputReplace(text=chunk.text)
-                    continue
-
-                if isinstance(chunk, TextDelta):
-                    if chunk.text:
-                        if thinking_started:
-                            thinking_started = False
-                            yield ThinkingEnd(text=thinking_text)
-                        if not output_started:
-                            output_started = True
-                            yield OutputBegin()
-                        yield OutputDelta(delta=chunk.text)
-                    continue
-
-                if isinstance(chunk, MessageMetadata):
-                    if chunk.user_message_id:
-                        operation.message.id = chunk.user_message_id
-                    if chunk.message_id:
-                        operation._assistant_message_id = chunk.message_id
-                    for record in chunk.sources:
-                        yield SourceDiscovered(
-                            Source(
-                                id=str(record.get("id") or record.get("source_id") or ""),
-                                url=str(record.get("url") or ""),
-                                title=str(record.get("title") or ""),
-                                snippet=str(record.get("snippet") or ""),
-                                kind=str(record.get("kind") or "web"),
-                                metadata=record,
-                            )
-                        )
-                    for record in chunk.files:
-                        size = record.get("size")
-                        yield ArtifactDiscovered(
-                            Artifact(
-                                id=str(record.get("id") or record.get("file_id") or ""),
-                                kind=str(record.get("kind") or "file"),
-                                name=str(
-                                    record.get("name")
-                                    or record.get("filename")
-                                    or record.get("file_name")
-                                    or ""
-                                ),
-                                mime_type=str(
-                                    record.get("mime_type") or "application/octet-stream"
-                                ),
-                                size=size if isinstance(size, int) else None,
-                                download_url=record.get("download_url") or record.get("url"),
-                                content=record.get("content"),
-                                metadata=record,
-                            )
-                        )
-                    continue
-
-                if isinstance(chunk, (ActionBegin, ActionDelta, ActionEnd, ResponseComplete)):
-                    continue
-
-            if thinking_started:
-                yield ThinkingEnd(text=thinking_text)
-            if output_started:
-                yield OutputEnd()
-
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise ProviderError("Provider request failed") from exc
+        async for event in self._get_provider().execute_stream(operation):
+            yield event
 
     async def download(
         self,
