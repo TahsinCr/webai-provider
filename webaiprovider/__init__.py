@@ -76,8 +76,8 @@ from .providers.gemini.resources import AsyncGeminiChat
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import AsyncGrokProvider, GrokProvider
 from .providers.grok.resources import AsyncGrokChat
-from .resources.chat import Chat
 from .resources.attachment import Attachment
+from .resources.chat import Chat
 from .resources.message import Message
 from .resources.operation import MessageOperation, OperationHooks
 from .resources.project import Project

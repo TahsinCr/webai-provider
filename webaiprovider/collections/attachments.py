@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
 
 from ..resources.attachment import Attachment
 from .base import QueryableCollection
@@ -11,13 +11,14 @@ class Attachments(QueryableCollection[Attachment]):
     def __init__(self, items: Iterable[Attachment] | None = None) -> None:
         super().__init__(list(items) if items is not None else None)
 
-    def add(
+    def create(
         self,
         item: Attachment | Path | str | bytes,
         *,
         name: str | None = None,
         mime_type: str | None = None,
     ) -> Attachment:
+        """Prepare an attachment and add it to this collection."""
         if isinstance(item, Attachment):
             self._items.append(item)
             return item
@@ -33,29 +34,31 @@ class Attachments(QueryableCollection[Attachment]):
             return att
         raise TypeError(f"Unsupported attachment type: {type(item)}")
 
-    def extend(self, items: Iterable[Attachment | Path | str | bytes]) -> list[Attachment]:
-        return [self.add(item) for item in items]
+    def update(
+        self,
+        target: Attachment | str,
+        *,
+        name: str | None = None,
+        mime_type: str | None = None,
+    ) -> Attachment:
+        """Update an attachment's display name or media type."""
+        item_id = target.id if isinstance(target, Attachment) else target
+        attachment = self.get(item_id)
+        if name is not None:
+            attachment.name = name
+        if mime_type is not None:
+            attachment.mime_type = mime_type
+        return attachment
 
-    def remove(self, item_or_id: Attachment | str) -> bool:
-        target_id = item_or_id.id if isinstance(item_or_id, Attachment) else item_or_id
-        for i, it in enumerate(self._items):
-            if it.id == target_id or it.name == target_id:
-                del self._items[i]
+    def delete(self, target: Attachment | str) -> bool:
+        """Detach an item from this collection without deleting its source file."""
+        item_id = target.id if isinstance(target, Attachment) else target
+        for index, item in enumerate(self._items):
+            if item.id == item_id:
+                del self._items[index]
                 return True
         return False
-
-    def clear(self) -> None:
-        self._items.clear()
 
     @property
     def total_size(self) -> int:
         return sum(it.size for it in self._items)
-
-    def __getitem__(self, index: int) -> Attachment:
-        return self._items[index]
-
-    def __contains__(self, item_or_id: Any) -> bool:
-        if isinstance(item_or_id, Attachment):
-            return any(item is item_or_id for item in self._items)
-        target = str(item_or_id)
-        return any(it.id == target or it.name == target for it in self._items)

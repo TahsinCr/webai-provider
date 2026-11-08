@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from ..catalogs import Models
@@ -8,6 +9,7 @@ from ..errors import ProviderError
 from ..models import Conversation
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
+from .attachments import Attachment, Attachments
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
@@ -53,7 +55,7 @@ class MessagesCollection(ManageableCollection[Message]):
         message: Message | str,
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-        attachments: Any = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
         **metadata: Any,
     ) -> MessageOperation:
         if isinstance(message, str):
@@ -70,7 +72,8 @@ class MessagesCollection(ManageableCollection[Message]):
             if model is not None:
                 msg.model = model
             if attachments is not None:
-                msg.attachments.extend(attachments)
+                for item in attachments:
+                    msg.attachments.create(item)
 
         self._items.append(msg)
         return MessageOperation(self.chat, msg, executor=self._execute_send)

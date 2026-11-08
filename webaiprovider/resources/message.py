@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..catalogs import Models
@@ -22,7 +23,7 @@ class Message:
         role: str = "user",
         id: str | None = None,
         remote_id: str | None = None,
-        attachments: Attachments | list[Attachment] | None = None,
+        attachments: Attachments | Iterable[Attachment] | None = None,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         chat: Chat | None = None,

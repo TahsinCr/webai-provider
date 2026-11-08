@@ -33,17 +33,22 @@ class AttachmentsTests(unittest.TestCase):
 
     def test_attachments_collection_operations(self) -> None:
         col = Attachments()
-        att1 = col.add(b"123", name="test1.bin")
-        col.add(b"45678", name="test2.bin")
+        att1 = col.create(b"123", name="test1.bin")
+        att2 = col.create(b"45678", name="test2.bin")
 
         self.assertEqual(len(col), 2)
         self.assertEqual(col.total_size, 8)
         self.assertIn(att1, col)
-        self.assertIn("test2.bin", col)
+        self.assertIs(col.find("test2.bin"), att2)
 
-        removed = col.remove("test1.bin")
+        updated = col.update(att1.id, name="renamed.bin", mime_type="application/x-test")
+        self.assertIs(updated, att1)
+        self.assertEqual(updated.name, "renamed.bin")
+        self.assertEqual(updated.mime_type, "application/x-test")
+
+        removed = col.delete(att1.id)
         self.assertTrue(removed)
         self.assertEqual(len(col), 1)
 
-        col.clear()
+        col.delete(att2.id)
         self.assertEqual(len(col), 0)
