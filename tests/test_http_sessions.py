@@ -492,7 +492,6 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         class Response:
             status_code = 200
             headers = {}
-            status_code = 200
 
             async def aiter_content(self):
                 for e in events:

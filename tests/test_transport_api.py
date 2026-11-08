@@ -9,13 +9,14 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
-from webaiprovider import Account, AsyncProvider, Provider
+from webaiprovider import Account, AsyncProvider, Provider, ProviderType
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.grok import AsyncGrokProvider
+from webaiprovider.streams import ProviderEvent, ProviderRequest, TextDelta
 from webaiprovider.transport import (
     AsyncHTTPTransport,
     AsyncHTTPXTransport,
@@ -26,6 +27,33 @@ from webaiprovider.transport import (
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_implementation_uses_public_events_and_the_shared_operation_pipeline(self):
+        class CustomProvider(AsyncProvider):
+            provider_type = ProviderType.GROK
+
+            async def _stream_request(self, request: ProviderRequest):
+                payload = await self.transport.request(
+                    "POST", "/fixture", json={"text": request.prompt}
+                )
+                event: ProviderEvent = TextDelta(payload["answer"])
+                yield event
+
+        client = SimpleNamespace(
+            request=AsyncMock(return_value=httpx.Response(200, json={"answer": "reply"})),
+            close=AsyncMock(),
+        )
+        transport = AsyncHTTPTransport("https://grok.com", client_factory=lambda **_: client)
+        async with CustomProvider(
+            Account.from_cookies("grok", {}), transport=transport
+        ) as provider:
+            chat = await provider.chats.create()
+            operation = chat.messages.create("question")
+            response = await operation.wait()
+            self.assertEqual(response.text, "reply")
+        client.request.assert_awaited_once()
+        self.assertEqual(client.request.call_args.kwargs["json"], {"text": "question"})
+        client.close.assert_awaited_once()
+
     async def test_httpx_strategy_uses_the_same_request_and_stream_contract(self):
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"ok": True}))

@@ -13,16 +13,7 @@ from typing import Callable, cast
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import (
-    AsyncProvider,
-    _ConversationBound,
-    _MessageMetadata,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-    confirm_deleted,
-)
+from ...async_provider import AsyncProvider, confirm_deleted
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
@@ -56,6 +47,14 @@ from ...provider import (
 from ...resources.chat import (
     BranchableChat,
     MovableChat,
+)
+from ...streams import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderRequest,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
 )
 from ...transport import AsyncTransport, PortalTransport, ThreadedTransport
 from ...utils.timing import current_send_timing
@@ -749,7 +748,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             await asyncio.to_thread(move)
 
-    async def _stream_request(self, request: _ProviderRequest):
+    async def _stream_request(self, request: ProviderRequest):
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue(maxsize=32)
         stopped = threading.Event()
@@ -771,11 +770,11 @@ class AsyncChatGPTProvider(AsyncProvider):
         def event(value):
             kind = value.get("type")
             if kind == "delta":
-                publish(("event", _TextDelta(value.get("text", ""), value.get("channel"))))
+                publish(("event", TextDelta(value.get("text", ""), value.get("channel"))))
             elif kind == "replace":
-                publish(("event", _ReplaceText(value.get("text", ""), value.get("channel"))))
+                publish(("event", TextReplacement(value.get("text", ""), value.get("channel"))))
             elif kind == "response_complete":
-                publish(("event", _ResponseComplete()))
+                publish(("event", ResponseComplete()))
 
         def work():
             try:
@@ -832,7 +831,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                             if text:
                                 summaries.append(text)
                     if summaries:
-                        publish(("event", _ReplaceText("\n\n".join(summaries), "analysis")))
+                        publish(("event", TextReplacement("\n\n".join(summaries), "analysis")))
                     final = next(
                         (
                             item
@@ -865,7 +864,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                         publish(
                             (
                                 "event",
-                                _MessageMetadata(
+                                MessageMetadata(
                                     final.get("id"),
                                     user.get("id"),
                                     (final.get("metadata") or {}).get("model_slug")
@@ -877,7 +876,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                                 ),
                             )
                         )
-                    publish(("event", _ConversationBound(remote_id)))
+                    publish(("event", ConversationBound(remote_id)))
             except _Stopped:
                 return
             except ProviderError as error:

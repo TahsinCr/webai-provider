@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tests.provider_fakes import provider_account
-from webaiprovider.async_provider import _ProviderRequest, _ReplaceText, _TextDelta
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.models import (
     Capability,
@@ -19,6 +18,7 @@ from webaiprovider.models import (
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
+from webaiprovider.streams import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.utils.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient
@@ -257,8 +257,8 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             "content_type": "thoughts",
             "thoughts": [{"summary": "Published summary"}],
         }
-        events = [event async for event in self.provider._stream_request(_ProviderRequest("hello"))]
-        self.assertIn(_ReplaceText("Published summary", "analysis"), events)
+        events = [event async for event in self.provider._stream_request(ProviderRequest("hello"))]
+        self.assertIn(TextReplacement("Published summary", "analysis"), events)
 
     async def test_completion_does_not_publish_hidden_or_tool_directed_analysis(self):
         self.client.closed.set()
@@ -278,9 +278,12 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
                 "content": {"parts": ["Tool protocol"]},
             },
         ]
-        events = [event async for event in self.provider._stream_request(_ProviderRequest("hello"))]
+        events = [event async for event in self.provider._stream_request(ProviderRequest("hello"))]
         self.assertFalse(
-            any(isinstance(event, _ReplaceText) and event.channel == "analysis" for event in events)
+            any(
+                isinstance(event, TextReplacement) and event.channel == "analysis"
+                for event in events
+            )
         )
 
     async def test_stream_produces_common_events_and_releases_transport(self):
@@ -289,8 +292,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         async def collect():
             with use_send_timing(timing):
                 return [
-                    event
-                    async for event in self.provider._stream_request(_ProviderRequest("hello"))
+                    event async for event in self.provider._stream_request(ProviderRequest("hello"))
                 ]
 
         timing = SendTiming()
@@ -300,7 +302,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stream.done())
         self.provider._gate.release()
         events = await stream
-        self.assertEqual(events[0], _TextDelta("partial"))
+        self.assertEqual(events[0], TextDelta("partial"))
         self.assertEqual(events[-1].conversation_id, "remote")
         self.assertTrue(self.client.closed.is_set())
         self.assertGreater(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
@@ -353,7 +355,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.client.closed.set()
         self.client.failure = RateLimited(30)
         with self.assertRaises(RateLimited) as raised:
-            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
+            async for _ in self.provider._stream_request(ProviderRequest("hello")):
                 pass
         self.assertEqual(raised.exception.retry_after, 30)
 
@@ -362,7 +364,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.client.failure = ValueError("secret transport detail")
 
         with self.assertRaises(ProviderError) as raised:
-            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
+            async for _ in self.provider._stream_request(ProviderRequest("hello")):
                 pass
 
         self.assertEqual(raised.exception.code, "chatgpt_error")
@@ -374,7 +376,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         failure = SentinelCompatibilityError("private signer detail")
         self.client.failure = failure
         with self.assertRaises(SentinelCompatibilityError) as raised:
-            async for _ in self.provider._stream_request(_ProviderRequest("hello")):
+            async for _ in self.provider._stream_request(ProviderRequest("hello")):
                 pass
         self.assertIs(raised.exception, failure)
         self.assertEqual(raised.exception.code, "chatgpt_sentinel_incompatible")

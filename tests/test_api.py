@@ -40,9 +40,9 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.async_provider import _TextDelta
 from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.streams import TextDelta
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
@@ -574,7 +574,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         async def fail_stream(_request):
             raise RateLimited(retry_after=42.0)
-            yield _TextDelta("unreachable")
+            yield TextDelta("unreachable")
 
         provider._stream_request = fail_stream
         await provider.open()
@@ -591,7 +591,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         p._close_provider = AsyncMock()
 
         async def fake_stream(_op):
-            yield _TextDelta("Direct answer")
+            yield TextDelta("Direct answer")
 
         p._stream_request = fake_stream
         await p.open()
@@ -604,7 +604,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.models import Model as CatalogModel
 
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
-        provider = StreamTestProvider(account.provider, account.id, (_TextDelta("hi"),))
+        provider = StreamTestProvider(account.provider, account.id, (TextDelta("hi"),))
         provider = await self.open_provider(account, provider)
         provider._load_model_catalog = AsyncMock(
             return_value=ModelCatalog(
@@ -688,7 +688,7 @@ class TestSyncApi(unittest.TestCase):
 
             async def _stream_request(self, _request):
                 self.thread_ids.append(threading.get_ident())
-                yield _TextDelta("done")
+                yield TextDelta("done")
 
             async def _close_provider(self) -> None:
                 self.thread_ids.append(threading.get_ident())

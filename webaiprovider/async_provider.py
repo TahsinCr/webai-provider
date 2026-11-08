@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from .accounts.status import SessionState, SessionStatus
@@ -46,26 +45,22 @@ from .provider import ProviderType, _provider_class
 from .resources.chat import Chat
 from .resources.project import Project as ProjectResource
 from .resources.response import Response
+from .streams import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderEvent,
+    ProviderRequest,
+    TextDelta,
+    TextReplacement,
+    ThoughtDelta,
+)
 from .transport import AsyncTransport
 
 if TYPE_CHECKING:
     from .accounts.account import Account
 
 
-@dataclass(frozen=True)
-class _ProviderRequest:
-    prompt: str
-    conversation_id: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    project_id: str | None = None
-    temporary: bool = False
-    attachments: tuple[dict, ...] = ()
-    action: MessageAction | None = None
-    message_id: str | None = None
-
-
-async def _prepare_operation(operation: Any, provider: Any) -> _ProviderRequest:
+async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
     message = operation.message
     chat = operation.chat
     raw_action = message.metadata.get("action")
@@ -112,7 +107,7 @@ async def _prepare_operation(operation: Any, provider: Any) -> _ProviderRequest:
         }
         for item in message.attachments
     )
-    return _ProviderRequest(
+    return ProviderRequest(
         prompt=message.content,
         model=model,
         effort=effort,
@@ -123,53 +118,6 @@ async def _prepare_operation(operation: Any, provider: Any) -> _ProviderRequest:
         conversation_id=chat.remote_id,
         project_id=chat.project_id,
     )
-
-
-@dataclass(frozen=True)
-class _TextDelta:
-    text: str
-    channel: str | None = None
-
-
-@dataclass(frozen=True)
-class _ThoughtDelta:
-    text: str
-
-
-@dataclass(frozen=True)
-class _ReplaceText:
-    text: str
-    channel: str | None = None
-
-
-@dataclass(frozen=True)
-class _ResponseComplete:
-    pass
-
-
-@dataclass(frozen=True)
-class _ConversationBound:
-    conversation_id: str
-
-
-@dataclass(frozen=True)
-class _MessageMetadata:
-    message_id: str | None = None
-    user_message_id: str | None = None
-    model: str | None = None
-    effort: str | None = None
-    sources: tuple[dict, ...] = ()
-    files: tuple[dict, ...] = ()
-
-
-_ProviderEvent = (
-    _TextDelta
-    | _ThoughtDelta
-    | _ReplaceText
-    | _ResponseComplete
-    | _ConversationBound
-    | _MessageMetadata
-)
 
 
 class AsyncProvider(BaseProvider):
@@ -265,7 +213,7 @@ class AsyncProvider(BaseProvider):
         else:
             await self._close_provider()
 
-    def _stream_request(self, request: _ProviderRequest) -> AsyncGenerator[_ProviderEvent, None]:
+    def _stream_request(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
         raise NotImplementedError
 
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
@@ -274,13 +222,13 @@ class AsyncProvider(BaseProvider):
         thinking_text = ""
         try:
             async for event in self._stream_request(request):
-                if isinstance(event, _ConversationBound):
+                if isinstance(event, ConversationBound):
                     operation.chat.remote_id = event.conversation_id
-                elif isinstance(event, _ThoughtDelta) or (
-                    isinstance(event, (_TextDelta, _ReplaceText)) and event.channel == "analysis"
+                elif isinstance(event, ThoughtDelta) or (
+                    isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
                 ):
                     delta = event.text
-                    if isinstance(event, _ReplaceText):
+                    if isinstance(event, TextReplacement):
                         delta = (
                             event.text[len(thinking_text) :]
                             if event.text.startswith(thinking_text)
@@ -294,7 +242,7 @@ class AsyncProvider(BaseProvider):
                         yield ThinkingBegin()
                     if delta:
                         yield ThinkingDelta(delta=delta)
-                elif isinstance(event, _ReplaceText):
+                elif isinstance(event, TextReplacement):
                     if not event.text and not output_started:
                         continue
                     if thinking_started:
@@ -304,7 +252,7 @@ class AsyncProvider(BaseProvider):
                         output_started = True
                         yield OutputBegin()
                     yield OutputReplace(text=event.text)
-                elif isinstance(event, _TextDelta) and event.text:
+                elif isinstance(event, TextDelta) and event.text:
                     if thinking_started:
                         thinking_started = False
                         yield ThinkingEnd(text=thinking_text)
@@ -312,7 +260,7 @@ class AsyncProvider(BaseProvider):
                         output_started = True
                         yield OutputBegin()
                     yield OutputDelta(delta=event.text)
-                elif isinstance(event, _MessageMetadata):
+                elif isinstance(event, MessageMetadata):
                     if event.user_message_id:
                         operation.message.id = event.user_message_id
                     if event.message_id:

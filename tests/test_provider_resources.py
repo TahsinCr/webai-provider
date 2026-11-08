@@ -5,14 +5,6 @@ from unittest.mock import AsyncMock
 
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncProvider, MessageOperation, OperationState
-from webaiprovider.async_provider import (
-    _ConversationBound,
-    _MessageMetadata,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-    _ThoughtDelta,
-)
 from webaiprovider.contracts import (
     ArtifactDiscovered,
     OutputBegin,
@@ -26,6 +18,14 @@ from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.models import Content, Conversation, Origin, Page, ResourceData
 from webaiprovider.models import MessageData as NativeMessage
 from webaiprovider.models import ProjectData as NativeProject
+from webaiprovider.streams import (
+    ConversationBound,
+    MessageMetadata,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+    ThoughtDelta,
+)
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
@@ -139,14 +139,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             self.account.provider,
             self.account.id,
             (
-                _ConversationBound("conversation-1"),
-                _ThoughtDelta("reasoning"),
-                _TextDelta("answer"),
-                _MessageMetadata(
+                ConversationBound("conversation-1"),
+                ThoughtDelta("reasoning"),
+                TextDelta("answer"),
+                MessageMetadata(
                     sources=({"id": "source-1", "url": "https://example.test"},),
                     files=({"id": "file-1", "name": "result.txt", "url": "https://files.test"},),
                 ),
-                _ResponseComplete(),
+                ResponseComplete(),
             ),
         )
         self.provider._stream_request = stream_provider._stream_request
@@ -179,16 +179,16 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             self.account.provider,
             self.account.id,
             (
-                _ConversationBound("conversation-2"),
-                _ReplaceText("Step 1", "analysis"),
-                _ReplaceText("", "final"),
-                _ReplaceText("Step 1 and Step 2", "analysis"),
-                _ReplaceText("Final output", "final"),
-                _MessageMetadata(
+                ConversationBound("conversation-2"),
+                TextReplacement("Step 1", "analysis"),
+                TextReplacement("", "final"),
+                TextReplacement("Step 1 and Step 2", "analysis"),
+                TextReplacement("Final output", "final"),
+                MessageMetadata(
                     message_id="msg-assistant-99",
                     user_message_id="msg-user-99",
                 ),
-                _ResponseComplete(),
+                ResponseComplete(),
             ),
         )
         self.provider._stream_request = stream_provider._stream_request

@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Publish provider request and normalized stream event contracts in `webaiprovider.streams` for implementations using the same operation pipeline as built-in providers.
+
 - Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded blocking-client bridges.
 
 - Add provider-specific async and sync provider facades, explicit `open()`/`close()` lifecycle, and paginated project chat access with chat moves.

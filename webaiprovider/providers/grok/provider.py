@@ -9,16 +9,7 @@ from io import StringIO
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import (
-    AsyncProvider,
-    _ConversationBound,
-    _MessageMetadata,
-    _ProviderEvent,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-)
+from ...async_provider import AsyncProvider
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...models import (
@@ -35,6 +26,15 @@ from ...models import (
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
+from ...streams import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderEvent,
+    ProviderRequest,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 from ...transport import AsyncTransport
 from ...utils.attachments import GROK_ATTACHMENTS
 from .client import GrokClient, GrokProjectEditor, remote_id
@@ -434,8 +434,8 @@ class AsyncGrokProvider(AsyncProvider):
         )
 
     async def _stream_request(
-        self, request: _ProviderRequest
-    ) -> AsyncGenerator[_ProviderEvent, None]:
+        self, request: ProviderRequest
+    ) -> AsyncGenerator[ProviderEvent, None]:
         if request.effort is not None:
             raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
         if len(request.attachments) > GROK_ATTACHMENTS.max_files:
@@ -628,7 +628,7 @@ class AsyncGrokProvider(AsyncProvider):
                 remainder = cleaner.feed(final=True)
                 if remainder:
                     output.write(remainder)
-                    yield _TextDelta(remainder, channel) if channel else _TextDelta(remainder)
+                    yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
 
         def reconcile_native():
             resolved_analysis = (
@@ -643,7 +643,7 @@ class AsyncGrokProvider(AsyncProvider):
                     output.seek(0)
                     output.truncate()
                     output.write(native)
-                    yield _ReplaceText(native, channel) if channel else _ReplaceText(native)
+                    yield TextReplacement(native, channel) if channel else TextReplacement(native)
 
         async for chunk in self.client.events(path, body):
             result = chunk.get("result")
@@ -656,12 +656,12 @@ class AsyncGrokProvider(AsyncProvider):
             if not conversation_id and isinstance(native_conversation, dict):
                 conversation_id = native_conversation.get("conversationId")
                 if conversation_id and not bound:
-                    yield _ConversationBound(conversation_id)
+                    yield ConversationBound(conversation_id)
                     bound = True
             if not conversation_id and not request.conversation_id:
                 conversation_id = result.get("conversationId") or response.get("conversationId")
                 if conversation_id and not bound:
-                    yield _ConversationBound(conversation_id)
+                    yield ConversationBound(conversation_id)
                     bound = True
             error = response.get("error") or result.get("error") or chunk.get("error")
             if error:
@@ -716,7 +716,7 @@ class AsyncGrokProvider(AsyncProvider):
                 visible = cleaner.feed(token)
                 if visible:
                     (streamed_analysis if analysis else streamed_text).write(visible)
-                    yield _TextDelta(visible, "analysis") if analysis else _TextDelta(visible)
+                    yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
             if response.get("responseId") and not response_id:
                 response_id = response["responseId"]
             if response.get("done") is True or response.get("finished") is True:
@@ -731,7 +731,7 @@ class AsyncGrokProvider(AsyncProvider):
                     yield event
                 for event in reconcile_native():
                     yield event
-                yield _ResponseComplete()
+                yield ResponseComplete()
                 completion_notified = True
         resolve_sources()
         for event in flush_text_filters():
@@ -745,9 +745,9 @@ class AsyncGrokProvider(AsyncProvider):
         if response_id:
             self._remember_continuation(conversation_id, response_id)
         if not bound and not request.conversation_id:
-            yield _ConversationBound(conversation_id)
+            yield ConversationBound(conversation_id)
         if response_id and streamed_text.tell():
-            yield _MessageMetadata(
+            yield MessageMetadata(
                 message_id=response_id,
                 user_message_id=user_response_id,
                 model=response_model,
@@ -755,7 +755,7 @@ class AsyncGrokProvider(AsyncProvider):
                 sources=sources,
             )
         if not completion_notified:
-            yield _ResponseComplete()
+            yield ResponseComplete()
 
 
 class GrokChat(MovableChat, SyncChat):

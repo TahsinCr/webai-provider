@@ -11,16 +11,7 @@ from typing import TYPE_CHECKING
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import (
-    AsyncProvider,
-    _ConversationBound,
-    _MessageMetadata,
-    _ProviderEvent,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    confirm_deleted,
-)
+from ...async_provider import AsyncProvider, confirm_deleted
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...models import (
@@ -37,6 +28,14 @@ from ...models import (
 from ...normalizers import files_from, sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import BranchableChat
+from ...streams import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderEvent,
+    ProviderRequest,
+    ResponseComplete,
+    TextReplacement,
+)
 from ...transport import AsyncTransport
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
@@ -375,8 +374,8 @@ class AsyncGeminiProvider(AsyncProvider):
         return await self.notebooks.chats(project_id, cursor)
 
     async def _stream_request(
-        self, request: _ProviderRequest
-    ) -> AsyncGenerator[_ProviderEvent, None]:
+        self, request: ProviderRequest
+    ) -> AsyncGenerator[ProviderEvent, None]:
         iterator = self._stream(request)
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
@@ -399,7 +398,7 @@ class AsyncGeminiProvider(AsyncProvider):
             timeout.cancel()
             await iterator.aclose()
 
-    async def _prepare_send_context(self, request: _ProviderRequest):
+    async def _prepare_send_context(self, request: ProviderRequest):
         from .notebooks import field, notebook_id
 
         project = notebook_id(request.project_id) if request.project_id else None
@@ -535,7 +534,7 @@ class AsyncGeminiProvider(AsyncProvider):
                 )
         return client, request, metadata, context, action_files
 
-    async def _stream(self, request: _ProviderRequest) -> AsyncGenerator[_ProviderEvent, None]:
+    async def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
         from .generation import generate
         from .media import resolve_image_links
 
@@ -554,7 +553,7 @@ class AsyncGeminiProvider(AsyncProvider):
             cid = chunk.get("cid") or cid
             metadata = chunk["metadata"]
             if cid and not bound and cid != request.conversation_id:
-                yield _ConversationBound(cid)
+                yield ConversationBound(cid)
                 bound = True
             if chunk.get("context_only"):
                 continue
@@ -578,18 +577,18 @@ class AsyncGeminiProvider(AsyncProvider):
             )
             visible = visible or bool(chunk["text"] or images)
             if chunk["thoughts"]:
-                yield _ReplaceText(chunk["thoughts"], "analysis")
+                yield TextReplacement(chunk["thoughts"], "analysis")
             for image in images:
                 self._media[cid, image["alias"]] = image
                 self._media[cid, image["url"]] = image
             while len(self._media) > 256:
                 self._media.pop(next(iter(self._media)))
-            yield _ReplaceText(resolve_image_links(chunk["text"], images), "final")
+            yield TextReplacement(resolve_image_links(chunk["text"], images), "final")
             if chunk.get("response_complete"):
-                yield _ResponseComplete()
+                yield ResponseComplete()
             rid = metadata[1] if len(metadata) > 1 else None
             if rid:
-                final_metadata = _MessageMetadata(
+                final_metadata = MessageMetadata(
                     message_id=rid + ":model",
                     user_message_id=rid + ":user",
                     model=request.model,

@@ -7,14 +7,7 @@ import time
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import (
-    AsyncProvider,
-    _ConversationBound,
-    _MessageMetadata,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-)
+from ...async_provider import AsyncProvider
 from ...errors import AccountPaused, FeatureUnavailable
 from ...models import (
     Capability,
@@ -28,6 +21,13 @@ from ...models import (
 )
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
+from ...streams import (
+    ConversationBound,
+    MessageMetadata,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 from ...utils.timing import current_send_timing
 from .client import ClaudeClient, ClaudeProjectEditor
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
@@ -296,16 +296,16 @@ class AsyncClaudeProvider(AsyncProvider):
                 ),
             ):
                 if event["type"] == "bound":
-                    yield _ConversationBound(event["id"])
+                    yield ConversationBound(event["id"])
                 elif event["type"] in ("replace", "delta"):
-                    event_type = _TextDelta if event["type"] == "delta" else _ReplaceText
+                    event_type = TextDelta if event["type"] == "delta" else TextReplacement
                     yield event_type(event["text"], event.get("channel", "final"))
                 elif event["type"] == "done":
                     completed = True
                 elif event["type"] == "response_complete":
-                    yield _ResponseComplete()
+                    yield ResponseComplete()
                 elif event["type"] == "metadata":
-                    yield _MessageMetadata(
+                    yield MessageMetadata(
                         message_id=event.get("message_id"),
                         user_message_id=event.get("user_message_id"),
                         model=event.get("model") or request.model,

@@ -12,14 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from tests.fakes import bind_stream
 from tests.provider_fakes import provider_account
 from webaiprovider.accounts.cookies import select_cookies
-from webaiprovider.async_provider import (
-    MessageAction,
-    _MessageMetadata,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-)
+from webaiprovider.async_provider import MessageAction
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited
 from webaiprovider.models import Capability, ResourceData
 from webaiprovider.providers.grok import AsyncGrokProvider
@@ -30,6 +23,13 @@ from webaiprovider.providers.grok.client import (
     _iter_bounded_lines,
 )
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
+from webaiprovider.streams import (
+    MessageMetadata,
+    ProviderRequest,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 
 
 class GrokClientFixture:
@@ -216,7 +216,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider.client = transport
 
         async def send(prompt="Question", *, action=None, message_id=None, model="fast"):
-            request = _ProviderRequest(
+            request = ProviderRequest(
                 prompt=prompt,
                 conversation_id="chat",
                 model=model,
@@ -255,9 +255,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history_paths, ["response-node", "responses", "response-node"])
         self.assertEqual(len(transport.bodies), 3)
         for events in (first, second, retried):
-            self.assertIn(_TextDelta("Answer"), events)
-            self.assertIn(_ResponseComplete(), events)
-            metadata = next(event for event in events if isinstance(event, _MessageMetadata))
+            self.assertIn(TextDelta("Answer"), events)
+            self.assertIn(ResponseComplete(), events)
+            metadata = next(event for event in events if isinstance(event, MessageMetadata))
             self.assertEqual(metadata.sources[0]["url"], "https://example.com")
 
     async def test_stream_supports_message_edit(self):
@@ -267,7 +267,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider.client = transport
 
         async def send(prompt="Hello", action=None, message_id=None):
-            request = _ProviderRequest(
+            request = ProviderRequest(
                 prompt=prompt,
                 conversation_id="chat",
                 action=action,
@@ -299,9 +299,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(transport.bodies[2]["isRegenRequest"])
         self.assertEqual(transport.bodies[3]["message"], "Edited First")
         self.assertFalse(transport.bodies[3]["isRegenRequest"])
-        self.assertIn(_TextDelta("Answer"), edited)
-        self.assertIn(_TextDelta("Answer"), edited_first)
-        metadata = next(event for event in edited if isinstance(event, _MessageMetadata))
+        self.assertIn(TextDelta("Answer"), edited)
+        self.assertIn(TextDelta("Answer"), edited_first)
+        metadata = next(event for event in edited if isinstance(event, MessageMetadata))
         self.assertEqual(metadata.user_message_id, "user-3")
         self.assertEqual(metadata.message_id, "answer-3")
 
@@ -410,7 +410,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             [
                 event
                 async for event in provider._stream_request(
-                    _ProviderRequest(
+                    ProviderRequest(
                         prompt="Question",
                         model="grok-future",
                     )
@@ -468,7 +468,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             }
 
         transport.events = events
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Question",
             model="fast",
         )
@@ -477,7 +477,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
-        deltas = [event for event in stream if isinstance(event, _TextDelta)]
+        deltas = [event for event in stream if isinstance(event, TextDelta)]
         self.assertEqual(
             "".join(event.text for event in deltas if event.channel is None), "Answer 1"
         )
@@ -487,7 +487,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(any("<grok:render" in event.text for event in deltas))
         self.assertFalse(any("tool_usage_card" in event.text for event in deltas))
-        metadata = next(event for event in stream if isinstance(event, _MessageMetadata))
+        metadata = next(event for event in stream if isinstance(event, MessageMetadata))
         self.assertEqual(metadata.model, "grok-4-1-thinking-1129")
 
     def test_text_filter_preserves_every_protocol_tag_split(self):
@@ -526,7 +526,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             received = [
                 event
                 async for event in provider._stream_request(
-                    _ProviderRequest(
+                    ProviderRequest(
                         prompt="Question",
                     )
                 )
@@ -535,13 +535,13 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.close()
         text = ""
         for event in received:
-            if isinstance(event, _TextDelta):
+            if isinstance(event, TextDelta):
                 text += event.text
-            elif isinstance(event, _ReplaceText):
+            elif isinstance(event, TextReplacement):
                 text = event.text
         self.assertEqual(text, "Authoritative final")
-        self.assertEqual(received.count(_ResponseComplete()), 1)
-        metadata = next(event for event in received if isinstance(event, _MessageMetadata))
+        self.assertEqual(received.count(ResponseComplete()), 1)
+        metadata = next(event for event in received if isinstance(event, MessageMetadata))
         self.assertEqual((metadata.model, metadata.message_id), ("grok-3", "answer"))
 
     async def test_failed_stream_does_not_cache_replay_or_hide_auth_errors(self):
@@ -568,7 +568,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                         [
                             event
                             async for event in provider._stream_request(
-                                _ProviderRequest(
+                                ProviderRequest(
                                     prompt="Question",
                                 )
                             )
@@ -611,7 +611,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
         provider.client = transport
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Question",
             conversation_id="chat",
             model="not-in-this-account",
@@ -691,7 +691,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             "name": "brief.pdf",
             "mimeType": "application/pdf",
         }
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Summarize this file",
             conversation_id="chat",
             model="fast",
@@ -1070,7 +1070,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             }
 
         transport.events = slow_events
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Hello",
             conversation_id="chat",
             model="fast",
@@ -1126,7 +1126,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             "name": "notes.txt",
             "mimeType": "text/plain",
         }
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Analyze both",
             conversation_id="chat",
             model="fast",
@@ -1220,7 +1220,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             }
 
         transport.events = events
-        request = _ProviderRequest(
+        request = ProviderRequest(
             prompt="Hello",
             model="fast",
         )
@@ -1248,7 +1248,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         ]
         provider.client = transport
 
-        request = _ProviderRequest(
+        request = ProviderRequest(
             conversation_id="conv-1",
             prompt="New edited prompt",
             action=MessageAction.EDIT,

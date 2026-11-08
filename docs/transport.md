@@ -75,3 +75,22 @@ jspb = JSPBFrameDecoder()  # Plain length-prefixed UTF-16-counted JSON frames.
 `SSEFrameDecoder` preserves `data`, `event`, `id`, and numeric `retry` fields. It handles CR, LF, CRLF, multiline data, comments, split UTF-8, and bounded data-line counts. It provides synchronous and async byte-iterator helpers. Provider meaning and completion semantics are handled by provider code after framing.
 
 Shared source and file normalization is in `webaiprovider.normalizers`. Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
+
+## Provider implementation contracts
+
+`webaiprovider.streams` exports `ProviderRequest` and the normalized `ProviderEvent` family: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, and `MessageMetadata`. A provider implementation overrides the protected `_stream_request` hook with these public types. The shared `AsyncProvider` performs operation preparation and maps them to the user-facing thinking/output/source/artifact events.
+
+```python
+from collections.abc import AsyncIterator
+from webaiprovider import AsyncClaudeProvider
+from webaiprovider.streams import ProviderEvent, ProviderRequest
+
+
+class CustomClaudeProvider(AsyncClaudeProvider):
+    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
+        async for event in super()._stream_request(request):
+            # Apply an implementation-specific policy here, preserving event order.
+            yield event
+```
+
+Built-in providers use these same contracts. Normal application code sends messages through `chat.messages`; it does not construct a wire request or replay an uncertain submission. `ProviderType` identifies the four supported web providers. The transport and frame tools can be reused for other origins independently; supporting a new provider identity also requires its auth, model, capability, and resource semantics.
