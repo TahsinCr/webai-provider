@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from ..collections.base import ManageableCollection
 from ..errors import ProviderError, UnsupportedOperationError
+from ..models import Project as ProviderProject, Resource as ProviderResource
+from ..utils.files import download_source
 
 if TYPE_CHECKING:
     from ..async_provider import AsyncProvider
@@ -23,7 +26,7 @@ class ProjectInstruction:
         if self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            await session._require_bridge().update_project(self.project, instructions=text)
+            await session.projects.update(self.project, instruction=text)
         else:
             self._text = text
         return self._text
@@ -56,7 +59,47 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         if self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            item = await session._require_bridge().add_project_resource(self.project, item)
+            kind = item["type"]
+            data = item.get("data")
+            if kind == "text" and isinstance(data, str):
+                options = {
+                    "name": item.get("name") or item.get("title") or "Text",
+                    "text": data,
+                }
+            elif kind == "file":
+                path = item.get("path") or data
+                if not isinstance(path, (str, os.PathLike)):
+                    raise ValueError("File resources require a local path")
+                options = {"path": os.fspath(path)}
+            else:
+                raise UnsupportedOperationError(f"Project resource type is unsupported: {kind}")
+
+            known_ids = {record.get("id") for record in self._items}
+            updated = await session._require_adapter().add_project_resource(
+                self.project.remote_id, kind, **options
+            )
+            if not isinstance(updated, ProviderProject):
+                raise ProviderError("Provider returned an invalid project")
+            added = [resource for resource in updated.resources if resource.id not in known_ids]
+            expected_name = options.get("name") or os.path.basename(options.get("path", ""))
+            matching = [resource for resource in added if resource.name == expected_name]
+            resource = matching[-1] if matching else added[0] if len(added) == 1 else None
+            if resource is None:
+                raise ProviderError("Provider did not confirm the created project resource")
+            existing = {record.get("id"): record for record in self._items}
+            self._items = [
+                {**existing.get(remote.id, {}), **_resource_record(remote)}
+                for remote in updated.resources
+                if remote.id != resource.id
+            ]
+            item = {
+                **item,
+                "id": resource.id,
+                "name": resource.name,
+                "media_type": resource.media_type,
+                "url": resource.remote_url,
+                "metadata": dict(resource.metadata),
+            }
         self._items.append(item)
         return item
 
@@ -68,7 +111,9 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
             if self.project.remote_id:
                 if session is None:
                     raise ProviderError("Project is not attached to an open provider")
-                await session._require_bridge().remove_project_resource(self.project, resource_id)
+                await session._require_adapter().remove_project_resource(
+                    self.project.remote_id, resource_id
+                )
             del self._items[index]
             return True
         return False
@@ -103,7 +148,8 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         if url and self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            return await session._require_bridge().download(url)
+            source = await session._require_adapter().resolve_download(url)
+            return await download_source(source)
         for key in ("bytes", "content", "data"):
             if key in item:
                 return item[key]
@@ -129,11 +175,25 @@ class Project:
 
         self.chats = ProjectChatsCollection(self)
 
+    def _apply_provider_project(
+        self,
+        project: ProviderProject,
+        *,
+        replace_resources: bool = True,
+    ) -> None:
+        if not isinstance(project, ProviderProject):
+            raise ProviderError("Provider returned an invalid project")
+        self.remote_id = project.origin.remote_id
+        self.title = project.name
+        self.instruction._text = project.instructions or ""
+        if replace_resources:
+            self.resources._items = [_resource_record(resource) for resource in project.resources]
+
     async def rename(self, title: str) -> None:
         if self.remote_id:
             if self.session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            await self.session._require_bridge().update_project(self, title=title)
+            await self.session.projects.update(self, title=title)
         else:
             self.title = title
 
@@ -142,9 +202,20 @@ class Project:
         if self.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            await session._require_bridge().delete_project(self)
+            await session._require_adapter().delete_project(self.remote_id)
         if session is not None:
             session.projects._items = [item for item in session.projects._items if item is not self]
 
     def __repr__(self) -> str:
         return f"<Project id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
+
+
+def _resource_record(resource: ProviderResource) -> dict[str, Any]:
+    return {
+        "id": resource.id,
+        "type": resource.metadata.get("kind", "file"),
+        "name": resource.name,
+        "media_type": resource.media_type,
+        "url": resource.remote_url,
+        "metadata": dict(resource.metadata),
+    }

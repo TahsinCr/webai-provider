@@ -6,8 +6,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
 
 from .collections.base import AsyncQueryableCollection, QueryableCollection
-from .contracts import EffortRef, ModelRef, ModelSelection
-from .errors import AmbiguousMatchError, RemoteNotFound
+from .contracts import EffortRef, EffortSet, ModelRef, ModelSelection
+from .errors import AmbiguousMatchError, ProviderError, RemoteNotFound
+from .models import ModelCatalog
 
 
 def effort_ref(
@@ -22,6 +23,51 @@ def effort_ref(
         effort_id,
         name or effort_id.replace(":", " ").title(),
     )
+
+
+def _model_refs_from_catalog(provider: str, catalog: ModelCatalog) -> list[ModelRef]:
+    if not isinstance(catalog, ModelCatalog):
+        raise ProviderError("Provider returned an invalid model catalog")
+    default_model = catalog.default_chat_model
+    result: list[ModelRef] = []
+    for rank, model in enumerate(catalog.chat_models):
+        efforts = tuple(
+            EffortRef(
+                provider=provider,
+                model_id=model.id,
+                id=choice.id,
+                name=(
+                    {"standard": "Medium", "extended": "High"}.get(choice.id.casefold())
+                    if provider.casefold() == "chatgpt"
+                    else None
+                )
+                or choice.title
+                or choice.id,
+                rank=index,
+            )
+            for index, choice in enumerate(model.efforts)
+        )
+        effort_ids = {effort.id for effort in efforts}
+        metadata = dict(model.metadata)
+        if default_model is not None and default_model.id == model.id:
+            metadata["default"] = True
+        result.append(
+            ModelRef(
+                provider=provider,
+                id=model.id,
+                name=model.title or model.id,
+                efforts=EffortSet.from_refs(
+                    efforts,
+                    name=f"{model.id}_Efforts",
+                    default_id=(
+                        model.default_effort if model.default_effort in effort_ids else None
+                    ),
+                ),
+                rank=rank,
+                metadata=metadata,
+            )
+        )
+    return result
 
 
 class StaticModelCatalog:

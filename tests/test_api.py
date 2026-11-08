@@ -40,26 +40,25 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
-from webaiprovider.providers.base import _TextDelta
+from webaiprovider.providers.base import ProviderAdapter, _TextDelta
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
     async def open_provider(
         self,
         account: Account,
-        bridge: ProviderBridge | None = None,
+        adapter: ProviderAdapter | None = None,
         provider_type: type[AsyncProvider] = AsyncProvider,
-    ) -> tuple[AsyncProvider, ProviderBridge]:
-        if bridge is None:
-            bridge = AsyncMock(spec=ProviderBridge)
+    ) -> tuple[AsyncProvider, ProviderAdapter]:
+        if adapter is None:
+            adapter = AsyncMock(spec=ProviderAdapter)
         provider = provider_type(account)
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             await provider.open()
         self.addAsyncCleanup(provider.close)
-        return provider, bridge
+        return provider, adapter
 
     def test_canonical_package_namespace(self) -> None:
         self.assertIsNotNone(importlib.util.find_spec("webaiprovider"))
@@ -93,7 +92,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_lazy_message_creation_and_hooks(self) -> None:
         acc = Account.from_cookies("chatgpt", {"cookie": "val"})
-        provider, mock_bridge = await self.open_provider(acc)
+        provider, mock_adapter = await self.open_provider(acc)
         chat = await provider.chats.create(title="Test Chat")
 
         op = chat.messages.create(
@@ -128,7 +127,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             yield OutputDelta(delta="World!")
             yield OutputEnd()
 
-        mock_bridge.execute_stream = fake_stream
+        mock_adapter.execute_stream = fake_stream
         events = []
         async for ev in op.stream():
             events.append(ev)
@@ -196,7 +195,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_response_with_sources_and_artifacts(self) -> None:
         acc = Account.from_cookies("gemini", {"cookie": "gemini-val"})
-        provider, mock_bridge = await self.open_provider(acc)
+        provider, mock_adapter = await self.open_provider(acc)
         chat = await provider.chats.create()
         op = chat.messages.create("Explain relativity")
 
@@ -223,7 +222,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             )
             yield OutputEnd()
 
-        mock_bridge.execute_stream = fake_stream
+        mock_adapter.execute_stream = fake_stream
         response = await op.start()
         self.assertEqual(response.text, "Relativity explained.")
         self.assertEqual(len(response.sources), 1)
@@ -233,93 +232,113 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_lifecycle_methods(self) -> None:
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
-        session, mock_bridge = await self.open_provider(acc)
-
+        session, mock_adapter = await self.open_provider(acc)
         chat = await session.chats.create(title="My Claude Chat")
         chat.remote_id = "chat-123"
 
         await chat.rename("Renamed Chat")
-        mock_bridge.rename_chat.assert_awaited_once_with(chat, "Renamed Chat")
+        mock_adapter.rename_chat.assert_awaited_once_with("chat-123", "Renamed Chat")
         self.assertEqual(chat.title, "Renamed Chat")
 
         await session.chats.update(chat, title="Updated Via Collection")
-        self.assertEqual(chat.title, "Updated Via Collection")
-
         await session.chats.update(chat.id, title="Updated Via ID")
         self.assertEqual(chat.title, "Updated Via ID")
+        self.assertEqual(session.chats.find("Updated", startswith=True).id, chat.id)
+        self.assertEqual(session.chats.find("ID", endswith=True).id, chat.id)
 
-        found_start = session.chats.find("Updated", startswith=True)
-        self.assertEqual(found_start.id, chat.id)
-
-        found_end = session.chats.find("ID", endswith=True)
-        self.assertEqual(found_end.id, chat.id)
-
-        mock_bridge.download.return_value = b"file-bytes"
-        dl = await chat.download("https://example.com/test.png")
-        mock_bridge.download.assert_awaited_once_with(
-            "https://example.com/test.png", conversation_id=chat.remote_id
+        with patch(
+            "webaiprovider.resources.chat.download_source",
+            AsyncMock(return_value=b"file-bytes"),
+        ):
+            dl = await chat.download("https://example.com/test.png")
+        mock_adapter.resolve_download.assert_awaited_once_with(
+            "https://example.com/test.png", conversation_id="chat-123"
         )
         self.assertEqual(dl, b"file-bytes")
 
         op = chat.messages.create("Hello test")
         self.assertEqual(chat.get(op.message.id).content, "Hello test")
-
         await chat.delete()
-        mock_bridge.delete_chat.assert_awaited_once_with(chat)
+        mock_adapter.delete_chat.assert_awaited_once_with("chat-123")
 
     async def test_project_lifecycle_methods(self) -> None:
+        from dataclasses import replace
+
+        from webaiprovider.models import Origin, Project as NativeProject, Resource
+
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
-        session, mock_bridge = await self.open_provider(acc)
+        session, mock_adapter = await self.open_provider(acc)
+        remote = [
+            NativeProject(
+                Origin(acc.provider, acc.id, "proj-abc"),
+                "Test Project",
+                "Always be concise",
+            )
+        ]
 
-        async def update_project(project, *, title=None, instructions=None) -> None:
-            if title is not None:
-                project.title = title
-            if instructions is not None:
-                project.instruction._text = instructions
+        async def create_project(name, *, instructions):
+            remote[0] = replace(remote[0], name=name, instructions=instructions)
+            return remote[0]
 
-        async def add_resource(project, item):
-            return {**item, "id": f"remote-{item['name']}"}
+        async def get_project(_project_id):
+            return remote[0]
 
-        mock_bridge.update_project.side_effect = update_project
-        mock_bridge.add_project_resource.side_effect = add_resource
+        async def update_project(project):
+            remote[0] = project
+            return project
+
+        async def add_resource(_project_id, kind, **options):
+            resource = Resource(
+                f"remote-{options['name']}",
+                options["name"],
+                "text/plain",
+                metadata={"kind": kind},
+            )
+            remote[0] = replace(remote[0], resources=(*remote[0].resources, resource))
+            return remote[0]
+
+        async def remove_resource(_project_id, resource_id):
+            remote[0] = replace(
+                remote[0],
+                resources=tuple(r for r in remote[0].resources if r.id != resource_id),
+            )
+            return remote[0]
+
+        mock_adapter.create_project.side_effect = create_project
+        mock_adapter.get_project.side_effect = get_project
+        mock_adapter.update_project.side_effect = update_project
+        mock_adapter.add_project_resource.side_effect = add_resource
+        mock_adapter.remove_project_resource.side_effect = remove_resource
 
         project = await session.projects.create(
             title="Test Project", instruction="Always be concise"
         )
         project.remote_id = "proj-abc"
-
         await project.rename("Renamed Project")
         self.assertEqual(project.title, "Renamed Project")
 
         await project.instruction.edit("New instruction")
         self.assertEqual(await project.instruction.get(), "New instruction")
-
         await project.instruction.clear()
         self.assertEqual(await project.instruction.get(), "")
 
         added = await project.resources.add("Doc", resource_type="text", name="res-1")
         self.assertEqual(added["id"], "remote-res-1")
-        self.assertEqual(mock_bridge.add_project_resource.await_args.args[1]["type"], "text")
-
-        res = project.resources.get(added["id"])
-        self.assertEqual(res["id"], added["id"])
+        mock_adapter.add_project_resource.assert_awaited_once_with(
+            "proj-abc", "text", name="res-1", text="Doc"
+        )
         self.assertEqual(await project.resources.download(added["id"]), "Doc")
 
         created_res = await project.resources.create("Doc 2", resource_type="text", name="res-2")
         self.assertEqual(created_res["data"], "Doc 2")
-
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
+        submitted = mock_adapter.update_project.await_args.args[0]
+        self.assertEqual(submitted.name, "Updated Project")
+        self.assertEqual(submitted.instructions, "Updated Instruction")
         self.assertEqual(project.title, "Updated Project")
         self.assertEqual(await project.instruction.get(), "Updated Instruction")
-        self.assertEqual(
-            mock_bridge.update_project.await_args.kwargs,
-            {
-                "title": "Updated Project",
-                "instructions": "Updated Instruction",
-            },
-        )
 
         with self.assertRaises(UnsupportedOperationError):
             await project.resources.update(added["id"], data="Updated Doc")
@@ -327,17 +346,17 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         await project.resources.delete(created_res["id"])
         await project.resources.remove(added["id"])
-        self.assertEqual(mock_bridge.remove_project_resource.await_count, 2)
-
+        self.assertEqual(mock_adapter.remove_project_resource.await_count, 2)
         await project.delete()
-        mock_bridge.delete_project.assert_awaited_once_with(project)
+        mock_adapter.delete_project.assert_awaited_once_with("proj-abc")
 
     async def test_message_branch_retry_edit(self) -> None:
+        from webaiprovider.models import Conversation, Origin
+
         acc = Account.from_cookies("chatgpt", {"session_token": "token"})
-        session, mock_bridge = await self.open_provider(acc, provider_type=AsyncChatGPTProvider)
+        session, mock_adapter = await self.open_provider(acc, provider_type=AsyncChatGPTProvider)
         chat = await session.chats.create()
         chat.remote_id = "remote-chat-id"
-
         msg = Message(
             content="Original prompt",
             role="user",
@@ -349,21 +368,19 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         retry_op = msg.retry()
         self.assertIsInstance(retry_op, MessageOperation)
         self.assertEqual(retry_op.message.metadata.get("action"), "retry")
-
         edit_op = msg.edit("Edited prompt")
-        self.assertIsInstance(edit_op, MessageOperation)
         self.assertEqual(edit_op.message.content, "Edited prompt")
         self.assertEqual(edit_op.message.metadata.get("action"), "edit")
-
         update_op = chat.messages.update(msg, content="Updated via messages.update")
-        self.assertIsInstance(update_op, MessageOperation)
         self.assertEqual(update_op.message.content, "Updated via messages.update")
         self.assertEqual(update_op.message.metadata.get("action"), "edit")
 
-        mock_bridge.branch_chat.return_value = MagicMock(remote_id="branch-chat-id")
+        mock_adapter.branch_chat.return_value = Conversation(
+            Origin(acc.provider, acc.id, "branch-chat-id"), "Branch chat"
+        )
         branched_chat = await chat.branch(msg.id, title="Branch chat")
-        mock_bridge.branch_chat.assert_awaited_once_with(chat, "msg-orig-1", title="Branch chat")
-        self.assertIsNotNone(branched_chat)
+        mock_adapter.branch_chat.assert_awaited_once_with("remote-chat-id", "msg-orig-1")
+        self.assertEqual(branched_chat.remote_id, "branch-chat-id")
 
     def test_provider_facades(self) -> None:
         from webaiprovider.collections.chats import ChatsCollection
@@ -411,35 +428,41 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "must match"):
             AsyncProvider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
 
-    async def test_provider_open_is_explicit_idempotent_and_closes_owned_bridge(self) -> None:
+    async def test_provider_open_is_explicit_idempotent_and_closes_owned_adapter(self) -> None:
         account = Account.from_cookies("gemini", {"cookie": "test"})
-        bridge = MagicMock(spec=ProviderBridge)
-        bridge.open = AsyncMock()
-        bridge.close = AsyncMock()
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge) as create_bridge:
+        adapter = MagicMock(spec=ProviderAdapter)
+        adapter.prepare = AsyncMock()
+        adapter.close = AsyncMock()
+        with patch(
+            "webaiprovider.async_provider.create_adapter", return_value=adapter
+        ) as create_adapter:
             provider = AsyncProvider(account, type=ProviderType.GEMINI)
             self.assertIs(await provider.open(), provider)
             self.assertIs(await provider.open(), provider)
-            create_bridge.assert_called_once_with(account)
-            bridge.open.assert_awaited_once_with()
+            create_adapter.assert_called_once_with(account, ProviderType.GEMINI)
+            adapter.prepare.assert_awaited_once_with()
             await provider.close()
-            bridge.close.assert_awaited_once_with()
+            adapter.close.assert_awaited_once_with()
 
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
+        from webaiprovider.models import Origin, Project as NativeProject
+
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        bridge = MagicMock(spec=ProviderBridge)
-        bridge.create_chatgpt_project = AsyncMock()
-        provider = AsyncChatGPTProvider(account)
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
-            await provider.open()
-
-        project = await provider.projects.create("Private notes", memory_share=False)
-
-        self.assertEqual(project.title, "Private notes")
-        self.assertEqual(
-            bridge.create_chatgpt_project.await_args.kwargs["memory_share"],
-            False,
+        adapter = MagicMock(spec=ProviderAdapter)
+        adapter.prepare = AsyncMock()
+        adapter.close = AsyncMock()
+        adapter.create_project = AsyncMock(
+            return_value=NativeProject(
+                Origin("chatgpt", account.id, "project-1"), "Private notes"
+            )
         )
+        provider = AsyncChatGPTProvider(account)
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
+            await provider.open()
+        project = await provider.projects.create("Private notes", memory_share=False)
+        self.assertEqual(project.title, "Private notes")
+        self.assertEqual(adapter.create_project.await_args.kwargs["memory_share"], False)
+        await provider.close()
 
     async def test_sync_provider_rejects_blocking_inside_running_loop(self) -> None:
         provider = Provider(Account.from_cookies("chatgpt", {"cookie": "test"}))
@@ -486,48 +509,41 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(msg.attachments), 1)
         self.assertEqual(msg.attachments[0].name, "hello.txt")
 
-    async def test_bridge_provider_instantiation_for_all_backends(self) -> None:
-        providers = (
-            (
-                AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"})),
-                "chatgpt",
-            ),
-            (
-                AsyncGeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"})),
-                "gemini",
-            ),
-            (
-                AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "token-3"})),
-                "claude",
-            ),
-            (AsyncGrokProvider(Account.from_cookies("grok", {"sso": "token-4"})), "grok"),
-        )
-        for provider, provider_id in providers:
-            bridge = ProviderBridge(provider.account)
-            bridge.open = AsyncMock()
-            bridge.close = AsyncMock()
-            with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
-                await provider.open()
-            self.assertEqual(bridge._get_provider().id, provider_id)
-            await provider.close()
+    async def test_adapter_factory_selects_provider_backend(self) -> None:
+        from webaiprovider.providers import create_adapter
+        from webaiprovider.providers.chatgpt.adapter import ChatGPTAdapter
+        from webaiprovider.providers.claude.adapter import ClaudeAdapter
+        from webaiprovider.providers.gemini.adapter import GeminiAdapter
+        from webaiprovider.providers.grok.adapter import GrokAdapter
 
-    async def test_bridge_preserves_typed_provider_errors(self) -> None:
+        providers = (
+            ("chatgpt", {"session_token": "token-1"}, ChatGPTAdapter),
+            ("gemini", {"__Secure-1PSID": "token-2"}, GeminiAdapter),
+            ("claude", {"sessionKey": "token-3"}, ClaudeAdapter),
+            ("grok", {"sso": "token-4"}, GrokAdapter),
+        )
+        for provider, credentials, adapter_type in providers:
+            account = Account.from_cookies(provider, credentials)
+            adapter = create_adapter(account, ProviderType.parse(provider))
+            self.assertIsInstance(adapter, adapter_type)
+            self.assertEqual(adapter.account_id, account.id)
+            await adapter.close()
+
+    async def test_provider_stream_preserves_typed_errors(self) -> None:
         from webaiprovider.errors import RateLimited
 
         p = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
         chat = await p.chats.create()
         op = chat.messages.create("Hello")
-
-        mock_bridge = MagicMock(spec=ProviderBridge)
+        adapter = AsyncMock(spec=ProviderAdapter)
 
         async def fail_stream(_op):
             raise RateLimited(retry_after=42.0)
             yield OutputBegin()
 
-        mock_bridge.execute_stream = fail_stream
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=mock_bridge):
+        adapter.execute_stream = fail_stream
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             await p.open()
-
         with self.assertRaises(RateLimited) as ctx:
             await op.start()
         self.assertEqual(ctx.exception.retry_after, 42.0)
@@ -535,28 +551,27 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_ask_convenience_method(self) -> None:
         p = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
-        mock_bridge = MagicMock(spec=ProviderBridge)
+        adapter = AsyncMock(spec=ProviderAdapter)
 
         async def fake_stream(_op):
             yield OutputBegin()
             yield OutputDelta(delta="Direct answer")
             yield OutputEnd()
 
-        mock_bridge.execute_stream = fake_stream
-
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=mock_bridge):
+        adapter.execute_stream = fake_stream
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             await p.open()
         res = await p.ask("What is 2+2?")
         self.assertEqual(res.text, "Direct answer")
         self.assertEqual(res.message.content, "Direct answer")
 
-    async def test_bridge_model_resolution_from_string_and_policy(self) -> None:
-        acc = Account.from_cookies("chatgpt", {"session_token": "tok"})
-        bridge = ProviderBridge(acc)
+    async def test_model_resolution_from_string_and_policy(self) -> None:
         from webaiprovider.models import Choice, FeatureState, ModelCatalog
         from webaiprovider.models import Model as CatalogModel
 
+        acc = Account.from_cookies("chatgpt", {"session_token": "tok"})
         adapter = StreamTestAdapter(acc.provider, acc.id, (_TextDelta("hi"),))
+        adapter.prepare = AsyncMock()
         adapter.models = AsyncMock(
             return_value=ModelCatalog(
                 FeatureState.AVAILABLE,
@@ -571,29 +586,24 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 default_model="gpt-6-instant",
             )
         )
-        bridge._provider_instance = adapter
-        bridge.open = AsyncMock()
-
-        session, _ = await self.open_provider(acc, bridge)
+        session, _ = await self.open_provider(acc, adapter)
         chat = await session.chats.create()
 
         operation = chat.messages.create("test", model="gpt-6-instant")
         await operation.start()
         self.assertEqual(adapter.requests[-1].model, "gpt-6-instant")
-
         operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
         await operation.start()
         self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
-
-        operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH)
+        operation = chat.messages.create(
+            "test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH
+        )
         await operation.start()
         self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
         self.assertEqual(adapter.requests[-1].effort, "extended")
-
         operation = chat.messages.create("test", model=Models.AUTO)
         await operation.start()
         self.assertEqual(adapter.requests[-1].model, "gpt-6-instant")
-
         operation = chat.messages.create("test", model=Models.HIGH)
         await operation.start()
         self.assertEqual(adapter.requests[-1].model, "gpt-6-thinking")
@@ -625,20 +635,27 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
 class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
-        class Bridge:
+        from webaiprovider.models import Origin, Project as NativeProject
+
+        class Adapter:
+            id = "chatgpt"
+            account_id = "account-1"
+
             def __init__(self) -> None:
                 self.thread_ids: list[int] = []
                 self.memory_share = None
 
-            async def open(self) -> None:
+            async def prepare(self) -> None:
                 self.thread_ids.append(threading.get_ident())
 
-            async def create_chatgpt_project(
-                self, project, instruction=None, *, memory_share=True
-            ) -> None:
+            async def create_project(self, name, *, instructions="", memory_share=True):
                 self.thread_ids.append(threading.get_ident())
                 self.memory_share = memory_share
-                project.remote_id = "project-1"
+                return NativeProject(
+                    Origin("chatgpt", self.account_id, "project-1"),
+                    name,
+                    instructions,
+                )
 
             async def execute_stream(self, operation):
                 self.thread_ids.append(threading.get_ident())
@@ -649,9 +666,10 @@ class TestSyncApi(unittest.TestCase):
             async def close(self) -> None:
                 self.thread_ids.append(threading.get_ident())
 
-        bridge = Bridge()
+        adapter = Adapter()
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+        adapter.account_id = account.id
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             with ChatGPTProvider(account) as provider:
                 project = provider.projects.create("Notes", memory_share=False)
                 chat = provider.chats.create("Draft", project=project)
@@ -660,15 +678,13 @@ class TestSyncApi(unittest.TestCase):
                 response = operation.wait()
 
         self.assertEqual(response.text, "done")
-        self.assertEqual(events[0].event, "output.begin")
-        self.assertEqual(events[1].event, "output.delta")
-        self.assertEqual(events[2].event, "output.end")
         self.assertEqual(
-            bridge.memory_share,
-            False,
+            [event.event for event in events],
+            ["output.begin", "output.delta", "output.end"],
         )
-        self.assertTrue(bridge.thread_ids)
-        self.assertEqual(len(set(bridge.thread_ids)), 1)
+        self.assertFalse(adapter.memory_share)
+        self.assertTrue(adapter.thread_ids)
+        self.assertEqual(len(set(adapter.thread_ids)), 1)
 
 
 if __name__ == "__main__":

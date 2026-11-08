@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..errors import ProviderError
+from ..models import Conversation, Page
 from ..resources.chat import Chat
 from ..resources.project import Project
 from .base import ManageableCollection
@@ -9,6 +11,15 @@ from .base import ManageableCollection
 if TYPE_CHECKING:
     from ..async_provider import AsyncProvider
     from ..resources.project import Project
+
+
+def _chat_from_conversation(item: Conversation, session: AsyncProvider) -> Chat:
+    return session._chat_type(
+        title=item.title,
+        remote_id=item.origin.remote_id,
+        project_id=item.project_id,
+        session=session,
+    )
 
 
 class ChatsCollection(ManageableCollection[Chat]):
@@ -38,8 +49,12 @@ class ChatsCollection(ManageableCollection[Chat]):
         return chat
 
     async def refresh(self) -> list[Chat]:
-        chats = await self.session._require_bridge().list_chats(self.session)
-        self._items = list(chats)
+        page = await self.session._require_adapter().list_chats()
+        if not isinstance(page, Page) or any(
+            not isinstance(item, Conversation) for item in page.items
+        ):
+            raise ProviderError("Provider returned an invalid conversation page")
+        self._items = [_chat_from_conversation(item, self.session) for item in page.items]
         return list(self._items)
 
     async def update(
@@ -51,7 +66,7 @@ class ChatsCollection(ManageableCollection[Chat]):
         target = chat if isinstance(chat, Chat) else self.get(chat)
         if title is not None and title != target.title:
             if target.remote_id:
-                await self.session._require_bridge().rename_chat(target, title)
+                await self.session._require_adapter().rename_chat(target.remote_id, title)
             target.title = title
         return target
 

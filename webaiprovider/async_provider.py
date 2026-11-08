@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .base import BaseProvider
-from .catalogs import Models, ModelsCollection
+from .catalogs import Models, ModelsCollection, _model_refs_from_catalog
 from .collections.chats import ChatsCollection
 from .collections.projects import ProjectsCollection
 from .contracts import EffortRef, ModelRef, ModelSelection
@@ -11,13 +11,14 @@ from .core.scope import ProviderResourceScope
 from .core.telemetry import ProviderTelemetry
 from .errors import ProviderError
 from .provider_type import ProviderType
+from .providers import create_adapter
+from .providers.base import ProviderAdapter
 from .resources.chat import Chat
 from .resources.project import Project
 from .resources.response import Response
 
 if TYPE_CHECKING:
     from .accounts.account import Account
-    from .bridge import ProviderBridge
 
 
 class AsyncProvider(BaseProvider):
@@ -34,51 +35,49 @@ class AsyncProvider(BaseProvider):
         super().__init__(account, type=type)
         self.telemetry = ProviderTelemetry()
         self._scope: ProviderResourceScope | None = None
-        self._bridge: ProviderBridge | None = None
+        self._adapter: ProviderAdapter | None = None
         self._opened = False
         self.chats = ChatsCollection(self)
         self.projects = self._projects_collection_type(self)
         self.models = ModelsCollection(self._load_models)
 
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
-        bridge = self._require_bridge()
-        return await bridge.list_models(refresh=refresh)
+        catalog = await self._require_adapter().models(force=refresh)
+        return _model_refs_from_catalog(self.type.value, catalog)
 
     async def open(self) -> AsyncProvider:
         if self._opened:
             return self
-        from .bridge import ProviderBridge
-
         scope = ProviderResourceScope()
-        bridge = ProviderBridge(self.account)
+        adapter = create_adapter(self.account, self.type)
         try:
-            await bridge.open()
+            await adapter.prepare()
         except BaseException:
             try:
-                await bridge.close()
+                await adapter.close()
             except Exception:
                 pass
             await scope.aclose()
             raise
-        scope.defer(bridge.close)
+        scope.defer(adapter.close)
         self._scope = scope
-        self._bridge = bridge
+        self._adapter = adapter
         self._opened = True
         return self
 
-    def _require_bridge(self) -> ProviderBridge:
-        if self._bridge is None or not self._opened:
+    def _require_adapter(self) -> ProviderAdapter:
+        if self._adapter is None or not self._opened:
             raise ProviderError("Open the provider before using its resources")
-        return self._bridge
+        return self._adapter
 
     async def close(self) -> None:
         scope, self._scope = self._scope, None
-        bridge, self._bridge = self._bridge, None
+        adapter, self._adapter = self._adapter, None
         self._opened = False
         if scope is not None:
             await scope.aclose()
-        elif bridge is not None:
-            await bridge.close()
+        elif adapter is not None:
+            await adapter.close()
 
     async def ask(
         self,

@@ -1,5 +1,6 @@
 """Resolved file requests; credentials are transient and never archive metadata."""
 
+import asyncio
 import ipaddress
 import socket
 from contextlib import contextmanager
@@ -168,3 +169,34 @@ class _NativeDownloadResponse:
 
     def iter_bytes(self, chunk_size: int = 65536):
         return self.response.iter_content(chunk_size=chunk_size)
+
+
+async def download_source(source: DownloadSource) -> bytes:
+    from ..errors import ProviderError, UnsupportedOperationError
+
+    if not isinstance(source, DownloadSource):
+        raise UnsupportedOperationError(
+            "Provider did not resolve this URL to a safe download source"
+        )
+
+    def read_source() -> bytes:
+        factory = source.client_factory
+        client = (
+            NativeDownloadClient(allow_private=False)
+            if factory is None or factory is NativeDownloadClient
+            else factory()
+        )
+        if not isinstance(client, NativeDownloadClient):
+            raise ProviderError("Provider returned an unsupported download transport")
+        with client:
+            with client.stream("GET", source.url, headers=dict(source.headers)) as response:
+                if not 200 <= response.status_code < 300:
+                    raise ProviderError(f"File transfer failed with HTTP {response.status_code}")
+                return b"".join(response.iter_bytes())
+
+    try:
+        return await asyncio.to_thread(read_source)
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError("File transfer failed") from exc

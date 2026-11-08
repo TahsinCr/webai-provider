@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 
 from tests.streaming_support import StreamTestAdapter
 from webaiprovider import Account, AsyncProvider, MessageOperation, OperationState
-from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import (
     ArtifactDiscovered,
     OutputBegin,
@@ -30,18 +29,14 @@ from webaiprovider.providers.base import (
 )
 
 
-class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
+class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.account = Account.from_cookies("claude", {"sessionKey": "session"})
         self.adapter = AsyncMock(spec=ProviderAdapter)
         self.adapter.id = self.account.provider
         self.adapter.account_id = self.account.id
-        self.adapter.close = AsyncMock()
-        self.bridge = ProviderBridge(self.account)
-        self.bridge._provider_instance = self.adapter
-        self.bridge.open = AsyncMock()
-        self.bridge.close = AsyncMock()
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=self.bridge):
+        self.adapter.prepare = AsyncMock()
+        with patch("webaiprovider.async_provider.create_adapter", return_value=self.adapter):
             self.provider = await AsyncProvider(self.account).open()
 
     async def asyncTearDown(self) -> None:
@@ -67,10 +62,11 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.list_projects.return_value = Page((original,))
 
         project = await self.provider.projects.create("Research", instruction="Be concise")
-        self.adapter.create_project.assert_awaited_once_with("Research", instructions="Be concise")
+        self.adapter.create_project.assert_awaited_once_with(
+            "Research", instructions="Be concise"
+        )
         self.assertEqual(project.remote_id, "project-1")
         self.assertEqual(await project.instruction.get(), "Be concise")
-
         added = await project.resources.add("A note", resource_type="text", name="Notes")
         self.adapter.add_project_resource.assert_awaited_once_with(
             "project-1", "text", name="Notes", text="A note"
@@ -89,23 +85,22 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         await project.resources.remove("resource-2")
         self.adapter.remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
-
         await self.provider.projects.refresh()
         loaded = self.provider.projects._items[0]
         self.assertEqual(loaded.remote_id, "project-1")
         self.assertEqual(await loaded.instruction.get(), "Be concise")
         self.assertEqual(loaded.resources._items[0]["id"], "resource-1")
 
-    async def test_project_chat_pages_and_move_actions_use_provider_bridge(self) -> None:
+    async def test_project_chat_pages_and_move_actions(self) -> None:
         from webaiprovider.providers.grok import AsyncGrokProvider, GrokChat
         from webaiprovider.resources.project import Project
 
         account = Account.from_cookies("grok", {"sso": "session"})
-        bridge = ProviderBridge(account)
-        bridge._provider_instance = self.adapter
-        bridge.open = AsyncMock()
-        bridge.close = AsyncMock()
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+        adapter = AsyncMock(spec=ProviderAdapter)
+        adapter.prepare = AsyncMock()
+        adapter.id = account.provider
+        adapter.account_id = account.id
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             provider = await AsyncGrokProvider(account).open()
         self.addAsyncCleanup(provider.close)
 
@@ -114,10 +109,8 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
             "Project chat",
             project_id="project-1",
         )
-        self.adapter.list_project_chats.return_value = Page((conversation,), "cursor-2")
-        self.adapter.move_chat = AsyncMock()
+        adapter.list_project_chats.return_value = Page((conversation,), "cursor-2")
         project = Project(title="Research", session=provider, remote_id="project-1")
-
         page = await project.chats.refresh()
         self.assertEqual(page.items[0].remote_id, "chat-1")
         self.assertIs(page.items[0].session, provider)
@@ -125,7 +118,7 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         chat = GrokChat(title="Loose chat", session=provider, remote_id="chat-2")
         await chat.move_to(project)
-        self.adapter.move_chat.assert_awaited_once_with("chat-2", "project-1")
+        adapter.move_chat.assert_awaited_once_with("chat-2", "project-1")
         self.assertEqual(chat.project_id, "project-1")
 
     async def test_stream_maps_typed_events_and_remote_identity(self) -> None:
@@ -143,11 +136,10 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
                 _ResponseComplete(),
             ),
         )
-        self.bridge._provider_instance = adapter
+        self.provider._adapter = adapter
         chat = await self.provider.chats.create()
         operation = chat.messages.create("prompt")
-
-        events = [event async for event in self.bridge.execute_stream(operation)]
+        events = [event async for event in operation.stream()]
 
         self.assertIsInstance(operation, MessageOperation)
         self.assertEqual(adapter.requests[0].prompt, "prompt")
@@ -161,16 +153,16 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_download_rejects_unresolved_user_url(self) -> None:
         self.adapter.resolve_download.return_value = None
-
+        chat = await self.provider.chats.create()
+        chat.remote_id = "conversation-1"
         with self.assertRaises(UnsupportedOperationError):
-            await self.bridge.download("https://example.test/file")
-
+            await chat.download("https://example.test/file")
         self.adapter.resolve_download.assert_awaited_once_with(
-            "https://example.test/file", conversation_id=None, message_id=None
+            "https://example.test/file", conversation_id="conversation-1"
         )
 
     async def test_stream_handles_analysis_channel_and_propagates_message_ids(self) -> None:
-        self.bridge._provider_instance = StreamTestAdapter(
+        self.provider._adapter = StreamTestAdapter(
             self.account.provider,
             self.account.id,
             (
@@ -189,7 +181,6 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         chat = await self.provider.chats.create()
         operation = chat.messages.create("solve")
         self.assertEqual(operation.state, OperationState.PENDING)
-
         events = [event async for event in operation.stream()]
         response = await operation.wait()
 
@@ -201,13 +192,13 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.telemetry.snapshot()["successful"], 1)
         self.assertIsInstance(events[0], ThinkingBegin)
         self.assertEqual(
-            [e.delta for e in events if isinstance(e, ThinkingDelta)],
+            [event.delta for event in events if isinstance(event, ThinkingDelta)],
             ["Step 1", " and Step 2"],
         )
-        thinking_end = next(e for e in events if isinstance(e, ThinkingEnd))
+        thinking_end = next(event for event in events if isinstance(event, ThinkingEnd))
         self.assertEqual(thinking_end.text, "Step 1 and Step 2")
-        self.assertTrue(any(isinstance(e, OutputBegin) for e in events))
-        self.assertTrue(any(isinstance(e, OutputReplace) for e in events))
+        self.assertTrue(any(isinstance(event, OutputBegin) for event in events))
+        self.assertTrue(any(isinstance(event, OutputReplace) for event in events))
 
     async def test_chat_messages_refresh_loads_remote_history(self) -> None:
         origin = Origin(self.account.provider, self.account.id, "conv-remote-1")
@@ -223,9 +214,7 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.get_chat.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
-
         messages = await chat.messages.refresh()
-
         self.assertEqual(chat.title, "Loaded Title")
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0].id, "u-1")

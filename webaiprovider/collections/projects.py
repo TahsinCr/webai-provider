@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from ..errors import ProviderError
+from ..models import Page, Project as ProviderProject
 from ..resources.project import Project
 from .base import ManageableCollection
 
@@ -23,13 +26,30 @@ class ProjectsCollection(ManageableCollection[Project]):
         project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
-        await self.session._require_bridge().create_project(project, instruction=instruction)
+        created = await self.session._require_adapter().create_project(
+            project.title,
+            instructions=instruction or "",
+        )
+        project._apply_provider_project(created)
         self._items.insert(0, project)
         return project
 
     async def refresh(self) -> list[Project]:
-        projects = await self.session._require_bridge().list_projects(self.session)
-        self._items = list(projects)
+        page = await self.session._require_adapter().list_projects()
+        if not isinstance(page, Page) or any(
+            not isinstance(item, ProviderProject) for item in page.items
+        ):
+            raise ProviderError("Provider returned an invalid project page")
+        projects = []
+        for item in page.items:
+            project = self.session._project_type(
+                title=item.name,
+                remote_id=item.origin.remote_id,
+                session=self.session,
+            )
+            project._apply_provider_project(item)
+            projects.append(project)
+        self._items = projects
         return list(self._items)
 
     async def update(
@@ -41,9 +61,20 @@ class ProjectsCollection(ManageableCollection[Project]):
     ) -> Project:
         target = project if isinstance(project, Project) else self.get(project)
         if target.remote_id:
-            await self.session._require_bridge().update_project(
-                target, title=title, instructions=instruction
+            adapter = self.session._require_adapter()
+            current = await adapter.get_project(target.remote_id)
+            if not isinstance(current, ProviderProject):
+                raise ProviderError("Provider returned an invalid project")
+            updated = await adapter.update_project(
+                replace(
+                    current,
+                    name=title if title is not None else current.name,
+                    instructions=(
+                        instruction if instruction is not None else current.instructions
+                    ),
+                )
             )
+            target._apply_provider_project(updated, replace_resources=False)
         else:
             if title is not None:
                 target.title = title
@@ -54,5 +85,5 @@ class ProjectsCollection(ManageableCollection[Project]):
     async def delete(self, project: Project | str) -> None:
         target = project if isinstance(project, Project) else self.get(project)
         if target.remote_id:
-            await self.session._require_bridge().delete_project(target)
+            await self.session._require_adapter().delete_project(target.remote_id)
         self._items = [item for item in self._items if item is not target]

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, call, patch
 
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
-from webaiprovider.bridge import ProviderBridge
 from webaiprovider.catalogs import (
     Models,
     ModelsCollection,
@@ -196,25 +195,21 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.models import FeatureState, Model, ModelCatalog
 
         account = Account("account-1", "chatgpt", {"session_token": "test"})
-        model = Model("gpt-6-pro", "GPT-6 Pro")
-        catalog = ModelCatalog(FeatureState.AVAILABLE, (model,))
+        catalog = ModelCatalog(
+            FeatureState.AVAILABLE,
+            (Model("gpt-6-pro", "GPT-6 Pro"),),
+        )
         adapter = AsyncMock(spec=ProviderAdapter)
-        adapter.id = account.provider
-        adapter.account_id = account.id
+        adapter.prepare = AsyncMock()
         adapter.models.return_value = catalog
-        bridge = ProviderBridge(account)
-        bridge._provider_instance = adapter
-        bridge.open = AsyncMock()
-        bridge.close = AsyncMock()
         provider = AsyncProvider(account)
-        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
             await provider.open()
         self.addAsyncCleanup(provider.close)
 
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         adapter.models.assert_awaited_once_with(force=False)
-
         await provider.models.refresh()
         self.assertEqual(adapter.models.await_args_list, [call(force=False), call(force=True)])
 

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from ..catalogs import Models
 from ..contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from ..errors import ProviderError
+from ..models import Conversation
 from ..resources.message import Message
 from ..resources.operation import MessageOperation
 from .base import ManageableCollection
@@ -24,7 +25,26 @@ class MessagesCollection(ManageableCollection[Message]):
         session = self.chat.session
         if session is None:
             raise ProviderError("Chat is not attached to an open provider")
-        messages = await session._require_bridge().list_messages(self.chat)
+        conversation = await session._require_adapter().get_chat(self.chat.remote_id)
+        if not isinstance(conversation, Conversation):
+            raise ProviderError("Provider returned an invalid conversation")
+        if conversation.title and not self.chat.title:
+            self.chat.title = conversation.title
+        messages = [
+            Message(
+                content="\n".join(
+                    part.text
+                    for part in item.content
+                    if part.kind == "text" and part.text
+                ),
+                role=item.role,
+                id=item.id,
+                metadata={**item.metadata, "actions": item.actions},
+                chat=self.chat,
+            )
+            for item in conversation.messages
+            if item.channel != "analysis"
+        ]
         self._items = list(messages)
         return list(self._items)
 
@@ -57,9 +77,9 @@ class MessagesCollection(ManageableCollection[Message]):
 
     async def _execute_send(self, operation: MessageOperation) -> AsyncIterator[StreamEvent]:
         session = self.chat.session
-        if session is None or session._bridge is None:
+        if session is None:
             raise ProviderError("No provider session is attached to this chat")
-        async for event in session._bridge.execute_stream(operation):
+        async for event in session._require_adapter().execute_stream(operation):
             yield event
 
     def update(

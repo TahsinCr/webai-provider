@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from ..contracts import Artifact
 from ..errors import ProviderError, UnsupportedOperationError
+from ..models import Conversation
+from ..utils.files import download_source
 
 if TYPE_CHECKING:
     from ..async_provider import AsyncProvider
@@ -37,28 +40,31 @@ class Chat:
     def get(self, message_id: str) -> Message:
         return self.messages.get(message_id)
 
-    async def download(self, target: Any) -> bytes:
+    async def download(self, target: Artifact | str) -> bytes:
         if self.remote_id:
             if self.session is None:
                 raise ProviderError("Chat is not attached to an open provider")
-            return await self.session._require_bridge().download(
-                target, conversation_id=self.remote_id
+            url = target.download_url if isinstance(target, Artifact) else target
+            if not url:
+                raise ValueError("Artifact has no download URL")
+            source = await self.session._require_adapter().resolve_download(
+                url,
+                conversation_id=self.remote_id,
             )
+            return await download_source(source)
         return b""
 
     async def rename(self, title: str) -> Chat:
-        if self.session is not None and hasattr(self.session, "chats"):
+        if self.session is not None:
             return await self.session.chats.update(self, title=title)
         self.title = title
-        if self.session is not None and hasattr(self.session, "_bridge") and self.session._bridge:
-            await self.session._bridge.rename_chat(self, title)
         return self
 
     async def delete(self) -> None:
         if self.remote_id:
             if self.session is None:
                 raise ProviderError("Chat is not attached to an open provider")
-            await self.session._require_bridge().delete_chat(self)
+            await self.session._require_adapter().delete_chat(self.remote_id)
 
     def __repr__(self) -> str:
         return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
@@ -66,14 +72,22 @@ class Chat:
 
 class AsyncBranchableChat(Chat):
     async def branch(self: Chat, message_id: str, *, title: str | None = None) -> Chat:
-        if self.remote_id:
-            if self.session is None:
-                raise ProviderError("Chat is not attached to an open provider")
-            return await self.session._require_bridge().branch_chat(self, message_id, title=title)
+        if not self.remote_id:
+            raise UnsupportedOperationError(
+                "Cannot branch a conversation that has not been persisted remotely"
+            )
+        if self.session is None:
+            raise ProviderError("Chat is not attached to an open provider")
+        branched = await self.session._require_adapter().branch_chat(
+            self.remote_id, message_id
+        )
+        if not isinstance(branched, Conversation):
+            raise ProviderError("Provider returned an invalid branched conversation")
         return type(self)(
-            title=title or f"{self.title} (Branch)",
+            title=title or branched.title,
+            remote_id=branched.origin.remote_id,
+            project_id=branched.project_id,
             session=self.session,
-            project_id=self.project_id,
         )
 
 
@@ -92,7 +106,7 @@ class AsyncMovableChat(Chat):
         else:
             project_id = str(project) if project is not None else None
         if self.remote_id:
-            await self.session._require_bridge().move_chat(self, project_id)
+            await self.session._require_adapter().move_chat(self.remote_id, project_id)
         self.project_id = project_id
         return self
 

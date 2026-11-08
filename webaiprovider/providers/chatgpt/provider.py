@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from ...async_provider import AsyncProvider
 from ...provider import (
@@ -16,6 +16,19 @@ from ...resources.chat import (
 )
 from .collections import AsyncChatGPTProjectsCollection
 from .resources import AsyncChatGPTChat
+
+
+if TYPE_CHECKING:
+    from ...accounts.account import Account
+    from ..base import ProviderAdapter
+
+
+def create_adapter(account: Account) -> ProviderAdapter:
+    from .adapter import ChatGPTAdapter
+    from .session import BrowserSession, SessionPaths
+
+    store = account.store()
+    return ChatGPTAdapter(BrowserSession(SessionPaths(store)), account_id=account.id)
 
 
 class AsyncChatGPTProvider(AsyncProvider):

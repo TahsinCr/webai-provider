@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..errors import ProviderError
-from ..models import Page
+from ..models import Conversation, Page
 from ..resources.chat import Chat
+from .chats import _chat_from_conversation
 from .base import QueryableCollection
 
 if TYPE_CHECKING:
@@ -21,11 +22,21 @@ class ProjectChatsCollection(QueryableCollection[Chat]):
         session = self.project.session
         if session is None:
             raise ProviderError("Project is not attached to an open provider")
-        page = await session._require_bridge().list_project_chats(self.project, cursor)
+        if not self.project.remote_id:
+            page = Page(())
+        else:
+            page = await session._require_adapter().list_project_chats(
+                self.project.remote_id, cursor
+            )
+        if not isinstance(page, Page) or any(
+            not isinstance(item, Conversation) for item in page.items
+        ):
+            raise ProviderError("Provider returned an invalid project conversation page")
+        chats = tuple(_chat_from_conversation(item, session) for item in page.items)
         if cursor is None:
-            self._items = list(page.items)
+            self._items = list(chats)
         else:
             known = {chat.id for chat in self._items}
-            self._items.extend(chat for chat in page.items if chat.id not in known)
+            self._items.extend(chat for chat in chats if chat.id not in known)
         self.next_cursor = page.next_cursor
-        return page
+        return Page(chats, page.next_cursor)

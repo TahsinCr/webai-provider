@@ -24,7 +24,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Represent effort options as each model's typed `Efforts` class across static provider catalogs. Account-discovered efforts use the same class-based interface, and an `EffortRef` can be passed through `model=` when the active account exposes it.
 - Use a single resolver for model policies, model references, and model-bound effort references; `AUTO` uses the provider-reported default.
 - Route an explicit `browser=` choice from `Account.from_browser()` through profile discovery and cookie import; an omitted choice still uses the operating system's default browser.
-- Type the bridge surface around provider events and domain models, keeping provider-specific transports isolated behind the adapter contract.
+- Keep the typed adapter contract as the provider boundary; shared collections and resources use it directly while provider-specific transports remain isolated.
 - Run only one producer task for each message operation so `stream()`, `wait()`, `start()`, and `wait_for()` cannot submit duplicate requests.
 - Require an attached provider session before sending a message; detached chats now raise a `ProviderError` instead of producing a local echo as if it were a provider response.
 
@@ -35,6 +35,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Remove generic message branching and project/chat collection move helpers; use `Chat.branch()` or `Chat.move_to()` on provider-specific chat types that support them.
 - Remove the `CapabilityError` alias and capability-enum compatibility branch; compatibility errors now accept a message, and bounded caches use explicit cache operations instead of dictionary emulation.
 - Remove the legacy adapter request/event interface and bridge fallback; message sends now flow through the v2 `execute_stream` contract, with provider wire events confined to transport internals.
+- Remove `ProviderBridge`; the async provider owns its adapter, and collections and resources perform their domain mappings at the point of use.
 
 ### Fixed
 

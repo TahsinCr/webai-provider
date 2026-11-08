@@ -288,36 +288,3 @@ class ChatGPTAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(OutputBegin, event_types)
         self.assertIn(OutputDelta, event_types)
         self.assertIn(OutputEnd, event_types)
-
-
-class BridgeDirectDelegationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bridge_execute_stream_delegates_directly_to_provider_execute_stream(
-        self,
-    ) -> None:
-        session = _create_mock_session("claude")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Claude", chat=chat)
-        operation = MessageOperation(chat, message)
-
-        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
-        adapter.transport.authenticated = True
-
-        async def fake_events(*args, **kwargs):
-            yield {"type": "bound", "id": "direct-conv-1"}
-            yield {"type": "delta", "text": "Direct response", "channel": "final"}
-            yield {"type": "done"}
-
-        adapter.transport.events = fake_events
-
-        from webaiprovider.bridge import ProviderBridge
-
-        bridge = ProviderBridge(session.account)
-        bridge._provider_instance = adapter
-
-        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=True):
-            events = [event async for event in bridge.execute_stream(operation)]
-
-        self.assertEqual(chat.remote_id, "direct-conv-1")
-        self.assertTrue(
-            any(isinstance(e, OutputDelta) and e.delta == "Direct response" for e in events)
-        )
