@@ -102,32 +102,21 @@ class CoreCacheTests(unittest.TestCase):
 
         self.assertIsNone(cache.get("k1"))
 
-    def test_cache_mapping_and_dictionary_compatibility(self) -> None:
+    def test_cache_removal_and_clear(self) -> None:
         cache: MultiDimensionBoundedCache[str, str] = MultiDimensionBoundedCache(
             max_entries=5,
             max_bytes=1000,
         )
-        self.assertEqual(cache, {})
-        self.assertFalse(cache)
-        self.assertEqual(len(cache), 0)
-
-        cache["k1"] = "val1"
-        self.assertIn("k1", cache)
-        self.assertNotIn("k2", cache)
-        self.assertTrue(cache)
-        self.assertEqual(len(cache), 1)
-        self.assertEqual(cache["k1"], "val1")
+        cache.put("k1", "val1")
+        cache.put("k2", "val2")
         self.assertGreater(cache.current_bytes, 0)
+        self.assertTrue(cache.remove("k1"))
+        self.assertFalse(cache.remove("k1"))
+        self.assertEqual(cache.pop("k2"), "val2")
+        self.assertIsNone(cache.pop("missing"))
 
-        self.assertEqual(cache.pop("k1"), "val1")
-        self.assertNotIn("k1", cache)
-        self.assertEqual(cache, {})
-
-        cache["k2"] = "val2"
         cache.clear()
-        self.assertEqual(len(cache), 0)
-        with self.assertRaises(KeyError):
-            _ = cache["missing"]
+        self.assertEqual(cache.stats().entries, 0)
 
 
 class CoreResilienceTests(unittest.IsolatedAsyncioTestCase):

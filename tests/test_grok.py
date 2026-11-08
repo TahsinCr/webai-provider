@@ -578,7 +578,7 @@ class GrokProviderTests(unittest.IsolatedAsyncioTestCase):
                                 )
                             )
                         ]
-                    self.assertEqual(provider._continuations, {})
+                    self.assertEqual(provider._continuations.stats().entries, 0)
                     self.assertEqual(len(transport.bodies), 1)
                     self.assertEqual(transport.session.authenticated, error is not AccountPaused)
                 finally:

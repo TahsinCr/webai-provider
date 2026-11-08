@@ -26,16 +26,12 @@ async def delayed_response(_request):
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_forget_conversation_releases_only_its_cached_context(self):
         provider = GeminiProvider(Path("unused"))
-        provider._chat_metadata.update(
-            {
-                "c1": ["c1", "request-1", "response-1"],
-                "c2": ["c2", "request-2", "response-2"],
-            }
-        )
+        provider._chat_metadata.put("c1", ["c1", "request-1", "response-1"])
+        provider._chat_metadata.put("c2", ["c2", "request-2", "response-2"])
         await provider.forget_conversation("c1")
 
-        self.assertNotIn("c1", provider._chat_metadata)
-        self.assertEqual(provider._chat_metadata["c2"], ["c2", "request-2", "response-2"])
+        self.assertIsNone(provider._chat_metadata.get("c1"))
+        self.assertEqual(provider._chat_metadata.get("c2"), ["c2", "request-2", "response-2"])
 
     async def test_saved_parameters_do_not_bypass_remote_session_validation(self):
         saved = {
@@ -208,12 +204,12 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_clears_cached_continuation_only_after_remote_confirmation(self):
         provider = GeminiProvider(Path("unused"))
         provider._client = SimpleNamespace()
-        provider._chat_metadata["conversation"] = ["conversation", "rid", "rcid"]
+        provider._chat_metadata.put("conversation", ["conversation", "rid", "rcid"])
         provider.rpc.call = AsyncMock(side_effect=[[], []])
 
         await provider.delete_chat("conversation")
 
-        self.assertNotIn("conversation", provider._chat_metadata)
+        self.assertIsNone(provider._chat_metadata.get("conversation"))
 
     async def test_rotated_credentials_are_serialized_and_saved_on_close(self):
         session = GeminiSession("unused")
@@ -806,14 +802,22 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             return_value=100.0 + _CHAT_METADATA_TTL_SECONDS + 1,
         ):
             self.assertIsNone(provider._take_chat_metadata("conversation"))
-        self.assertNotIn("conversation", provider._chat_metadata)
+        self.assertIsNone(provider._chat_metadata.get("conversation"))
 
     def test_prepare_next_turn_reorders_lru(self):
+        from webaiprovider.core.cache import MultiDimensionBoundedCache
+
         provider = GeminiProvider(Path("unused"), "test")
-        provider._chat_metadata["c1"] = ["c1", "r1", "rc1"]
-        provider._chat_metadata["c2"] = ["c2", "r2", "rc2"]
+        provider._chat_metadata = MultiDimensionBoundedCache(
+            max_entries=2, max_bytes=1000, default_ttl=None
+        )
+        provider._chat_metadata.put("c1", ["c1", "r1", "rc1"])
+        provider._chat_metadata.put("c2", ["c2", "r2", "rc2"])
         provider.prepare_next_turn("c1")
-        self.assertEqual(list(provider._chat_metadata.keys()), ["c2", "c1"])
+        provider._chat_metadata.put("c3", ["c3", "r3", "rc3"])
+        self.assertIsNotNone(provider._chat_metadata.get("c1"))
+        self.assertIsNone(provider._chat_metadata.get("c2"))
+        self.assertIsNotNone(provider._chat_metadata.get("c3"))
 
     def test_frames_fast_path_and_astral_planes(self):
         from webaiprovider.providers.gemini.transport import Frames

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import copy
 import unittest
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 from webaiprovider.accounts import Account
+from webaiprovider.base import ProviderAdapter
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.catalogs import (
     ChatGPTModels,
@@ -193,28 +193,31 @@ class CatalogTests(unittest.TestCase):
 
 
 class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
-    async def test_account_model_cache_is_shared_across_sessions_and_refreshable(self) -> None:
+    async def test_provider_model_cache_is_reused_and_refreshable(self) -> None:
         from webaiprovider.models import FeatureState, Model, ModelCatalog
 
         account = Account("account-1", "chatgpt", {"session_token": "test"})
         model = Model("gpt-6-pro", "GPT-6 Pro")
         catalog = ModelCatalog(FeatureState.AVAILABLE, (model,))
-        provider = SimpleNamespace(models=AsyncMock(return_value=catalog))
+        adapter = AsyncMock(spec=ProviderAdapter)
+        adapter.id = account.provider
+        adapter.account_id = account.id
+        adapter.models.return_value = catalog
         bridge = ProviderBridge(account)
-        bridge._provider_instance = provider
-        first = Provider(account)
-        first._bridge = bridge
-        first._opened = True
-        second = Provider(account)
-        second._bridge = bridge
-        second._opened = True
+        bridge._provider_instance = adapter
+        bridge.open = AsyncMock()
+        bridge.close = AsyncMock()
+        provider = Provider(account)
+        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+            await provider.open()
+        self.addAsyncCleanup(provider.close)
 
-        self.assertEqual((await first.models.list())[0].id, "gpt-6-pro")
-        self.assertEqual((await second.models.list())[0].id, "gpt-6-pro")
-        provider.models.assert_awaited_once_with(force=False)
+        self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
+        self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
+        adapter.models.assert_awaited_once_with(force=False)
 
-        await second.models.refresh()
-        self.assertEqual(provider.models.await_args_list, [call(force=False), call(force=True)])
+        await provider.models.refresh()
+        self.assertEqual(adapter.models.await_args_list, [call(force=False), call(force=True)])
 
     async def test_account_catalog_is_cached_and_returns_same_typed_refs(self) -> None:
         loads = 0

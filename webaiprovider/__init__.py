@@ -49,7 +49,6 @@ from .core.telemetry import ProviderTelemetry
 from .errors import (
     AccountPaused,
     AmbiguousMatchError,
-    CapabilityError,
     ConfigurationError,
     ContentError,
     FeatureUnavailable,
@@ -144,7 +143,6 @@ __all__ = [
     "TimingMetrics",
     "AccountPaused",
     "AmbiguousMatchError",
-    "CapabilityError",
     "ChatGPTWebError",
     "ConfigurationError",
     "ContentError",

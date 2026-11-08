@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import Capability
@@ -58,19 +58,8 @@ class RateLimited(ProviderError):
 class CompatibilityError(ProviderError):
     code = "compatibility_error"
 
-    def __init__(self, capability_or_message: Any = None):
-        if hasattr(capability_or_message, "value"):
-            super().__init__(f"provider capability changed: {capability_or_message.value}")
-            self.capability = capability_or_message
-        elif isinstance(capability_or_message, str):
-            super().__init__(capability_or_message)
-            self.capability = None
-        else:
-            super().__init__("provider capability changed")
-            self.capability = None
-
-
-CapabilityError = CompatibilityError
+    def __init__(self, message: str = "provider capability changed") -> None:
+        super().__init__(message)
 
 
 class RemoteNotFound(ProviderError):

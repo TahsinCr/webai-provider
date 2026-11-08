@@ -26,6 +26,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Run only one producer task for each message operation so `stream()`, `wait()`, `start()`, and `wait_for()` cannot submit duplicate requests.
 - Require an attached provider session before sending a message; detached chats now raise a `ProviderError` instead of producing a local echo as if it were a provider response.
 
+### Removed
+
+- Remove the `CapabilityError` alias and capability-enum compatibility branch; compatibility errors now accept a message, and bounded caches use explicit cache operations instead of dictionary emulation.
+
 ### Fixed
 
 - Translate provider, profile, catalog, timeout, and persistence exception messages to English.

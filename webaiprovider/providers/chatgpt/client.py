@@ -248,7 +248,9 @@ class ChatGPTClient:
         previous = self._continuation_cache.pop(conversation_id, None)
         if previous is not None and isinstance(previous, tuple):
             self._continuation_cache_text_chars = self._continuation_cache.current_bytes
-        self._continuation_cache[conversation_id] = (time.monotonic(), conversation, text_size)
+        self._continuation_cache.put(
+            conversation_id, (time.monotonic(), conversation, text_size)
+        )
         self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
