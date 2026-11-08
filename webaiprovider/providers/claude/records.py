@@ -8,9 +8,8 @@ from ...models import (
     ProjectData,
     ResourceData,
     actions_for,
-    files_from,
-    sources_from,
 )
+from ...normalizers import files_from, sources_from
 from .errors import ClaudeCompatibilityError
 
 

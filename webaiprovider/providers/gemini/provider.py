@@ -33,9 +33,8 @@ from ...models import (
     ProjectOptions,
     SessionState,
     SessionStatus,
-    files_from,
-    sources_from,
 )
+from ...normalizers import files_from, sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import BranchableChat
 from ...utils.timing import current_send_timing

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from .accounts.status import FeatureState, SessionState, SessionStatus
-from .transformers.citations import files_from, sources_from
 
 __all__ = [
     "Capability",
@@ -29,8 +28,6 @@ __all__ = [
     "MessageAction",
     "actions_for",
     "target_message",
-    "sources_from",
-    "files_from",
     "Page",
 ]
 

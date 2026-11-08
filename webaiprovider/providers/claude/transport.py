@@ -430,7 +430,7 @@ class ClaudeTransport:
                     raise ClaudeStreamError("Claude stream failed; the request was not retried")
                 if kind == "content_block_start":
                     block = event.get("content_block", {})
-                    from ...models import files_from
+                    from ...normalizers import files_from
 
                     files = files_from({"files": files}, block)
                     if block.get("type") == "tool_use" and block.get("name") == "present_files":
@@ -440,7 +440,7 @@ class ClaudeTransport:
                         presented_inputs[event.get("index", 0)] = ""
                     blocks[event.get("index", 0)] = block.get("type")
                     if block.get("type") in ("text", "web_search_tool_result"):
-                        from ...models import sources_from
+                        from ...normalizers import sources_from
 
                         if block.get("type") == "web_search_tool_result":
                             results = block.get("content")
@@ -468,7 +468,7 @@ class ClaudeTransport:
                         else:
                             presented_inputs.pop(index)
                     if delta.get("type") == "citations_delta":
-                        from ...models import sources_from
+                        from ...normalizers import sources_from
 
                         sources = sources_from(
                             {"sources": list(sources), "citations": [delta.get("citation")]}

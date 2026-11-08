@@ -44,8 +44,8 @@ from ...models import (
     SessionState,
     SessionStatus,
     actions_for,
-    sources_from,
 )
+from ...normalizers import sources_from
 from ...provider import (
     Provider,
     ProviderType,

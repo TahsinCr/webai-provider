@@ -15,6 +15,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Flatten reference normalization into `webaiprovider.normalizers` and use direct imports instead of routing normalization helpers through data models.
+
 - Share bounded SSE framing across ChatGPT, Claude, and Grok; expose a provider-independent `JSPBFrameDecoder` with Gemini framing settings supplied by Gemini.
 
 - Repair provider imports and sync/async resource exports after removing the old provider adapter layer.

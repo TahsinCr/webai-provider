@@ -10,11 +10,11 @@ import httpx
 
 from webaiprovider.async_provider import _ProviderRequest
 from webaiprovider.models import MessageAction, Model, Origin
+from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.transport import ClaudeTransport
 from webaiprovider.providers.gemini.history import history
 from webaiprovider.providers.gemini.transport import generation_request
-from webaiprovider.transformers.citations import files_from, sources_from
 
 
 class ChatGPTActionsTests(unittest.TestCase):

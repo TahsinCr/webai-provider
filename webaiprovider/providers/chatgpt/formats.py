@@ -2,7 +2,7 @@ import json
 from itertools import chain, islice
 from typing import Any, Iterable
 
-from ...models import files_from
+from ...normalizers import files_from
 from .discovery import project_id
 
 

@@ -11,8 +11,8 @@ from ...models import (
     Origin,
     ProjectData,
     ResourceData,
-    sources_from,
 )
+from ...normalizers import sources_from
 
 
 def _text(value):

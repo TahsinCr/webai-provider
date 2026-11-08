@@ -31,8 +31,8 @@ from ...models import (
     Page,
     SessionState,
     SessionStatus,
-    sources_from,
 )
+from ...normalizers import sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
 from ...utils.attachments import GROK_ATTACHMENTS
