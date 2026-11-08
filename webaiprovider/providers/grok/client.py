@@ -103,7 +103,7 @@ class GrokClient:
             raise
 
     async def upload_file(self, path):
-        file = source_file(path, error="Grok chat dosyası en fazla 3 MiB olabilir")
+        file = source_file(path, error="Grok chat files must not exceed 3 MiB")
         if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
             raise ValueError("Grok chat file type is not supported")
         if not 0 < file.stat().st_size <= GROK_ATTACHMENTS.max_bytes:
@@ -178,8 +178,6 @@ class GrokClient:
         except AccountPaused:
             self.session.authenticated = False
             raise
-        finally:
-            await self.session.persist()
 
     async def close(self):
         try:

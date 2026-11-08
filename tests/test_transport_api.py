@@ -78,7 +78,12 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         for path in ("https://other.test/", "//other.test/", "/%2e%2e/private", "/x\\y", "/x\n"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 await transport.send("POST", path)
-        for options in ({"follow_redirects": True}, {"headers": {"Host": "other.test"}}):
+        for options in (
+            {"follow_redirects": True},
+            {"headers": {"Host": "other.test"}},
+            {"headers": {"Host": "claude.ai", "host": "other.test"}},
+            {"stream": True},
+        ):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 await transport.send("POST", "/", **options)
         client.request.assert_not_awaited()

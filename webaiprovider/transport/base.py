@@ -142,19 +142,18 @@ class _TransportPolicy:
     def _options(self, options: dict[str, Any], method: str, path: str) -> dict[str, Any]:
         if options.pop("stream", False):
             raise ValueError("Use transport.stream() to own a streaming response")
-        inherit = options.pop("inherit_headers", True)
-        if inherit and self._headers is not None:
+        if options.pop("allow_redirects", False) or options.pop("follow_redirects", False):
+            raise ValueError("Authenticated transport redirects are disabled")
+        defaults = {}
+        if options.pop("inherit_headers", True) and self._headers is not None:
             defaults = self._headers(method, path) if callable(self._headers) else self._headers
+        if defaults or options.get("headers") is not None:
             options["headers"] = {
                 str(key).lower(): value
                 for headers in (defaults, options.get("headers") or {})
                 for key, value in headers.items()
             }
-        if options.pop("allow_redirects", False) or options.pop("follow_redirects", False):
-            raise ValueError("Authenticated transport redirects are disabled")
-        host = next(
-            (v for k, v in (options.get("headers") or {}).items() if k.lower() == "host"), None
-        )
+        host = (options.get("headers") or {}).get("host")
         if host is not None and host.casefold() != urlsplit(self.origin).netloc.casefold():
             raise ValueError("Transport Host header must match its origin")
         options.setdefault("timeout", self.config.timeout)

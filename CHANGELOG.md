@@ -19,6 +19,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Remove duplicate Grok cookie persistence and ChatGPT header preparation; shared worker execution now supports keyword arguments through the same bounded submission path.
+
 - Keep transport origins immutable and describe buffered/streamed responses with backend-independent public protocols; synchronous stream closure reaches its async owner exactly once.
 
 - Make generic `Provider` and `AsyncProvider` constructors select the concrete provider class directly, preserving provider-specific behavior when switching `ProviderType`.

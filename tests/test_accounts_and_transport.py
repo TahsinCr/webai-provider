@@ -244,6 +244,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             large_data = httpx.Response(200, json=large_dict).text
             parsed_large = await pool.parse_json(large_data, threshold=50)
             self.assertEqual(parsed_large, large_dict)
+            self.assertEqual(await pool.run(lambda value, *, scale: value * scale, 3, scale=4), 12)
         finally:
             pool.shutdown(wait=True)
 

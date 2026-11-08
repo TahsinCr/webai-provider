@@ -19,8 +19,7 @@ class BoundedWorkPool:
         return self._executor.submit(fn, *args, **kwargs)
 
     async def run(self, fn, *args, **kwargs):
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, fn, *args, **kwargs)
+        return await asyncio.wrap_future(self.submit(fn, *args, **kwargs))
 
     async def parse_json(
         self, data: bytes | str, threshold: int = DEFAULT_JSON_OFFLOAD_THRESHOLD

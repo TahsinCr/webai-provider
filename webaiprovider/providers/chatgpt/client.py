@@ -258,13 +258,7 @@ class ChatGPTClient:
         if target.scheme != "https" or target.netloc != "chatgpt.com":
             raise ChatGPTError("authenticated requests must stay on the ChatGPT origin")
         for attempt in range(2):
-            request_headers = self.headers.copy()
-            # httpx only decodes Brotli and Zstandard when optional packages are
-            # installed. Ask for encodings available in the minimal uv setup.
-            request_headers["accept-encoding"] = "gzip, deflate"
-            target_path = urlsplit(url).path
-            request_headers["x-openai-target-path"] = target_path
-            request_headers["x-openai-target-route"] = target_path
+            request_headers = self._transport_headers(method, target.path)
             path = target.path + ("?" + target.query if target.query else "")
             response = self.transport.send(
                 method, path, headers=request_headers, check_status=False, **kwargs

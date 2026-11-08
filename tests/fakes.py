@@ -86,5 +86,9 @@ def bind_stream(session, origin="https://claude.ai"):
     from webaiprovider.transport import AsyncHTTPTransport
 
     session.origin = origin
-    session.stream = AsyncHTTPTransport(origin, client_getter=lambda: session.connect()).stream
+    session.stream = AsyncHTTPTransport(
+        origin,
+        client_getter=lambda: session.connect(),
+        after_response=getattr(session, "persist", None),
+    ).stream
     return session
