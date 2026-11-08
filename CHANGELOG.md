@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Include the PEP 561 `py.typed` marker in wheels and source distributions for the public typed API.
 - Publish provider request and normalized stream event contracts in `webaiprovider.streams` for implementations using the same operation pipeline as built-in providers.
 
 - Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded blocking-client bridges.

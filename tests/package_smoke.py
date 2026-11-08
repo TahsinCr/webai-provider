@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import importlib.resources
 import importlib.util
 import tempfile
 from pathlib import Path
@@ -16,6 +17,8 @@ def main():
         raise SystemExit("package metadata and import version do not match")
     if importlib.util.find_spec("webai_provider") is not None:
         raise SystemExit("legacy package namespace is present in the wheel")
+    if not importlib.resources.files("webaiprovider").joinpath("py.typed").is_file():
+        raise SystemExit("the inline typing marker is missing from the installed package")
 
     with SentinelRuntime(user_agent="Mozilla/5.0 (X11; Linux x86_64)") as runtime:
         initial = runtime.create_initial_proof()

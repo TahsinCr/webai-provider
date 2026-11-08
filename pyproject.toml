@@ -51,3 +51,6 @@ known-first-party = ["webaiprovider"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["webaiprovider*"]
+
+[tool.setuptools.package-data]
+webaiprovider = ["py.typed"]
