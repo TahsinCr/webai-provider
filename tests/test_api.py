@@ -290,8 +290,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_project_lifecycle_methods(self) -> None:
         from dataclasses import replace
 
-        from webaiprovider.models import Origin, Resource
-        from webaiprovider.models import Project as NativeProject
+        from webaiprovider.models import Origin, ResourceData
+        from webaiprovider.models import ProjectData as NativeProject
 
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
@@ -316,7 +316,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             return project
 
         async def add_resource(_project_id, kind, **options):
-            resource = Resource(
+            resource = ResourceData(
                 f"remote-{options['name']}",
                 options["name"],
                 "text/plain",
@@ -469,7 +469,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
         from webaiprovider.models import Origin
-        from webaiprovider.models import Project as NativeProject
+        from webaiprovider.models import ProjectData as NativeProject
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         provider = AsyncChatGPTProvider(account)
@@ -651,7 +651,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
         from webaiprovider.models import Origin
-        from webaiprovider.models import Project as NativeProject
+        from webaiprovider.models import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
             def __init__(self, account: Account) -> None:

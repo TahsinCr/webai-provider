@@ -38,7 +38,7 @@ from .models import (
     ModelCatalog,
     Origin,
     Page,
-    Project,
+    ProjectData,
     ProjectOptions,
     ProviderDescription,
 )
@@ -391,10 +391,10 @@ class AsyncProvider(BaseProvider):
     async def upload_file(self, path: Any) -> dict:
         raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")
 
-    async def list_projects(self, cursor: str | None = None) -> Page[Project]:
+    async def list_projects(self, cursor: str | None = None) -> Page[ProjectData]:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
-    async def get_project(self, project_id: str) -> Project:
+    async def get_project(self, project_id: str) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
     async def list_project_chats(
@@ -406,7 +406,7 @@ class AsyncProvider(BaseProvider):
         self,
         name: str,
         instructions: str = "",
-    ) -> Project:
+    ) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECT_CREATE, "not_implemented")
 
     async def delete_project(self, project_id: str) -> None:
@@ -420,7 +420,7 @@ class AsyncProvider(BaseProvider):
     ) -> Any | None:
         return None
 
-    async def _project_after_write(self, project_id: str, confirmed: Any) -> Project:
+    async def _project_after_write(self, project_id: str, confirmed: Any) -> ProjectData:
         host = self
         for _ in range(12):
             project = await host.get_project(project_id)
@@ -436,7 +436,7 @@ class AsyncProvider(BaseProvider):
         async with host._gate:
             return await host.editor.options(project_id)
 
-    async def update_project(self, project: Project) -> Project:
+    async def update_project(self, project: ProjectData) -> ProjectData:
         host = self
         if project.origin.provider_id != host.id or project.origin.account_id != host.account_id:
             raise ValueError("Project belongs to a different provider account")
@@ -461,7 +461,7 @@ class AsyncProvider(BaseProvider):
             ),
         )
 
-    async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> Project:
+    async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> ProjectData:
         host = self
         before = await host.get_project(project_id)
         ids = {resource.id for resource in before.resources}
@@ -478,7 +478,7 @@ class AsyncProvider(BaseProvider):
             lambda project: any(resource.id not in ids for resource in project.resources),
         )
 
-    async def remove_project_resource(self, project_id: str, resource_id: str) -> Project:
+    async def remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
         host = self
         before = await host.get_project(project_id)
         source = next(

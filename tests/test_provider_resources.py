@@ -23,9 +23,9 @@ from webaiprovider.contracts import (
     ThinkingEnd,
 )
 from webaiprovider.errors import UnsupportedOperationError
-from webaiprovider.models import Content, Conversation, Origin, Page, Resource
-from webaiprovider.models import Message as NativeMessage
-from webaiprovider.models import Project as NativeProject
+from webaiprovider.models import Content, Conversation, Origin, Page, ResourceData
+from webaiprovider.models import MessageData as NativeMessage
+from webaiprovider.models import ProjectData as NativeProject
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
@@ -62,7 +62,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             Origin(self.account.provider, self.account.id, "project-1"),
             "Research",
             "Be concise",
-            (Resource("resource-1", "Source", "text/plain"),),
+            (ResourceData("resource-1", "Source", "text/plain"),),
         )
         self.provider.create_project.return_value = original
         self.provider.get_project.return_value = original
@@ -71,7 +71,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             original.origin,
             original.name,
             original.instructions,
-            (*original.resources, Resource("resource-2", "Notes", "text/plain")),
+            (*original.resources, ResourceData("resource-2", "Notes", "text/plain")),
         )
         self.provider.remove_project_resource.return_value = original
         self.provider.list_projects.return_value = Page((original,))

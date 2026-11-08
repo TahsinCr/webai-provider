@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from ...models import Conversation, Origin, Page, Project, Resource
+from ...models import Conversation, Origin, Page, ProjectData, ResourceData
 from .errors import GeminiCompatibilityError, GeminiError
 from .history import timestamp
 
@@ -45,13 +45,13 @@ def project_from_native(row, account_id):
         name = field(source, 2)
         if isinstance(resource_id, str) and isinstance(name, str):
             resources.append(
-                Resource(
+                ResourceData(
                     resource_id, name, metadata={"native": source, "source_type": field(source, 1)}
                 )
             )
     settings = field(detail, 12, []) or []
     instructions = field(field(row, 2, []), 0)
-    return Project(
+    return ProjectData(
         Origin("gemini", account_id, remote),
         detail[0],
         instructions if isinstance(instructions, str) else None,

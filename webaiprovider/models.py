@@ -19,11 +19,11 @@ __all__ = [
     "Model",
     "ModelCatalog",
     "Origin",
-    "Resource",
+    "ResourceData",
     "Content",
-    "Message",
+    "MessageData",
     "Conversation",
-    "Project",
+    "ProjectData",
     "ProjectOptions",
     "source_file",
     "MessageAction",
@@ -87,8 +87,8 @@ def actions_for(
 
 
 def target_message(
-    messages: tuple[Message, ...] | list[Message], message_id: str, role: str
-) -> tuple[int, Message]:
+    messages: tuple[MessageData, ...] | list[MessageData], message_id: str, role: str
+) -> tuple[int, MessageData]:
     for index, message in enumerate(messages):
         if message.id == message_id:
             if message.role != role or message.channel == "analysis":
@@ -198,7 +198,7 @@ class Origin:
 
 
 @dataclass(frozen=True)
-class Resource:
+class ResourceData:
     id: str
     name: str
     media_type: str | None = None
@@ -210,12 +210,12 @@ class Resource:
 class Content:
     kind: str
     text: str | None = None
-    resource: Resource | None = None
+    resource: ResourceData | None = None
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
-class Message:
+class MessageData:
     id: str
     role: str
     content: tuple[Content, ...]
@@ -228,17 +228,17 @@ class Message:
 class Conversation:
     origin: Origin
     title: str
-    messages: tuple[Message, ...] = ()
+    messages: tuple[MessageData, ...] = ()
     project_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
-class Project:
+class ProjectData:
     origin: Origin
     name: str
     instructions: str | None = None
-    resources: tuple[Resource, ...] = ()
+    resources: tuple[ResourceData, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
 

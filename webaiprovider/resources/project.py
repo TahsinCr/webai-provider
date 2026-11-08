@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 from ..collections.base import ManageableCollection
 from ..errors import ProviderError, UnsupportedOperationError
-from ..models import Project as ProviderProject
-from ..models import Resource as ProviderResource
+from ..models import ProjectData as ProviderProject
+from ..models import ResourceData as ProviderResource
 from ..utils.files import download_source
 
 if TYPE_CHECKING:

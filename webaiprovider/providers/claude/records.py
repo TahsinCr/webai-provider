@@ -3,10 +3,10 @@
 from ...models import (
     Content,
     Conversation,
-    Message,
+    MessageData,
     Origin,
-    Project,
-    Resource,
+    ProjectData,
+    ResourceData,
     actions_for,
     files_from,
     sources_from,
@@ -79,7 +79,7 @@ def conversation(value, account_id):
     def flush_files():
         if pending_files:
             messages.append(
-                Message(
+                MessageData(
                     pending_id + ":files",
                     "assistant",
                     (Content("text", ""),),
@@ -130,7 +130,7 @@ def conversation(value, account_id):
                 )
                 if text:
                     messages.append(
-                        Message(
+                        MessageData(
                             str(item["uuid"]) + ":" + str(index),
                             role,
                             (Content("text", text),),
@@ -160,7 +160,7 @@ def conversation(value, account_id):
             else:
                 # Keep unsupported tool/media blocks available to future consumers.
                 messages.append(
-                    Message(
+                    MessageData(
                         str(item["uuid"]) + ":" + str(index),
                         role,
                         (Content(kind or "unknown", metadata={"native": block}),),
@@ -171,13 +171,13 @@ def conversation(value, account_id):
             (item.get("attachments") or []) + (item.get("files") or [])
         ):
             messages.append(
-                Message(
+                MessageData(
                     str(item["uuid"]) + ":resource:" + str(resource_index),
                     role,
                     (
                         Content(
                             "resource",
-                            resource=Resource(
+                            resource=ResourceData(
                                 str(resource.get("uuid") or resource.get("id") or ""),
                                 resource.get("file_name") or resource.get("name") or "File",
                                 metadata={"native": resource},
@@ -203,14 +203,14 @@ def project(value, account_id):
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude project response contract changed")
     resources = tuple(
-        Resource(
+        ResourceData(
             str(x.get("uuid") or x.get("id") or ""),
             x.get("file_name") or x.get("name") or "Resource",
             metadata={"native": x},
         )
         for x in (value.get("docs") or []) + (value.get("files") or [])
     )
-    return Project(
+    return ProjectData(
         Origin("claude", account_id, value["uuid"]),
         value.get("name") or "Claude projesi",
         value.get("prompt_template") or value.get("instructions"),

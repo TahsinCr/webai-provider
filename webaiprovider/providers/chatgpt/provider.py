@@ -34,13 +34,13 @@ from ...models import (
     Conversation,
     Feature,
     FeatureState,
-    Message,
+    MessageData,
     ModelCatalog,
     Origin,
     Page,
-    Project,
+    ProjectData,
     ProviderDescription,
-    Resource,
+    ResourceData,
     SessionState,
     SessionStatus,
     actions_for,
@@ -291,13 +291,13 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             return await asyncio.to_thread(read)
 
-    def _project(self, raw: dict) -> Project:
-        return Project(
+    def _project(self, raw: dict) -> ProjectData:
+        return ProjectData(
             Origin(self.id, self.account_id, raw["id"]),
             raw["name"],
             raw.get("instructions"),
             tuple(
-                Resource(
+                ResourceData(
                     str(item.get("file_id") or item.get("id") or ""),
                     str(item.get("name") or ""),
                     item.get("type"),
@@ -341,7 +341,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             await asyncio.to_thread(remove)
         await confirm_deleted(lambda: self.get_project(project_id))
 
-    async def list_projects(self, cursor: str | None = None) -> Page[Project]:
+    async def list_projects(self, cursor: str | None = None) -> Page[ProjectData]:
         def read():
             with self._client_scope() as client:
                 return client.list_projects(cursor)
@@ -356,7 +356,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         instructions: str = "",
         *,
         memory_share: bool = True,
-    ) -> Project:
+    ) -> ProjectData:
         if type(memory_share) is not bool:
             raise TypeError("memory_share must be a bool")
 
@@ -367,7 +367,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             return self._project(await asyncio.to_thread(create))
 
-    async def get_project(self, project_id: str) -> Project:
+    async def get_project(self, project_id: str) -> ProjectData:
         def read():
             with self._client_scope() as client:
                 return client.get_project(project_id)
@@ -386,7 +386,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             raw = await asyncio.to_thread(read)
         return Page(tuple(self._conversation(item) for item in raw["items"]), raw.get("cursor"))
 
-    def _message(self, item: dict, raw: dict) -> Message:
+    def _message(self, item: dict, raw: dict) -> MessageData:
         content = item.get("content") or {}
         parts = message_parts(content)
         parts = parts if isinstance(parts, list) else []
@@ -401,7 +401,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             else Content("provider", metadata={"value": part})
             for part in parts
         )
-        return Message(
+        return MessageData(
             str(item.get("id", "")),
             role,
             blocks,

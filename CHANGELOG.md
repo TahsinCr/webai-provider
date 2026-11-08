@@ -15,6 +15,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Rename immutable normalized model types to `MessageData`, `ProjectData`, and `ResourceData` to distinguish them from SDK resource objects.
 - Define `ProviderType` in the canonical `webaiprovider.provider` module and remove the separate `provider_type.py` module.
 - Give `Attachments` the collection-style `create`, metadata-only `update`, and local `delete` API.
 - Place `Attachments` in the collections package and use the shared queryable collection behavior; keep `Attachment` as a resource value.

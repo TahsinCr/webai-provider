@@ -20,7 +20,7 @@ from webaiprovider.async_provider import (
     _TextDelta,
 )
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited
-from webaiprovider.models import Capability, Resource
+from webaiprovider.models import Capability, ResourceData
 from webaiprovider.providers.grok import AsyncGrokProvider
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
 from webaiprovider.providers.grok.transport import (
@@ -839,7 +839,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "remove_source",
                 "workspace",
                 resource_id=resource_id,
-                resource=Resource(resource_id, source["name"], metadata=source),
+                resource=ResourceData(resource_id, source["name"], metadata=source),
             )
 
             self.assertEqual(result, {"deleted": True})

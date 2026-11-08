@@ -3,7 +3,15 @@
 import re
 
 from ...errors import ProviderError
-from ...models import Content, Conversation, Message, Origin, Project, Resource, sources_from
+from ...models import (
+    Content,
+    Conversation,
+    MessageData,
+    Origin,
+    ProjectData,
+    ResourceData,
+    sources_from,
+)
 from ..base import MessageAction
 
 
@@ -166,7 +174,7 @@ def _messages(history, temporary=False):
             resources = tuple(
                 Content(
                     "resource",
-                    resource=Resource(
+                    resource=ResourceData(
                         str(item.get("assetId") or item.get("id") or ""),
                         str(item.get("name") or item.get("fileName") or "Attachment"),
                         item.get("mimeType") or item.get("fileMimeType"),
@@ -176,7 +184,7 @@ def _messages(history, temporary=False):
                 if item.get("assetId") or item.get("id")
             )
             messages.append(
-                Message(
+                MessageData(
                     response_id,
                     "user",
                     (Content("text", str(text)),) + resources,
@@ -189,7 +197,7 @@ def _messages(history, temporary=False):
         thinking = clean_text(row.get("thinkingTrace"))
         if thinking:
             messages.append(
-                Message(
+                MessageData(
                     response_id + ":analysis",
                     "assistant",
                     (Content("text", thinking),),
@@ -200,7 +208,7 @@ def _messages(history, temporary=False):
         answer = clean_text(row.get("message"))
         sources = sources_from({"sources": row.get("webSearchResults", [])})
         messages.append(
-            Message(
+            MessageData(
                 response_id,
                 "assistant",
                 (Content("text", answer),),
@@ -248,7 +256,7 @@ def project(value, account_id, files=()):
         raise ProviderError("Grok workspace response contract changed")
     files = files or ()
     resources = tuple(
-        Resource(
+        ResourceData(
             str(item.get("path") or item.get("assetId")),
             str(item.get("name") or item.get("path") or "Source"),
             item.get("mimeType"),
@@ -263,7 +271,7 @@ def project(value, account_id, files=()):
         and not item.get("isDirectory")
         and (item.get("assetId") or item.get("path"))
     )
-    return Project(
+    return ProjectData(
         Origin("grok", account_id, identifier),
         str(value.get("name") or "Grok project"),
         value.get("customPersonality"),

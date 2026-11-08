@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from ..errors import ProviderError
 from ..models import Page
-from ..models import Project as ProviderProject
+from ..models import ProjectData as ProviderProject
 from ..resources.project import Project
 from .base import ManageableCollection
 

@@ -2,7 +2,7 @@
 
 import re
 
-from ...models import Content, Conversation, Message, Resource, actions_for, sources_from
+from ...models import Content, Conversation, MessageData, ResourceData, actions_for, sources_from
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 
@@ -132,7 +132,7 @@ def history(data, origin, cid):
         user = nested(turn, 2, 0, 0)
         if isinstance(user, str) and user:
             messages.append(
-                Message(
+                MessageData(
                     rid + ":user",
                     "user",
                     (Content("text", user),),
@@ -151,7 +151,7 @@ def history(data, origin, cid):
         thoughts = published_thoughts(candidate, steps)
         if thoughts:
             messages.append(
-                Message(
+                MessageData(
                     rid + ":model:thoughts",
                     "assistant",
                     (Content("text", thoughts),),
@@ -163,14 +163,14 @@ def history(data, origin, cid):
         text = resolve_image_links(text if isinstance(text, str) else "", images)
         if text or images:
             messages.append(
-                Message(
+                MessageData(
                     rid + ":model",
                     "assistant",
                     (Content("text", text),)
                     + tuple(
                         Content(
                             "resource",
-                            resource=Resource(
+                            resource=ResourceData(
                                 image["alias"], image["name"], image.get("media_type"), image["url"]
                             ),
                         )
