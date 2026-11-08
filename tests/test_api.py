@@ -214,7 +214,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider = AsyncProvider(Account.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
 
-        with self.assertRaisesRegex(ProviderError, "No provider session is attached"):
+        with self.assertRaisesRegex(ProviderError, "Open the provider before using its resources"):
             await chat.messages.create("must not be echoed as a response").wait()
 
     async def test_response_with_sources_and_artifacts(self) -> None:
@@ -527,7 +527,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         msg = Message("With attachment", attachments=attachments)
         self.assertEqual(len(msg.attachments), 1)
-        self.assertEqual(msg.attachments[0].name, "hello.txt")
+        self.assertEqual(msg.attachments.get(att.id).name, "hello.txt")
 
     async def test_provider_types_implement_shared_provider_api(self) -> None:
         from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
@@ -574,9 +574,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         p._close_provider = AsyncMock()
 
         async def fake_stream(_op):
-            yield OutputBegin()
-            yield OutputDelta(delta="Direct answer")
-            yield OutputEnd()
+            yield _TextDelta("Direct answer")
 
         p._stream_request = fake_stream
         await p.open()
@@ -654,8 +652,8 @@ class TestSyncApi(unittest.TestCase):
         from webaiprovider.models import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
-            def __init__(self, account: Account) -> None:
-                super().__init__(account)
+            def __init__(self, account: Account, **options) -> None:
+                super().__init__(account, **options)
                 self.thread_ids: list[int] = []
                 self.memory_share = None
 

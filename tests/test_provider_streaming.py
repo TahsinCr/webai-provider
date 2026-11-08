@@ -273,7 +273,9 @@ class AsyncChatGPTProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 return mock_client
 
         provider = AsyncChatGPTProvider(
-            DummyBrowserSession(), account_id="acc-test", client_factory=lambda _: mock_client
+            provider_account("chatgpt", "cred_file", "acc-test"),
+            session=DummyBrowserSession(),
+            client_factory=lambda _: mock_client,
         )
 
         events = [event async for event in provider.execute_stream(operation)]

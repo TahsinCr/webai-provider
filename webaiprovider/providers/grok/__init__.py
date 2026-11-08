@@ -5,7 +5,8 @@ from typing import Any
 
 _EXPORTS = {
     "GrokModels": "catalogs",
-    "GrokChat": "resources",
+    "GrokChat": "provider",
+    "AsyncGrokChat": "resources",
     "GrokProvider": "provider",
     "AsyncGrokProvider": "provider",
 }

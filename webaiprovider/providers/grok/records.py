@@ -6,13 +6,13 @@ from ...errors import ProviderError
 from ...models import (
     Content,
     Conversation,
+    MessageAction,
     MessageData,
     Origin,
     ProjectData,
     ResourceData,
     sources_from,
 )
-from ..base import MessageAction
 
 
 def _text(value):
