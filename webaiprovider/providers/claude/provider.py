@@ -1,3 +1,5 @@
+"""Claude provider using a saved web session over HTTPS."""
+
 from __future__ import annotations
 
 import asyncio
@@ -31,8 +33,6 @@ from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .resources import AsyncClaudeChat
 from .transport import ClaudeProjectEditor, ClaudeTransport
-
-"""Claude provider using a saved web session over HTTPS."""
 
 
 class AsyncClaudeProvider(AsyncProvider):

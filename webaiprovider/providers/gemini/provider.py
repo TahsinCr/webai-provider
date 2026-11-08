@@ -1,7 +1,10 @@
+"""Gemini web provider implementing the shared provider contract."""
+
 from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +15,7 @@ from ...async_provider import (
     AsyncProvider,
     _ConversationBound,
     _MessageMetadata,
+    _ProviderEvent,
     _ProviderRequest,
     _ReplaceText,
     _ResponseComplete,
@@ -42,13 +46,13 @@ if TYPE_CHECKING:
     from .notebooks import Notebooks
     from .session import GeminiSession
 
-"""Gemini web provider implementing the shared provider contract."""
-
 _CHAT_METADATA_TTL_SECONDS = 60.0
 
 
 class AsyncGeminiProvider(AsyncProvider):
     provider_type = ProviderType.GEMINI
+    stream_idle_timeout = 120
+    stream_total_timeout = 600
 
     _chat_type = AsyncGeminiChat
 
@@ -363,7 +367,9 @@ class AsyncGeminiProvider(AsyncProvider):
             raise FeatureUnavailable(Capability.PROJECTS)
         return await self.notebooks.chats(project_id, cursor)
 
-    async def _stream_request(self, request: _ProviderRequest):
+    async def _stream_request(
+        self, request: _ProviderRequest
+    ) -> AsyncGenerator[_ProviderEvent, None]:
         iterator = self._stream(request)
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
@@ -522,7 +528,7 @@ class AsyncGeminiProvider(AsyncProvider):
                 )
         return client, request, metadata, context, action_files
 
-    async def _stream(self, request: _ProviderRequest):
+    async def _stream(self, request: _ProviderRequest) -> AsyncGenerator[_ProviderEvent, None]:
         from .media import resolve_image_links
         from .transport import generate
 

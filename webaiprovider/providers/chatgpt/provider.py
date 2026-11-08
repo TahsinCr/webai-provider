@@ -1,3 +1,5 @@
+"""ChatGPT provider built on its persistent web client."""
+
 from __future__ import annotations
 
 import asyncio
@@ -64,8 +66,6 @@ from .formats import message_files, message_parts
 from .projects import ChatGPTProjectEditor
 from .resources import AsyncChatGPTChat
 from .session import BrowserSession, SessionPaths
-
-"""Async common API over the independent, synchronous ChatGPT web client."""
 
 
 class _Stopped(Exception):
@@ -147,7 +147,7 @@ class AsyncChatGPTProvider(AsyncProvider):
 
         await asyncio.to_thread(discard)
 
-    async def upload_file(self, path, *, cancel_event=None):
+    async def upload_file(self, path, *, cancel_event=None) -> dict:
         import mimetypes
         import threading
         from pathlib import Path
@@ -177,7 +177,10 @@ class AsyncChatGPTProvider(AsyncProvider):
         waiter = asyncio.shield(worker)
         waiter.add_done_callback(consume_failure)
         try:
-            return await waiter
+            result = await waiter
+            if result is None:
+                raise asyncio.CancelledError
+            return result
         except asyncio.CancelledError:
             cancelled.set()
             # This dedicated client only serves this upload. Closing its transport

@@ -1,7 +1,10 @@
+"""Grok web-session provider."""
+
 from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncGenerator
 from io import StringIO
 
 from ...accounts import delete_session, session_exists
@@ -10,6 +13,8 @@ from ...async_provider import (
     AsyncProvider,
     _ConversationBound,
     _MessageMetadata,
+    _ProviderEvent,
+    _ProviderRequest,
     _ReplaceText,
     _ResponseComplete,
     _TextDelta,
@@ -34,8 +39,6 @@ from ...utils.attachments import GROK_ATTACHMENTS
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .resources import AsyncGrokChat
 from .transport import GrokProjectEditor, GrokTransport, remote_id
-
-"""Grok web-session provider."""
 
 _CATALOG_TTL = 300
 
@@ -421,7 +424,9 @@ class AsyncGrokProvider(AsyncProvider):
             "Grok conversation project membership could not be confirmed by the server"
         )
 
-    async def _stream_request(self, request):
+    async def _stream_request(
+        self, request: _ProviderRequest
+    ) -> AsyncGenerator[_ProviderEvent, None]:
         if request.effort is not None:
             raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
         if len(request.attachments) > GROK_ATTACHMENTS.max_files:
