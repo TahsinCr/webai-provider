@@ -6,13 +6,7 @@ from typing import Any, TypeVar
 
 from eventflow import CircuitBreaker, CooldownRegistry
 
-try:
-    from ..errors import RateLimited
-except (ImportError, ValueError):
-    try:
-        from .errors import RateLimited
-    except ImportError:
-        from errors import RateLimited
+from ..errors import RateLimited
 
 T = TypeVar("T")
 
