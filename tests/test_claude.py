@@ -7,10 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from tests.provider_fakes import provider_account
+from webaiprovider.async_provider import _ConversationBound, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import ProviderError
 from webaiprovider.models import Capability, FeatureState
-from webaiprovider.providers.base import _ConversationBound, _ProviderRequest, _ReplaceText
-from webaiprovider.providers.claude import ClaudeAdapter
+from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.claude.records import (
     conversation,
     conversation_attachment_count,
@@ -212,9 +213,9 @@ class ClaudeRecordsTests(unittest.TestCase):
         self.assertEqual(value.metadata["kind"], "project")
 
 
-class ClaudeAdapterTests(unittest.IsolatedAsyncioTestCase):
+class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.provider = ClaudeAdapter(Path("unused"), "account")
+        self.provider = AsyncClaudeProvider(provider_account("claude", Path("unused"), "account"))
         self.provider.transport.authenticated = True
         self.provider.transport.request = AsyncMock()
 
@@ -252,7 +253,7 @@ class ClaudeAdapterTests(unittest.IsolatedAsyncioTestCase):
             ],
             "default_model": "claude-future",
         }
-        result = await self.provider.models()
+        result = await self.provider._load_model_catalog()
         self.assertEqual(result.state, FeatureState.AVAILABLE)
         self.assertEqual(result.models[0].default_effort, "high")
         self.assertEqual(result.models[0].id, "claude-future")
@@ -269,7 +270,7 @@ class ClaudeAdapterTests(unittest.IsolatedAsyncioTestCase):
                 },
             ]
         }
-        catalog = await self.provider.models()
+        catalog = await self.provider._load_model_catalog()
         self.assertEqual([x.id for x in catalog.chat_models], ["claude-main"])
         self.assertEqual(catalog.chat_models[0].metadata["effort_error"], "changed")
 

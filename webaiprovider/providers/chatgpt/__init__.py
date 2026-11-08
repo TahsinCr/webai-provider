@@ -10,7 +10,6 @@ _EXPORTS = {
     "ChatGPTError": "errors",
     "SentinelCompatibilityError": "errors",
     "ChatGPTModels": "catalogs",
-    "ChatGPTAdapter": "adapter",
     "ChatGPTChat": "resources",
     "ChatGPTProjectsCollection": "collections",
     "ChatGPTProvider": "provider",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..contracts import Artifact
 from ..errors import ProviderError, UnsupportedOperationError
@@ -47,7 +47,7 @@ class Chat:
             url = target.download_url if isinstance(target, Artifact) else target
             if not url:
                 raise ValueError("Artifact has no download URL")
-            source = await self.session._require_adapter().resolve_download(
+            source = await self.session._require_provider().resolve_download(
                 url,
                 conversation_id=self.remote_id,
             )
@@ -64,7 +64,7 @@ class Chat:
         if self.remote_id:
             if self.session is None:
                 raise ProviderError("Chat is not attached to an open provider")
-            await self.session._require_adapter().delete_chat(self.remote_id)
+            await self.session._require_provider().delete_chat(self.remote_id)
 
     def __repr__(self) -> str:
         return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
@@ -78,9 +78,7 @@ class AsyncBranchableChat(Chat):
             )
         if self.session is None:
             raise ProviderError("Chat is not attached to an open provider")
-        branched = await self.session._require_adapter().branch_chat(
-            self.remote_id, message_id
-        )
+        branched = await self.session._require_provider().branch_chat(self.remote_id, message_id)
         if not isinstance(branched, Conversation):
             raise ProviderError("Provider returned an invalid branched conversation")
         return type(self)(
@@ -106,7 +104,7 @@ class AsyncMovableChat(Chat):
         else:
             project_id = str(project) if project is not None else None
         if self.remote_id:
-            await self.session._require_adapter().move_chat(self.remote_id, project_id)
+            await self.session._require_provider().move_chat(self.remote_id, project_id)
         self.project_id = project_id
         return self
 

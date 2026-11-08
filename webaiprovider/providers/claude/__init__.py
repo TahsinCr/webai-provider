@@ -9,7 +9,6 @@ _EXPORTS = {
     "ClaudeRequestNotSent": "errors",
     "ClaudeStreamError": "errors",
     "ClaudeModels": "catalogs",
-    "ClaudeAdapter": "adapter",
     "ClaudeChat": "resources",
     "ClaudeProvider": "provider",
     "AsyncClaudeProvider": "provider",

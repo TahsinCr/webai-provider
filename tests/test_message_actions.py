@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
+from webaiprovider.async_provider import _ProviderRequest
 from webaiprovider.models import MessageAction, Model, Origin
-from webaiprovider.providers.base import _ProviderRequest
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.transport import ClaudeTransport
 from webaiprovider.providers.gemini.history import history
@@ -292,9 +292,9 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_chatgpt_asset_reference_gets_a_fresh_url_and_checks_conversation_membership(
         self,
     ):
-        from webaiprovider.providers.chatgpt.adapter import ChatGPTAdapter
+        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 
-        provider = ChatGPTAdapter.__new__(ChatGPTAdapter)
+        provider = AsyncChatGPTProvider.__new__(AsyncChatGPTProvider)
         client = Mock()
         client.get_conversation.return_value = {
             "messages": [

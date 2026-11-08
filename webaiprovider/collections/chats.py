@@ -49,7 +49,7 @@ class ChatsCollection(ManageableCollection[Chat]):
         return chat
 
     async def refresh(self) -> list[Chat]:
-        page = await self.session._require_adapter().list_chats()
+        page = await self.session._require_provider().list_chats()
         if not isinstance(page, Page) or any(
             not isinstance(item, Conversation) for item in page.items
         ):
@@ -66,7 +66,7 @@ class ChatsCollection(ManageableCollection[Chat]):
         target = chat if isinstance(chat, Chat) else self.get(chat)
         if title is not None and title != target.title:
             if target.remote_id:
-                await self.session._require_adapter().rename_chat(target.remote_id, title)
+                await self.session._require_provider().rename_chat(target.remote_id, title)
             target.title = title
         return target
 

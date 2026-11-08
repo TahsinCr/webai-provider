@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests.provider_fakes import provider_account
 from webaiprovider import Account, AsyncProvider, Chat, Message, MessageOperation
 from webaiprovider.contracts import (
     ArtifactDiscovered,
@@ -18,10 +19,10 @@ from webaiprovider.contracts import (
 from webaiprovider.errors import AccountPaused, RateLimited
 from webaiprovider.models import Choice, FeatureState, ModelCatalog
 from webaiprovider.models import Model as CatalogModel
-from webaiprovider.providers.chatgpt.adapter import ChatGPTAdapter
-from webaiprovider.providers.claude.adapter import ClaudeAdapter
-from webaiprovider.providers.gemini.adapter import GeminiAdapter
-from webaiprovider.providers.grok.adapter import GrokAdapter
+from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+from webaiprovider.providers.claude.provider import AsyncClaudeProvider
+from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
+from webaiprovider.providers.grok.provider import AsyncGrokProvider
 
 
 def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:
@@ -41,15 +42,15 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
     return session
 
 
-class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_updates_operation(self) -> None:
         session = _create_mock_session("claude")
         chat = Chat(title="Test Chat", session=session)
         message = Message("Hello Claude", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
-        adapter.transport.authenticated = True
+        provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
+        provider.transport.authenticated = True
 
         async def fake_events(*args, **kwargs):
             yield {"type": "bound", "id": "claude-conv-123"}
@@ -65,10 +66,10 @@ class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
             }
             yield {"type": "done"}
 
-        adapter.transport.events = fake_events
+        provider.transport.events = fake_events
 
-        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=True):
-            events = [event async for event in adapter.execute_stream(operation)]
+        with patch("webaiprovider.providers.claude.provider.session_exists", return_value=True):
+            events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
         self.assertEqual(operation.message.id, "claude-user-msg-1")
@@ -98,28 +99,28 @@ class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Claude", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
-        adapter.transport.authenticated = False
+        provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
+        provider.transport.authenticated = False
 
-        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=False):
+        with patch("webaiprovider.providers.claude.provider.session_exists", return_value=False):
             with self.assertRaises(AccountPaused):
-                _ = [event async for event in adapter.execute_stream(operation)]
+                _ = [event async for event in provider.execute_stream(operation)]
 
 
-class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_caches_continuation(self) -> None:
         session = _create_mock_session("grok")
         chat = Chat(title="Test Chat", session=session)
         message = Message("Hello Grok", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GrokAdapter("cred_file", account_id="acc-test")
+        provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
             FeatureState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )
-        adapter.models = AsyncMock(return_value=catalog)
+        provider._load_model_catalog = AsyncMock(return_value=catalog)
 
         async def fake_events(*args, **kwargs):
             yield {
@@ -138,14 +139,14 @@ class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        adapter.transport.events = fake_events
+        provider.transport.events = fake_events
 
-        events = [event async for event in adapter.execute_stream(operation)]
+        events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "grok-conv-456")
         self.assertEqual(operation.message.id, "grok-user-456")
         self.assertEqual(operation._assistant_message_id, "grok-resp-456")
-        self.assertEqual(adapter._take_continuation("grok-conv-456"), "grok-resp-456")
+        self.assertEqual(provider._take_continuation("grok-conv-456"), "grok-resp-456")
 
         event_types = [type(e) for e in events]
         self.assertIn(OutputBegin, event_types)
@@ -159,13 +160,13 @@ class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Grok", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GrokAdapter("cred_file", account_id="acc-test")
+        provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
             FeatureState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )
-        adapter.models = AsyncMock(return_value=catalog)
+        provider._load_model_catalog = AsyncMock(return_value=catalog)
 
         async def fake_events(*args, **kwargs):
             yield {
@@ -175,22 +176,22 @@ class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        adapter.transport.events = fake_events
+        provider.transport.events = fake_events
 
         with self.assertRaises(RateLimited) as cm:
-            _ = [event async for event in adapter.execute_stream(operation)]
+            _ = [event async for event in provider.execute_stream(operation)]
         self.assertEqual(cm.exception.retry_after, 12.5)
 
 
-class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_resolves_image_links(self) -> None:
         session = _create_mock_session("gemini")
         chat = Chat(title="Test Chat", session=session)
         message = Message("Hello Gemini", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GeminiAdapter("cookie_file", account_id="acc-test")
-        adapter._connect = AsyncMock()
+        provider = AsyncGeminiProvider(provider_account("gemini", "cookie_file", "acc-test"))
+        provider._connect = AsyncMock()
 
         mock_client = MagicMock()
         mock_client.models = ("gemini-2.5-flash",)
@@ -199,7 +200,7 @@ class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         async def fake_prepare(req):
             return mock_client, req, ["", "", ""], None, None
 
-        adapter._prepare_send_context = fake_prepare
+        provider._prepare_send_context = fake_prepare
 
         async def fake_generate(*args, **kwargs):
             yield {
@@ -220,7 +221,7 @@ class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
-            events = [event async for event in adapter.execute_stream(operation)]
+            events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")
         self.assertEqual(operation.message.id, "rc_turn_1:user")
@@ -237,7 +238,7 @@ class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(OutputEnd, event_types)
 
 
-class ChatGPTAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
+class AsyncChatGPTProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_updates_remote_ids(self) -> None:
         session = _create_mock_session("chatgpt")
         chat = Chat(title="Test Chat", session=session)
@@ -271,11 +272,11 @@ class ChatGPTAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
             def client_session(self):
                 return mock_client
 
-        adapter = ChatGPTAdapter(
+        provider = AsyncChatGPTProvider(
             DummyBrowserSession(), account_id="acc-test", client_factory=lambda _: mock_client
         )
 
-        events = [event async for event in adapter.execute_stream(operation)]
+        events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "chatgpt-conv-999")
         self.assertEqual(operation.message.id, "chatgpt-u1")

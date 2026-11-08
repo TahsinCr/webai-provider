@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from tests.provider_fakes import provider_account
+from webaiprovider.async_provider import _ProviderRequest, _ReplaceText, _TextDelta
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.models import (
     Capability,
@@ -14,8 +16,7 @@ from webaiprovider.models import (
     ModelCatalog,
     SessionState,
 )
-from webaiprovider.providers.base import _ProviderRequest, _ReplaceText, _TextDelta
-from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTAdapter, SessionPaths
+from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
 from webaiprovider.utils.timing import SendTiming, use_send_timing
@@ -23,7 +24,7 @@ from webaiprovider.utils.timing import SendTiming, use_send_timing
 from .fakes import FakeClient
 
 
-class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
+class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_structured_text_parts_are_readable_alongside_thinking(self):
         self.client.raw["messages"] = [
             {
@@ -49,7 +50,9 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.directory.name)
         self.session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
         self.client = FakeClient(self.session)
-        self.provider = ChatGPTAdapter(self.session, client_factory=lambda _: self.client)
+        self.provider = AsyncChatGPTProvider(
+            provider_account("chatgpt"), session=self.session, client_factory=lambda _: self.client
+        )
 
     async def test_session_snapshot_is_not_mistaken_for_verified_authentication(self):
         self.assertEqual((await self.provider.session_status()).state, SessionState.LOGIN_REQUIRED)
@@ -125,7 +128,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(description.feature(Capability.PROJECTS).state, FeatureState.AVAILABLE)
         self.client.model_catalog = lambda: ModelCatalog(FeatureState.AVAILABLE)
         self.client.list_projects = lambda cursor: {"items": [], "cursor": None}
-        self.assertEqual((await self.provider.models()).state, FeatureState.AVAILABLE)
+        self.assertEqual((await self.provider._load_model_catalog()).state, FeatureState.AVAILABLE)
         self.assertEqual((await self.provider.list_projects()).items, ())
         self.client.create_project = lambda name, instructions, **options: {
             "id": "g-p-created",
@@ -212,12 +215,12 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
             patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as sentinel_prewarm,
         ):
-            provider = ChatGPTAdapter(self.session)
+            provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
             await provider.prepare()
             await provider.prepare_for_send()
             sentinel_prewarm.assert_called_once_with()
-            await provider.models()
-            await provider.models(force=True)
+            await provider._load_model_catalog()
+            await provider._load_model_catalog(force=True)
             await provider.list_chats(limit=1)
             await provider.get_chat("remote")
             await provider.project_options("project")
@@ -327,7 +330,11 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("upload stopped")
 
         client = UploadClient()
-        provider = ChatGPTAdapter(self.session, client_factory=lambda _session: client)
+        provider = AsyncChatGPTProvider(
+            provider_account("chatgpt"),
+            session=self.session,
+            client_factory=lambda _session: client,
+        )
         cancel_event = threading.Event()
         task = asyncio.create_task(
             provider.upload_file(
@@ -342,7 +349,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stopped.is_set())
         self.assertTrue(closed.is_set())
 
-    async def test_rate_limit_survives_adapter_and_is_not_retried(self):
+    async def test_rate_limit_survives_provider_and_is_not_retried(self):
         self.client.closed.set()
         self.client.failure = RateLimited(30)
         with self.assertRaises(RateLimited) as raised:

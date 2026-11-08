@@ -8,7 +8,6 @@ _EXPORTS = {
     "GeminiError": "errors",
     "GeminiStreamError": "errors",
     "GeminiModels": "catalogs",
-    "GeminiAdapter": "adapter",
     "GeminiChat": "resources",
     "GeminiProvider": "provider",
     "AsyncGeminiProvider": "provider",

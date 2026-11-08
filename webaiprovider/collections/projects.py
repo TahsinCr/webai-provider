@@ -4,7 +4,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ..errors import ProviderError
-from ..models import Page, Project as ProviderProject
+from ..models import Page
+from ..models import Project as ProviderProject
 from ..resources.project import Project
 from .base import ManageableCollection
 
@@ -26,7 +27,7 @@ class ProjectsCollection(ManageableCollection[Project]):
         project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
-        created = await self.session._require_adapter().create_project(
+        created = await self.session._require_provider().create_project(
             project.title,
             instructions=instruction or "",
         )
@@ -35,7 +36,7 @@ class ProjectsCollection(ManageableCollection[Project]):
         return project
 
     async def refresh(self) -> list[Project]:
-        page = await self.session._require_adapter().list_projects()
+        page = await self.session._require_provider().list_projects()
         if not isinstance(page, Page) or any(
             not isinstance(item, ProviderProject) for item in page.items
         ):
@@ -61,17 +62,15 @@ class ProjectsCollection(ManageableCollection[Project]):
     ) -> Project:
         target = project if isinstance(project, Project) else self.get(project)
         if target.remote_id:
-            adapter = self.session._require_adapter()
-            current = await adapter.get_project(target.remote_id)
+            provider = self.session._require_provider()
+            current = await provider.get_project(target.remote_id)
             if not isinstance(current, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
-            updated = await adapter.update_project(
+            updated = await provider.update_project(
                 replace(
                     current,
                     name=title if title is not None else current.name,
-                    instructions=(
-                        instruction if instruction is not None else current.instructions
-                    ),
+                    instructions=(instruction if instruction is not None else current.instructions),
                 )
             )
             target._apply_provider_project(updated, replace_resources=False)
@@ -85,5 +84,5 @@ class ProjectsCollection(ManageableCollection[Project]):
     async def delete(self, project: Project | str) -> None:
         target = project if isinstance(project, Project) else self.get(project)
         if target.remote_id:
-            await self.session._require_adapter().delete_project(target.remote_id)
+            await self.session._require_provider().delete_project(target.remote_id)
         self._items = [item for item in self._items if item is not target]

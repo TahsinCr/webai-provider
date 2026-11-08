@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import unittest
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, call
 
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
@@ -14,7 +14,6 @@ from webaiprovider.catalogs import (
 )
 from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
-from webaiprovider.providers.base import ProviderAdapter
 from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels
 from webaiprovider.providers.chatgpt.discovery import model_catalog
 from webaiprovider.providers.claude.catalogs import ClaudeModels, selector_catalog
@@ -199,19 +198,20 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             FeatureState.AVAILABLE,
             (Model("gpt-6-pro", "GPT-6 Pro"),),
         )
-        adapter = AsyncMock(spec=ProviderAdapter)
-        adapter.prepare = AsyncMock()
-        adapter.models.return_value = catalog
         provider = AsyncProvider(account)
-        with patch("webaiprovider.async_provider.create_adapter", return_value=adapter):
-            await provider.open()
+        provider.prepare = AsyncMock()
+        provider._load_model_catalog = AsyncMock(return_value=catalog)
+        await provider.open()
         self.addAsyncCleanup(provider.close)
 
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
-        adapter.models.assert_awaited_once_with(force=False)
+        provider._load_model_catalog.assert_awaited_once_with(force=False)
         await provider.models.refresh()
-        self.assertEqual(adapter.models.await_args_list, [call(force=False), call(force=True)])
+        self.assertEqual(
+            provider._load_model_catalog.await_args_list,
+            [call(force=False), call(force=True)],
+        )
 
     async def test_account_catalog_is_cached_and_returns_same_typed_refs(self) -> None:
         loads = 0

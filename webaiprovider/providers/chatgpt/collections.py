@@ -16,7 +16,7 @@ class AsyncChatGPTProjectsCollection(ProjectsCollection):
         project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
-        created = await self.session._require_adapter().create_project(
+        created = await self.session._require_provider().create_project(
             title,
             instructions=instruction or "",
             memory_share=memory_share,

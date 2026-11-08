@@ -13,10 +13,11 @@ from unittest.mock import Mock, patch
 
 import httpx
 
+from tests.provider_fakes import provider_account
 from webaiprovider.models import ModelCatalog
 from webaiprovider.providers.chatgpt import (
+    AsyncChatGPTProvider,
     BrowserSession,
-    ChatGPTAdapter,
     ChatGPTClient,
     SessionPaths,
 )
@@ -156,8 +157,10 @@ class DiscoveryTests(unittest.TestCase):
             client.http = httpx.Client(transport=self.client.http._transport)
             return client
 
-        provider = ChatGPTAdapter(self.session, client_factory=factory)
-        catalog = asyncio.run(provider.models())
+        provider = AsyncChatGPTProvider(
+            provider_account("chatgpt"), session=self.session, client_factory=factory
+        )
+        catalog = asyncio.run(provider._load_model_catalog())
         projects = asyncio.run(provider.list_projects())
         detail = asyncio.run(provider.get_project("g-p-work"))
         chats = asyncio.run(provider.list_project_chats("g-p-work"))

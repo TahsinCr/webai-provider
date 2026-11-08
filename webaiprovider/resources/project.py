@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 from ..collections.base import ManageableCollection
 from ..errors import ProviderError, UnsupportedOperationError
-from ..models import Project as ProviderProject, Resource as ProviderResource
+from ..models import Project as ProviderProject
+from ..models import Resource as ProviderResource
 from ..utils.files import download_source
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
                 raise UnsupportedOperationError(f"Project resource type is unsupported: {kind}")
 
             known_ids = {record.get("id") for record in self._items}
-            updated = await session._require_adapter().add_project_resource(
+            updated = await session._require_provider().add_project_resource(
                 self.project.remote_id, kind, **options
             )
             if not isinstance(updated, ProviderProject):
@@ -111,7 +112,7 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
             if self.project.remote_id:
                 if session is None:
                     raise ProviderError("Project is not attached to an open provider")
-                await session._require_adapter().remove_project_resource(
+                await session._require_provider().remove_project_resource(
                     self.project.remote_id, resource_id
                 )
             del self._items[index]
@@ -148,7 +149,7 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         if url and self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            source = await session._require_adapter().resolve_download(url)
+            source = await session._require_provider().resolve_download(url)
             return await download_source(source)
         for key in ("bytes", "content", "data"):
             if key in item:
@@ -202,7 +203,7 @@ class Project:
         if self.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            await session._require_adapter().delete_project(self.remote_id)
+            await session._require_provider().delete_project(self.remote_id)
         if session is not None:
             session.projects._items = [item for item in session.projects._items if item is not self]
 

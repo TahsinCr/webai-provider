@@ -27,7 +27,7 @@ class MessagesCollection(ManageableCollection[Message]):
         session = self.chat.session
         if session is None:
             raise ProviderError("Chat is not attached to an open provider")
-        conversation = await session._require_adapter().get_chat(self.chat.remote_id)
+        conversation = await session._require_provider().get_chat(self.chat.remote_id)
         if not isinstance(conversation, Conversation):
             raise ProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
@@ -35,9 +35,7 @@ class MessagesCollection(ManageableCollection[Message]):
         messages = [
             Message(
                 content="\n".join(
-                    part.text
-                    for part in item.content
-                    if part.kind == "text" and part.text
+                    part.text for part in item.content if part.kind == "text" and part.text
                 ),
                 role=item.role,
                 id=item.id,
@@ -82,7 +80,7 @@ class MessagesCollection(ManageableCollection[Message]):
         session = self.chat.session
         if session is None:
             raise ProviderError("No provider session is attached to this chat")
-        async for event in session._require_adapter().execute_stream(operation):
+        async for event in session._require_provider().execute_stream(operation):
             yield event
 
     def update(

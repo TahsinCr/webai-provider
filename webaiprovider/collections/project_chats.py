@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 from ..errors import ProviderError
 from ..models import Conversation, Page
 from ..resources.chat import Chat
-from .chats import _chat_from_conversation
 from .base import QueryableCollection
+from .chats import _chat_from_conversation
 
 if TYPE_CHECKING:
     from ..resources.project import Project
@@ -25,7 +25,7 @@ class ProjectChatsCollection(QueryableCollection[Chat]):
         if not self.project.remote_id:
             page = Page(())
         else:
-            page = await session._require_adapter().list_project_chats(
+            page = await session._require_provider().list_project_chats(
                 self.project.remote_id, cursor
             )
         if not isinstance(page, Page) or any(
