@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from ..catalogs.policies import Models
+from ..catalogs import Models
 from ..contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from ..errors import ProviderError
 from ..resources.message import Message
@@ -124,6 +124,3 @@ class MessagesCollection(ManageableCollection[Message]):
     async def delete(self, target: Message | str) -> None:
         target_id = target.id if isinstance(target, Message) else str(target)
         self._items = [m for m in self._items if m.id != target_id]
-
-    async def branch(self, message_id: str, *, title: str | None = None) -> Chat:
-        return await self.chat.branch(message_id, title=title)

@@ -9,9 +9,9 @@ import time
 import uuid
 from pathlib import Path
 
-from ...base import MessageAction
 from ...transport import WebSession
 from ...utils.timing import current_send_timing
+from ..base import MessageAction
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
 from .session import BASE, HEADERS, nested

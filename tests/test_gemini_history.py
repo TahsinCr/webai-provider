@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webaiprovider.providers.gemini import GeminiProvider
+from webaiprovider.providers.gemini import GeminiAdapter
 
 
 def message(role, text, **extra):
@@ -14,7 +14,7 @@ def message(role, text, **extra):
 
 class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_listing_reads_remote_pages_and_returns_real_pagination(self):
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         provider._connect = AsyncMock()
         provider.rpc.call = AsyncMock(
             return_value=[[None, None, [["c_" + str(i), str(i)] for i in range(5)]]]
@@ -30,7 +30,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         def turn(rid):
             return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]
 
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         provider.rpc.call = AsyncMock(return_value=[[[turn("r_stable")]]])
         first = await provider.get_chat("c_abc")
         provider.rpc.call.return_value = [[[turn("r_stable"), turn("r_old")]]]
@@ -50,7 +50,7 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=[SimpleNamespace(items=[project]), SimpleNamespace(items=[])]
             ),
         )
-        provider = GeminiProvider(Path("unused"), notebooks=notebooks)
+        provider = GeminiAdapter(Path("unused"), notebooks=notebooks)
         with (
             patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
             patch(

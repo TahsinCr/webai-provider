@@ -10,10 +10,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from webaiprovider.base import MessageAction, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.models import Choice, Model
-from webaiprovider.providers.gemini import GeminiProvider
+from webaiprovider.providers.base import MessageAction, _ProviderRequest, _ReplaceText
+from webaiprovider.providers.gemini import GeminiAdapter
 from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.providers.gemini.transport import Frames, generation_request, upload_files
 
@@ -25,7 +25,7 @@ async def delayed_response(_request):
 
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_forget_conversation_releases_only_its_cached_context(self):
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         provider._chat_metadata.put("c1", ["c1", "request-1", "response-1"])
         provider._chat_metadata.put("c2", ["c2", "request-2", "response-2"])
         await provider.forget_conversation("c1")
@@ -72,7 +72,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 models=(),
                 discover_models=AsyncMock(return_value=(Model("one", "One"),)),
             )
-            provider = GeminiProvider(credential, client_factory=lambda _path: client)
+            provider = GeminiAdapter(credential, client_factory=lambda _path: client)
             opening = asyncio.create_task(provider.prepare())
             await started.wait()
             logout = asyncio.create_task(provider.forget_session())
@@ -88,7 +88,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 await provider.prepare()
 
     async def test_close_releases_gemini_session_when_editor_cleanup_fails(self):
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         client = SimpleNamespace(close=AsyncMock())
         provider._client = client
         provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
@@ -100,7 +100,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(provider._client)
 
     async def test_background_prepare_and_first_request_share_session_open(self):
-        provider = GeminiProvider(Path("saved"), client_factory=lambda _path: client)
+        provider = GeminiAdapter(Path("saved"), client_factory=lambda _path: client)
         first = Model("first", "First")
 
         async def open_session():
@@ -119,7 +119,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         await provider.close()
 
     async def test_web_activity_is_synced_immediately_before_generation(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         events = []
         client = SimpleNamespace(
             models=(Model("flash", "Flash"),),
@@ -146,7 +146,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["activity", "generation"])
 
     async def test_silent_generation_time_is_not_mistaken_for_network_idle(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         provider.stream_idle_timeout = 0.005
         provider.stream_total_timeout = 0.5
 
@@ -156,7 +156,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [_ReplaceText("answer")])
 
     async def test_stream_still_enforces_the_total_request_deadline(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         provider.stream_total_timeout = 0.005
 
         provider._stream = delayed_response
@@ -178,7 +178,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_catalog_is_cached_but_expiry_and_force_refresh_entitlements(self):
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         first, second = Model("first", "First"), Model("second", "Second")
         session = SimpleNamespace(
             models=(first,), discover_models=AsyncMock(return_value=(second,))
@@ -194,7 +194,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.discover_models.await_count, 2)
 
     async def test_delete_clears_cached_continuation_only_after_remote_confirmation(self):
-        provider = GeminiProvider(Path("unused"))
+        provider = GeminiAdapter(Path("unused"))
         provider._client = SimpleNamespace()
         provider._chat_metadata.put("conversation", ["conversation", "rid", "rcid"])
         provider.rpc.call = AsyncMock(side_effect=[[], []])
@@ -482,7 +482,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         session.http.post.assert_awaited_once()
 
     async def test_history_preserves_thoughts_and_stable_ids(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[37] = "rcid", ["Answer"], [["Thought"]]
         turn = [["cid", "rid"], None, [["Question"]], [[candidate]]]
@@ -713,7 +713,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.batch.await_count, 2)
 
     async def test_chat_metadata_caches_turn_ids_for_consecutive_stream_calls(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         client = SimpleNamespace(
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),
@@ -757,7 +757,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_metadata_cache_expires_after_verification_ttl(self):
         from webaiprovider.providers.gemini.adapter import _CHAT_METADATA_TTL_SECONDS
 
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         metadata = ["conversation", "request", "response"]
         with patch("webaiprovider.providers.gemini.adapter.time.monotonic", return_value=100.0):
             provider._remember_chat_metadata("conversation", metadata)
@@ -780,7 +780,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
     def test_prepare_next_turn_reorders_lru(self):
         from webaiprovider.core.cache import MultiDimensionBoundedCache
 
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         provider._chat_metadata = MultiDimensionBoundedCache(
             max_entries=2, max_bytes=1000, default_ttl=None
         )
@@ -870,7 +870,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lite_model.metadata["number"], 42)
 
     async def test_retry_earlier_turn_uses_edit_controls_and_preserves_prompt_and_files(self):
-        provider = GeminiProvider(Path("unused"), "test")
+        provider = GeminiAdapter(Path("unused"), "test")
         client = SimpleNamespace(
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),

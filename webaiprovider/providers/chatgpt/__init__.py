@@ -1,16 +1,28 @@
-"""Standalone ChatGPT backend; all session paths are supplied by callers."""
+from __future__ import annotations
 
-from .client import ChatGPTClient
-from .errors import ChatGPTWebError, SentinelCompatibilityError
-from .session import BrowserSession, SessionPaths
+from importlib import import_module
+from typing import Any
 
-__all__ = [
-    "BrowserSession",
-    "ChatGPTClient",
-    "ChatGPTWebError",
-    "SentinelCompatibilityError",
-    "SessionPaths",
-    "ChatGPTProvider",
-]
+_EXPORTS = {
+    "BrowserSession": "session",
+    "SessionPaths": "session",
+    "ChatGPTClient": "client",
+    "ChatGPTWebError": "errors",
+    "SentinelCompatibilityError": "errors",
+    "ChatGPTModels": "catalogs",
+    "ChatGPTAdapter": "adapter",
+    "ChatGPTChat": "resources",
+    "ChatGPTProjectsCollection": "collections",
+    "ChatGPTProvider": "provider",
+    "AsyncChatGPTProvider": "provider",
+}
+__all__ = list(_EXPORTS)
 
-from .adapter import ChatGPTProvider
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{module}", __name__), name)
+    globals()[name] = value
+    return value

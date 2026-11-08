@@ -21,13 +21,13 @@ You can import credentials from the operating system's default browser or name a
 ```python
 import asyncio
 
-from webaiprovider import Account, OutputDelta, Provider, ProviderType
+from webaiprovider import Account, AsyncChatGPTProvider, OutputDelta, ProviderType
 
 
 async def main() -> None:
     account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
 
-    async with Provider(account, type=ProviderType.CHATGPT) as provider:
+    async with AsyncChatGPTProvider(account) as provider:
         models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
@@ -45,24 +45,24 @@ asyncio.run(main())
 
 `Account.from_browser()` uses the default browser when `browser` is omitted. Browser-cookie access may require the browser to be closed or the operating system keyring to be unlocked. To supply credentials directly, use `Account.from_cookies(provider, cookies)` and keep the cookie values in your own secure store.
 
-For blocking code, use `SyncProvider` with the same account and provider type. It keeps one event-loop portal alive for the provider's lifetime:
+For blocking code, use the provider-specific sync class. It keeps one event-loop portal alive for the provider's lifetime:
 
 ```python
-from webaiprovider import Account, ProviderType, SyncProvider
+from webaiprovider import Account, ChatGPTProvider, ProviderType
 
 account = Account.from_browser(ProviderType.CHATGPT)
-with SyncProvider(account, type=ProviderType.CHATGPT) as provider:
+with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Quick start")
     response = chat.messages.create("Hello!").start()
 ```
 
 ## Core API
 
-- `Account` stores credentials. `Provider(account, type=ProviderType.CHATGPT)` owns the asynchronous session; `SyncProvider` offers the blocking equivalent. Both support context-manager cleanup.
+- `BaseProvider` carries the shared account and provider identity. Use `AsyncChatGPTProvider` (or the matching async class) for asynchronous work and `ChatGPTProvider` for blocking work; generic `AsyncProvider` and `Provider` serve shared use through `ProviderType`.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory.
 - `provider.models.list()` loads and caches the account's available models for that session. Use `refresh=True` or `provider.models.refresh()` to request a new catalog. `find()`, `search()`, and `get()` select from that catalog.
 - `chat.messages.create()`, `edit()`, and `retry()` return a `MessageOperation`. Consume `operation.stream()` for events, or await `operation.wait()` for the completed response. These entry points share one send operation.
-- Project, attachment, retry, edit, and branching capabilities vary by provider. Unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.
+- Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.
 
 The package exports model references and effort choices for typed use. Account-discovered models remain authoritative for the account and may differ by subscription or provider changes.
 

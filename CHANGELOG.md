@@ -15,6 +15,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Split the public API into shared `BaseProvider`, async `AsyncProvider`, blocking `Provider`, and provider-specific sync/async classes. Provider-only chat operations are exposed by the corresponding provider chat types.
+- Move shared model selection, caching, and resolution into `webaiprovider.catalogs`; keep each provider's static model and effort definitions in `providers/<provider>/catalogs.py`.
 - Make `webaiprovider` the sole import package for the v2 API and remove the `webai_provider` re-export namespace.
 - `chat.messages.create`, edit, retry, and provider `ask` accept one `model=` selection; separate public `effort=` selection was removed. The selected model and effort are checked against that account's live catalog before send, with no silent downgrade.
 - Keep ChatGPT web IDs separate from API IDs. ChatGPT's Pro thinking option is powered by Astra; discover its account-eligible web model and effort references instead of modeling it as API ID `gpt-6-astra` with API-only effort levels.
@@ -28,6 +30,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
+- Remove the former top-level `session.py`, `sync.py`, `facade.py`, and `catalogs/` package layout; no compatibility imports are provided for the new API.
+- Remove generic message branching and project/chat collection move helpers; use `Chat.branch()` or `Chat.move_to()` on provider-specific chat types that support them.
 - Remove the `CapabilityError` alias and capability-enum compatibility branch; compatibility errors now accept a message, and bounded caches use explicit cache operations instead of dictionary emulation.
 - Remove the legacy adapter request/event interface and bridge fallback; message sends now flow through the v2 `execute_stream` contract, with provider wire events confined to transport internals.
 

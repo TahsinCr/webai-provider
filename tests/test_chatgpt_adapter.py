@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from webaiprovider.base import _ProviderRequest, _ReplaceText, _TextDelta
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.models import (
     Capability,
@@ -15,7 +14,8 @@ from webaiprovider.models import (
     ModelCatalog,
     SessionState,
 )
-from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTProvider, SessionPaths
+from webaiprovider.providers.base import _ProviderRequest, _ReplaceText, _TextDelta
+from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTAdapter, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
 from webaiprovider.utils.timing import SendTiming, use_send_timing
@@ -49,7 +49,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.directory.name)
         self.session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
         self.client = FakeClient(self.session)
-        self.provider = ChatGPTProvider(self.session, client_factory=lambda _: self.client)
+        self.provider = ChatGPTAdapter(self.session, client_factory=lambda _: self.client)
 
     async def test_session_snapshot_is_not_mistaken_for_verified_authentication(self):
         self.assertEqual((await self.provider.session_status()).state, SessionState.LOGIN_REQUIRED)
@@ -212,7 +212,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
             patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as sentinel_prewarm,
         ):
-            provider = ChatGPTProvider(self.session)
+            provider = ChatGPTAdapter(self.session)
             await provider.prepare()
             await provider.prepare_for_send()
             sentinel_prewarm.assert_called_once_with()
@@ -327,7 +327,7 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("upload stopped")
 
         client = UploadClient()
-        provider = ChatGPTProvider(self.session, client_factory=lambda _session: client)
+        provider = ChatGPTAdapter(self.session, client_factory=lambda _session: client)
         cancel_event = threading.Event()
         task = asyncio.create_task(
             provider.upload_file(

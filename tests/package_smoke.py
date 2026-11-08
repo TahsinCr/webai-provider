@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 import webaiprovider
-from webaiprovider import Account, ChatGPTProvider
+from webaiprovider import Account, AsyncChatGPTProvider
 from webaiprovider.providers.chatgpt.sentinel import SentinelRuntime, generate_enforcement_proof
 
 
@@ -41,7 +41,7 @@ def main():
             acc = Account.from_cookies("chatgpt", session_file)
             if acc.provider != "chatgpt":
                 raise SystemExit("Account did not preserve provider identity")
-            provider = ChatGPTProvider(acc)
+            provider = AsyncChatGPTProvider(acc)
             if provider.provider != "chatgpt":
                 raise SystemExit("Provider did not preserve provider identity")
             await provider.close()

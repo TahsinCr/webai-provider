@@ -16,8 +16,8 @@ import httpx
 from webaiprovider.models import ModelCatalog
 from webaiprovider.providers.chatgpt import (
     BrowserSession,
+    ChatGPTAdapter,
     ChatGPTClient,
-    ChatGPTProvider,
     SessionPaths,
 )
 from webaiprovider.providers.chatgpt.client import _sse_data
@@ -156,7 +156,7 @@ class DiscoveryTests(unittest.TestCase):
             client.http = httpx.Client(transport=self.client.http._transport)
             return client
 
-        provider = ChatGPTProvider(self.session, client_factory=factory)
+        provider = ChatGPTAdapter(self.session, client_factory=factory)
         catalog = asyncio.run(provider.models())
         projects = asyncio.run(provider.list_projects())
         detail = asyncio.run(provider.get_project("g-p-work"))

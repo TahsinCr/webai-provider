@@ -7,7 +7,7 @@ from ..collections.base import ManageableCollection
 from ..errors import ProviderError, UnsupportedOperationError
 
 if TYPE_CHECKING:
-    from ..session import Provider
+    from ..async_provider import AsyncProvider
 
 
 class ProjectInstruction:
@@ -116,7 +116,7 @@ class Project:
         id: str | None = None,
         title: str = "",
         *,
-        session: Provider | None = None,
+        session: AsyncProvider | None = None,
         remote_id: str | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())

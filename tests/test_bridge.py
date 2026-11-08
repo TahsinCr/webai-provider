@@ -4,16 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from tests.streaming_support import StreamTestAdapter
-from webaiprovider import Account, MessageOperation, OperationState, Provider
-from webaiprovider.base import (
-    ProviderAdapter,
-    _ConversationBound,
-    _MessageMetadata,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-    _ThoughtDelta,
-)
+from webaiprovider import Account, AsyncProvider, MessageOperation, OperationState
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import (
     ArtifactDiscovered,
@@ -28,6 +19,15 @@ from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.models import Content, Conversation, Origin, Page, Resource
 from webaiprovider.models import Message as NativeMessage
 from webaiprovider.models import Project as NativeProject
+from webaiprovider.providers.base import (
+    ProviderAdapter,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
+    _ThoughtDelta,
+)
 
 
 class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -42,7 +42,7 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.bridge.open = AsyncMock()
         self.bridge.close = AsyncMock()
         with patch("webaiprovider.bridge.ProviderBridge", return_value=self.bridge):
-            self.provider = await Provider(self.account).open()
+            self.provider = await AsyncProvider(self.account).open()
 
     async def asyncTearDown(self) -> None:
         await self.provider.close()
@@ -97,25 +97,34 @@ class ProviderBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.resources._items[0]["id"], "resource-1")
 
     async def test_project_chat_pages_and_move_actions_use_provider_bridge(self) -> None:
-        from webaiprovider.resources.chat import Chat
+        from webaiprovider.providers.grok import AsyncGrokProvider, GrokChat
         from webaiprovider.resources.project import Project
 
+        account = Account.from_cookies("grok", {"sso": "session"})
+        bridge = ProviderBridge(account)
+        bridge._provider_instance = self.adapter
+        bridge.open = AsyncMock()
+        bridge.close = AsyncMock()
+        with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
+            provider = await AsyncGrokProvider(account).open()
+        self.addAsyncCleanup(provider.close)
+
         conversation = Conversation(
-            Origin(self.account.provider, self.account.id, "chat-1"),
+            Origin(account.provider, account.id, "chat-1"),
             "Project chat",
             project_id="project-1",
         )
         self.adapter.list_project_chats.return_value = Page((conversation,), "cursor-2")
         self.adapter.move_chat = AsyncMock()
-        project = Project(title="Research", session=self.provider, remote_id="project-1")
+        project = Project(title="Research", session=provider, remote_id="project-1")
 
         page = await project.chats.refresh()
         self.assertEqual(page.items[0].remote_id, "chat-1")
-        self.assertIs(page.items[0].session, self.provider)
+        self.assertIs(page.items[0].session, provider)
         self.assertEqual(project.chats.next_cursor, "cursor-2")
 
-        chat = Chat(title="Loose chat", session=self.provider, remote_id="chat-2")
-        await self.provider.chats.move(chat, project)
+        chat = GrokChat(title="Loose chat", session=provider, remote_id="chat-2")
+        await chat.move_to(project)
         self.adapter.move_chat.assert_awaited_once_with("chat-2", "project-1")
         self.assertEqual(chat.project_id, "project-1")
 

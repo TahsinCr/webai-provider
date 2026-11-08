@@ -9,13 +9,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from ...accounts import read_session
-from ...base import MessageAction, confirm_deleted
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
 from ...models import ProjectOptions, source_file
 from ...transport import WebSession
 from ...utils.timing import current_send_timing
-from .catalog import selector_catalog
+from ..base import MessageAction, confirm_deleted
+from .catalogs import selector_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}

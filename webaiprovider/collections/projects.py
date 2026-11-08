@@ -6,11 +6,11 @@ from ..resources.project import Project
 from .base import ManageableCollection
 
 if TYPE_CHECKING:
-    from ..session import Provider
+    from ..async_provider import AsyncProvider
 
 
 class ProjectsCollection(ManageableCollection[Project]):
-    def __init__(self, session: Provider) -> None:
+    def __init__(self, session: AsyncProvider) -> None:
         super().__init__()
         self.session = session
 
@@ -20,7 +20,7 @@ class ProjectsCollection(ManageableCollection[Project]):
         *,
         instruction: str | None = None,
     ) -> Project:
-        project = Project(title=title, session=self.session)
+        project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
         await self.session._require_bridge().create_project(project, instruction=instruction)

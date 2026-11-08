@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ..contracts import EffortSet, ModelRef
-from .base import StaticModelCatalog
+from ...catalogs import StaticModelCatalog
+from ...contracts import EffortSet, ModelRef
 
 
 class GrokModels(StaticModelCatalog):

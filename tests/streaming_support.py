@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from webaiprovider.base import ProviderAdapter, _ProviderRequest
+from webaiprovider.providers.base import ProviderAdapter, _ProviderRequest
 
 
 class StreamTestAdapter(ProviderAdapter):

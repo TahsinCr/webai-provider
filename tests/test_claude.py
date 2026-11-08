@@ -7,10 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from webaiprovider.base import _ConversationBound, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import ProviderError
 from webaiprovider.models import Capability, FeatureState
-from webaiprovider.providers.claude import ClaudeProvider
+from webaiprovider.providers.base import _ConversationBound, _ProviderRequest, _ReplaceText
+from webaiprovider.providers.claude import ClaudeAdapter
 from webaiprovider.providers.claude.records import (
     conversation,
     conversation_attachment_count,
@@ -212,9 +212,9 @@ class ClaudeRecordsTests(unittest.TestCase):
         self.assertEqual(value.metadata["kind"], "project")
 
 
-class ClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
+class ClaudeAdapterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.provider = ClaudeProvider(Path("unused"), "account")
+        self.provider = ClaudeAdapter(Path("unused"), "account")
         self.provider.transport.authenticated = True
         self.provider.transport.request = AsyncMock()
 

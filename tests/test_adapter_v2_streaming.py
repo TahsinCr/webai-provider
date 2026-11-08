@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from webaiprovider import Account, Chat, Message, MessageOperation, Provider
+from webaiprovider import Account, AsyncProvider, Chat, Message, MessageOperation
 from webaiprovider.contracts import (
     ArtifactDiscovered,
     OutputBegin,
@@ -18,15 +18,15 @@ from webaiprovider.contracts import (
 from webaiprovider.errors import AccountPaused, RateLimited
 from webaiprovider.models import Choice, FeatureState, ModelCatalog
 from webaiprovider.models import Model as CatalogModel
-from webaiprovider.providers.chatgpt.adapter import ChatGPTProvider
-from webaiprovider.providers.claude.adapter import ClaudeProvider
-from webaiprovider.providers.gemini.adapter import GeminiProvider
-from webaiprovider.providers.grok.adapter import GrokProvider
+from webaiprovider.providers.chatgpt.adapter import ChatGPTAdapter
+from webaiprovider.providers.claude.adapter import ClaudeAdapter
+from webaiprovider.providers.gemini.adapter import GeminiAdapter
+from webaiprovider.providers.grok.adapter import GrokAdapter
 
 
-def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> Provider:
+def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:
     account = Account.from_cookies(provider_name, {"session": "token"}, id=account_id)
-    session = Provider(account)
+    session = AsyncProvider(account)
     models_catalog = [
         CatalogModel(
             "default-model",
@@ -48,7 +48,7 @@ class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Claude", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
         adapter.transport.authenticated = True
 
         async def fake_events(*args, **kwargs):
@@ -98,7 +98,7 @@ class ClaudeAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Claude", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
         adapter.transport.authenticated = False
 
         with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=False):
@@ -113,7 +113,7 @@ class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Grok", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GrokProvider("cred_file", account_id="acc-test")
+        adapter = GrokAdapter("cred_file", account_id="acc-test")
         catalog = ModelCatalog(
             FeatureState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
@@ -159,7 +159,7 @@ class GrokAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Grok", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GrokProvider("cred_file", account_id="acc-test")
+        adapter = GrokAdapter("cred_file", account_id="acc-test")
         catalog = ModelCatalog(
             FeatureState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
@@ -189,7 +189,7 @@ class GeminiAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Gemini", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = GeminiProvider("cookie_file", account_id="acc-test")
+        adapter = GeminiAdapter("cookie_file", account_id="acc-test")
         adapter._connect = AsyncMock()
 
         mock_client = MagicMock()
@@ -271,7 +271,7 @@ class ChatGPTAdapterV2StreamingTests(unittest.IsolatedAsyncioTestCase):
             def client_session(self):
                 return mock_client
 
-        adapter = ChatGPTProvider(
+        adapter = ChatGPTAdapter(
             DummyBrowserSession(), account_id="acc-test", client_factory=lambda _: mock_client
         )
 
@@ -299,7 +299,7 @@ class BridgeDirectDelegationTests(unittest.IsolatedAsyncioTestCase):
         message = Message("Hello Claude", chat=chat)
         operation = MessageOperation(chat, message)
 
-        adapter = ClaudeProvider("cred_file", account_id="acc-test")
+        adapter = ClaudeAdapter("cred_file", account_id="acc-test")
         adapter.transport.authenticated = True
 
         async def fake_events(*args, **kwargs):

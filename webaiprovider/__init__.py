@@ -1,24 +1,11 @@
 from __future__ import annotations
 
 from .accounts.account import Account
-from .accounts.credentials import (
-    CredentialStore,
-    FileCredentialStore,
-    MemoryCredentialStore,
-)
-from .catalogs.base import StaticModelCatalog
-from .catalogs.chatgpt import ChatGPTModels
-from .catalogs.claude import ClaudeModels
-from .catalogs.dynamic import ModelsCollection
-from .catalogs.gemini import GeminiModels
-from .catalogs.grok import GrokModels
-from .catalogs.policies import Models
-from .catalogs.resolver import SelectionResolver
-from .collections.base import (
-    AsyncQueryableCollection,
-    ManageableCollection,
-    QueryableCollection,
-)
+from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
+from .async_provider import AsyncProvider
+from .base import BaseProvider
+from .catalogs import Models, ModelsCollection, SelectionResolver, StaticModelCatalog
+from .collections.base import AsyncQueryableCollection, ManageableCollection, QueryableCollection
 from .collections.chats import ChatsCollection
 from .collections.messages import MessagesCollection
 from .collections.project_chats import ProjectChatsCollection
@@ -59,34 +46,11 @@ from .errors import (
     RemoteNotFound,
     UnsupportedOperationError,
 )
-from .facade import (
-    ChatGPTProvider,
-    ClaudeProvider,
-    GeminiProvider,
-    GrokProvider,
-)
 from .models import Capability
-from .provider_type import ProviderType
-from .providers.chatgpt.collections import ChatGPTProjectsCollection
-from .providers.chatgpt.errors import (
-    ChatGPTWebError,
-    SentinelCompatibilityError,
-)
-from .resources.attachments import Attachment, Attachments
-from .resources.chat import Chat
-from .resources.message import Message
-from .resources.operation import MessageOperation, OperationHooks
-from .resources.project import Project
-from .resources.response import Response
-from .session import Provider
-from .sync import (
+from .provider import (
+    Provider,
     SyncChat,
-    SyncChatGPTProjectsCollection,
-    SyncChatGPTProvider,
     SyncChatsCollection,
-    SyncClaudeProvider,
-    SyncGeminiProvider,
-    SyncGrokProvider,
     SyncMessageOperation,
     SyncMessagesCollection,
     SyncModelsCollection,
@@ -95,8 +59,28 @@ from .sync import (
     SyncProjectInstruction,
     SyncProjectResources,
     SyncProjectsCollection,
-    SyncProvider,
 )
+from .provider_type import ProviderType
+from .providers.chatgpt.catalogs import ChatGPTModels
+from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
+from .providers.chatgpt.errors import ChatGPTWebError, SentinelCompatibilityError
+from .providers.chatgpt.provider import AsyncChatGPTProvider, ChatGPTProvider
+from .providers.chatgpt.resources import AsyncChatGPTChat
+from .providers.claude.catalogs import ClaudeModels
+from .providers.claude.provider import AsyncClaudeProvider, ClaudeProvider
+from .providers.claude.resources import AsyncClaudeChat
+from .providers.gemini.catalogs import GeminiModels
+from .providers.gemini.provider import AsyncGeminiProvider, GeminiProvider
+from .providers.gemini.resources import AsyncGeminiChat
+from .providers.grok.catalogs import GrokModels
+from .providers.grok.provider import AsyncGrokProvider, GrokProvider
+from .providers.grok.resources import AsyncGrokChat
+from .resources.attachments import Attachment, Attachments
+from .resources.chat import Chat
+from .resources.message import Message
+from .resources.operation import MessageOperation, OperationHooks
+from .resources.project import Project
+from .resources.response import Response
 
 __version__ = "1.3.0b0"
 
@@ -106,6 +90,18 @@ __all__ = [
     "CredentialStore",
     "FileCredentialStore",
     "MemoryCredentialStore",
+    "BaseProvider",
+    "Provider",
+    "AsyncProvider",
+    "ProviderType",
+    "ChatGPTProvider",
+    "AsyncChatGPTProvider",
+    "ClaudeProvider",
+    "AsyncClaudeProvider",
+    "GeminiProvider",
+    "AsyncGeminiProvider",
+    "GrokProvider",
+    "AsyncGrokProvider",
     "Capability",
     "ChatGPTModels",
     "ClaudeModels",
@@ -122,6 +118,7 @@ __all__ = [
     "ProjectsCollection",
     "ProjectChatsCollection",
     "MessagesCollection",
+    "AsyncChatGPTProjectsCollection",
     "Artifact",
     "ArtifactDiscovered",
     "Attribution",
@@ -154,16 +151,20 @@ __all__ = [
     "RemoteNotFound",
     "SentinelCompatibilityError",
     "UnsupportedOperationError",
-    "ChatGPTProvider",
-    "ClaudeProvider",
-    "GeminiProvider",
-    "GrokProvider",
-    "SyncProvider",
-    "SyncChatGPTProvider",
-    "SyncChatGPTProjectsCollection",
-    "SyncClaudeProvider",
-    "SyncGeminiProvider",
-    "SyncGrokProvider",
+    "Attachment",
+    "Attachments",
+    "Chat",
+    "AsyncChatGPTChat",
+    "AsyncClaudeChat",
+    "AsyncGeminiChat",
+    "AsyncGrokChat",
+    "Message",
+    "MessageOperation",
+    "OperationHooks",
+    "OperationState",
+    "Project",
+    "Response",
+    "ProviderTelemetry",
     "SyncChat",
     "SyncChatsCollection",
     "SyncMessageOperation",
@@ -172,19 +173,6 @@ __all__ = [
     "SyncProject",
     "SyncProjectChatsCollection",
     "SyncProjectInstruction",
-    "SyncProjectsCollection",
     "SyncProjectResources",
-    "ProviderType",
-    "ChatGPTProjectsCollection",
-    "Attachment",
-    "Attachments",
-    "Chat",
-    "Message",
-    "MessageOperation",
-    "OperationHooks",
-    "OperationState",
-    "Project",
-    "Response",
-    "Provider",
-    "ProviderTelemetry",
+    "SyncProjectsCollection",
 ]

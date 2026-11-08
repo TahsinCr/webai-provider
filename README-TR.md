@@ -21,13 +21,13 @@ Kimlik bilgilerini işletim sisteminin varsayılan tarayıcısından alabilir ve
 ```python
 import asyncio
 
-from webaiprovider import Account, OutputDelta, Provider, ProviderType
+from webaiprovider import Account, AsyncChatGPTProvider, OutputDelta, ProviderType
 
 
 async def main() -> None:
     account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
 
-    async with Provider(account, type=ProviderType.CHATGPT) as provider:
+    async with AsyncChatGPTProvider(account) as provider:
         models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
@@ -45,24 +45,24 @@ asyncio.run(main())
 
 `browser` verilmezse `Account.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `Account.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
 
-Bloklayan kodlarda aynı hesabı `SyncProvider` ile kullanabilirsiniz. Sağlayıcı açık kaldığı sürece tek bir event loop portalı kullanılır:
+Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Sağlayıcı açık kaldığı sürece tek bir event loop portalı kullanılır:
 
 ```python
-from webaiprovider import Account, ProviderType, SyncProvider
+from webaiprovider import Account, ChatGPTProvider, ProviderType
 
 account = Account.from_browser(ProviderType.CHATGPT)
-with SyncProvider(account, type=ProviderType.CHATGPT) as provider:
+with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Hızlı başlangıç")
     response = chat.messages.create("Merhaba!").start()
 ```
 
 ## Temel API
 
-- `Account` yalnızca kimlik bilgilerini saklar. `Provider(account, type=ProviderType.CHATGPT)` asenkron oturumu, `SyncProvider` ise bloklayan eşdeğerini yönetir. İkisi de bağlam yöneticisiyle güvenli biçimde kapatılır.
+- `BaseProvider`, ortak hesap ve sağlayıcı kimliğini taşır. Asenkron işlemlerde `AsyncChatGPTProvider` (ve diğer sağlayıcıların karşılık gelen sınıfı), bloklayan işlemlerde `ChatGPTProvider` kullanılır; `AsyncProvider` ve `Provider`, `ProviderType` ile ortak kullanım içindir.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir.
 - `provider.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `provider.models.refresh()` kullanın. `find()`, `search()` ve `get()` bu katalogda seçim yapar.
 - `chat.messages.create()`, `edit()` ve `retry()` birer `MessageOperation` döndürür. Akış olayları için `operation.stream()` kullanın veya tamamlanmış yanıtı `operation.wait()` ile alın. Bu yöntemler aynı gönderim işlemini paylaşır.
-- Proje, ek, yeniden deneme, düzenleme ve dallandırma özellikleri sağlayıcıya göre değişir. Desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
+- Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
 
 Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri sunar. Hesaptan keşfedilen modeller, o hesap için yetkili kaynaktır; aboneliğe ve sağlayıcı değişikliklerine göre farklılık gösterebilir.
 

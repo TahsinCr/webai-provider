@@ -29,19 +29,3 @@ class ProjectChatsCollection(QueryableCollection[Chat]):
             self._items.extend(chat for chat in page.items if chat.id not in known)
         self.next_cursor = page.next_cursor
         return page
-
-    async def add(self, chat: Chat | str) -> Chat:
-        session = self.project.session
-        if session is None:
-            raise ProviderError("Project is not attached to an open provider")
-        target = chat if isinstance(chat, Chat) else session.chats.get(chat)
-        return await session.chats.move(target, self.project)
-
-    async def remove(self, chat: Chat | str) -> Chat:
-        session = self.project.session
-        if session is None:
-            raise ProviderError("Project is not attached to an open provider")
-        target = chat if isinstance(chat, Chat) else self.get(chat)
-        if target.project_id != (self.project.remote_id or self.project.id):
-            raise ValueError("Chat does not belong to this project")
-        return await session.chats.move(target, None)

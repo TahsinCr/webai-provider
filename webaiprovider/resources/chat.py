@@ -3,22 +3,24 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ..errors import ProviderError
+from ..errors import ProviderError, UnsupportedOperationError
 
 if TYPE_CHECKING:
-    from ..collections.messages import MessagesCollection
+    from ..async_provider import AsyncProvider
+    from ..provider import Provider, SyncChat, SyncProject
     from ..resources.message import Message
-    from ..resources.project import Project
-    from ..session import Provider
+    from .project import Project
 
 
 class Chat:
+    _messages_collection_type = None
+
     def __init__(
         self,
         id: str | None = None,
         title: str = "",
         *,
-        session: Provider | None = None,
+        session: AsyncProvider | None = None,
         remote_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -30,7 +32,7 @@ class Chat:
 
         from ..collections.messages import MessagesCollection
 
-        self.messages: MessagesCollection = MessagesCollection(self)
+        self.messages = (self._messages_collection_type or MessagesCollection)(self)
 
     def get(self, message_id: str) -> Message:
         return self.messages.get(message_id)
@@ -58,21 +60,56 @@ class Chat:
                 raise ProviderError("Chat is not attached to an open provider")
             await self.session._require_bridge().delete_chat(self)
 
-    async def move_to(self, project: Project | str | None) -> Chat:
-        if self.session is None:
-            raise ProviderError("Chat is not attached to a provider session")
-        return await self.session.chats.move(self, project)
+    def __repr__(self) -> str:
+        return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
 
-    async def branch(self, message_id: str, *, title: str | None = None) -> Chat:
+
+class AsyncBranchableChat(Chat):
+    async def branch(self: Chat, message_id: str, *, title: str | None = None) -> Chat:
         if self.remote_id:
             if self.session is None:
                 raise ProviderError("Chat is not attached to an open provider")
             return await self.session._require_bridge().branch_chat(self, message_id, title=title)
-        return Chat(
+        return type(self)(
             title=title or f"{self.title} (Branch)",
             session=self.session,
             project_id=self.project_id,
         )
 
-    def __repr__(self) -> str:
-        return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
+
+class AsyncMovableChat(Chat):
+    async def move_to(self: Chat, project: Project | str | None) -> Chat:
+        if self.session is None:
+            raise ProviderError("Chat is not attached to a provider session")
+        if project is not None and not isinstance(project, str):
+            if project.session is not self.session:
+                raise ValueError("Project and chat must belong to the same provider session")
+            if self.remote_id and not project.remote_id:
+                raise UnsupportedOperationError(
+                    "A remote chat cannot be moved into a project that is not persisted remotely"
+                )
+            project_id = project.remote_id or project.id
+        else:
+            project_id = str(project) if project is not None else None
+        if self.remote_id:
+            await self.session._require_bridge().move_chat(self, project_id)
+        self.project_id = project_id
+        return self
+
+
+class _SyncChatCapability:
+    _owner: Provider
+    _resource: Any
+
+
+class BranchableChat(_SyncChatCapability):
+    def branch(self, message_id: str, *, title: str | None = None) -> SyncChat:
+        chat = self._owner._call(self._resource.branch(message_id, title=title))
+        return self._owner._wrap_chat(chat)
+
+
+class MovableChat(_SyncChatCapability):
+    def move_to(self, project: SyncProject | Project | str | None) -> SyncChat:
+        target = getattr(project, "_resource", project)
+        chat = self._owner._call(self._resource.move_to(target))
+        return self._owner._wrap_chat(chat)

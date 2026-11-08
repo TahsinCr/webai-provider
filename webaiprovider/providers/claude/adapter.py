@@ -4,16 +4,6 @@ import asyncio
 import time
 
 from ...accounts import delete_session, session_exists
-from ...base import (
-    Capability,
-    ProjectEditing,
-    ProviderAdapter,
-    _ConversationBound,
-    _MessageMetadata,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-)
 from ...errors import AccountPaused, FeatureUnavailable
 from ...models import (
     Choice,
@@ -25,12 +15,22 @@ from ...models import (
     SessionStatus,
 )
 from ...utils.timing import current_send_timing
+from ..base import (
+    Capability,
+    ProjectEditing,
+    ProviderAdapter,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
+)
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .transport import ClaudeProjectEditor, ClaudeTransport
 
 
-class ClaudeProvider(ProjectEditing, ProviderAdapter):
+class ClaudeAdapter(ProjectEditing, ProviderAdapter):
     id = "claude"
     capabilities = frozenset(
         {

@@ -12,17 +12,19 @@ from webaiprovider import (
     Account,
     AmbiguousMatchError,
     Artifact,
+    AsyncChatGPTProvider,
+    AsyncClaudeProvider,
+    AsyncGeminiProvider,
+    AsyncGrokProvider,
+    AsyncProvider,
     Attachment,
     Attachments,
     ChatGPTModels,
-    ChatGPTProjectsCollection,
+    AsyncChatGPTProjectsCollection,
     ChatGPTProvider,
     ClaudeModels,
-    ClaudeProvider,
     GeminiModels,
-    GeminiProvider,
     GrokModels,
-    GrokProvider,
     Message,
     MessageOperation,
     Models,
@@ -34,16 +36,14 @@ from webaiprovider import (
     Response,
     SelectionResolver,
     Source,
-    SyncChatGPTProvider,
-    SyncProvider,
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.base import _TextDelta
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.providers.base import _TextDelta
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
@@ -51,10 +51,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self,
         account: Account,
         bridge: ProviderBridge | None = None,
-    ) -> tuple[Provider, ProviderBridge]:
+        provider_type: type[AsyncProvider] = AsyncProvider,
+    ) -> tuple[AsyncProvider, ProviderBridge]:
         if bridge is None:
             bridge = AsyncMock(spec=ProviderBridge)
-        provider = Provider(account)
+        provider = provider_type(account)
         with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
             await provider.open()
         self.addAsyncCleanup(provider.close)
@@ -65,7 +66,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(importlib.util.find_spec("webai_provider"))
         self.assertIs(webaiprovider.Account, Account)
         self.assertIs(webaiprovider.Message, Message)
-        self.assertIs(webaiprovider.ChatGPTProvider, ChatGPTProvider)
+        self.assertIs(webaiprovider.AsyncChatGPTProvider, AsyncChatGPTProvider)
         self.assertIs(webaiprovider.SelectionResolver, SelectionResolver)
 
     def test_account_creation_and_session(self) -> None:
@@ -75,8 +76,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertIn("session_token", acc.store().read())
         self.assertFalse(hasattr(acc, "connect"))
 
-        provider = Provider(acc, type=ProviderType.CHATGPT)
-        self.assertIsInstance(provider, Provider)
+        provider = AsyncProvider(acc, type=ProviderType.CHATGPT)
+        self.assertIsInstance(provider, AsyncProvider)
         self.assertEqual(provider.provider, "chatgpt")
         self.assertIsNotNone(provider.chats)
         self.assertIsNotNone(provider.projects)
@@ -187,7 +188,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_count, 1)
 
     async def test_message_send_requires_provider_session(self) -> None:
-        provider = Provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
+        provider = AsyncProvider(Account.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
 
         with self.assertRaisesRegex(ProviderError, "No provider session is attached"):
@@ -263,13 +264,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         op = chat.messages.create("Hello test")
         self.assertEqual(chat.get(op.message.id).content, "Hello test")
 
-        mock_bridge.branch_chat.return_value = MagicMock(
-            remote_id="branch-789", title="Branch Chat"
-        )
-        branched = await chat.branch("msg-999")
-        mock_bridge.branch_chat.assert_awaited_once_with(chat, "msg-999", title=None)
-        self.assertIsNotNone(branched)
-
         await chat.delete()
         mock_bridge.delete_chat.assert_awaited_once_with(chat)
 
@@ -339,8 +333,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         mock_bridge.delete_project.assert_awaited_once_with(project)
 
     async def test_message_branch_retry_edit(self) -> None:
-        acc = Account.from_cookies("grok", {"sso": "grok-sso"})
-        session, mock_bridge = await self.open_provider(acc)
+        acc = Account.from_cookies("chatgpt", {"session_token": "token"})
+        session, mock_bridge = await self.open_provider(acc, provider_type=AsyncChatGPTProvider)
         chat = await session.chats.create()
         chat.remote_id = "remote-chat-id"
 
@@ -367,28 +361,55 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_op.message.metadata.get("action"), "edit")
 
         mock_bridge.branch_chat.return_value = MagicMock(remote_id="branch-chat-id")
-        branched_chat = await msg.branch("Dallanmış Sohbet")
-        mock_bridge.branch_chat.assert_awaited_once_with(
-            chat, "msg-orig-1", title="Dallanmış Sohbet"
-        )
+        branched_chat = await chat.branch(msg.id, title="Branch chat")
+        mock_bridge.branch_chat.assert_awaited_once_with(chat, "msg-orig-1", title="Branch chat")
         self.assertIsNotNone(branched_chat)
 
     def test_provider_facades(self) -> None:
-        p1 = ChatGPTProvider(Account.from_cookies("chatgpt", {"token": "t1"}))
+        from webaiprovider.collections.chats import ChatsCollection
+        from webaiprovider.collections.messages import MessagesCollection
+        from webaiprovider.collections.project_chats import ProjectChatsCollection
+        from webaiprovider.provider import SyncProjectChatsCollection
+        from webaiprovider.providers.chatgpt import ChatGPTChat
+        from webaiprovider.providers.claude import ClaudeChat
+        from webaiprovider.providers.gemini import GeminiChat
+        from webaiprovider.providers.grok import GrokChat
+        from webaiprovider.resources.chat import Chat
+
+        self.assertFalse(hasattr(Chat, "branch"))
+        self.assertFalse(hasattr(Chat, "move_to"))
+        self.assertFalse(hasattr(Message, "branch"))
+        self.assertFalse(hasattr(ChatsCollection, "branch"))
+        self.assertFalse(hasattr(ChatsCollection, "move"))
+        self.assertFalse(hasattr(MessagesCollection, "branch"))
+        self.assertFalse(hasattr(ProjectChatsCollection, "add"))
+        self.assertFalse(hasattr(ProjectChatsCollection, "remove"))
+        self.assertFalse(hasattr(SyncProjectChatsCollection, "add"))
+        self.assertFalse(hasattr(SyncProjectChatsCollection, "remove"))
+        self.assertTrue(hasattr(ChatGPTChat, "branch"))
+        self.assertTrue(hasattr(ChatGPTChat, "move_to"))
+        self.assertTrue(hasattr(ClaudeChat, "move_to"))
+        self.assertFalse(hasattr(ClaudeChat, "branch"))
+        self.assertTrue(hasattr(GeminiChat, "branch"))
+        self.assertFalse(hasattr(GeminiChat, "move_to"))
+        self.assertTrue(hasattr(GrokChat, "move_to"))
+        self.assertFalse(hasattr(GrokChat, "branch"))
+
+        p1 = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"token": "t1"}))
         self.assertEqual(p1.type, ProviderType.CHATGPT)
         self.assertEqual(p1.account.provider, "chatgpt")
-        self.assertIsInstance(p1.projects, ChatGPTProjectsCollection)
+        self.assertIsInstance(p1.projects, AsyncChatGPTProjectsCollection)
 
-        p2 = ClaudeProvider(Account.from_cookies("claude", {"token": "t2"}))
+        p2 = AsyncClaudeProvider(Account.from_cookies("claude", {"token": "t2"}))
         self.assertEqual(p2.type, ProviderType.CLAUDE)
 
-        p3 = GeminiProvider(Account.from_cookies("gemini", {"token": "t3"}))
+        p3 = AsyncGeminiProvider(Account.from_cookies("gemini", {"token": "t3"}))
         self.assertEqual(p3.type, ProviderType.GEMINI)
 
-        p4 = GrokProvider(Account.from_cookies("grok", {"token": "t4"}))
+        p4 = AsyncGrokProvider(Account.from_cookies("grok", {"token": "t4"}))
         self.assertEqual(p4.type, ProviderType.GROK)
         with self.assertRaisesRegex(ValueError, "must match"):
-            Provider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
+            AsyncProvider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
 
     async def test_provider_open_is_explicit_idempotent_and_closes_owned_bridge(self) -> None:
         account = Account.from_cookies("gemini", {"cookie": "test"})
@@ -396,7 +417,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         bridge.open = AsyncMock()
         bridge.close = AsyncMock()
         with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge) as create_bridge:
-            provider = Provider(account, type=ProviderType.GEMINI)
+            provider = AsyncProvider(account, type=ProviderType.GEMINI)
             self.assertIs(await provider.open(), provider)
             self.assertIs(await provider.open(), provider)
             create_bridge.assert_called_once_with(account)
@@ -408,7 +429,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         bridge = MagicMock(spec=ProviderBridge)
         bridge.create_chatgpt_project = AsyncMock()
-        provider = ChatGPTProvider(account)
+        provider = AsyncChatGPTProvider(account)
         with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
             await provider.open()
 
@@ -421,7 +442,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_sync_provider_rejects_blocking_inside_running_loop(self) -> None:
-        provider = SyncProvider(Account.from_cookies("chatgpt", {"cookie": "test"}))
+        provider = Provider(Account.from_cookies("chatgpt", {"cookie": "test"}))
         with self.assertRaisesRegex(RuntimeError, "cannot block an event loop"):
             provider.open()
         provider.close()
@@ -468,15 +489,18 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_provider_instantiation_for_all_backends(self) -> None:
         providers = (
             (
-                ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"})),
+                AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "token-1"})),
                 "chatgpt",
             ),
             (
-                GeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"})),
+                AsyncGeminiProvider(Account.from_cookies("gemini", {"__Secure-1PSID": "token-2"})),
                 "gemini",
             ),
-            (ClaudeProvider(Account.from_cookies("claude", {"sessionKey": "token-3"})), "claude"),
-            (GrokProvider(Account.from_cookies("grok", {"sso": "token-4"})), "grok"),
+            (
+                AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "token-3"})),
+                "claude",
+            ),
+            (AsyncGrokProvider(Account.from_cookies("grok", {"sso": "token-4"})), "grok"),
         )
         for provider, provider_id in providers:
             bridge = ProviderBridge(provider.account)
@@ -490,7 +514,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_preserves_typed_provider_errors(self) -> None:
         from webaiprovider.errors import RateLimited
 
-        p = GrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
+        p = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
         chat = await p.chats.create()
         op = chat.messages.create("Hello")
 
@@ -510,7 +534,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await p.close()
 
     async def test_provider_ask_convenience_method(self) -> None:
-        p = ChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
+        p = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
         mock_bridge = MagicMock(spec=ProviderBridge)
 
         async def fake_stream(_op):
@@ -628,7 +652,7 @@ class TestSyncApi(unittest.TestCase):
         bridge = Bridge()
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
-            with SyncChatGPTProvider(account) as provider:
+            with ChatGPTProvider(account) as provider:
                 project = provider.projects.create("Notes", memory_share=False)
                 chat = provider.chats.create("Draft", project=project)
                 operation = chat.messages.create("hello")

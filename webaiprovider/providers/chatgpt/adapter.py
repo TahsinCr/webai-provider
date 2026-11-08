@@ -10,18 +10,6 @@ from contextlib import contextmanager
 from typing import Callable
 
 from ...accounts import delete_session, session_exists
-from ...base import (
-    Capability,
-    ProjectEditing,
-    ProviderAdapter,
-    _ConversationBound,
-    _MessageMetadata,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-    confirm_deleted,
-)
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
@@ -45,6 +33,18 @@ from ...models import (
     sources_from,
 )
 from ...utils.timing import current_send_timing
+from ..base import (
+    Capability,
+    ProjectEditing,
+    ProviderAdapter,
+    _ConversationBound,
+    _MessageMetadata,
+    _ProviderRequest,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
+    confirm_deleted,
+)
 from .client import ChatGPTClient
 from .discovery import project_id
 from .errors import ChatGPTWebError
@@ -57,7 +57,7 @@ class _Stopped(Exception):
     pass
 
 
-class ChatGPTProvider(ProjectEditing, ProviderAdapter):
+class ChatGPTAdapter(ProjectEditing, ProviderAdapter):
     id = "chatgpt"
     capabilities = frozenset(
         {

@@ -5,7 +5,6 @@ import os
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from .base import ProviderAdapter
 from .contracts import (
     Artifact,
     EffortRef,
@@ -25,15 +24,16 @@ from .models import (
 from .models import (
     Resource as ProviderResource,
 )
+from .providers.base import ProviderAdapter
 from .utils.files import DownloadSource, NativeDownloadClient
 
 if TYPE_CHECKING:
     from .accounts.account import Account
+    from .async_provider import AsyncProvider
     from .resources.chat import Chat
     from .resources.message import Message
     from .resources.operation import MessageOperation
     from .resources.project import Project
-    from .session import Provider
 
 
 def _resource_record(resource: ProviderResource) -> dict[str, Any]:
@@ -47,10 +47,8 @@ def _resource_record(resource: ProviderResource) -> dict[str, Any]:
     }
 
 
-def _chat_from_conversation(item: Conversation, session: Provider) -> Chat:
-    from .resources.chat import Chat
-
-    return Chat(
+def _chat_from_conversation(item: Conversation, session: AsyncProvider) -> Chat:
+    return session._chat_type(
         title=item.title,
         remote_id=item.origin.remote_id,
         project_id=item.project_id,
@@ -76,24 +74,24 @@ class ProviderBridge:
         store = self.account.store()
 
         if provider_name == "chatgpt":
-            from .providers.chatgpt.adapter import ChatGPTProvider
+            from .providers.chatgpt.adapter import ChatGPTAdapter
             from .providers.chatgpt.session import BrowserSession, SessionPaths
 
             paths = SessionPaths(store)
             session = BrowserSession(paths)
-            self._provider_instance = ChatGPTProvider(session, account_id=self.account.id)
+            self._provider_instance = ChatGPTAdapter(session, account_id=self.account.id)
         elif provider_name == "gemini":
-            from .providers.gemini.adapter import GeminiProvider
+            from .providers.gemini.adapter import GeminiAdapter
 
-            self._provider_instance = GeminiProvider(store, account_id=self.account.id)
+            self._provider_instance = GeminiAdapter(store, account_id=self.account.id)
         elif provider_name == "claude":
-            from .providers.claude.adapter import ClaudeProvider
+            from .providers.claude.adapter import ClaudeAdapter
 
-            self._provider_instance = ClaudeProvider(store, account_id=self.account.id)
+            self._provider_instance = ClaudeAdapter(store, account_id=self.account.id)
         elif provider_name == "grok":
-            from .providers.grok.adapter import GrokProvider
+            from .providers.grok.adapter import GrokAdapter
 
-            self._provider_instance = GrokProvider(store, account_id=self.account.id)
+            self._provider_instance = GrokAdapter(store, account_id=self.account.id)
         else:
             raise UnsupportedOperationError(f"Unsupported provider: {provider_name}")
 
@@ -149,7 +147,7 @@ class ProviderBridge:
         self._models_cache = tuple(result)
         return list(self._models_cache)
 
-    async def list_chats(self, session: Provider) -> list[Chat]:
+    async def list_chats(self, session: AsyncProvider) -> list[Chat]:
         provider = self._get_provider()
         chats_data = await provider.list_chats()
         if not isinstance(chats_data, Page) or any(
@@ -214,10 +212,8 @@ class ProviderBridge:
             raise UnsupportedOperationError(
                 "Cannot branch a conversation that has not been persisted remotely"
             )
-        from .resources.chat import Chat
-
         branched = await self._get_provider().branch_chat(chat.remote_id, message_id)
-        return Chat(
+        return type(chat)(
             title=title or branched.title,
             remote_id=branched.origin.remote_id,
             project_id=branched.project_id,
@@ -228,14 +224,12 @@ class ProviderBridge:
         if chat.remote_id:
             await self._get_provider().move_chat(chat.remote_id, project_id)
 
-    async def list_projects(self, session: Provider) -> list[Project]:
-        from .resources.project import Project
-
+    async def list_projects(self, session: AsyncProvider) -> list[Project]:
         result: list[Project] = []
         for native in (await self._get_provider().list_projects()).items:
             if not isinstance(native, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
-            project = Project(
+            project = session._project_type(
                 title=native.name,
                 remote_id=native.origin.remote_id,
                 session=session,
@@ -267,7 +261,7 @@ class ProviderBridge:
     ) -> None:
         if self.account.provider != "chatgpt":
             raise UnsupportedOperationError("ChatGPT project settings require a ChatGPT provider")
-        from .providers.chatgpt.adapter import ChatGPTProvider as ChatGPTAdapter
+        from .providers.chatgpt.adapter import ChatGPTAdapter as ChatGPTAdapter
 
         adapter = self._get_provider()
         if not isinstance(adapter, ChatGPTAdapter):

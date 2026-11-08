@@ -2,9 +2,9 @@
 
 import re
 
-from ...base import MessageAction
 from ...errors import ProviderError
 from ...models import Content, Conversation, Message, Origin, Project, Resource, sources_from
+from ..base import MessageAction
 
 
 def _text(value):

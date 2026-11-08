@@ -6,7 +6,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Mapping, TypeVar, cast
 
 if TYPE_CHECKING:
-    from .catalogs.policies import Models
+    from .catalogs import Models
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class EffortSet:
 
     @classmethod
     def find(cls, query: str) -> EffortRef:
-        from .catalogs.resolver import SelectionResolver
+        from .catalogs import SelectionResolver
 
         result = SelectionResolver.resolve(
             query,
@@ -118,8 +118,7 @@ class ModelRef(Generic[E]):
         if effort is None or (isinstance(effort, str) and effort.casefold() == "auto"):
             return ModelSelection(self)
 
-        from .catalogs.policies import Models
-        from .catalogs.resolver import SelectionResolver
+        from .catalogs import Models, SelectionResolver
 
         if isinstance(effort, Models) and effort is Models.AUTO:
             return ModelSelection(self)

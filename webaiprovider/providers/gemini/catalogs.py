@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ..contracts import EffortRef, EffortSet, ModelRef
-from .base import StaticModelCatalog, effort_ref
+from ...catalogs import StaticModelCatalog, effort_ref
+from ...contracts import EffortRef, EffortSet, ModelRef
 
 
 class GeminiFlashLiteEfforts(EffortSet):

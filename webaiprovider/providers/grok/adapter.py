@@ -5,17 +5,6 @@ import time
 from io import StringIO
 
 from ...accounts import delete_session, session_exists
-from ...base import (
-    Capability,
-    MessageAction,
-    ProjectEditing,
-    ProviderAdapter,
-    _ConversationBound,
-    _MessageMetadata,
-    _ReplaceText,
-    _ResponseComplete,
-    _TextDelta,
-)
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...models import (
@@ -29,6 +18,17 @@ from ...models import (
     sources_from,
 )
 from ...utils.attachments import GROK_ATTACHMENTS
+from ..base import (
+    Capability,
+    MessageAction,
+    ProjectEditing,
+    ProviderAdapter,
+    _ConversationBound,
+    _MessageMetadata,
+    _ReplaceText,
+    _ResponseComplete,
+    _TextDelta,
+)
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .transport import GrokProjectEditor, GrokTransport, remote_id
 
@@ -43,7 +43,7 @@ _MODEL_MODES = {
 }
 
 
-class GrokProvider(ProjectEditing, ProviderAdapter):
+class GrokAdapter(ProjectEditing, ProviderAdapter):
     id = "grok"
     capabilities = frozenset(
         {

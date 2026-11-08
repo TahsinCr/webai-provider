@@ -5,13 +5,9 @@ import unittest
 from unittest.mock import AsyncMock, call, patch
 
 from webaiprovider.accounts import Account
-from webaiprovider.base import ProviderAdapter
+from webaiprovider.async_provider import AsyncProvider
 from webaiprovider.bridge import ProviderBridge
 from webaiprovider.catalogs import (
-    ChatGPTModels,
-    ClaudeModels,
-    GeminiModels,
-    GrokModels,
     Models,
     ModelsCollection,
     SelectionResolver,
@@ -19,9 +15,12 @@ from webaiprovider.catalogs import (
 )
 from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
+from webaiprovider.providers.base import ProviderAdapter
+from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels
 from webaiprovider.providers.chatgpt.discovery import model_catalog
-from webaiprovider.providers.claude.catalog import selector_catalog
-from webaiprovider.session import Provider
+from webaiprovider.providers.claude.catalogs import ClaudeModels, selector_catalog
+from webaiprovider.providers.gemini.catalogs import GeminiModels
+from webaiprovider.providers.grok.catalogs import GrokModels
 
 
 def _claude_selector_fixture() -> dict:
@@ -207,7 +206,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         bridge._provider_instance = adapter
         bridge.open = AsyncMock()
         bridge.close = AsyncMock()
-        provider = Provider(account)
+        provider = AsyncProvider(account)
         with patch("webaiprovider.bridge.ProviderBridge", return_value=bridge):
             await provider.open()
         self.addAsyncCleanup(provider.close)

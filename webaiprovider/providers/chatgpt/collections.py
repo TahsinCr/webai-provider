@@ -4,7 +4,7 @@ from ...collections.projects import ProjectsCollection
 from ...resources.project import Project
 
 
-class ChatGPTProjectsCollection(ProjectsCollection):
+class AsyncChatGPTProjectsCollection(ProjectsCollection):
     async def create(
         self,
         title: str,
@@ -13,7 +13,7 @@ class ChatGPTProjectsCollection(ProjectsCollection):
         memory_share: bool = True,
     ) -> Project:
         """Create a project with shared default memory or project-only memory."""
-        project = Project(title=title, session=self.session)
+        project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
         await self.session._require_bridge().create_chatgpt_project(

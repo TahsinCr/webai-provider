@@ -1,7 +1,7 @@
 from typing import ClassVar
 
-from ..contracts import EffortRef, EffortSet, ModelRef
-from .base import StaticModelCatalog
+from ...catalogs import StaticModelCatalog
+from ...contracts import EffortRef, EffortSet, ModelRef
 
 
 class GPT56ThinkingEfforts(EffortSet):

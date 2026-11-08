@@ -794,7 +794,7 @@ class ChatGPTClient:
         body = self.create_conversation_body(conversation, prompt, attachments)
         submitted_message_id = body["messages"][0]["id"]
         if action:
-            from ...base import MessageAction
+            from ..base import MessageAction
 
             items = (conversation or {}).get("messages", [])
             target_index = next(

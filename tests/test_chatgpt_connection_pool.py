@@ -3,8 +3,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from webaiprovider.base import _ConversationBound, _ProviderRequest, _TextDelta
-from webaiprovider.providers.chatgpt.adapter import ChatGPTProvider
+from webaiprovider.providers.base import _ConversationBound, _ProviderRequest, _TextDelta
+from webaiprovider.providers.chatgpt.adapter import ChatGPTAdapter
 
 
 class PersistentClient:
@@ -30,7 +30,7 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_reuses_prepared_client_and_discards_it_after_cancel(self):
         PersistentClient.instances.clear()
         with patch("webaiprovider.providers.chatgpt.adapter.ChatGPTClient", PersistentClient):
-            provider = ChatGPTProvider(object(), client_factory=PersistentClient)
+            provider = ChatGPTAdapter(object(), client_factory=PersistentClient)
 
         with provider._client_scope() as prepared_client:
             pass

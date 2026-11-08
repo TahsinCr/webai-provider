@@ -2,42 +2,53 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar
 
 from .accounts.account import Account
-from .catalogs.policies import Models
+from .async_provider import AsyncProvider
+from .base import BaseProvider
+from .catalogs import Models
 from .contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from .core.bridges import SyncPortalBridge
 from .core.state import OperationState
 from .core.telemetry import ProviderTelemetry
 from .models import Page
 from .provider_type import ProviderType
-from .providers.chatgpt.collections import ChatGPTProjectsCollection
 from .resources.chat import Chat
 from .resources.message import Message
 from .resources.operation import MessageOperation
 from .resources.project import Project
 from .resources.response import Response
-from .session import Provider
 
 T = TypeVar("T")
 U = TypeVar("U")
 
 
-class SyncProvider:
-    """Blocking façade over the async provider, backed by one persistent event loop."""
+class Provider(BaseProvider):
+    """Synchronous provider API backed by one persistent async runtime."""
+
+    async_provider_type = AsyncProvider
+    chat_wrapper_type = None
+    project_wrapper_type = None
+    projects_collection_type = None
+    models_collection_type = None
 
     def __init__(self, account: Account, *, type: ProviderType | str | None = None) -> None:
-        self.account = account
-        self.type = ProviderType.parse(type if type is not None else account.provider)
-        self._provider = Provider(account, type=self.type)
+        super().__init__(account, type=type)
+        self._provider = self.async_provider_type(account, type=self.type)
         self._portal = SyncPortalBridge()
         self._portal_started = False
         self._opened = False
         self._closed = False
         self.chats = SyncChatsCollection(self)
-        self.projects = SyncProjectsCollection(self)
-        self.models = SyncModelsCollection(self)
+        self.projects = (self.projects_collection_type or SyncProjectsCollection)(self)
+        self.models = (self.models_collection_type or SyncModelsCollection)(self)
+
+    def _wrap_chat(self, resource: Chat) -> SyncChat:
+        return (self.chat_wrapper_type or SyncChat)(self, resource)
+
+    def _wrap_project(self, resource: Project) -> SyncProject:
+        return (self.project_wrapper_type or SyncProject)(self, resource)
 
     @property
     def telemetry(self) -> ProviderTelemetry:
@@ -56,12 +67,12 @@ class SyncProvider:
             if hasattr(coroutine, "close"):
                 coroutine.close()
             raise RuntimeError(
-                "Use Provider in async code; SyncProvider cannot block an event loop"
+                "Use AsyncProvider in async code; Provider cannot block an event loop"
             )
         self._portal_started = True
         return self._portal.call(coroutine)
 
-    def open(self) -> SyncProvider:
+    def open(self) -> Provider:
         if self._closed:
             raise RuntimeError("A closed provider cannot be reopened")
         if not self._opened:
@@ -89,18 +100,18 @@ class SyncProvider:
     ) -> Response:
         return self._call(self._provider.ask(prompt, model=model, attachments=attachments))
 
-    def __enter__(self) -> SyncProvider:
+    def __enter__(self) -> Provider:
         return self.open()
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
     def __repr__(self) -> str:
-        return f"<SyncProvider type={self.type.value!r} account={self.account.id!r}>"
+        return super().__repr__()
 
 
 class _SyncCollection(Generic[T, U]):
-    def __init__(self, owner: SyncProvider, collection: Any) -> None:
+    def __init__(self, owner: Provider, collection: Any) -> None:
         self._owner = owner
         self._collection = collection
 
@@ -127,10 +138,12 @@ class _SyncCollection(Generic[T, U]):
 
 
 class SyncChat:
-    def __init__(self, owner: SyncProvider, resource: Chat) -> None:
+    messages_collection_type = None
+
+    def __init__(self, owner: Provider, resource: Chat) -> None:
         self._owner = owner
         self._resource = resource
-        self.messages = SyncMessagesCollection(owner, resource)
+        self.messages = (self.messages_collection_type or SyncMessagesCollection)(owner, resource)
 
     @property
     def id(self) -> str:
@@ -155,30 +168,21 @@ class SyncChat:
         return self._owner._call(self._resource.download(target))
 
     def rename(self, title: str) -> SyncChat:
-        return SyncChat(self._owner, self._owner._call(self._resource.rename(title)))
+        return self._owner._wrap_chat(self._owner._call(self._resource.rename(title)))
 
     def delete(self) -> None:
         self._owner._call(self._resource.delete())
-
-    def branch(self, message_id: str, *, title: str | None = None) -> SyncChat:
-        chat = self._owner._call(self._resource.branch(message_id, title=title))
-        return SyncChat(self._owner, chat)
-
-    def move_to(self, project: SyncProject | Project | str | None) -> SyncChat:
-        target = project._resource if isinstance(project, SyncProject) else project
-        chat = self._owner._call(self._resource.move_to(target))
-        return SyncChat(self._owner, chat)
 
     def __repr__(self) -> str:
         return repr(self._resource)
 
 
 class SyncChatsCollection(_SyncCollection[Chat, SyncChat]):
-    def __init__(self, owner: SyncProvider) -> None:
+    def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.chats)
 
     def _wrap(self, item: Chat) -> SyncChat:
-        return SyncChat(self._owner, item)
+        return self._owner._wrap_chat(item)
 
     def refresh(self) -> list[SyncChat]:
         return [self._wrap(item) for item in self._owner._call(self._collection.refresh())]
@@ -198,27 +202,9 @@ class SyncChatsCollection(_SyncCollection[Chat, SyncChat]):
         target = chat._resource if isinstance(chat, SyncChat) else chat
         self._owner._call(self._collection.delete(target))
 
-    def branch(
-        self, chat: SyncChat | Chat | str, message_id: str, *, title: str | None = None
-    ) -> SyncChat:
-        target = chat._resource if isinstance(chat, SyncChat) else chat
-        return self._wrap(
-            self._owner._call(self._collection.branch(target, message_id, title=title))
-        )
-
-    def move(
-        self,
-        chat: SyncChat | Chat | str,
-        project: SyncProject | Project | str | None,
-    ) -> SyncChat:
-        target_chat = chat._resource if isinstance(chat, SyncChat) else chat
-        target_project = project._resource if isinstance(project, SyncProject) else project
-        moved = self._owner._call(self._collection.move(target_chat, target_project))
-        return self._wrap(moved)
-
 
 class SyncProject:
-    def __init__(self, owner: SyncProvider, resource: Project) -> None:
+    def __init__(self, owner: Provider, resource: Project) -> None:
         self._owner = owner
         self._resource = resource
         self.instruction = SyncProjectInstruction(owner, resource)
@@ -248,11 +234,11 @@ class SyncProject:
 
 
 class SyncProjectsCollection(_SyncCollection[Project, SyncProject]):
-    def __init__(self, owner: SyncProvider) -> None:
+    def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.projects)
 
     def _wrap(self, item: Project) -> SyncProject:
-        return SyncProject(self._owner, item)
+        return self._owner._wrap_project(item)
 
     def refresh(self) -> list[SyncProject]:
         return [self._wrap(item) for item in self._owner._call(self._collection.refresh())]
@@ -284,7 +270,7 @@ class SyncProjectsCollection(_SyncCollection[Project, SyncProject]):
 
 
 class SyncModelsCollection:
-    def __init__(self, owner: SyncProvider) -> None:
+    def __init__(self, owner: Provider) -> None:
         self._owner = owner
         self._collection = owner._provider.models
 
@@ -310,7 +296,7 @@ class SyncModelsCollection:
 
 
 class SyncMessagesCollection(_SyncCollection[Message, Message]):
-    def __init__(self, owner: SyncProvider, chat: Chat) -> None:
+    def __init__(self, owner: Provider, chat: Chat) -> None:
         super().__init__(owner, chat.messages)
 
     def refresh(self) -> list[Message]:
@@ -370,15 +356,9 @@ class SyncMessagesCollection(_SyncCollection[Message, Message]):
     def delete(self, message: Message | str) -> None:
         self._owner._call(self._collection.delete(message))
 
-    def branch(self, message_id: str, *, title: str | None = None) -> SyncChat:
-        return SyncChat(
-            self._owner,
-            self._owner._call(self._collection.branch(message_id, title=title)),
-        )
-
 
 class SyncMessageOperation:
-    def __init__(self, owner: SyncProvider, operation: MessageOperation) -> None:
+    def __init__(self, owner: Provider, operation: MessageOperation) -> None:
         self._owner = owner
         self._operation = operation
         self.hooks = operation.hooks
@@ -389,7 +369,7 @@ class SyncMessageOperation:
 
     @property
     def chat(self) -> SyncChat:
-        return SyncChat(self._owner, self._operation.chat)
+        return self._owner._wrap_chat(self._operation.chat)
 
     @property
     def response(self) -> Response | None:
@@ -424,7 +404,7 @@ class SyncMessageOperation:
 
 
 class SyncProjectInstruction:
-    def __init__(self, owner: SyncProvider, project: Project) -> None:
+    def __init__(self, owner: Provider, project: Project) -> None:
         self._owner = owner
         self._instruction = project.instruction
 
@@ -439,7 +419,7 @@ class SyncProjectInstruction:
 
 
 class SyncProjectResources(_SyncCollection[dict[str, Any], dict[str, Any]]):
-    def __init__(self, owner: SyncProvider, project: Project) -> None:
+    def __init__(self, owner: Provider, project: Project) -> None:
         super().__init__(owner, project.resources)
 
     def create(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
@@ -466,59 +446,14 @@ class SyncProjectResources(_SyncCollection[dict[str, Any], dict[str, Any]]):
 
 
 class SyncProjectChatsCollection(_SyncCollection[Chat, SyncChat]):
-    def __init__(self, owner: SyncProvider, project: Project) -> None:
+    def __init__(self, owner: Provider, project: Project) -> None:
         super().__init__(owner, project.chats)
         self.next_cursor: str | None = None
 
     def _wrap(self, item: Chat) -> SyncChat:
-        return SyncChat(self._owner, item)
+        return self._owner._wrap_chat(item)
 
     def refresh(self, cursor: str | None = None) -> Page[SyncChat]:
         page = self._owner._call(self._collection.refresh(cursor))
         self.next_cursor = page.next_cursor
         return Page(tuple(self._wrap(item) for item in page.items), page.next_cursor)
-
-    def add(self, chat: SyncChat | Chat | str) -> SyncChat:
-        target = chat._resource if isinstance(chat, SyncChat) else chat
-        return self._wrap(self._owner._call(self._collection.add(target)))
-
-    def remove(self, chat: SyncChat | Chat | str) -> SyncChat:
-        target = chat._resource if isinstance(chat, SyncChat) else chat
-        return self._wrap(self._owner._call(self._collection.remove(target)))
-
-
-class SyncChatGPTProjectsCollection(SyncProjectsCollection):
-    def create(
-        self,
-        title: str,
-        *,
-        instruction: str | None = None,
-        memory_share: bool = True,
-    ) -> SyncProject:
-        collection = cast(ChatGPTProjectsCollection, self._collection)
-        project = self._owner._call(
-            collection.create(title, instruction=instruction, memory_share=memory_share)
-        )
-        return self._wrap(project)
-
-
-class SyncChatGPTProvider(SyncProvider):
-    def __init__(self, account: Account) -> None:
-        super().__init__(account, type=ProviderType.CHATGPT)
-        self._provider.projects = ChatGPTProjectsCollection(self._provider)
-        self.projects = SyncChatGPTProjectsCollection(self)
-
-
-class SyncClaudeProvider(SyncProvider):
-    def __init__(self, account: Account) -> None:
-        super().__init__(account, type=ProviderType.CLAUDE)
-
-
-class SyncGeminiProvider(SyncProvider):
-    def __init__(self, account: Account) -> None:
-        super().__init__(account, type=ProviderType.GEMINI)
-
-
-class SyncGrokProvider(SyncProvider):
-    def __init__(self, account: Account) -> None:
-        super().__init__(account, type=ProviderType.GROK)

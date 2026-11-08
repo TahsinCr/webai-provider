@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ..catalogs.policies import Models
+from ..catalogs import Models
 from ..contracts import EffortRef, ModelRef, ModelSelection
 from ..errors import UnsupportedOperationError
 from .attachments import Attachment, Attachments
@@ -78,13 +78,6 @@ class Message:
             self.id,
             model=model if model is not None else self.model,
         )
-
-    async def branch(self, title: str | None = None) -> Chat:
-        if self.chat is None:
-            raise UnsupportedOperationError(
-                "Cannot branch a message that does not belong to a conversation"
-            )
-        return await self.chat.branch(self.id, title=title)
 
     def __repr__(self) -> str:
         preview = self.content[:40] + ("..." if len(self.content) > 40 else "")

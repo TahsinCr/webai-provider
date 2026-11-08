@@ -21,13 +21,13 @@ python -m pip install -e '.[dev]'
 ```python
 import asyncio
 
-from webaiprovider import Account, OutputDelta, Provider, ProviderType
+from webaiprovider import Account, AsyncChatGPTProvider, OutputDelta, ProviderType
 
 
 async def main() -> None:
     account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
 
-    async with Provider(account, type=ProviderType.CHATGPT) as provider:
+    async with AsyncChatGPTProvider(account) as provider:
         models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
@@ -45,24 +45,24 @@ asyncio.run(main())
 
 Если `browser` не указан, `Account.from_browser()` использует системный браузер по умолчанию. Для доступа к cookies может потребоваться закрыть браузер или разблокировать системное хранилище ключей. Чтобы передать учетные данные вручную, используйте `Account.from_cookies(provider, cookies)` и храните cookies в собственном защищенном хранилище.
 
-Для блокирующего кода используйте тот же аккаунт с `SyncProvider`. Пока провайдер открыт, он повторно использует один портал событийного цикла:
+Для блокирующего кода используйте синхронный класс соответствующего провайдера. Пока провайдер открыт, он повторно использует один портал событийного цикла:
 
 ```python
-from webaiprovider import Account, ProviderType, SyncProvider
+from webaiprovider import Account, ChatGPTProvider, ProviderType
 
 account = Account.from_browser(ProviderType.CHATGPT)
-with SyncProvider(account, type=ProviderType.CHATGPT) as provider:
+with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Быстрый старт")
     response = chat.messages.create("Здравствуйте!").start()
 ```
 
 ## Основной API
 
-- `Account` хранит только учетные данные. `Provider(account, type=ProviderType.CHATGPT)` управляет асинхронной сессией, а `SyncProvider` предоставляет блокирующий интерфейс. Оба класса поддерживают контекстный менеджер.
+- `BaseProvider` содержит общие сведения об аккаунте и провайдере. Для асинхронной работы используйте `AsyncChatGPTProvider` (или соответствующий класс другого провайдера), а для блокирующей — `ChatGPTProvider`. Общие классы `AsyncProvider` и `Provider` подходят для выбора провайдера через `ProviderType`.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` и `GrokProvider` предоставляют функции конкретных провайдеров. Проекты ChatGPT по умолчанию используют общую область памяти; укажите `memory_share=False`, чтобы оставить память только в проекте.
 - `provider.models.list()` загружает доступные аккаунту модели и кеширует каталог до конца сессии. Для нового запроса используйте `refresh=True` или `provider.models.refresh()`. Методы `find()`, `search()` и `get()` выбирают модель из этого каталога.
 - `chat.messages.create()`, `edit()` и `retry()` возвращают `MessageOperation`. Используйте `operation.stream()` для потока событий или дождитесь итогового ответа через `operation.wait()`. Эти методы используют одну отправку.
-- Возможности проектов, вложений, повторной отправки, редактирования и ветвления зависят от провайдера. Неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.
+- Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.
 
 Пакет предоставляет типизированные ссылки на модели и уровни усилий. Каталог, полученный от аккаунта, является источником доступных ему моделей и может различаться в зависимости от подписки и изменений на стороне провайдера.
 

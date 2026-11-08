@@ -1,11 +1,78 @@
 from __future__ import annotations
 
+import asyncio
 import math
-from typing import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from enum import Enum
 
-from ..contracts import EffortRef, ModelRef, ModelSelection
-from ..errors import AmbiguousMatchError, RemoteNotFound
-from .policies import Models
+from .collections.base import AsyncQueryableCollection, QueryableCollection
+from .contracts import EffortRef, ModelRef, ModelSelection
+from .errors import AmbiguousMatchError, RemoteNotFound
+
+
+def effort_ref(
+    provider: str,
+    model_id: str,
+    effort_id: str,
+    name: str | None = None,
+) -> EffortRef:
+    return EffortRef(
+        provider,
+        model_id,
+        effort_id,
+        name or effort_id.replace(":", " ").title(),
+    )
+
+
+class StaticModelCatalog:
+    provider: str = ""
+
+    @classmethod
+    def list(cls) -> list[ModelRef]:
+        return [v for v in cls.__dict__.values() if isinstance(v, ModelRef)]
+
+    @classmethod
+    def get(cls, model_id: str) -> ModelRef:
+        for m in cls.list():
+            if m.id == model_id:
+                return m
+        raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} was not found in the catalog")
+
+    @classmethod
+    def find(cls, query: str) -> ModelRef:
+        result = SelectionResolver.resolve(query, cls.list())
+        if not isinstance(result, ModelRef):
+            raise TypeError("Model query did not resolve to a model")
+        return result
+
+    @classmethod
+    def search(cls, query: str) -> list[ModelRef]:
+        q = query.lower()
+        return [m for m in cls.list() if q in m.id.lower() or q in m.name.lower()]
+
+    @classmethod
+    def contains(cls, item: str | EffortRef | ModelRef | ModelSelection) -> bool:
+        target = (
+            item.model.id
+            if isinstance(item, ModelSelection)
+            else item.model_id
+            if isinstance(item, EffortRef)
+            else item.id
+            if isinstance(item, ModelRef)
+            else item
+        )
+        return any(m.id == target for m in cls.list())
+
+    @classmethod
+    def __class_getitem__(cls, key: str) -> ModelRef:
+        return cls.get(key)
+
+
+class Models(str, Enum):
+    AUTO = "auto"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class SelectionResolver:
@@ -139,3 +206,66 @@ class SelectionResolver:
             )
 
         raise RemoteNotFound(f"Selection was not found: {target}")
+
+
+class ModelsCollection(AsyncQueryableCollection[ModelRef]):
+    def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
+        self._loader = loader
+        self._items_tuple: tuple[ModelRef, ...] | None = None
+        self._lock = asyncio.Lock()
+
+    async def list(self, *, refresh: bool = False) -> list[ModelRef]:
+        """Load once to prewarm the account cache; refresh forces a provider fetch."""
+        async with self._lock:
+            if self._items_tuple is None or refresh:
+                loaded = await self._loader(refresh)
+                self._items_tuple = tuple(loaded)
+            return list(self._items_tuple)
+
+    async def refresh(self) -> list[ModelRef]:
+        """Refresh the account catalog and bypass provider-side cache entries."""
+        return await self.list(refresh=True)
+
+    async def get(self, model_id: str, /) -> ModelRef:
+        models = await self.list()
+        for model in models:
+            if model.id == model_id:
+                return model
+        raise RemoteNotFound(f"Model ID {model_id!r} is not available for this account")
+
+    async def find(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        models = await self.list()
+        if not (startswith or endswith or exact):
+            result = SelectionResolver.resolve(query, models)
+            if not isinstance(result, ModelRef):
+                raise TypeError("Model query did not resolve to a model")
+            return result
+        return QueryableCollection._find_in(
+            models,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def resolve(
+        self,
+        target: Models | EffortRef | ModelRef | ModelSelection | str,
+    ) -> ModelSelection:
+        result = SelectionResolver.resolve(target, await self.list())
+        if isinstance(result, ModelRef):
+            return ModelSelection(result)
+        if isinstance(result, ModelSelection):
+            return result
+        raise TypeError("Selection did not resolve to a model")
+
+
+__all__ = ["Models", "ModelsCollection", "SelectionResolver", "StaticModelCatalog", "effort_ref"]

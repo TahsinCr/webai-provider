@@ -15,18 +15,6 @@ if TYPE_CHECKING:
 
 from ...accounts import delete_session, session_exists
 from ...accounts.credentials import CredentialStore
-from ...base import (
-    Capability,
-    MessageAction,
-    ProjectEditing,
-    ProviderAdapter,
-    _ConversationBound,
-    _MessageMetadata,
-    _ProviderRequest,
-    _ReplaceText,
-    _ResponseComplete,
-    confirm_deleted,
-)
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...models import (
@@ -40,12 +28,24 @@ from ...models import (
     sources_from,
 )
 from ...utils.timing import current_send_timing
+from ..base import (
+    Capability,
+    MessageAction,
+    ProjectEditing,
+    ProviderAdapter,
+    _ConversationBound,
+    _MessageMetadata,
+    _ProviderRequest,
+    _ReplaceText,
+    _ResponseComplete,
+    confirm_deleted,
+)
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 
 _CHAT_METADATA_TTL_SECONDS = 60.0
 
 
-class GeminiProvider(ProjectEditing, ProviderAdapter):
+class GeminiAdapter(ProjectEditing, ProviderAdapter):
     id = "gemini"
     capabilities = frozenset(
         {
