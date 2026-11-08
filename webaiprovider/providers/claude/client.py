@@ -44,9 +44,12 @@ def organization_from_bootstrap(data, selected):
     return org["uuid"]
 
 
-class ClaudeTransport:
-    def __init__(self, credential_file, *, session=None):
+class ClaudeClient:
+    def __init__(self, credential_file, *, session=None, transport=None):
         self.session = session or HttpSession("https://claude.ai", credential_file, "sessionKey")
+        self.http = transport or self.session
+        if transport is not None and self.http.origin != "https://claude.ai":
+            raise ValueError("Provider transport origin does not match its account")
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
         self._coordinator = ConcurrencyCoordinator()
@@ -61,11 +64,9 @@ class ClaudeTransport:
         except ValueError:
             saved_id = None
         if saved_id:
-            bootstrap = asyncio.create_task(self.session.request("GET", "/api/bootstrap"))
+            bootstrap = asyncio.create_task(self.http.request("GET", "/api/bootstrap"))
             selector = asyncio.create_task(
-                self.session.request(
-                    "GET", "/api/organizations/" + saved_id + "/model_selector/chat"
-                )
+                self.http.request("GET", "/api/organizations/" + saved_id + "/model_selector/chat")
             )
             try:
                 data, selected = await asyncio.gather(bootstrap, selector)
@@ -88,7 +89,7 @@ class ClaudeTransport:
                         # authenticated account has exactly one chat workspace.
                         organization = organization_from_bootstrap(data, None)
                     if organization != saved_id:
-                        selected = await self.session.request(
+                        selected = await self.http.request(
                             "GET",
                             "/api/organizations/"
                             + remote_id(organization)
@@ -104,9 +105,9 @@ class ClaudeTransport:
             else:
                 organization = organization_from_bootstrap(data, last_org)
         else:
-            data = await self.session.request("GET", "/api/bootstrap")
+            data = await self.http.request("GET", "/api/bootstrap")
             organization = organization_from_bootstrap(data, last_org)
-            selected = await self.session.request(
+            selected = await self.http.request(
                 "GET", "/api/organizations/" + remote_id(organization) + "/model_selector/chat"
             )
         catalog = selector_catalog(selected)
@@ -148,7 +149,11 @@ class ClaudeTransport:
         self.organization = None
         self.catalog = None
         self.authenticated = False
-        await self.session.close()
+        try:
+            await self.http.close()
+        finally:
+            if self.http is not self.session:
+                await self.session.close()
 
     async def upload_file(self, path):
         """Upload a local file through Claude's web document conversion endpoint."""
@@ -183,7 +188,7 @@ class ClaudeTransport:
         body = CurlMime()
         try:
             body.addpart(name="file", filename=path.name, local_path=str(path), content_type=mime)
-            result = await self.session.request(
+            result = await self.http.request(
                 "POST", await self.base() + "/convert_document", multipart=body
             )
         finally:
@@ -208,7 +213,7 @@ class ClaudeTransport:
         base = await self.base()
         cid = remote_id(v["conversation_id"]) if v.get("conversation_id") else None
         pid = remote_id(v["project_id"]) if v.get("project_id") else None
-        call = self.session.request
+        call = self.http.request
         if mode == "chats":
             offset, limit = int(v.get("cursor") or 0), int(v.get("limit") or 50)
             if offset < 0 or not 1 <= limit <= 100:
@@ -295,7 +300,7 @@ class ClaudeTransport:
                 history = (
                     await self.request("history", conversation_id=cid)
                     if v.get("action")
-                    else await self.session.request("GET", path)
+                    else await self.http.request("GET", path)
                 )
             finally:
                 if history_started is not None:
@@ -332,14 +337,14 @@ class ClaudeTransport:
             create_payload = {"uuid": cid, "name": ""}
             if v.get("temporary"):
                 create_payload["is_temporary"] = True
-            created = await self.session.request(
+            created = await self.http.request(
                 "POST", base + "/chat_conversations", json=create_payload
             )
             if v.get("temporary") and (
                 not isinstance(created, dict) or created.get("is_temporary") is not True
             ):
                 try:
-                    created = await self.session.request("GET", path)
+                    created = await self.http.request("GET", path)
                 except Exception:
                     created = None
                 if not isinstance(created, dict) or created.get("is_temporary") is not True:
@@ -395,9 +400,9 @@ class ClaudeTransport:
             timing.record("button_to_first_assistant_text_ms", now - timing.started_ns)
 
         suffix = "/retry_completion" if v.get("action") == MessageAction.RETRY else "/completion"
-        async with self.session.connect().stream(
+        async with self.http.stream(
             "POST",
-            self.session.url(path + suffix),
+            path + suffix,
             json=body,
             headers={"accept": "text/event-stream"},
             allow_redirects=False,
@@ -406,9 +411,8 @@ class ClaudeTransport:
             response_opened = time.perf_counter_ns() if timing is not None else None
             if sse_started is not None:
                 timing.record("sse_connect_ms", response_opened - sse_started)
-            self.session.check(response)
             decoder = SSEFrameDecoder(max_event_bytes=1_048_576, utf8_errors="strict")
-            async for frame in decoder.decode_lines(response.aiter_lines()):
+            async for frame in decoder.decode_async(response.aiter_bytes()):
                 raw = frame.data
                 if raw == "[DONE]":
                     continue
@@ -540,7 +544,7 @@ class ClaudeTransport:
 
 class ClaudeProjectEditor:
     def __init__(self, transport):
-        self.transport = transport
+        self.client = transport
 
     async def close(self):
         pass
@@ -558,8 +562,8 @@ class ClaudeProjectEditor:
         )
 
     async def write(self, operation, project_id=None, **v):
-        path = await self.transport.base() + "/projects/" + remote_id(project_id)
-        call = self.transport.session.request
+        path = await self.client.base() + "/projects/" + remote_id(project_id)
+        call = self.client.http.request
         if operation == "update":
             fields = {"name": v["name"]} if "name" in v else {}
             if "instructions" in v:
@@ -583,7 +587,7 @@ class ClaudeProjectEditor:
                 mime.close()
         if operation == "remove_source":
             rid = quote(v["resource_id"], safe="")
-            current = await self.transport.request("project", project_id=project_id)
+            current = await self.client.request("project", project_id=project_id)
             doc = next(
                 (x for x in current["docs"] if (x.get("uuid") or x.get("id")) == v["resource_id"]),
                 None,

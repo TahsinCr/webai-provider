@@ -28,6 +28,7 @@ from webaiprovider.accounts.importer import (
     CookieReader,
     import_browser_session,
 )
+from webaiprovider.core import BoundedWorkPool
 from webaiprovider.errors import (
     AccountPaused,
     ProviderError,
@@ -36,7 +37,6 @@ from webaiprovider.errors import (
 )
 from webaiprovider.models import Capability
 from webaiprovider.transport import (
-    BoundedWorkPool,
     HttpSession,
     RetryPolicy,
     calculate_backoff,

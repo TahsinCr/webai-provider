@@ -3,6 +3,8 @@
 import codecs
 import json
 import re
+from collections.abc import Iterator
+from typing import Any
 
 from ..errors import FrameDecodeError
 
@@ -13,7 +15,11 @@ class JSPBFrameDecoder:
     _LENGTH_MARKER = re.compile(r"(\d+)\n")
 
     def __init__(
-        self, *, prefix="", max_frame_units=8 * 1024 * 1024, length_includes_separator=False
+        self,
+        *,
+        prefix: str = "",
+        max_frame_units: int = 8 * 1024 * 1024,
+        length_includes_separator: bool = False,
     ):
         if max_frame_units <= 0:
             raise ValueError("max_frame_units must be positive")
@@ -28,7 +34,7 @@ class JSPBFrameDecoder:
         self.scanned_units = 0
         self.prefix_checked = False
 
-    def feed(self, data, final=False):
+    def feed(self, data: bytes, final: bool = False) -> Iterator[Any]:
         try:
             self.pending += self.decoder.decode(data, final=final)
         except UnicodeDecodeError as error:

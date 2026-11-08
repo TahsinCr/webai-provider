@@ -8,13 +8,15 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 
+from tests.fakes import bind_stream
 from webaiprovider.async_provider import _ProviderRequest
 from webaiprovider.models import MessageAction, Model, Origin
 from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
-from webaiprovider.providers.claude.transport import ClaudeTransport
+from webaiprovider.providers.claude.client import ClaudeClient
+from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import history
-from webaiprovider.providers.gemini.transport import generation_request
+from webaiprovider.transport import HTTPTransport
 
 
 class ChatGPTActionsTests(unittest.TestCase):
@@ -113,6 +115,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         }
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {}
+        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
         client.create_sentinel_headers = lambda: {}
         with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
             result = client.send_prompt_direct(
@@ -392,34 +395,50 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
         }
 
         class Response:
+            status_code = 200
+            headers = {}
+
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_):
                 pass
 
-            async def aiter_lines(self):
-                yield 'data: {"type":"message_start","message":{"uuid":"reply","parent_uuid":"prompt"}}'
-                yield ""
-                yield 'data: {"type":"content_block_delta","delta":{"type":"citations_delta","citation":{"url":"https://example.com/source","title":"Published source"}}}'
-                yield ""
-                yield 'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"present_files","input":{}}}'
-                yield ""
-                yield "data: " + json.dumps(
-                    {
-                        "type": "content_block_delta",
-                        "index": 1,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": '{"filepaths":["/mnt/user-data/outputs/result.pdf"]}',
-                        },
-                    }
-                )
-                yield ""
-                yield 'data: {"type":"content_block_stop","index":1}'
-                yield ""
-                yield 'data: {"type":"message_stop"}'
-                yield ""
+            async def aiter_content(self):
+                yield (
+                    'data: {"type":"message_start","message":{"uuid":"reply","parent_uuid":"prompt"}}'
+                    + "\n"
+                ).encode()
+                yield ("" + "\n").encode()
+                yield (
+                    'data: {"type":"content_block_delta","delta":{"type":"citations_delta","citation":{"url":"https://example.com/source","title":"Published source"}}}'
+                    + "\n"
+                ).encode()
+                yield ("" + "\n").encode()
+                yield (
+                    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","name":"present_files","input":{}}}'
+                    + "\n"
+                ).encode()
+                yield ("" + "\n").encode()
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "content_block_delta",
+                            "index": 1,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": '{"filepaths":["/mnt/user-data/outputs/result.pdf"]}',
+                            },
+                        }
+                    )
+                    + "\n"
+                ).encode()
+                yield ("" + "\n").encode()
+                yield ('data: {"type":"content_block_stop","index":1}' + "\n").encode()
+                yield ("" + "\n").encode()
+                yield ('data: {"type":"message_stop"}' + "\n").encode()
+                yield ("" + "\n").encode()
 
         writes = []
 
@@ -434,7 +453,7 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
             url=lambda path: path,
             check=lambda response: None,
         )
-        transport = ClaudeTransport(None, session=session)
+        transport = ClaudeClient(None, session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
         transport.catalog = {
             "default_model": "available-model",

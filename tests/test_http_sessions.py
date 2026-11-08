@@ -14,10 +14,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
+from tests.fakes import bind_stream
 from webaiprovider.accounts.credentials import read_session, save_session, save_session_async
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from webaiprovider.providers.claude.client import ClaudeClient, organization_from_bootstrap
 from webaiprovider.providers.claude.errors import ClaudeRequestNotSent
-from webaiprovider.providers.claude.transport import ClaudeTransport, organization_from_bootstrap
 from webaiprovider.providers.gemini.rpc import NotebookEditor, NotebookRPC
 from webaiprovider.transport import HttpSession
 
@@ -113,7 +114,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
         )
-        with patch("webaiprovider.transport.session.time.time", return_value=now.timestamp()):
+        with patch("webaiprovider.transport.base.time.time", return_value=now.timestamp()):
             with self.assertRaises(RateLimited) as error:
                 HttpSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
@@ -181,7 +182,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             request=AsyncMock(return_value={"is_temporary": False}),
             connect=Mock(),
         )
-        transport = ClaudeTransport("unused", session=session)
+        transport = ClaudeClient("unused", session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
         transport.catalog = {"default_model": "model", "models": [{"id": "model", "efforts": []}]}
         with self.assertRaises(ClaudeRequestNotSent):
@@ -213,7 +214,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             check=Mock(side_effect=ProviderError("denied")),
             url=lambda value: value,
         )
-        transport = ClaudeTransport("unused", session=session)
+        transport = ClaudeClient("unused", session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
         transport.catalog = {"default_model": "model", "models": [{"id": "model", "efforts": []}]}
         with self.assertRaises(ProviderError):
@@ -301,7 +302,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                 request=AsyncMock(side_effect=request),
                 close=AsyncMock(),
             )
-            transport = ClaudeTransport(path, session=session)
+            transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
             _, chats = await asyncio.gather(
                 transport.prepare(), transport.request("chats", cursor=0, limit=50)
@@ -353,7 +354,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                 request=AsyncMock(side_effect=request),
                 close=AsyncMock(),
             )
-            transport = ClaudeTransport(path, session=session)
+            transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
 
             await transport.prepare()
@@ -404,7 +405,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                 request=AsyncMock(side_effect=request),
                 close=AsyncMock(),
             )
-            transport = ClaudeTransport(path, session=session)
+            transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
 
             with self.assertRaises(ProviderError):
@@ -435,7 +436,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             session = SimpleNamespace(
                 path=path, request=AsyncMock(side_effect=request), close=AsyncMock()
             )
-            transport = ClaudeTransport(path, session=session)
+            transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
             with self.assertRaisesRegex(ProviderError, "selector failed"):
                 await transport.prepare()
@@ -444,7 +445,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(calls), 2)
 
     async def test_model_catalog_expires_and_explicit_refresh_bypasses_cache(self):
-        transport = ClaudeTransport("unused")
+        transport = ClaudeClient("unused")
         self.addAsyncCleanup(transport.close)
 
         async def discover():
@@ -490,11 +491,13 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
         class Response:
             status_code = 200
+            headers = {}
+            status_code = 200
 
-            async def aiter_lines(self):
+            async def aiter_content(self):
                 for e in events:
-                    yield "data: " + json.dumps(e)
-                    yield ""
+                    yield ("data: " + json.dumps(e) + "\n").encode()
+                    yield ("" + "\n").encode()
 
             async def __aenter__(self):
                 return self
@@ -509,7 +512,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             check=Mock(),
             url=lambda path: "https://claude.ai" + path,
         )
-        transport = ClaudeTransport(Path("unused"), session=session)
+        transport = ClaudeClient(Path("unused"), session=bind_stream(session))
         transport.organization = cid
         transport.catalog = {
             "default_model": "model",
@@ -544,7 +547,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
 class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_uploaded_files_use_native_file_uuid_and_documents_stay_separate(self):
-        from webaiprovider.providers.claude.transport import ClaudeProjectEditor
+        from webaiprovider.providers.claude.client import ClaudeProjectEditor
 
         pid = "11111111-1111-1111-1111-111111111111"
         transport = SimpleNamespace(
@@ -555,32 +558,32 @@ class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
                     "files": [{"uuid": "resource", "file_uuid": "native-file"}],
                 }
             ),
-            session=SimpleNamespace(request=AsyncMock()),
+            http=SimpleNamespace(request=AsyncMock()),
         )
         editor = ClaudeProjectEditor(transport)
         await editor.write("remove_source", pid, resource_id="resource")
-        transport.session.request.assert_awaited_once_with(
+        transport.http.request.assert_awaited_once_with(
             "POST",
             f"/api/organizations/org/projects/{pid}/files/delete_many",
             json={"file_uuids": ["native-file"]},
         )
-        transport.session.request.reset_mock()
+        transport.http.request.reset_mock()
         transport.request.return_value = {"docs": [{"uuid": "document"}], "files": []}
         await editor.write("remove_source", pid, resource_id="document")
-        transport.session.request.assert_awaited_once_with(
+        transport.http.request.assert_awaited_once_with(
             "DELETE", f"/api/organizations/org/projects/{pid}/docs/document"
         )
 
     async def test_deleted_foreign_source_cannot_be_submitted(self):
-        from webaiprovider.providers.claude.transport import ClaudeProjectEditor
+        from webaiprovider.providers.claude.client import ClaudeProjectEditor
 
         transport = SimpleNamespace(
             base=AsyncMock(return_value="/api/organizations/org"),
             request=AsyncMock(return_value={"docs": [], "files": []}),
-            session=SimpleNamespace(request=AsyncMock()),
+            http=SimpleNamespace(request=AsyncMock()),
         )
         with self.assertRaises(ValueError):
             await ClaudeProjectEditor(transport).write(
                 "remove_source", "11111111-1111-1111-1111-111111111111", resource_id="foreign"
             )
-        transport.session.request.assert_not_awaited()
+        transport.http.request.assert_not_awaited()

@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
+    "GrokClient": "client",
     "GrokModels": "catalogs",
     "GrokChat": "provider",
     "AsyncGrokChat": "resources",

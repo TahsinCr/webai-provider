@@ -1,6 +1,5 @@
 """Bounded Gemini generation protocol and streaming disk uploads."""
 
-import asyncio
 import json
 import mimetypes
 import time
@@ -9,7 +8,6 @@ from pathlib import Path
 
 from ...frames import JSPBFrameDecoder
 from ...models import MessageAction
-from ...transport import HttpSession
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
@@ -30,8 +28,9 @@ async def upload_files(session, paths):
                 filename=path.name,
                 local_path=str(path),
             )
-            response = await session.http.post(
-                "https://content-push.googleapis.com/upload",
+            response = await session.upload_transport.send(
+                "POST",
+                "/upload",
                 headers={
                     "Origin": "https://gemini.google.com",
                     "Referer": "https://gemini.google.com/",
@@ -41,7 +40,6 @@ async def upload_files(session, paths):
                 multipart=mime,
                 allow_redirects=False,
             )
-            HttpSession.check(response)
             files.append([[response.text], path.name])
         finally:
             mime.close()
@@ -148,24 +146,21 @@ async def generate(
     first_assistant_text = False
     last_event_at = None
     try:
-        response = await session.http.request(
+        async with session.transport.stream(
             "POST",
-            BASE + "assistant.lamda.BardFrontendService/StreamGenerate",
+            "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
             params=session.params(),
             headers=headers,
             data=data,
             allow_redirects=False,
             timeout=request_timeout,
-            stream=True,
-        )
-        response_opened = time.perf_counter_ns() if timing is not None else None
-        if sse_connect_started is not None:
-            timing.record("sse_connect_ms", response_opened - sse_connect_started)
-        try:
-            HttpSession.check(response)
+        ) as response:
+            response_opened = time.perf_counter_ns() if timing is not None else None
+            if sse_connect_started is not None:
+                timing.record("sse_connect_ms", response_opened - sse_connect_started)
 
             async def parts():
-                async for chunk in response.aiter_content():
+                async for chunk in response.aiter_bytes():
                     for packet in frames.feed(chunk):
                         for frame in packet if isinstance(packet, list) else (packet,):
                             yield frame
@@ -259,11 +254,6 @@ async def generate(
                         "metadata": metadata,
                         "context_only": True,
                     }
-        finally:
-            # curl_cffi's aclose waits for the transfer; cancel it first so a
-            # stalled connection cannot hold the provider gate after cancellation.
-            response.astream_task.cancel()
-            await asyncio.gather(response.astream_task, return_exceptions=True)
     except RequestException as error:
         if error.code != CurlECode.OPERATION_TIMEDOUT:
             raise

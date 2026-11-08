@@ -35,10 +35,11 @@ from ...models import (
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
+from ...transport import AsyncTransport
 from ...utils.attachments import GROK_ATTACHMENTS
+from .client import GrokClient, GrokProjectEditor, remote_id
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .resources import AsyncGrokChat
-from .transport import GrokProjectEditor, GrokTransport, remote_id
 
 _CATALOG_TTL = 300
 
@@ -81,12 +82,20 @@ class AsyncGrokProvider(AsyncProvider):
     )
 
     def __init__(
-        self, account: Account, *, type: ProviderType | str | None = None, client_factory=None
+        self,
+        account: Account,
+        *,
+        type: ProviderType | str | None = None,
+        client_factory=None,
+        transport: AsyncTransport | None = None,
     ) -> None:
         super().__init__(account, type=type)
         self.credential_file = account.store()
-        self.transport = GrokTransport(self.credential_file, client_factory=client_factory)
-        self.editor = GrokProjectEditor(self.transport)
+        self.client = GrokClient(
+            self.credential_file, client_factory=client_factory, transport=transport
+        )
+        self._transport = self.client.http
+        self.editor = GrokProjectEditor(self.client)
         self._gate = asyncio.Lock()
         self._catalog = None
         self._catalog_at = 0.0
@@ -112,16 +121,16 @@ class AsyncGrokProvider(AsyncProvider):
     async def _close_provider(self):
         async with self._gate:
             self._continuations.clear()
-            await self.transport.close()
+            await self.client.close()
 
     async def authenticate(self):
-        await self.transport.authenticate()
+        await self.client.authenticate()
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
     async def session_status(self):
         return SessionStatus(
             SessionState.AUTHENTICATED
-            if self.transport.session.authenticated
+            if self.client.session.authenticated
             else SessionState.UNKNOWN
             if session_exists(self.credential_file)
             else SessionState.LOGIN_REQUIRED,
@@ -130,15 +139,15 @@ class AsyncGrokProvider(AsyncProvider):
 
     async def forget_session(self):
         async with self._gate:
-            await self.transport.close()
+            await self.client.close()
             delete_session(self.credential_file)
             self._catalog = None
             self._continuations.clear()
-            self.transport.session.authenticated = False
+            self.client.session.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def upload_file(self, path):
-        return await self.transport.upload_file(path)
+        return await self.client.upload_file(path)
 
     async def _load_model_catalog(self, *, force=False):
         now = time.monotonic()
@@ -149,8 +158,8 @@ class AsyncGrokProvider(AsyncProvider):
             if not force and self._catalog and now - self._catalog_at < _CATALOG_TTL:
                 return self._catalog
             data, details = await asyncio.gather(
-                self.transport.request("POST", "/rest/modes", json={"locale": "en"}),
-                self.transport.request("POST", "/rest/models", json={"locale": "en"}),
+                self.client.request("POST", "/rest/modes", json={"locale": "en"}),
+                self.client.request("POST", "/rest/models", json={"locale": "en"}),
             )
             if (
                 not isinstance(data, dict)
@@ -250,7 +259,7 @@ class AsyncGrokProvider(AsyncProvider):
         query = {"pageSize": max(1, min(int(limit), 100))}
         if cursor:
             query["pageToken"] = cursor
-        data = await self.transport.request("GET", "/rest/app-chat/conversations", params=query)
+        data = await self.client.request("GET", "/rest/app-chat/conversations", params=query)
         if not isinstance(data, dict):
             raise ProviderError("Grok conversation list response contract changed")
         conversations = data.get("conversations")
@@ -262,21 +271,21 @@ class AsyncGrokProvider(AsyncProvider):
         )
 
     async def _history(self, conversation_id):
-        return await self.transport.request(
+        return await self.client.request(
             "GET",
             "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses",
             params={"includeThreads": True},
         )
 
     async def _response_nodes(self, conversation_id):
-        return await self.transport.request(
+        return await self.client.request(
             "GET",
             "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/response-node",
             params={"includeThreads": False},
         )
 
     async def _conversation_metadata(self, conversation_id):
-        return await self.transport.request(
+        return await self.client.request(
             "GET",
             "/rest/app-chat/conversations/" + remote_id(conversation_id),
             params={"includeWorkspaces": True},
@@ -305,14 +314,14 @@ class AsyncGrokProvider(AsyncProvider):
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
             raise ValueError("Conversation title must be between 1 and 200 characters")
-        await self.transport.request(
+        await self.client.request(
             "PUT",
             "/rest/app-chat/conversations/" + remote_id(conversation_id),
             json={"title": title.strip()},
         )
 
     async def delete_chat(self, conversation_id):
-        await self.transport.request(
+        await self.client.request(
             "DELETE", "/rest/app-chat/conversations/" + remote_id(conversation_id)
         )
         self._continuations.pop(conversation_id, None)
@@ -321,7 +330,7 @@ class AsyncGrokProvider(AsyncProvider):
         query = {"pageSize": 50}
         if cursor:
             query["pageToken"] = cursor
-        data = await self.transport.request("GET", "/rest/workspaces", params=query)
+        data = await self.client.request("GET", "/rest/workspaces", params=query)
         if not isinstance(data, dict):
             raise ProviderError("Grok workspace list response contract changed")
         workspaces = data.get("workspaces")
@@ -335,8 +344,8 @@ class AsyncGrokProvider(AsyncProvider):
     async def get_project(self, project_id):
         path = "/rest/workspaces/" + remote_id(project_id)
         workspace, listing = await asyncio.gather(
-            self.transport.request("GET", path),
-            self.transport.request("GET", path + "/files", params={"recursive": "true"}),
+            self.client.request("GET", path),
+            self.client.request("GET", path + "/files", params={"recursive": "true"}),
         )
         if not isinstance(listing, dict):
             raise ProviderError("Grok workspace file response contract changed")
@@ -349,7 +358,7 @@ class AsyncGrokProvider(AsyncProvider):
         query = {"pageSize": 50, "workspaceId": project_id}
         if cursor:
             query["pageToken"] = cursor
-        data = await self.transport.request("GET", "/rest/app-chat/conversations", params=query)
+        data = await self.client.request("GET", "/rest/app-chat/conversations", params=query)
         if not isinstance(data, dict):
             raise ProviderError("Grok project conversation response contract changed")
         conversations = data.get("conversations")
@@ -374,7 +383,7 @@ class AsyncGrokProvider(AsyncProvider):
             raise ValueError("Project name must be between 1 and 200 characters")
         if not isinstance(instructions, str):
             raise ValueError("Project instructions must be text")
-        data = await self.transport.request(
+        data = await self.client.request(
             "POST",
             "/rest/workspaces",
             json={"name": name.strip(), "customPersonality": instructions or ""},
@@ -382,7 +391,7 @@ class AsyncGrokProvider(AsyncProvider):
         return project(data, self.account_id)
 
     async def delete_project(self, project_id):
-        await self.transport.request("DELETE", "/rest/workspaces/" + remote_id(project_id))
+        await self.client.request("DELETE", "/rest/workspaces/" + remote_id(project_id))
 
     async def move_chat(self, conversation_id, project_id):
         metadata = await self._conversation_metadata(conversation_id)
@@ -392,21 +401,21 @@ class AsyncGrokProvider(AsyncProvider):
         conversation_path = "/conversations/" + remote_id(conversation_id)
         old_project = chat.project_id
         if project_id:
-            await self.transport.request(
+            await self.client.request(
                 "POST",
                 "/rest/workspaces/" + remote_id(project_id) + "/conversations",
                 json={"conversationId": conversation_id},
             )
         if old_project:
             try:
-                await self.transport.request(
+                await self.client.request(
                     "DELETE",
                     "/rest/workspaces/" + remote_id(old_project) + conversation_path,
                 )
             except Exception:
                 if project_id:
                     try:
-                        await self.transport.request(
+                        await self.client.request(
                             "DELETE",
                             "/rest/workspaces/" + remote_id(project_id) + conversation_path,
                         )
@@ -636,7 +645,7 @@ class AsyncGrokProvider(AsyncProvider):
                     output.write(native)
                     yield _ReplaceText(native, channel) if channel else _ReplaceText(native)
 
-        async for chunk in self.transport.events(path, body):
+        async for chunk in self.client.events(path, body):
             result = chunk.get("result")
             if not isinstance(result, dict):
                 result = chunk
@@ -659,7 +668,7 @@ class AsyncGrokProvider(AsyncProvider):
                 code = str(error.get("code") or "").upper() if isinstance(error, dict) else ""
                 msg = str(error.get("message") or "") if isinstance(error, dict) else str(error)
                 if code in ("UNAUTHORIZED", "AUTH_REQUIRED"):
-                    self.transport.session.authenticated = False
+                    self.client.session.authenticated = False
                     raise AccountPaused("Grok session expired; verify the account again")
                 if (
                     "RATE_LIMIT" in code

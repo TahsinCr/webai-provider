@@ -13,8 +13,10 @@ from .telemetry import (
     correlation_context,
     current_correlation_id,
 )
+from .workers import BoundedWorkPool
 
 __all__ = [
+    "BoundedWorkPool",
     "ConcurrencyCoordinator",
     "MultiDimensionBoundedCache",
     "OperationMetrics",

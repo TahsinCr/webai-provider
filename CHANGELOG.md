@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded blocking-client bridges.
+
 - Add provider-specific async and sync provider facades, explicit `open()`/`close()` lifecycle, and paginated project chat access with chat moves.
 - Add ChatGPT project memory selection as `memory_share: bool`; `True` uses the provider's default/global memory scope and `False` selects project-only memory.
 - Model-specific typed effort namespaces; a static choice is available as `ChatGPTModels.GPT_5_6_THINKING.efforts.MEDIUM` and each value is an `EffortRef`.
@@ -14,6 +16,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - `await provider.models.list()` preloads and caches the account's catalog for the current session; `refresh()` forces a fresh provider request.
 
 ### Changed
+
+- Route provider HTTP streams through the shared transport contract; keep provider protocol clients in their own `client.py` modules and move generic work pools to `core`. Rate-limit cooldowns are isolated per transport session.
 
 - Flatten reference normalization into `webaiprovider.normalizers` and use direct imports instead of routing normalization helpers through data models.
 

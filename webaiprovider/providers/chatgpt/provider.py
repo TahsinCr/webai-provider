@@ -57,6 +57,7 @@ from ...resources.chat import (
     BranchableChat,
     MovableChat,
 )
+from ...transport import AsyncTransport, PortalTransport, ThreadedTransport
 from ...utils.timing import current_send_timing
 from .client import ChatGPTClient
 from .collections import AsyncChatGPTProjectsCollection
@@ -109,8 +110,15 @@ class AsyncChatGPTProvider(AsyncProvider):
         type: ProviderType | str | None = None,
         session: BrowserSession | None = None,
         client_factory: Callable = ChatGPTClient,
+        transport: AsyncTransport | None = None,
     ) -> None:
-        super().__init__(account, type=type)
+        super().__init__(account, type=type, transport=transport)
+        self._provided_transport = transport
+        if transport is not None and transport.origin != "https://chatgpt.com":
+            raise ValueError("ChatGPT transport must use the ChatGPT origin")
+        self._transport = transport or ThreadedTransport(
+            "https://chatgpt.com", self._transport_scope
+        )
         self.session = session or BrowserSession(SessionPaths(account.store()))
         self._factory = client_factory
         self._persistent_client = client_factory is ChatGPTClient
@@ -131,12 +139,28 @@ class AsyncChatGPTProvider(AsyncProvider):
         if self._persistent_client:
             with self._http_lock:
                 if self._http_client is None:
-                    self._http_client = self._factory(self.session)
+                    options = {}
+                    if self._provided_transport is not None:
+                        options["transport"] = PortalTransport(
+                            self._call_transport, lambda: self._provided_transport
+                        )
+                    self._http_client = self._factory(self.session, **options)
                     self._http_client.temporary_conversations = self._temporary_conversations
                 yield self._http_client
             return
         with self._factory(self.session) as client:
             yield client
+
+    @contextmanager
+    def _transport_scope(self):
+        with self._client_scope() as client:
+            yield client.transport
+
+    def _call_transport(self, coroutine):
+        if self._loop is None or not self._loop.is_running():
+            coroutine.close()
+            raise ProviderError("Open the provider before using its transport")
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
 
     async def _discard_http_client(self):
         def discard():
@@ -200,13 +224,17 @@ class AsyncChatGPTProvider(AsyncProvider):
             raise
 
     async def _close_provider(self):
-        async with self._gate:
-            async with self._rename_gate:
-                try:
-                    await self.editor.close()
-                finally:
-                    self._temporary_conversations.clear()
-                    await self._discard_http_client()
+        try:
+            async with self._gate:
+                async with self._rename_gate:
+                    try:
+                        await self.editor.close()
+                    finally:
+                        self._temporary_conversations.clear()
+                        await self._discard_http_client()
+        finally:
+            if self._provided_transport is not None:
+                await self._provided_transport.close()
 
     async def session_status(self) -> SessionStatus:
         saved = session_exists(self.session.paths.session_file)

@@ -15,8 +15,9 @@ from webaiprovider.async_provider import MessageAction, _ProviderRequest, _Repla
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.models import Choice, Model
 from webaiprovider.providers.gemini import AsyncGeminiProvider
+from webaiprovider.providers.gemini.generation import generation_request, upload_files
 from webaiprovider.providers.gemini.session import GeminiSession
-from webaiprovider.providers.gemini.transport import generation_request, upload_files
+from webaiprovider.transport import AsyncRequestTransport
 
 
 async def delayed_response(_request):
@@ -43,7 +44,8 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             "rpc_path_prefix": "/_/BardChatUi/",
         }
         http = SimpleNamespace(
-            get=AsyncMock(return_value=SimpleNamespace(status_code=401)), close=AsyncMock()
+            get=AsyncMock(return_value=SimpleNamespace(status_code=401, content=b"")),
+            close=AsyncMock(),
         )
         factory = Mock(return_value=http)
         session = GeminiSession(Path("unused"), http_factory=factory)
@@ -145,7 +147,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             }
 
         request = _ProviderRequest("question")
-        with patch("webaiprovider.providers.gemini.transport.generate", generate):
+        with patch("webaiprovider.providers.gemini.generation.generate", generate):
             _ = [event async for event in provider._stream(request)]
 
         self.assertEqual(events, ["activity", "generation"])
@@ -308,6 +310,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         mock_status_response = SimpleNamespace(
             status_code=200,
             text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
+            content=b"",
         )
         session.http = SimpleNamespace(
             get=AsyncMock(return_value=mock_status_response),
@@ -365,10 +368,15 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 path.write_text("fixture")
             http = SimpleNamespace(
                 post=AsyncMock(
-                    return_value=SimpleNamespace(status_code=200, text="uploaded", headers={})
+                    return_value=SimpleNamespace(
+                        status_code=200, text="uploaded", headers={}, content=b"uploaded"
+                    )
                 )
             )
             session = SimpleNamespace(http=http, push_id="push")
+            session.upload_transport = AsyncRequestTransport(
+                "https://content-push.googleapis.com", client_getter=lambda: session.http
+            )
             with patch(
                 "pathlib.Path.read_bytes", side_effect=AssertionError("must stream from disk")
             ):
@@ -421,7 +429,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cookie_refresh_retries_transient_network_error_with_backoff(self):
         session = GeminiSession(Path("unused"))
-        response = SimpleNamespace(status_code=200, headers={})
+        response = SimpleNamespace(status_code=200, headers={}, content=b"")
         requests = 0
 
         async def post(*_args, **_kwargs):
@@ -452,7 +460,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_cookie_refresh_stops_on_expired_session(self):
         session = GeminiSession(Path("unused"))
         session.http = SimpleNamespace(
-            post=AsyncMock(return_value=SimpleNamespace(status_code=401, headers={}))
+            post=AsyncMock(return_value=SimpleNamespace(status_code=401, headers={}, content=b""))
         )
 
         with patch("webaiprovider.providers.gemini.session.asyncio.sleep", new=AsyncMock()):
@@ -477,7 +485,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             response.astream_task = asyncio.create_task(asyncio.Event().wait())
             response.astream_task.add_done_callback(lambda _: setattr(response, "closed", True))
 
-        return SimpleNamespace(
+        session = SimpleNamespace(
             http=SimpleNamespace(request=AsyncMock(return_value=response)),
             models=(
                 Model(
@@ -501,15 +509,27 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             persist=AsyncMock(),
         )
 
+        session.transport = AsyncRequestTransport(
+            "https://gemini.google.com", client_getter=lambda: session.http
+        )
+        return session
+
     def response(self, payloads):
         async def content():
             for payload in payloads:
                 yield payload
 
-        return SimpleNamespace(status_code=200, headers={}, aiter_content=content, closed=False)
+        return SimpleNamespace(
+            status_code=200,
+            headers={},
+            aiter_content=content,
+            aclose=AsyncMock(),
+            closed=False,
+            content=b"",
+        )
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
-        from webaiprovider.providers.gemini.transport import generate
+        from webaiprovider.providers.gemini.generation import generate
         from webaiprovider.utils.timing import SendTiming, use_send_timing
 
         candidate = [None] * 38
@@ -564,7 +584,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_aborts_an_actual_stalled_http_transfer(self):
         from curl_cffi.requests import AsyncSession
 
-        from webaiprovider.providers.gemini.transport import generate
+        from webaiprovider.providers.gemini.generation import generate
 
         accepted = asyncio.Event()
         requests = []
@@ -596,9 +616,12 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         port = server.sockets[0].getsockname()[1]
         session = self.session(None)
         session.http = AsyncSession(trust_env=False)
+        session.transport = AsyncRequestTransport(
+            f"http://127.0.0.1:{port}", client_getter=lambda: session.http
+        )
         try:
             with patch(
-                "webaiprovider.providers.gemini.transport.BASE", f"http://127.0.0.1:{port}/"
+                "webaiprovider.providers.gemini.generation.BASE", f"http://127.0.0.1:{port}/"
             ):
                 stream = generate(session, _ProviderRequest("question"), [])
                 pending = asyncio.create_task(anext(stream))
@@ -619,7 +642,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
     async def test_incomplete_stream_is_not_success_or_retried(self):
-        from webaiprovider.providers.gemini.transport import generate
+        from webaiprovider.providers.gemini.generation import generate
 
         response = self.response([b""])
         session = self.session(response)
@@ -629,7 +652,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         session.persist.assert_not_awaited()
 
     async def test_cancellation_closes_stream_without_resending(self):
-        from webaiprovider.providers.gemini.transport import generate
+        from webaiprovider.providers.gemini.generation import generate
 
         entered = asyncio.Event()
 
@@ -711,7 +734,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
+        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
             _ = [
                 e
                 async for e in provider._stream_request(
@@ -814,6 +837,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         mock_status_response = SimpleNamespace(
             status_code=200,
             text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
+            content=b"",
         )
         session.http = SimpleNamespace(
             get=AsyncMock(return_value=mock_status_response),
@@ -866,7 +890,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             }
 
         async def retry(message_id):
-            with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
+            with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
                 return [
                     event
                     async for event in provider._stream_request(

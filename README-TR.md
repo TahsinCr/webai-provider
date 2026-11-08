@@ -66,6 +66,10 @@ with ChatGPTProvider(account) as provider:
 
 Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri sunar. Hesaptan keşfedilen modeller, o hesap için yetkili kaynaktır; aboneliğe ve sağlayıcı değişikliklerine göre farklılık gösterebilir.
 
+## Alt seviye transport API’si
+
+Tüm sağlayıcılar, kendi origin’iyle sınırlı `send`, JSON `request` ve parçalı `stream` işlemleri için `provider.transport` sunar. Senkron ve asenkron API aynı bağlantı yaşam döngüsünü kullanır. Özel transport sağlayabilir veya HTTP, SSE ve JSPB araçlarını kullanarak kendi uzantılarınızı oluşturabilirsiniz. Sözleşmeler, oturum sınırları ve kapanış davranışı için [transport ve frame rehberine](docs/transport.md) bakın.
+
 ## Güvenlik ve çalışma biçimi
 
 - Tarayıcı kimlik bilgileri yerel olarak okunur. Kütüphane bunları SiopeChat sunucusuna göndermez.

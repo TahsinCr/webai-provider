@@ -34,7 +34,7 @@ def _read_limited(path):
 async def _iter_bounded_lines(response):
     buffer = bytearray()
     total = 0
-    async for chunk in response.aiter_content():
+    async for chunk in response.aiter_bytes():
         total += len(chunk)
         if total > _MAX_STREAM_BYTES:
             raise ProviderError("Grok stream response exceeds the size limit")
@@ -62,9 +62,12 @@ async def _iter_bounded_lines(response):
             raise ProviderError("Grok stream response format has changed") from None
 
 
-class GrokTransport:
-    def __init__(self, credential_file, *, client_factory=None):
+class GrokClient:
+    def __init__(self, credential_file, *, client_factory=None, transport=None):
         self.session = HttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
+        self.http = transport or self.session
+        if transport is not None and self.http.origin != "https://grok.com":
+            raise ValueError("Provider transport origin does not match its account")
         self._auth_lock = asyncio.Lock()
 
     async def authenticate(self):
@@ -79,7 +82,7 @@ class GrokTransport:
 
     async def _check_authentication(self):
         try:
-            status = await self.session.request("GET", "/rest/user-settings")
+            status = await self.http.request("GET", "/rest/user-settings")
         except AccountPaused:
             self.session.authenticated = False
             raise
@@ -94,7 +97,7 @@ class GrokTransport:
     async def request(self, method, path, **options):
         await self._ensure_authenticated()
         try:
-            return await self.session.request(method, path, **options)
+            return await self.http.request(method, path, **options)
         except AccountPaused:
             self.session.authenticated = False
             raise
@@ -143,16 +146,14 @@ class GrokTransport:
     async def events(self, path, body):
         await self._ensure_authenticated()
         try:
-            client = self.session.connect()
-            async with client.stream(
+            async with self.http.stream(
                 "POST",
-                self.session.url(path),
+                path,
                 json=body,
                 headers={"accept": "application/x-ndjson, text/event-stream"},
                 allow_redirects=False,
                 timeout=600,
             ) as response:
-                self.session.check(response)
                 decoder = SSEFrameDecoder(max_event_bytes=_MAX_LINE_BYTES, utf8_errors="strict")
 
                 def parse(raw):
@@ -181,13 +182,17 @@ class GrokTransport:
             await self.session.persist()
 
     async def close(self):
-        await self.session.close()
+        try:
+            await self.http.close()
+        finally:
+            if self.http is not self.session:
+                await self.session.close()
         self.session.authenticated = False
 
 
 class GrokProjectEditor:
     def __init__(self, transport):
-        self.transport = transport
+        self.client = transport
 
     async def options(self, project_id=None):
         return ProjectOptions(
@@ -216,7 +221,7 @@ class GrokProjectEditor:
                 body["customPersonality"] = values["instructions"]
             if not body:
                 raise ValueError("A Grok project change is required")
-            return await self.transport.request("PUT", project_path, json=body)
+            return await self.client.request("PUT", project_path, json=body)
         if operation == "add_source":
             if values.get("kind") not in ("text", "file"):
                 raise ValueError("Grok supports only text and file resources")
@@ -249,7 +254,7 @@ class GrokProjectEditor:
                 for source in values.get("existing_resources", ())
             ):
                 raise ValueError("A Grok project resource with this name already exists")
-            return await self.transport.request(
+            return await self.client.request(
                 "POST",
                 project_path + "/files/upload",
                 json={
@@ -264,13 +269,13 @@ class GrokProjectEditor:
                 raise ValueError("Grok project resource was not found")
             item = source.metadata
             if item.get("path"):
-                return await self.transport.request(
+                return await self.client.request(
                     "DELETE",
                     project_path + "/files",
                     params={"path": item["path"], "recursive": "false"},
                 )
             if item.get("assetId"):
-                return await self.transport.request(
+                return await self.client.request(
                     "DELETE", project_path + "/assets/" + remote_id(item["assetId"])
                 )
             raise ValueError("Grok project resource was not found")

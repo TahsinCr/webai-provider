@@ -1,25 +1,18 @@
 import asyncio
-import time
-from urllib.parse import urlsplit
 
 from ..accounts.credentials import read_session, save_session_async
 from ..accounts.filters import ProviderCookieFilter
-from ..core import ProviderResilienceRegistry
-from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
-from .retry import parse_retry_after
-from .worker import DEFAULT_JSON_OFFLOAD_THRESHOLD, BoundedWorkPool
-
-_ORIGIN_RESILIENCE = ProviderResilienceRegistry()
-_GLOBAL_WORK_POOL = BoundedWorkPool(max_workers=4)
+from .http import AsyncHTTPTransport
 
 
-class HttpSession:
-    resilience = _ORIGIN_RESILIENCE
-    work_pool = _GLOBAL_WORK_POOL
-
-    def __init__(self, origin, credential_file, required_cookie, *, client_factory=None):
+class HttpSession(AsyncHTTPTransport):
+    def __init__(
+        self, origin, credential_file, required_cookie, *, client_factory=None, config=None
+    ):
         ProviderCookieFilter.validate_origin(origin)
-        self.origin = origin
+        super().__init__(
+            origin, client_factory=client_factory, after_response=self.persist, config=config
+        )
         self.path = credential_file
         self.required_cookie = required_cookie
         self.factory = client_factory
@@ -29,7 +22,7 @@ class HttpSession:
         self._save_lock = asyncio.Lock()
         self.persistence_warning = None
 
-    def connect(self):
+    def _connect(self):
         if self.client is None:
             values = read_session(self.path)
             raw_cookies = values.get("cookies", values)
@@ -45,7 +38,7 @@ class HttpSession:
             self.client = factory(
                 cookies=cookies,
                 impersonate="chrome",
-                timeout=60,
+                timeout=self.config.timeout,
                 headers={
                     "origin": self.origin,
                     "referer": self.origin + "/",
@@ -54,63 +47,10 @@ class HttpSession:
             )
         return self.client
 
-    def url(self, path):
-        parsed = urlsplit(path)
-        if (
-            parsed.scheme
-            or parsed.netloc
-            or not path.startswith("/")
-            or ".." in parsed.path
-            or path.startswith("//")
-        ):
-            raise ValueError("session request must remain on its origin")
-        return self.origin + path
-
-    @staticmethod
-    def check(response):
-        code = response.status_code
-        if code == 401 or code in (301, 302, 303, 307, 308):
-            raise AccountPaused(
-                "Provider session has expired; verify it through the Accounts section"
-            )
-        if code == 403:
-            raise ProviderError(
-                "Provider denied access to this operation (403); the request was not retried"
-            )
-        if code == 404:
-            raise RemoteNotFound("Remote record was not found")
-        if code == 429:
-            value = response.headers.get("retry-after", "")
-            delay = parse_retry_after(value, now=time.time())
-            raise RateLimited(delay)
-        if not 200 <= code < 300:
-            raise ProviderError(f"Provider request failed (HTTP {code})")
-
-    async def request(self, method, path, **options):
-        if _ORIGIN_RESILIENCE.is_rate_limited(self.origin):
-            remaining = _ORIGIN_RESILIENCE.rate_limit_remaining(self.origin)
-            raise RateLimited(remaining if remaining > 0 else 1.0)
-        url = self.url(path)
-        try:
-            response = await self.connect().request(method, url, allow_redirects=False, **options)
-            self.check(response)
-        except RateLimited as exc:
-            delay = getattr(exc, "retry_after", None)
-            if delay and isinstance(delay, (int, float)) and delay > 0:
-                _ORIGIN_RESILIENCE.register_rate_limit(self.origin, float(delay))
-            raise
+    async def send(self, method, path, **options):
+        response = await super().send(method, path, **options)
         self.authenticated = True
-        await self.persist()
-        if response.status_code == 204 or not response.content:
-            return None
-        if len(response.content) > 16 * 1024 * 1024:
-            raise ProviderError("Provider response exceeds the size limit")
-        try:
-            if len(response.content) >= DEFAULT_JSON_OFFLOAD_THRESHOLD:
-                return await asyncio.to_thread(response.json)
-            return response.json()
-        except ValueError:
-            raise ProviderError("Provider response format has changed") from None
+        return response
 
     async def persist(self):
         if self.client is None or self._saved_cookies is None:
@@ -133,12 +73,3 @@ class HttpSession:
                     self.persistence_warning = (
                         "The session was refreshed, but the local record could not be updated."
                     )
-
-    async def close(self):
-        client = self.client
-        if client is not None:
-            try:
-                await self.persist()
-            finally:
-                self.client = None
-                await client.close()

@@ -17,6 +17,7 @@ from .resources.message import Message
 from .resources.operation import MessageOperation
 from .resources.project import Project
 from .resources.response import Response
+from .transport import AsyncTransport, PortalTransport, Transport
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -51,15 +52,25 @@ class Provider(BaseProvider):
     projects_collection_type = None
     models_collection_type = None
 
-    def __init__(self, account: Account, *, type: ProviderType | str | None = None) -> None:
+    def __init__(
+        self,
+        account: Account,
+        *,
+        type: ProviderType | str | None = None,
+        transport: AsyncTransport | None = None,
+    ) -> None:
         super().__init__(account, type=type)
         provider_type = self.async_provider_type
         if provider_type is None:
             from .async_provider import AsyncProvider
 
             provider_type = AsyncProvider
-        self._provider = provider_type(account, type=self.type)
+        options = {"type": self.type}
+        if transport is not None:
+            options["transport"] = transport
+        self._provider = provider_type(account, **options)
         self._portal = SyncPortalBridge()
+        self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
         self._portal_started = False
         self._opened = False
         self._closed = False

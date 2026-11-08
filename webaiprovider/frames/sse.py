@@ -1,12 +1,12 @@
 """Bounded incremental Server-Sent Events framing."""
 
-from dataclasses import dataclass
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from typing import NamedTuple
 
 from ..errors import FrameDecodeError
 
 
-@dataclass(frozen=True)
-class SSEFrame:
+class SSEFrame(NamedTuple):
     data: str
     event: str = "message"
     id: str | None = None
@@ -14,7 +14,13 @@ class SSEFrame:
 
 
 class SSEFrameDecoder:
-    def __init__(self, *, max_event_bytes=2_000_000, max_data_lines=65_536, utf8_errors="replace"):
+    def __init__(
+        self,
+        *,
+        max_event_bytes: int = 2_000_000,
+        max_data_lines: int = 65_536,
+        utf8_errors: str = "replace",
+    ):
         if max_event_bytes <= 0 or max_data_lines <= 0:
             raise ValueError("SSE frame limits must be positive")
         self.max_event_bytes = max_event_bytes
@@ -31,8 +37,10 @@ class SSEFrameDecoder:
 
     def _append(self, piece):
         length = len(self._line)
-        prefix = bytes(self._line[:5]) + piece[: max(0, 5 - length)]
-        if prefix == b"data:":
+        is_data = self._line.startswith(b"data:")
+        if not is_data and length < 5:
+            is_data = bytes(self._line) + piece[: 5 - length] == b"data:"
+        if is_data:
             value_size = max(0, length + len(piece) - 5)
             first = self._line[5:6] if length > 5 else piece[max(0, 5 - length) :][:1]
             value_size -= first == b" "
@@ -42,7 +50,7 @@ class SSEFrameDecoder:
             raise FrameDecodeError("SSE line exceeds the size limit")
         self._line.extend(piece)
 
-    def feed_line(self, line):
+    def feed_line(self, line: bytes | str) -> Iterator[SSEFrame]:
         """Consume one line without its CR/LF terminator."""
         raw = line.encode("utf-8") if isinstance(line, str) else line
         if len(raw) > self.max_event_bytes + 6:
@@ -82,7 +90,7 @@ class SSEFrameDecoder:
             if len(value) <= 10:
                 self._retry = int(value)
 
-    def feed(self, chunk, *, final=False):
+    def feed(self, chunk: bytes, *, final: bool = False) -> Iterator[SSEFrame]:
         offset = 0
         while offset < len(chunk):
             if self._skip_lf:
@@ -110,14 +118,14 @@ class SSEFrameDecoder:
                 yield from self.feed_line(raw)
             yield from self.feed_line(b"")
 
-    def decode(self, chunks):
+    def decode(self, chunks: Iterable[bytes]) -> Iterator[SSEFrame]:
         for chunk in chunks:
             yield from self.feed(chunk)
         yield from self.feed(b"", final=True)
 
-    async def decode_lines(self, lines):
-        async for line in lines:
-            for frame in self.feed_line(line):
+    async def decode_async(self, chunks: AsyncIterable[bytes]) -> AsyncIterator[SSEFrame]:
+        async for chunk in chunks:
+            for frame in self.feed(chunk):
                 yield frame
         for frame in self.feed(b"", final=True):
             yield frame

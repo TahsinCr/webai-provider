@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
+    "ClaudeClient": "client",
     "ClaudeCompatibilityError": "errors",
     "ClaudeError": "errors",
     "ClaudeRequestNotSent": "errors",

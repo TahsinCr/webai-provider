@@ -29,10 +29,10 @@ from ...models import (
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import MovableChat
 from ...utils.timing import current_send_timing
+from .client import ClaudeClient, ClaudeProjectEditor
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .resources import AsyncClaudeChat
-from .transport import ClaudeProjectEditor, ClaudeTransport
 
 
 class AsyncClaudeProvider(AsyncProvider):
@@ -62,13 +62,16 @@ class AsyncClaudeProvider(AsyncProvider):
         }
     )
 
-    def __init__(self, account: Account, *, type: ProviderType | str | None = None) -> None:
+    def __init__(
+        self, account: Account, *, type: ProviderType | str | None = None, transport=None
+    ) -> None:
         super().__init__(account, type=type)
         self.credential_file = account.store()
-        self.transport = ClaudeTransport(self.credential_file)
+        self.client = ClaudeClient(self.credential_file, transport=transport)
         self._gate = asyncio.Lock()
         self._rename_gate = asyncio.Lock()
-        self.editor = ClaudeProjectEditor(self.transport)
+        self._transport = self.client.http
+        self.editor = ClaudeProjectEditor(self.client)
 
     async def _close_provider(self):
         async with self._rename_gate:
@@ -76,28 +79,28 @@ class AsyncClaudeProvider(AsyncProvider):
                 await self.editor.close()
             except BaseException as editor_error:
                 try:
-                    await self.transport.close()
+                    await self.client.close()
                 except BaseException as close_error:
                     raise editor_error from close_error
                 raise
-            await self.transport.close()
+            await self.client.close()
 
     async def prepare(self):
-        await self.transport.prepare()
+        await self.client.prepare()
 
     async def upload_file(self, path):
         async with self._gate:
-            return await self.transport.upload_file(path)
+            return await self.client.upload_file(path)
 
     async def authenticate(self):
         async with self._gate:
-            await self.transport.request("status")
+            await self.client.request("status")
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
     async def session_status(self):
         return SessionStatus(
             SessionState.AUTHENTICATED
-            if self.transport.authenticated
+            if self.client.authenticated
             else SessionState.UNKNOWN
             if session_exists(self.credential_file)
             else SessionState.LOGIN_REQUIRED,
@@ -109,7 +112,7 @@ class AsyncClaudeProvider(AsyncProvider):
 
         from ...accounts import read_session
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
-        from .transport import remote_id
+        from .client import remote_id
 
         parsed = urlsplit(url)
         path = unquote(parsed.path)
@@ -128,9 +131,9 @@ class AsyncClaudeProvider(AsyncProvider):
             raise ValueError("Unsupported conversation file path")
         if not conversation_id:
             raise ValueError("Conversation ID is not available for this file yet")
-        base = await self.transport.base()
+        base = await self.client.base()
         endpoint = base + "/conversations/" + remote_id(conversation_id) + "/wiggle"
-        listing = await self.transport.session.request("GET", endpoint + "/list-files?prefix=")
+        listing = await self.client.http.request("GET", endpoint + "/list-files?prefix=")
         files = listing.get("files_metadata", []) if isinstance(listing, dict) else []
         if not any(isinstance(item, dict) and item.get("path") == path for item in files):
             raise ValueError("File was not found in the conversation record or has expired")
@@ -158,12 +161,12 @@ class AsyncClaudeProvider(AsyncProvider):
         async with self._gate:
             await self.close()
             delete_session(self.credential_file)
-            self.transport.authenticated = False
+            self.client.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def _load_model_catalog(self, *, force: bool = False):
         async with self._gate:
-            data = await self.transport.request("models", force=force)
+            data = await self.client.request("models", force=force)
             models = []
             for item in data["models"]:
                 efforts = tuple(Choice(x["id"], x["title"]) for x in item["efforts"])
@@ -185,7 +188,7 @@ class AsyncClaudeProvider(AsyncProvider):
             return ModelCatalog(FeatureState.AVAILABLE, tuple(models), data.get("default_model"))
 
     async def list_chats(self, cursor=None, limit=50):
-        values = await self.transport.request("chats", cursor=cursor, limit=limit)
+        values = await self.client.request("chats", cursor=cursor, limit=limit)
         if not isinstance(values, list):
             raise ClaudeCompatibilityError("Claude conversation list response changed")
         return Page(
@@ -194,7 +197,7 @@ class AsyncClaudeProvider(AsyncProvider):
         )
 
     async def get_chat(self, conversation_id):
-        raw = await self.transport.request("history", conversation_id=conversation_id)
+        raw = await self.client.request("history", conversation_id=conversation_id)
         return await asyncio.to_thread(
             conversation,
             raw,
@@ -202,28 +205,26 @@ class AsyncClaudeProvider(AsyncProvider):
         )
 
     async def conversation_attachment_count(self, conversation_id):
-        value = await self.transport.request("history", conversation_id=conversation_id)
+        value = await self.client.request("history", conversation_id=conversation_id)
         return conversation_attachment_count(value)
 
     async def list_projects(self, cursor=None):
         if cursor:
             raise ValueError("Claude project listing does not use a cursor")
         async with self._gate:
-            values = await self.transport.request("projects")
+            values = await self.client.request("projects")
             if not isinstance(values, list):
                 raise ClaudeCompatibilityError("Claude project list response changed")
             return Page(tuple(project(x, self.account_id) for x in values))
 
     async def get_project(self, project_id):
-        return project(
-            await self.transport.request("project", project_id=project_id), self.account_id
-        )
+        return project(await self.client.request("project", project_id=project_id), self.account_id)
 
     async def list_project_chats(self, project_id, cursor=None):
         if cursor:
             raise ValueError("Claude project conversation listing does not use a cursor")
         async with self._gate:
-            values = await self.transport.request("project_chats", project_id=project_id)
+            values = await self.client.request("project_chats", project_id=project_id)
             if not isinstance(values, list):
                 raise ClaudeCompatibilityError("Claude project conversation response changed")
             return Page(
@@ -237,7 +238,7 @@ class AsyncClaudeProvider(AsyncProvider):
             raise ValueError("Project name must contain 1–200 characters")
         async with self._gate:
             return project(
-                await self.transport.request(
+                await self.client.request(
                     "create_project", name=name.strip(), instructions=instructions
                 ),
                 self.account_id,
@@ -247,21 +248,21 @@ class AsyncClaudeProvider(AsyncProvider):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
             raise ValueError("Chat title must contain 1–200 characters")
         async with self._rename_gate:
-            await self.transport.request(
+            await self.client.request(
                 "rename_chat", conversation_id=conversation_id, title=title.strip()
             )
 
     async def delete_chat(self, conversation_id):
         async with self._gate:
-            await self.transport.request("delete_chat", conversation_id=conversation_id)
+            await self.client.request("delete_chat", conversation_id=conversation_id)
 
     async def delete_project(self, project_id):
         async with self._gate:
-            await self.transport.request("delete_project", project_id=project_id)
+            await self.client.request("delete_project", project_id=project_id)
 
     async def move_chat(self, conversation_id, project_id):
         async with self._gate:
-            await self.transport.request(
+            await self.client.request(
                 "move_chat", conversation_id=conversation_id, project_id=project_id
             )
 
@@ -271,7 +272,7 @@ class AsyncClaudeProvider(AsyncProvider):
                 Capability.TEMPORARY,
                 "projects_not_supported",
             )
-        if not session_exists(self.credential_file) and not self.transport.authenticated:
+        if not session_exists(self.credential_file) and not self.client.authenticated:
             raise AccountPaused("Verify the Claude account in the Accounts section")
         timing = current_send_timing()
         gate_started = time.perf_counter_ns() if timing is not None else None
@@ -279,7 +280,7 @@ class AsyncClaudeProvider(AsyncProvider):
             if gate_started is not None:
                 timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
             completed = False
-            async for event in self.transport.events(
+            async for event in self.client.events(
                 "send",
                 prompt=request.prompt,
                 conversation_id=request.conversation_id,

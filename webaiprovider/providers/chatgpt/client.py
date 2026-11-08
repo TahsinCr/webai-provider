@@ -19,6 +19,7 @@ import httpx
 from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
 from ...frames import SSEFrameDecoder
+from ...transport import HTTPTransport, Transport, TransportConfig
 from ...utils.timing import SendTiming, current_send_timing
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (
@@ -69,7 +70,13 @@ def system_timezone():
 
 
 class ChatGPTClient:
-    def __init__(self, session: BrowserSession, *, authenticate: bool = True) -> None:
+    def __init__(
+        self,
+        session: BrowserSession,
+        *,
+        authenticate: bool = True,
+        transport: Transport | None = None,
+    ) -> None:
         self.session = session
         self.cdp_url = session.cdp_url
         self.list_url = ""
@@ -93,6 +100,12 @@ class ChatGPTClient:
             follow_redirects=False,
             timeout=httpx.Timeout(30.0),
             limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=60.0),
+        )
+        self.transport = transport or HTTPTransport(
+            CHATGPT_ORIGIN,
+            client_getter=lambda: self.http,
+            config=TransportConfig(timeout=30),
+            headers=self._transport_headers,
         )
         if http_started is not None:
             timing.record("httpx_client_construct_ms", time.perf_counter_ns() - http_started)
@@ -198,12 +211,23 @@ class ChatGPTClient:
                 "No saved session; verify the account in the Accounts section"
             ) from None
 
+    def _transport_headers(self, method, path):
+        headers = dict(self.headers)
+        headers["accept-encoding"] = "gzip, deflate"
+        target = urlsplit(path).path
+        headers["x-openai-target-path"] = target
+        headers["x-openai-target-route"] = target
+        return headers
+
     def refresh_session(self) -> None:
         headers = self.headers.copy()
         headers.pop("authorization", None)
         headers["accept-encoding"] = "gzip, deflate"
-        response = self.http.get(
-            urljoin(CHATGPT_ORIGIN, "/api/auth/session"),
+        response = self.transport.send(
+            "GET",
+            "/api/auth/session",
+            check_status=False,
+            inherit_headers=False,
             headers=headers,
             timeout=30,
         )
@@ -241,7 +265,10 @@ class ChatGPTClient:
             target_path = urlsplit(url).path
             request_headers["x-openai-target-path"] = target_path
             request_headers["x-openai-target-route"] = target_path
-            response = self.http.request(method, url, headers=request_headers, **kwargs)
+            path = target.path + ("?" + target.query if target.query else "")
+            response = self.transport.send(
+                method, path, headers=request_headers, check_status=False, **kwargs
+            )
             if (
                 response.status_code not in (401, 403)
                 or attempt == 1
@@ -782,9 +809,10 @@ class ChatGPTClient:
         sse_connect_started = time.perf_counter_ns() if timing is not None else None
         first_sse_event = False
         first_assistant_text = False
-        with self.http.stream(
+        with self.transport.stream(
             method,
-            url,
+            url.removeprefix(CHATGPT_ORIGIN),
+            check_status=False,
             headers=headers,
             json=body,
             timeout=httpx.Timeout(300.0),
@@ -1145,6 +1173,14 @@ class ChatGPTClient:
                 body["conversation_id"] = conversation_id
         return body
 
+    def _upload_request(self, url, **options):
+        target = urlsplit(url)
+        if target.scheme != "https" or not target.hostname or target.username or target.password:
+            raise ChatGPTError("Upload URL must be an HTTPS origin without credentials")
+        path = (target.path or "/") + ("?" + target.query if target.query else "")
+        transport = HTTPTransport(f"https://{target.netloc}", client_getter=lambda: self.http)
+        return transport.send("PUT", path, check_status=False, **options)
+
     def upload_file(
         self, file_name: str, mime_type: str, data, *, project_id=None, cancel_event=None
     ) -> dict[str, Any]:
@@ -1221,7 +1257,9 @@ class ChatGPTClient:
             import httpx
 
             timeout = httpx.Timeout(connect=30, read=15, write=15, pool=30)
-            response = self.http.put(upload_url, content=content, headers=headers, timeout=timeout)
+            response = self._upload_request(
+                upload_url, content=content, headers=headers, timeout=timeout
+            )
             response.raise_for_status()
             ensure_active()
             if stream is not None:
@@ -1284,7 +1322,7 @@ class ChatGPTClient:
         upload_url = slot.get("upload_url")
         if not isinstance(file_id, str) or not isinstance(upload_url, str):
             raise ChatGPTError("ChatGPT returned an invalid image upload slot")
-        upload = self.http.put(
+        upload = self._upload_request(
             upload_url,
             content=data,
             headers={"content-type": mime_type, "x-ms-blob-type": "BlockBlob"},

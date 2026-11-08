@@ -50,7 +50,7 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = MessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
-        provider.transport.authenticated = True
+        provider.client.authenticated = True
 
         async def fake_events(*args, **kwargs):
             yield {"type": "bound", "id": "claude-conv-123"}
@@ -66,7 +66,7 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
             }
             yield {"type": "done"}
 
-        provider.transport.events = fake_events
+        provider.client.events = fake_events
 
         with patch("webaiprovider.providers.claude.provider.session_exists", return_value=True):
             events = [event async for event in provider.execute_stream(operation)]
@@ -100,7 +100,7 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = MessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
-        provider.transport.authenticated = False
+        provider.client.authenticated = False
 
         with patch("webaiprovider.providers.claude.provider.session_exists", return_value=False):
             with self.assertRaises(AccountPaused):
@@ -139,7 +139,7 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        provider.transport.events = fake_events
+        provider.client.events = fake_events
 
         events = [event async for event in provider.execute_stream(operation)]
 
@@ -176,7 +176,7 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        provider.transport.events = fake_events
+        provider.client.events = fake_events
 
         with self.assertRaises(RateLimited) as cm:
             _ = [event async for event in provider.execute_stream(operation)]
@@ -220,7 +220,7 @@ class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.transport.generate", fake_generate):
+        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
             events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")

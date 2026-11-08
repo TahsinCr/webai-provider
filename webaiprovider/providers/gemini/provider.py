@@ -37,6 +37,7 @@ from ...models import (
 from ...normalizers import files_from, sources_from
 from ...provider import Provider, ProviderType, SyncChat
 from ...resources.chat import BranchableChat
+from ...transport import AsyncTransport
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .resources import AsyncGeminiChat
@@ -79,8 +80,12 @@ class AsyncGeminiProvider(AsyncProvider):
         type: ProviderType | str | None = None,
         client_factory=None,
         notebooks: Notebooks | None = None,
+        transport: AsyncTransport | None = None,
     ) -> None:
-        super().__init__(account, type=type)
+        super().__init__(account, type=type, transport=transport)
+        self._provided_transport = transport
+        if transport is not None and transport.origin != "https://gemini.google.com":
+            raise ValueError("Gemini transport must use the Gemini origin")
         self._media = {}
         self.cookie_file = account.store()
         self._factory = client_factory
@@ -141,7 +146,7 @@ class AsyncGeminiProvider(AsyncProvider):
         from .session import GeminiSession
 
         client = (
-            GeminiSession(self.cookie_file)
+            GeminiSession(self.cookie_file, transport=self._provided_transport)
             if self._factory is None
             else self._factory(self.cookie_file)
         )
@@ -153,6 +158,7 @@ class AsyncGeminiProvider(AsyncProvider):
         ):
             client.models = self._cached_models
         self._client = client
+        self._transport = self._provided_transport or getattr(client, "transport", None)
         return client
 
     async def _close_provider(self):
@@ -177,6 +183,8 @@ class AsyncGeminiProvider(AsyncProvider):
         else:
             if self._client is client:
                 self._client = None
+                if self._provided_transport is None:
+                    self._transport = None
             if self._client is None:
                 self._chat_metadata.clear()
         if editor_error is not None:
@@ -528,8 +536,8 @@ class AsyncGeminiProvider(AsyncProvider):
         return client, request, metadata, context, action_files
 
     async def _stream(self, request: _ProviderRequest) -> AsyncGenerator[_ProviderEvent, None]:
+        from .generation import generate
         from .media import resolve_image_links
-        from .transport import generate
 
         client, request, metadata, context, action_files = await self._prepare_send_context(request)
         bound, visible, cid = bool(request.conversation_id), False, request.conversation_id

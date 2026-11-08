@@ -79,3 +79,12 @@ def cookie(name, value="secret", domain=".google.com", expires=None):
         {},
         False,
     )
+
+
+def bind_stream(session, origin="https://claude.ai"):
+    """Use the real transport stream policy with a fixture's HTTP client."""
+    from webaiprovider.transport import AsyncHTTPTransport
+
+    session.origin = origin
+    session.stream = AsyncHTTPTransport(origin, client_getter=lambda: session.connect()).stream
+    return session

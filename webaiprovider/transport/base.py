@@ -1,0 +1,209 @@
+"""Public transport contracts and origin-scoped request policy."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
+from typing import Any, AsyncContextManager, ContextManager, Mapping, Protocol
+from urllib.parse import unquote, urlsplit
+
+from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from .retry import parse_retry_after
+
+
+class TransportResponse(Protocol):
+    status_code: int
+    headers: Mapping[str, str]
+    content: bytes
+    text: str
+
+    def json(self) -> Any: ...
+
+
+@dataclass(frozen=True)
+class TransportConfig:
+    timeout: float = 60
+    max_response_bytes: int = 16 * 1024 * 1024
+    max_stream_bytes: int | None = None
+
+    def __post_init__(self):
+        if self.timeout <= 0 or self.max_response_bytes <= 0:
+            raise ValueError("Transport timeout and response limit must be positive")
+        if self.max_stream_bytes is not None and self.max_stream_bytes <= 0:
+            raise ValueError("Transport stream limit must be positive")
+
+
+class AsyncStreamResponse:
+    def __init__(self, response, chunks, limit=None):
+        self.status_code: int = response.status_code
+        self.headers: Mapping[str, str] = response.headers
+        self._chunks = chunks
+        self._limit = limit
+
+    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        size = 0
+        async for chunk in self._chunks:
+            size += len(chunk)
+            if self._limit is not None and size > self._limit:
+                raise ProviderError("Transport stream exceeds the size limit")
+            yield chunk
+
+
+class StreamResponse:
+    def __init__(self, response, limit=None):
+        self.status_code: int = response.status_code
+        self.headers: Mapping[str, str] = response.headers
+        self._response = response
+        self._limit = limit
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        size = 0
+        for chunk in self._response.iter_bytes():
+            size += len(chunk)
+            if self._limit is not None and size > self._limit:
+                raise ProviderError("Transport stream exceeds the size limit")
+            yield chunk
+
+    def close(self):
+        self._response.close()
+
+
+class _TransportPolicy:
+    def __init__(self, origin: str, *, config: TransportConfig | None = None, headers=None):
+        target = urlsplit(origin)
+        if (
+            target.scheme not in ("http", "https")
+            or not target.hostname
+            or target.username is not None
+            or target.password is not None
+            or target.path not in ("", "/")
+            or target.query
+            or target.fragment
+            or "\\" in origin
+            or any(ord(char) < 32 or ord(char) == 127 for char in origin)
+        ):
+            raise ValueError("Transport origin must be an HTTP origin without credentials or path")
+        self.origin = origin.rstrip("/")
+        self.config = config or TransportConfig()
+        self._headers = headers
+        self._rate_limited_until = 0.0
+
+    def url(self, path: str) -> str:
+        parsed = urlsplit(path)
+        decoded = unquote(parsed.path)
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or not path.startswith("/")
+            or path.startswith("//")
+            or ".." in decoded
+            or "\\" in decoded
+            or parsed.fragment
+            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+        ):
+            raise ValueError("Transport request must remain on its origin")
+        return self.origin + path
+
+    def _options(self, options, method, path):
+        if options.pop("stream", False):
+            raise ValueError("Use transport.stream() to own a streaming response")
+        inherit = options.pop("inherit_headers", True)
+        if inherit and self._headers is not None:
+            defaults = self._headers(method, path) if callable(self._headers) else self._headers
+            options["headers"] = {
+                str(key).lower(): value
+                for headers in (defaults, options.get("headers") or {})
+                for key, value in headers.items()
+            }
+        if options.pop("allow_redirects", False) or options.pop("follow_redirects", False):
+            raise ValueError("Authenticated transport redirects are disabled")
+        host = next(
+            (v for k, v in (options.get("headers") or {}).items() if k.lower() == "host"), None
+        )
+        if host is not None and host.casefold() != urlsplit(self.origin).netloc.casefold():
+            raise ValueError("Transport Host header must match its origin")
+        options.setdefault("timeout", self.config.timeout)
+        remaining = self._rate_limited_until - time.monotonic()
+        if remaining > 0:
+            raise RateLimited(remaining)
+        return options
+
+    @staticmethod
+    def check(response):
+        code = response.status_code
+        if code == 401 or code in (301, 302, 303, 307, 308):
+            raise AccountPaused("Provider session expired or redirected; verify the account")
+        if code == 403:
+            raise ProviderError("Provider denied access (HTTP 403); the request was not retried")
+        if code == 404:
+            raise RemoteNotFound("Remote record was not found")
+        if code == 429:
+            raise RateLimited(
+                parse_retry_after(response.headers.get("retry-after", ""), now=time.time())
+            )
+        if not 200 <= code < 300:
+            raise ProviderError(f"Provider request failed (HTTP {code})")
+
+    def _check_response(self, response, check_status):
+        if check_status:
+            try:
+                self.check(response)
+            except RateLimited as error:
+                if error.retry_after is not None and error.retry_after > 0:
+                    self._rate_limited_until = time.monotonic() + error.retry_after
+                raise
+
+    def _check_size(self, response):
+        if len(response.content) > self.config.max_response_bytes:
+            raise ProviderError("Provider response exceeds the size limit")
+
+
+class AsyncTransport(_TransportPolicy, ABC):
+    """Extension contract used by async providers and custom transports."""
+
+    @abstractmethod
+    async def send(self, method: str, path: str, **options) -> TransportResponse: ...
+
+    @abstractmethod
+    def stream(
+        self, method: str, path: str, **options
+    ) -> AsyncContextManager[AsyncStreamResponse]: ...
+
+    async def request(self, method: str, path: str, **options):
+        response = await self.send(method, path, **options)
+        if response.status_code == 204 or not response.content:
+            return None
+        try:
+            if len(response.content) >= 256 * 1024:
+                return await asyncio.to_thread(response.json)
+            return response.json()
+        except ValueError:
+            raise ProviderError("Provider response format has changed") from None
+
+    @abstractmethod
+    async def close(self): ...
+
+
+class Transport(_TransportPolicy, ABC):
+    """Blocking transport contract with the same request semantics."""
+
+    @abstractmethod
+    def send(self, method: str, path: str, **options) -> TransportResponse: ...
+
+    @abstractmethod
+    def stream(self, method: str, path: str, **options) -> ContextManager[StreamResponse]: ...
+
+    def request(self, method: str, path: str, **options):
+        response = self.send(method, path, **options)
+        if response.status_code == 204 or not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            raise ProviderError("Provider response format has changed") from None
+
+    @abstractmethod
+    def close(self): ...

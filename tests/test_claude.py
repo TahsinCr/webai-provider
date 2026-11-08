@@ -7,17 +7,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from tests.fakes import bind_stream
 from tests.provider_fakes import provider_account
 from webaiprovider.async_provider import _ConversationBound, _ProviderRequest, _ReplaceText
 from webaiprovider.errors import ProviderError
 from webaiprovider.models import Capability, FeatureState
 from webaiprovider.providers.claude import AsyncClaudeProvider
+from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.claude.records import (
     conversation,
     conversation_attachment_count,
     project,
 )
-from webaiprovider.providers.claude.transport import ClaudeTransport
 
 CHAT = "12345678-abcd-1234-abcd-123456789abc"
 PROJECT = "87654321-abcd-1234-abcd-123456789abc"
@@ -216,20 +217,20 @@ class ClaudeRecordsTests(unittest.TestCase):
 class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.provider = AsyncClaudeProvider(provider_account("claude", Path("unused"), "account"))
-        self.provider.transport.authenticated = True
-        self.provider.transport.request = AsyncMock()
+        self.provider.client.authenticated = True
+        self.provider.client.request = AsyncMock()
 
     async def test_close_releases_transport_when_editor_cleanup_fails(self):
         self.provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
-        self.provider.transport.close = AsyncMock()
+        self.provider.client.close = AsyncMock()
 
         with self.assertRaisesRegex(RuntimeError, "editor close failed"):
             await self.provider.close()
 
-        self.provider.transport.close.assert_awaited_once_with()
+        self.provider.client.close.assert_awaited_once_with()
 
     async def test_attachment_count_uses_the_compact_history_operation(self):
-        self.provider.transport.request.return_value = {
+        self.provider.client.request.return_value = {
             "uuid": CHAT,
             "chat_messages": [
                 {"uuid": "u", "attachments": [{"uuid": "file-1"}]},
@@ -240,10 +241,10 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         count = await self.provider.conversation_attachment_count(CHAT)
 
         self.assertEqual(count, 2)
-        self.provider.transport.request.assert_awaited_once_with("history", conversation_id=CHAT)
+        self.provider.client.request.assert_awaited_once_with("history", conversation_id=CHAT)
 
     async def test_dynamic_models_keep_only_discovered_efforts_and_default(self):
-        self.provider.transport.request.return_value = {
+        self.provider.client.request.return_value = {
             "models": [
                 {
                     "id": "claude-future",
@@ -259,7 +260,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.models[0].id, "claude-future")
 
     async def test_one_model_feature_failure_does_not_remove_working_models(self):
-        self.provider.transport.request.return_value = {
+        self.provider.client.request.return_value = {
             "models": [
                 {"id": "claude-main", "title": "Main", "efforts": [], "effort_error": "changed"},
                 {
@@ -275,35 +276,31 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog.chat_models[0].metadata["effort_error"], "changed")
 
     async def test_chat_and_project_queries_use_scoped_transport(self):
-        self.provider.transport.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
+        self.provider.client.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
         result = await self.provider.list_project_chats(PROJECT)
         self.assertEqual(result.items[0].project_id, PROJECT)
-        self.provider.transport.request.assert_awaited_once_with(
-            "project_chats", project_id=PROJECT
-        )
+        self.provider.client.request.assert_awaited_once_with("project_chats", project_id=PROJECT)
 
     async def test_chatgpt_project_option_is_not_exposed_by_claude(self):
         with self.assertRaises(TypeError):
             await self.provider.create_project("Name", memory_share=False)
-        self.provider.transport.request.assert_not_awaited()
+        self.provider.client.request.assert_not_awaited()
 
     async def test_delete_and_move_do_not_retry_mutations(self):
         await self.provider.delete_chat(CHAT)
-        self.provider.transport.request.assert_awaited_once_with(
-            "delete_chat", conversation_id=CHAT
-        )
-        self.provider.transport.request.reset_mock()
-        self.provider.transport.request.side_effect = ProviderError("network")
+        self.provider.client.request.assert_awaited_once_with("delete_chat", conversation_id=CHAT)
+        self.provider.client.request.reset_mock()
+        self.provider.client.request.side_effect = ProviderError("network")
         with self.assertRaises(ProviderError):
             await self.provider.move_chat(CHAT, PROJECT)
-        self.provider.transport.request.assert_awaited_once()
+        self.provider.client.request.assert_awaited_once()
 
     async def test_truncated_stream_is_not_success(self):
         async def events(*args, **kwargs):
             yield {"type": "bound", "id": CHAT}
             yield {"type": "replace", "text": "Partial", "channel": "final"}
 
-        self.provider.transport.events = events
+        self.provider.client.events = events
         with self.assertRaises(ProviderError):
             _ = [x async for x in self.provider._stream_request(_ProviderRequest("Question"))]
 
@@ -350,10 +347,13 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         class Response:
-            async def aiter_lines(self):
+            status_code = 200
+            headers = {}
+
+            async def aiter_content(self):
                 for frame in frames:
-                    yield "data: " + json.dumps(frame)
-                    yield ""
+                    yield ("data: " + json.dumps(frame) + "\n").encode()
+                    yield ("" + "\n").encode()
 
         class Stream:
             async def __aenter__(self):
@@ -373,7 +373,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             url=lambda path: path,
             check=lambda _response: None,
         )
-        transport = ClaudeTransport(Path("unused"), session=session)
+        transport = ClaudeClient(Path("unused"), session=bind_stream(session))
         transport.organization = PROJECT
         transport.catalog = {
             "default_model": "claude-test",
@@ -409,7 +409,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "replace", "text": "Answer", "channel": "final"}
             yield {"type": "done"}
 
-        self.provider.transport.events = events
+        self.provider.client.events = events
         result = [x async for x in self.provider._stream_request(_ProviderRequest("Question"))]
         self.assertIsInstance(result[0], _ConversationBound)
         self.assertIsInstance(result[1], _ReplaceText)
@@ -423,7 +423,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "bound", "id": CHAT}
             yield {"type": "done"}
 
-        self.provider.transport.events = events
+        self.provider.client.events = events
         _ = [
             x
             async for x in self.provider._stream_request(
@@ -437,7 +437,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "notes.pdf"
             path.write_bytes(b"pdf")
-            transport = self.provider.transport
+            transport = self.provider.client
             transport.organization = PROJECT
             transport.session.request = AsyncMock(return_value={"file_uuid": "remote-file"})
             with patch("curl_cffi.CurlMime") as mime_type:

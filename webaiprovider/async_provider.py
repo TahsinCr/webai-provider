@@ -46,6 +46,7 @@ from .provider import ProviderType
 from .resources.chat import Chat
 from .resources.project import Project as ProjectResource
 from .resources.response import Response
+from .transport import AsyncTransport
 
 if TYPE_CHECKING:
     from .accounts.account import Account
@@ -184,14 +185,24 @@ class AsyncProvider(BaseProvider):
         account: Account,
         *,
         type: ProviderType | str | None = None,
+        transport: AsyncTransport | None = None,
     ) -> None:
         super().__init__(account, type=type)
+        self._transport = transport
+        self._loop = None
         self.telemetry = ProviderTelemetry()
         self._scope: ProviderResourceScope | None = None
         self._opened = False
         self.chats = ChatsCollection(self)
         self.projects = self._projects_collection_type(self)
         self.models = ModelsCollection(self._load_models)
+
+    @property
+    def transport(self) -> AsyncTransport:
+        self._require_provider()
+        if self._transport is None:
+            raise ProviderError("This provider has no configured transport")
+        return self._transport
 
     @property
     def id(self) -> str:
@@ -209,11 +220,13 @@ class AsyncProvider(BaseProvider):
         return None
 
     async def _close_provider(self) -> None:
-        return None
+        if self._transport is not None:
+            await self._transport.close()
 
     async def open(self) -> AsyncProvider:
         if self._opened:
             return self
+        self._loop = asyncio.get_running_loop()
         scope = ProviderResourceScope()
         try:
             await self.prepare()

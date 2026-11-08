@@ -66,6 +66,10 @@ with ChatGPTProvider(account) as provider:
 
 The package exports model references and effort choices for typed use. Account-discovered models remain authoritative for the account and may differ by subscription or provider changes.
 
+## Advanced transport API
+
+All providers expose `provider.transport` for origin-scoped `send`, JSON `request`, and incremental `stream` operations. Blocking and async APIs share the same connection lifecycle. Supply a custom transport or reuse the HTTP, SSE, and JSPB tools to build extensions. See the [transport and framing guide](docs/transport.md) for supported contracts, credential scope, and cleanup.
+
 ## Security and behavior
 
 - Browser credentials are read locally. The library does not send credentials to a SiopeChat service.
