@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 
-from .base import AsyncStreamResponse, AsyncTransport, StreamResponse, Transport
+from .base import AsyncTransport, Transport, _AsyncStreamResponse, _StreamResponse
 
 
 class AsyncHTTPTransport(AsyncTransport):
@@ -73,7 +73,7 @@ class AsyncHTTPTransport(AsyncTransport):
         try:
             async with self._open_stream(method, url, options) as response:
                 self._check_response(response, check_status)
-                yield AsyncStreamResponse(
+                yield _AsyncStreamResponse(
                     response, getattr(response, self._byte_iterator)(), self.config.max_stream_bytes
                 )
         finally:
@@ -156,7 +156,7 @@ class HTTPTransport(Transport):
         options = self._options(options, method, path)
         with self._connect().stream(method, url, follow_redirects=False, **options) as response:
             self._check_response(response, check_status)
-            yield StreamResponse(response, self.config.max_stream_bytes)
+            yield _StreamResponse(response, self.config.max_stream_bytes)
 
     def close(self):
         client, self.client = self.client, None

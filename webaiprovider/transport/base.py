@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, AsyncContextManager, ContextManager, Mapping, Protocol
 from urllib.parse import unquote, urlsplit
@@ -14,13 +14,31 @@ from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from .retry import parse_retry_after
 
 
-class TransportResponse(Protocol):
-    status_code: int
-    headers: Mapping[str, str]
-    content: bytes
-    text: str
+class _ResponseHead(Protocol):
+    @property
+    def status_code(self) -> int: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+
+class TransportResponse(_ResponseHead, Protocol):
+    @property
+    def content(self) -> bytes: ...
+
+    @property
+    def text(self) -> str: ...
 
     def json(self) -> Any: ...
+
+
+class StreamResponse(_ResponseHead, Protocol):
+    def iter_bytes(self) -> Iterator[bytes]: ...
+    def close(self) -> None: ...
+
+
+class AsyncStreamResponse(_ResponseHead, Protocol):
+    def aiter_bytes(self) -> AsyncIterator[bytes]: ...
 
 
 @dataclass(frozen=True)
@@ -36,7 +54,7 @@ class TransportConfig:
             raise ValueError("Transport stream limit must be positive")
 
 
-class AsyncStreamResponse:
+class _AsyncStreamResponse:
     def __init__(self, response, chunks, limit=None):
         self.status_code: int = response.status_code
         self.headers: Mapping[str, str] = response.headers
@@ -52,7 +70,7 @@ class AsyncStreamResponse:
             yield chunk
 
 
-class StreamResponse:
+class _StreamResponse:
     def __init__(self, response, limit=None):
         self.status_code: int = response.status_code
         self.headers: Mapping[str, str] = response.headers
@@ -72,7 +90,13 @@ class StreamResponse:
 
 
 class _TransportPolicy:
-    def __init__(self, origin: str, *, config: TransportConfig | None = None, headers=None):
+    def __init__(
+        self,
+        origin: str,
+        *,
+        config: TransportConfig | None = None,
+        headers: Mapping[str, str] | Callable[[str, str], Mapping[str, str]] | None = None,
+    ):
         target = urlsplit(origin)
         if (
             target.scheme not in ("http", "https")
@@ -86,10 +110,18 @@ class _TransportPolicy:
             or any(ord(char) < 32 or ord(char) == 127 for char in origin)
         ):
             raise ValueError("Transport origin must be an HTTP origin without credentials or path")
-        self.origin = origin.rstrip("/")
-        self.config = config or TransportConfig()
+        self._origin = origin.rstrip("/")
+        self._config = config or TransportConfig()
         self._headers = headers
         self._rate_limited_until = 0.0
+
+    @property
+    def origin(self) -> str:
+        return self._origin
+
+    @property
+    def config(self) -> TransportConfig:
+        return self._config
 
     def url(self, path: str) -> str:
         parsed = urlsplit(path)
@@ -107,7 +139,7 @@ class _TransportPolicy:
             raise ValueError("Transport request must remain on its origin")
         return self.origin + path
 
-    def _options(self, options, method, path):
+    def _options(self, options: dict[str, Any], method: str, path: str) -> dict[str, Any]:
         if options.pop("stream", False):
             raise ValueError("Use transport.stream() to own a streaming response")
         inherit = options.pop("inherit_headers", True)

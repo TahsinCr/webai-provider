@@ -42,8 +42,7 @@ class JSPBFrameDecoder:
 
         self._strip_prefix()
         while self.expected_units is not None or self._read_length_marker():
-            self._scan_payload()
-            if self.scanned_units < self.expected_units:
+            if not self._scan_payload():
                 break
 
             end = self.payload_start + self.scanned_chars
@@ -93,9 +92,12 @@ class JSPBFrameDecoder:
         self.scanned_units = 0
         return True
 
-    def _scan_payload(self):
+    def _scan_payload(self) -> bool:
+        expected = self.expected_units
+        if expected is None:
+            raise FrameDecodeError("JSPB frame length is missing")
         index = self.payload_start + self.scanned_chars
-        needed_units = self.expected_units - self.scanned_units
+        needed_units = expected - self.scanned_units
         remaining_chars = len(self.pending) - index
         if remaining_chars > 0 and needed_units > 0:
             take_candidate = min(remaining_chars, needed_units)
@@ -105,13 +107,14 @@ class JSPBFrameDecoder:
                 self.scanned_chars += take_chars
                 self.scanned_units += take_chars
                 index += take_chars
-        while self.scanned_units < self.expected_units and index < len(self.pending):
+        while self.scanned_units < expected and index < len(self.pending):
             units = 2 if ord(self.pending[index]) > 0xFFFF else 1
-            if self.scanned_units + units > self.expected_units:
+            if self.scanned_units + units > expected:
                 raise FrameDecodeError("JSPB stream frame UTF-16 length is invalid")
             self.scanned_chars += 1
             self.scanned_units += units
             index += 1
+        return self.scanned_units >= expected
 
     def _reset_frame(self):
         self.expected_units = None

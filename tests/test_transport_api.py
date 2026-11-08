@@ -92,6 +92,11 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             await transport.send("POST", "/api/test")
         self.assertEqual(client.request.await_count, 2)
 
+    async def test_origin_cannot_be_reassigned_after_binding_credentials(self):
+        transport, _ = self.transport()
+        with self.assertRaises(AttributeError):
+            transport.origin = "https://other.test"
+
     async def test_rate_limits_are_isolated_between_accounts_on_the_same_origin(self):
         first, first_client = self.transport()
         second, _ = self.transport()
@@ -265,6 +270,7 @@ class BlockingTransportTests(unittest.TestCase):
     def test_sync_facade_uses_one_portal_for_raw_requests_and_stream_cleanup(self):
         threads = set()
         closed = threading.Event()
+        exits = []
 
         async def request(*args, **options):
             threads.add(threading.get_ident())
@@ -279,6 +285,7 @@ class BlockingTransportTests(unittest.TestCase):
             try:
                 yield SimpleNamespace(status_code=200, headers={}, aiter_content=chunks)
             finally:
+                exits.append(True)
                 closed.set()
 
         transport = AsyncHTTPTransport(
@@ -300,12 +307,14 @@ class BlockingTransportTests(unittest.TestCase):
             self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
             with provider.transport.stream("GET", "/stream") as response:
                 self.assertEqual(list(response.iter_bytes()), [b"stream"])
+                response.close()
             with self.assertRaises(ValueError):
                 with provider.transport.stream("GET", "/stream"):
                     raise ValueError("caller failure")
         self.assertEqual(len(threads), 1)
         self.assertNotIn(threading.get_ident(), threads)
         self.assertTrue(closed.is_set())
+        self.assertEqual(len(exits), 2)
 
     def test_sync_http_request_checks_response_limits_and_disables_redirects(self):
         requests = []

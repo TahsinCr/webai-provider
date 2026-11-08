@@ -5,7 +5,7 @@ import concurrent.futures
 import threading
 from contextlib import asynccontextmanager, contextmanager
 
-from .base import AsyncStreamResponse, AsyncTransport, Transport
+from .base import AsyncTransport, Transport, _AsyncStreamResponse
 
 
 class ThreadedTransport(AsyncTransport):
@@ -88,7 +88,7 @@ class ThreadedTransport(AsyncTransport):
         worker = asyncio.create_task(asyncio.to_thread(run))
         try:
             _, response = await receive()
-            yield AsyncStreamResponse(response, chunks(), self.config.max_stream_bytes)
+            yield _AsyncStreamResponse(response, chunks(), self.config.max_stream_bytes)
         finally:
             stopped.set()
             if responses:
@@ -129,10 +129,21 @@ class PortalTransport(Transport):
         manager = self._get_transport().stream(method, path, **options)
         response = self._call(manager.__aenter__())
         call = self._call
+        closed = False
+
+        def finish(exc_type=None, error=None, traceback=None):
+            nonlocal closed
+            if closed:
+                return False
+            closed = True
+            return call(manager.__aexit__(exc_type, error, traceback))
 
         class Stream:
             status_code = response.status_code
             headers = response.headers
+
+            def close(self):
+                finish()
 
             def iter_bytes(self):
                 iterator = response.aiter_bytes()
@@ -148,10 +159,10 @@ class PortalTransport(Transport):
         try:
             yield Stream()
         except BaseException as error:
-            if not self._call(manager.__aexit__(type(error), error, error.__traceback__)):
+            if not finish(type(error), error, error.__traceback__):
                 raise
         else:
-            self._call(manager.__aexit__(None, None, None))
+            finish()
 
     def close(self):
         self._call(self._get_transport().close())
