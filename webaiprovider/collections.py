@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from ..errors import AmbiguousMatchError, RemoteNotFound
+from .errors import AmbiguousMatchError, RemoteNotFound
+
+if TYPE_CHECKING:
+    from .provider import Provider
 
 T = TypeVar("T")
+U = TypeVar("U")
 
 
 class QueryableCollection(Generic[T], ABC):
@@ -187,9 +191,9 @@ class QueryableCollection(Generic[T], ABC):
 
 
 class ManageableCollection(QueryableCollection[T], ABC):
-    """Generic abstract base class for collections with CRUD lifecycle operations."""
+    """Synchronous collection base with CRUD lifecycle operations."""
 
-    async def refresh(self) -> list[T]:
+    def refresh(self) -> list[T]:
         return list(self._items)
 
     @abstractmethod
@@ -197,7 +201,7 @@ class ManageableCollection(QueryableCollection[T], ABC):
         """Create a new item in the collection."""
 
     @abstractmethod
-    async def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
+    def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
         """Delete an item from the collection and its remote backend."""
 
     @abstractmethod
@@ -206,11 +210,14 @@ class ManageableCollection(QueryableCollection[T], ABC):
 
 
 class AsyncQueryableCollection(Generic[T], ABC):
-    """Generic abstract base class for asynchronous queryable collections."""
+    """Generic asynchronous collection base with shared query operations."""
 
-    @abstractmethod
+    def __init__(self, items: Sequence[T] | None = None) -> None:
+        self._items: list[T] = list(items) if items is not None else []
+
     async def list(self, *args: Any, **kwargs: Any) -> list[T]:
-        """Return all items in the collection asynchronously."""
+        """Return the currently cached items asynchronously."""
+        return list(self._items)
 
     async def get(self, item_id: str, /) -> T:
         return QueryableCollection._get_from(await self.list(), item_id)
@@ -248,3 +255,48 @@ class AsyncQueryableCollection(Generic[T], ABC):
             startswith=startswith,
             endswith=endswith,
         )
+
+
+class AsyncManageableCollection(AsyncQueryableCollection[T], ABC):
+    """Asynchronous collection base for cached items with refresh support."""
+
+    async def refresh(self) -> list[T]:
+        return await self.list()
+
+
+class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
+    """Synchronous view over an asynchronous collection owned by Provider."""
+
+    def __init__(self, owner: Provider, collection: Any) -> None:
+        super().__init__()
+        self._owner = owner
+        self._collection = collection
+
+    def _wrap(self, item: T) -> U:
+        return item  # type: ignore[return-value]
+
+    def list(self) -> list[U]:
+        self._items = [self._wrap(item) for item in self._owner._call(self._collection.list())]
+        return list(self._items)
+
+    def get(self, item_id: str, /) -> U:
+        return self._wrap(self._owner._call(self._collection.get(item_id)))
+
+    def find(self, query: str, /, **match: bool) -> U:
+        return self._wrap(self._owner._call(self._collection.find(query, **match)))
+
+    def search(self, query: str, /, **match: bool) -> list[U]:
+        return [
+            self._wrap(item)
+            for item in self._owner._call(self._collection.search(query, **match))
+        ]
+
+    def __len__(self) -> int:
+        return len(self.list())
+
+    def __iter__(self) -> Iterator[U]:
+        return iter(self.list())
+
+    def __contains__(self, item: Any) -> bool:
+        target_id = self._extract_id(item) if not isinstance(item, str) else item
+        return any(self._extract_id(value) == target_id for value in self.list())

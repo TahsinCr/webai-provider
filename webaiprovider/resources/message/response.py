@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from ..contracts import Artifact, Source, TimingMetrics
+from ...contracts import Artifact, Source, TimingMetrics
 
 if TYPE_CHECKING:
-    from .message import Message
+    from .message import AsyncMessage, Message
 
 
 class Response:
     def __init__(
         self,
-        message: Message,
+        message: AsyncMessage | Message,
         *,
         sources: Sequence[Source] | None = None,
         artifacts: Sequence[Artifact] | None = None,

@@ -19,8 +19,8 @@ from ...models import (
     SessionState,
     SessionStatus,
 )
-from ...provider import Provider, ProviderType, SyncChat
-from ...resources.chat import MovableChat
+from ...provider import Provider, ProviderType
+from ...resources.chat.chat import Chat, MovableChat
 from ...streams import (
     ConversationBound,
     MessageMetadata,
@@ -319,7 +319,7 @@ class AsyncClaudeProvider(AsyncProvider):
                 )
 
 
-class ClaudeChat(MovableChat, SyncChat):
+class ClaudeChat(MovableChat, Chat):
     pass
 
 

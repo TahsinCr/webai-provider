@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ..errors import ProviderError
-from ..models import Page
-from ..models import ProjectData as ProviderProject
-from ..resources.project import Project
-from .base import ManageableCollection
+from ...collections import AsyncManageableCollection, ManageableCollection, _CollectionFacade
+from ...errors import ProviderError
+from ...models import Page
+from ...models import ProjectData as ProviderProject
+from .project import AsyncProject, Project
 
 if TYPE_CHECKING:
-    from ..async_provider import AsyncProvider
+    from ...async_provider import AsyncProvider
+    from ...provider import Provider
 
 
-class ProjectsCollection(ManageableCollection[Project]):
+class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
     def __init__(self, session: AsyncProvider) -> None:
         super().__init__()
         self.session = session
@@ -23,7 +24,7 @@ class ProjectsCollection(ManageableCollection[Project]):
         title: str,
         *,
         instruction: str | None = None,
-    ) -> Project:
+    ) -> AsyncProject:
         project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
@@ -35,7 +36,7 @@ class ProjectsCollection(ManageableCollection[Project]):
         self._items.insert(0, project)
         return project
 
-    async def refresh(self) -> list[Project]:
+    async def refresh(self) -> list[AsyncProject]:
         page = await self.session._require_provider().list_projects()
         if not isinstance(page, Page) or any(
             not isinstance(item, ProviderProject) for item in page.items
@@ -55,12 +56,12 @@ class ProjectsCollection(ManageableCollection[Project]):
 
     async def update(
         self,
-        project: Project | str,
+        project: AsyncProject | str,
         *,
         title: str | None = None,
         instruction: str | None = None,
-    ) -> Project:
-        target = project if isinstance(project, Project) else self.get(project)
+    ) -> AsyncProject:
+        target = project if isinstance(project, AsyncProject) else await self.get(project)
         if target.remote_id:
             provider = self.session._require_provider()
             current = await provider.get_project(target.remote_id)
@@ -81,8 +82,47 @@ class ProjectsCollection(ManageableCollection[Project]):
                 target.instruction._text = instruction
         return target
 
-    async def delete(self, project: Project | str) -> None:
-        target = project if isinstance(project, Project) else self.get(project)
+    async def delete(self, project: AsyncProject | str) -> None:
+        target = project if isinstance(project, AsyncProject) else await self.get(project)
         if target.remote_id:
             await self.session._require_provider().delete_project(target.remote_id)
         self._items = [item for item in self._items if item is not target]
+
+
+class ProjectsCollection(_CollectionFacade[AsyncProject, Project], ManageableCollection[Project]):
+    def __init__(self, owner: Provider) -> None:
+        super().__init__(owner, owner._provider.projects)
+
+    def _wrap(self, item: AsyncProject) -> Project:
+        return self._owner._wrap_project(item)
+
+    def refresh(self) -> list[Project]:
+        return [self._wrap(item) for item in self._owner._call(self._collection.refresh())]
+
+    def create(
+        self,
+        title: str,
+        *,
+        instruction: str | None = None,
+    ) -> Project:
+        project = self._owner._call(self._collection.create(title, instruction=instruction))
+        return self._wrap(project)
+
+    def update(
+        self,
+        project: Project | AsyncProject | str,
+        *,
+        title: str | None = None,
+        instruction: str | None = None,
+        **fields: Any,
+    ) -> Project:
+        if fields:
+            raise TypeError(f"Unsupported project fields: {', '.join(fields)}")
+        target = project._resource if isinstance(project, Project) else project
+        return self._wrap(
+            self._owner._call(self._collection.update(target, title=title, instruction=instruction))
+        )
+
+    def delete(self, project: Project | AsyncProject | str) -> None:
+        target = project._resource if isinstance(project, Project) else project
+        self._owner._call(self._collection.delete(target))

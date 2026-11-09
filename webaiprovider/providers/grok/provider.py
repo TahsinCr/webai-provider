@@ -24,8 +24,8 @@ from ...models import (
     SessionStatus,
 )
 from ...normalizers import sources_from
-from ...provider import Provider, ProviderType, SyncChat
-from ...resources.chat import MovableChat
+from ...provider import Provider, ProviderType
+from ...resources.chat.chat import Chat, MovableChat
 from ...streams import (
     ConversationBound,
     MessageMetadata,
@@ -758,7 +758,7 @@ class AsyncGrokProvider(AsyncProvider):
             yield ResponseComplete()
 
 
-class GrokChat(MovableChat, SyncChat):
+class GrokChat(MovableChat, Chat):
     pass
 
 

@@ -273,7 +273,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.chats.find("ID", endswith=True).id, chat.id)
 
         with patch(
-            "webaiprovider.resources.chat.download_source",
+            "webaiprovider.resources.chat.chat.download_source",
             AsyncMock(return_value=b"file-bytes"),
         ):
             dl = await chat.download("https://example.com/test.png")
@@ -428,15 +428,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 provider.close()
 
     def test_provider_facades(self) -> None:
-        from webaiprovider.collections.chats import ChatsCollection
-        from webaiprovider.collections.messages import MessagesCollection
-        from webaiprovider.collections.project_chats import ProjectChatsCollection
-        from webaiprovider.provider import SyncProjectChatsCollection
         from webaiprovider.providers.chatgpt import ChatGPTChat
         from webaiprovider.providers.claude import ClaudeChat
         from webaiprovider.providers.gemini import GeminiChat
         from webaiprovider.providers.grok import GrokChat
-        from webaiprovider.resources.chat import Chat
+        from webaiprovider.resources.chat.chat import Chat
+        from webaiprovider.resources.chat.collections import ChatsCollection
+        from webaiprovider.resources.message.collections import MessagesCollection
+        from webaiprovider.resources.project.chats import ProjectChatsCollection
 
         self.assertFalse(hasattr(Chat, "branch"))
         self.assertFalse(hasattr(Chat, "move_to"))
@@ -446,8 +445,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(MessagesCollection, "branch"))
         self.assertFalse(hasattr(ProjectChatsCollection, "add"))
         self.assertFalse(hasattr(ProjectChatsCollection, "remove"))
-        self.assertFalse(hasattr(SyncProjectChatsCollection, "add"))
-        self.assertFalse(hasattr(SyncProjectChatsCollection, "remove"))
+        self.assertFalse(hasattr(ProjectChatsCollection, "add"))
+        self.assertFalse(hasattr(ProjectChatsCollection, "remove"))
         self.assertTrue(hasattr(ChatGPTChat, "branch"))
         self.assertTrue(hasattr(ChatGPTChat, "move_to"))
         self.assertTrue(hasattr(ClaudeChat, "move_to"))
@@ -644,7 +643,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         import webaiprovider.collections
         import webaiprovider.resources
-        from webaiprovider.collections.base import (
+        from webaiprovider.collections import (
             AsyncQueryableCollection,
             ManageableCollection,
             QueryableCollection,

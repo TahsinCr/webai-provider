@@ -26,8 +26,8 @@ from ...models import (
     SessionStatus,
 )
 from ...normalizers import files_from, sources_from
-from ...provider import Provider, ProviderType, SyncChat
-from ...resources.chat import BranchableChat
+from ...provider import Provider, ProviderType
+from ...resources.chat.chat import BranchableChat, Chat
 from ...streams import (
     ConversationBound,
     MessageMetadata,
@@ -654,7 +654,7 @@ class AsyncGeminiProvider(AsyncProvider):
             self._chat_metadata.pop(conversation_id, None)
 
 
-class GeminiChat(BranchableChat, SyncChat):
+class GeminiChat(BranchableChat, Chat):
     pass
 
 

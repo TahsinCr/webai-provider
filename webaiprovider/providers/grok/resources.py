@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ...resources.chat import AsyncMovableChat
+from ...resources.chat.chat import AsyncMovableChat
 
 
 class AsyncGrokChat(AsyncMovableChat):

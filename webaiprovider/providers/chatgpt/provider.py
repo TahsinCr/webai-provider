@@ -37,17 +37,10 @@ from ...models import (
     actions_for,
 )
 from ...normalizers import sources_from
-from ...provider import (
-    Provider,
-    ProviderType,
-    SyncChat,
-    SyncProject,
-    SyncProjectsCollection,
-)
-from ...resources.chat import (
-    BranchableChat,
-    MovableChat,
-)
+from ...provider import Provider, ProviderType
+from ...resources.chat.chat import BranchableChat, Chat, MovableChat
+from ...resources.project.collections import ProjectsCollection
+from ...resources.project.project import Project
 from ...streams import (
     ConversationBound,
     MessageMetadata,
@@ -925,18 +918,18 @@ class AsyncChatGPTProvider(AsyncProvider):
                     await self._discard_http_client()
 
 
-class ChatGPTChat(BranchableChat, MovableChat, SyncChat):
+class ChatGPTChat(BranchableChat, MovableChat, Chat):
     pass
 
 
-class ChatGPTProjectsCollection(SyncProjectsCollection):
+class ChatGPTProjectsCollection(ProjectsCollection):
     def create(
         self,
         title: str,
         *,
         instruction: str | None = None,
         memory_share: bool = True,
-    ) -> SyncProject:
+    ) -> Project:
         collection = cast(AsyncChatGPTProjectsCollection, self._collection)
         project = self._owner._call(
             collection.create(title, instruction=instruction, memory_share=memory_share)

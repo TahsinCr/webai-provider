@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..resources.attachment import Attachment
-from .base import QueryableCollection
+from ...collections import QueryableCollection
+from ..attachment import Attachment
 
 
 class Attachments(QueryableCollection[Attachment]):

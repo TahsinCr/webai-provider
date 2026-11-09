@@ -106,7 +106,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_project_chat_pages_and_move_actions(self) -> None:
         from webaiprovider.providers.grok import AsyncGrokChat
-        from webaiprovider.resources.project import Project
+        from webaiprovider.resources.project.project import AsyncProject
 
         account = Account.from_cookies("grok", {"sso": "session"})
         provider = AsyncProvider(account)
@@ -123,7 +123,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
-        project = Project(title="Research", session=provider, remote_id="project-1")
+        project = AsyncProject(title="Research", session=provider, remote_id="project-1")
         page = await project.chats.refresh()
         self.assertEqual(page.items[0].remote_id, "chat-1")
         self.assertIs(page.items[0].session, provider)

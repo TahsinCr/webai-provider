@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Iterator
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -10,7 +11,7 @@ from typing import (
     Coroutine,
 )
 
-from ..contracts import (
+from ...contracts import (
     ArtifactDiscovered,
     OutputDelta,
     OutputEnd,
@@ -20,13 +21,14 @@ from ..contracts import (
     TerminalStatus,
     TimingMetrics,
 )
-from ..core.state import OperationState, OperationStateMachine
-from ..errors import OperationCancelledError, ProviderError
+from ...core.state import OperationState, OperationStateMachine
+from ...errors import OperationCancelledError, ProviderError
+from .message import AsyncMessage, Message
 from .response import Response
 
 if TYPE_CHECKING:
-    from .chat import Chat
-    from .message import Message
+    from ...provider import Provider
+    from ..chat.chat import AsyncChat, Chat
 
 HandlerType = Callable[[StreamEvent], Any | Coroutine[Any, Any, Any]]
 
@@ -69,13 +71,13 @@ class OperationHooks:
                 pass
 
 
-class MessageOperation:
+class AsyncMessageOperation:
     def __init__(
         self,
-        chat: Chat,
-        message: Message,
+        chat: AsyncChat,
+        message: AsyncMessage,
         *,
-        executor: Callable[[MessageOperation], AsyncIterator[StreamEvent]] | None = None,
+        executor: Callable[[AsyncMessageOperation], AsyncIterator[StreamEvent]] | None = None,
     ) -> None:
         self.chat = chat
         self.message = message
@@ -240,10 +242,10 @@ class MessageOperation:
                 duration_ms=duration_s * 1000.0,
             )
 
-            from .message import Message
+            from .message import AsyncMessage
 
             full_text = "".join(collected_text)
-            response_message = Message(
+            response_message = AsyncMessage(
                 content=full_text,
                 role="assistant",
                 model=self.message.model,
@@ -295,3 +297,62 @@ class MessageOperation:
 
     def __await__(self) -> Any:
         return self.start().__await__()
+
+
+class MessageOperation:
+    def __init__(self, owner: Provider, operation: AsyncMessageOperation) -> None:
+        self._owner = owner
+        self._operation = operation
+        self.hooks = operation.hooks
+
+    @property
+    def message(self) -> Message:
+        return Message._from_async(self._owner, self._operation.message)
+
+    @property
+    def chat(self) -> Chat:
+        return self._owner._wrap_chat(self._operation.chat)
+
+    @property
+    def response(self) -> Response | None:
+        response = self._operation._response
+        return self._wrap_response(response) if response is not None else None
+
+    def _wrap_response(self, response: Response) -> Response:
+        message = response.message
+        if isinstance(message, AsyncMessage):
+            message = Message._from_async(self._owner, message)
+        return Response(
+            message,
+            sources=response.sources,
+            artifacts=response.artifacts,
+            metadata=response.metadata,
+            timing=response.timing,
+        )
+
+    @property
+    def state(self) -> OperationState:
+        return self._operation.state
+
+    def on(self, event_name: str, handler: Any = None) -> Any:
+        return self.hooks.on(event_name, handler)
+
+    def cancel(self) -> None:
+        self._operation.cancel()
+
+    def wait_for(self, stage_name: str, *, timeout: float | None = None) -> StreamEvent | None:
+        return self._owner._call(self._operation.wait_for(stage_name, timeout=timeout))
+
+    def stream(self) -> Iterator[StreamEvent]:
+        events = self._operation.stream()
+        while True:
+            try:
+                yield self._owner._call(events.__anext__())
+            except StopAsyncIteration:
+                return
+
+    def start(self) -> Response:
+        return self._wrap_response(self._owner._call(self._operation.start()))
+
+    def wait(self) -> Response:
+        return self._wrap_response(self._owner._call(self._operation.wait()))

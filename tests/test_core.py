@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from webaiprovider.core.bridges import SyncPortalBridge
+from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import MultiDimensionBoundedCache
 from webaiprovider.core.concurrency import ConcurrencyCoordinator
 from webaiprovider.core.resilience import ProviderResilienceRegistry
@@ -193,7 +193,7 @@ class CoreScopeTests(unittest.IsolatedAsyncioTestCase):
 
 class CorePortalBridgeTests(unittest.TestCase):
     def test_portal_bridge_runs_coroutine_synchronously(self) -> None:
-        with SyncPortalBridge(name="TestPortal") as bridge:
+        with PortalBridge(name="TestPortal") as bridge:
 
             async def add(a: int, b: int) -> int:
                 await asyncio.sleep(0.001)

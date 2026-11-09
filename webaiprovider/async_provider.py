@@ -5,9 +5,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider
-from .catalogs import Models, ModelsCollection, _model_refs_from_catalog
-from .collections.chats import ChatsCollection
-from .collections.projects import ProjectsCollection
+from .catalogs import AsyncModelsCollection, Models, _model_refs_from_catalog
 from .contracts import (
     Artifact,
     ArtifactDiscovered,
@@ -42,9 +40,11 @@ from .models import (
     ProviderDescription,
 )
 from .provider import ProviderType, _provider_class
-from .resources.chat import Chat
-from .resources.project import Project as ProjectResource
-from .resources.response import Response
+from .resources.chat.chat import AsyncChat
+from .resources.chat.collections import AsyncChatsCollection
+from .resources.message.response import Response
+from .resources.project.collections import AsyncProjectsCollection
+from .resources.project.project import AsyncProject
 from .streams import (
     ConversationBound,
     MessageMetadata,
@@ -131,9 +131,9 @@ class AsyncProvider(BaseProvider):
             return object.__new__(_provider_class(selected, asynchronous=True))
         return object.__new__(cls)
 
-    _chat_type = Chat
-    _project_type = ProjectResource
-    _projects_collection_type = ProjectsCollection
+    _chat_type = AsyncChat
+    _project_type = AsyncProject
+    _projects_collection_type = AsyncProjectsCollection
     capabilities: frozenset[Capability] = frozenset()
     _gate: asyncio.Lock
     editor: Any
@@ -151,9 +151,9 @@ class AsyncProvider(BaseProvider):
         self.telemetry = ProviderTelemetry()
         self._scope: ProviderResourceScope | None = None
         self._opened = False
-        self.chats = ChatsCollection(self)
+        self.chats = AsyncChatsCollection(self)
         self.projects = self._projects_collection_type(self)
-        self.models = ModelsCollection(self._load_models)
+        self.models = AsyncModelsCollection(self._load_models)
 
     @property
     def transport(self) -> AsyncTransport:

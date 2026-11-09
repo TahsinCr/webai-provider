@@ -2,23 +2,24 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..errors import ProviderError
-from ..models import Conversation, Page
-from ..resources.chat import Chat
-from .base import QueryableCollection
-from .chats import _chat_from_conversation
+from ...collections import AsyncQueryableCollection, QueryableCollection, _CollectionFacade
+from ...errors import ProviderError
+from ...models import Conversation, Page
+from ..chat.chat import AsyncChat, Chat
+from ..chat.collections import _chat_from_conversation
+from .project import AsyncProject
 
 if TYPE_CHECKING:
-    from ..resources.project import Project
+    from ...provider import Provider
 
 
-class ProjectChatsCollection(QueryableCollection[Chat]):
-    def __init__(self, project: Project) -> None:
+class AsyncProjectChatsCollection(AsyncQueryableCollection[AsyncChat]):
+    def __init__(self, project: AsyncProject) -> None:
         super().__init__()
         self.project = project
         self.next_cursor: str | None = None
 
-    async def refresh(self, cursor: str | None = None) -> Page[Chat]:
+    async def refresh(self, cursor: str | None = None) -> Page[AsyncChat]:
         session = self.project.session
         if session is None:
             raise ProviderError("Project is not attached to an open provider")
@@ -40,3 +41,17 @@ class ProjectChatsCollection(QueryableCollection[Chat]):
             self._items.extend(chat for chat in chats if chat.id not in known)
         self.next_cursor = page.next_cursor
         return Page(chats, page.next_cursor)
+
+
+class ProjectChatsCollection(_CollectionFacade[AsyncChat, Chat], QueryableCollection[Chat]):
+    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+        super().__init__(owner, project.chats)
+        self.next_cursor: str | None = None
+
+    def _wrap(self, item: AsyncChat) -> Chat:
+        return self._owner._wrap_chat(item)
+
+    def refresh(self, cursor: str | None = None) -> Page[Chat]:
+        page = self._owner._call(self._collection.refresh(cursor))
+        self.next_cursor = page.next_cursor
+        return Page(tuple(self._wrap(item) for item in page.items), page.next_cursor)

@@ -4,18 +4,19 @@ import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ..collections.base import ManageableCollection
-from ..errors import ProviderError, UnsupportedOperationError
-from ..models import ProjectData as ProviderProject
-from ..models import ResourceData as ProviderResource
-from ..utils.files import download_source
+from ...collections import AsyncManageableCollection, QueryableCollection, _CollectionFacade
+from ...errors import ProviderError, UnsupportedOperationError
+from ...models import ProjectData as ProviderProject
+from ...models import ResourceData as ProviderResource
+from ...utils.files import DownloadSource, download_source
 
 if TYPE_CHECKING:
-    from ..async_provider import AsyncProvider
+    from ...async_provider import AsyncProvider
+    from ...provider import Provider
 
 
-class ProjectInstruction:
-    def __init__(self, project: Project) -> None:
+class AsyncProjectInstruction:
+    def __init__(self, project: AsyncProject) -> None:
         self.project = project
         self._text: str = ""
 
@@ -36,8 +37,8 @@ class ProjectInstruction:
         await self.edit("")
 
 
-class ProjectResources(ManageableCollection[dict[str, Any]]):
-    def __init__(self, project: Project) -> None:
+class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
+    def __init__(self, project: AsyncProject) -> None:
         super().__init__()
         self.project = project
 
@@ -120,7 +121,9 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         return False
 
     async def delete(self, target: dict[str, Any] | str) -> None:
-        resource_id = self._extract_id(target) if not isinstance(target, str) else target
+        resource_id = (
+            QueryableCollection._extract_id(target) if not isinstance(target, str) else target
+        )
         await self.remove(resource_id)
 
     async def update(
@@ -130,8 +133,12 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         data: Any = None,
         **options: Any,
     ) -> dict[str, Any]:
-        resource_id = resource if isinstance(resource, str) else self._extract_id(resource)
-        target = self.get(resource_id)
+        resource_id = (
+            resource
+            if isinstance(resource, str)
+            else QueryableCollection._extract_id(resource)
+        )
+        target = await self.get(resource_id)
         if self.project.session is not None and self.project.remote_id:
             raise UnsupportedOperationError("Updating remote project resources is not supported")
         updated = dict(target)
@@ -143,13 +150,13 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         return target
 
     async def download(self, resource_id: str) -> Any:
-        item = self.get(resource_id)
+        item = await self.get(resource_id)
         url = item.get("url") or item.get("download_url")
         session = self.project.session
         if url and self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            source = await session._require_provider().resolve_download(url)
+            source: DownloadSource | None = await session._require_provider().resolve_download(url)
             return await download_source(source)
         for key in ("bytes", "content", "data"):
             if key in item:
@@ -157,7 +164,7 @@ class ProjectResources(ManageableCollection[dict[str, Any]]):
         return item
 
 
-class Project:
+class AsyncProject:
     def __init__(
         self,
         id: str | None = None,
@@ -170,11 +177,11 @@ class Project:
         self.title = title
         self.session = session
         self.remote_id = remote_id
-        self.instruction = ProjectInstruction(self)
-        self.resources = ProjectResources(self)
-        from ..collections.project_chats import ProjectChatsCollection
+        self.instruction = AsyncProjectInstruction(self)
+        self.resources = AsyncProjectResources(self)
+        from .chats import AsyncProjectChatsCollection
 
-        self.chats = ProjectChatsCollection(self)
+        self.chats = AsyncProjectChatsCollection(self)
 
     def _apply_provider_project(
         self,
@@ -220,3 +227,77 @@ def _resource_record(resource: ProviderResource) -> dict[str, Any]:
         "url": resource.remote_url,
         "metadata": dict(resource.metadata),
     }
+
+
+class Project:
+    def __init__(self, owner: Provider, resource: AsyncProject) -> None:
+        self._owner = owner
+        self._resource = resource
+        self.instruction = ProjectInstruction(owner, resource)
+        self.resources = ProjectResources(owner, resource)
+        from .chats import ProjectChatsCollection
+
+        self.chats = ProjectChatsCollection(owner, resource)
+
+    @property
+    def id(self) -> str:
+        return self._resource.id
+
+    @property
+    def remote_id(self) -> str | None:
+        return self._resource.remote_id
+
+    @property
+    def title(self) -> str:
+        return self._resource.title
+
+    def rename(self, title: str) -> None:
+        self._owner._call(self._resource.rename(title))
+
+    def delete(self) -> None:
+        self._owner._call(self._resource.delete())
+
+    def __repr__(self) -> str:
+        return f"<Project id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"
+
+
+class ProjectInstruction:
+    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+        self._owner = owner
+        self._instruction = project.instruction
+
+    def get(self) -> str:
+        return self._owner._call(self._instruction.get())
+
+    def edit(self, text: str) -> str:
+        return self._owner._call(self._instruction.edit(text))
+
+    def clear(self) -> None:
+        self._owner._call(self._instruction.clear())
+
+
+class ProjectResources(_CollectionFacade[dict[str, Any], dict[str, Any]]):
+    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+        super().__init__(owner, project.resources)
+
+    def create(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
+        return self._owner._call(
+            self._collection.create(data, resource_type=resource_type, **options)
+        )
+
+    def add(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
+        return self._owner._call(self._collection.add(data, resource_type=resource_type, **options))
+
+    def remove(self, resource_id: str) -> bool:
+        return self._owner._call(self._collection.remove(resource_id))
+
+    def delete(self, target: dict[str, Any] | str) -> None:
+        self._owner._call(self._collection.delete(target))
+
+    def update(
+        self, resource: dict[str, Any] | str, *, data: Any = None, **options: Any
+    ) -> dict[str, Any]:
+        return self._owner._call(self._collection.update(resource, data=data, **options))
+
+    def download(self, resource_id: str) -> Any:
+        return self._owner._call(self._collection.download(resource_id))

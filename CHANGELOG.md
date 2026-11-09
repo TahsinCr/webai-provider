@@ -9,7 +9,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Include the PEP 561 `py.typed` marker in wheels and source distributions for the public typed API.
 - Publish provider request and normalized stream event contracts in `webaiprovider.streams` for implementations using the same operation pipeline as built-in providers.
 
-- Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded blocking-client bridges.
+- Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded `PortalBridge` orchestration.
 
 - Add provider-specific async and sync provider facades, explicit `open()`/`close()` lifecycle, and paginated project chat access with chat moves.
 - Add ChatGPT project memory selection as `memory_share: bool`; `True` uses the provider's default/global memory scope and `False` selects project-only memory.
@@ -37,7 +37,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Rename immutable normalized model types to `MessageData`, `ProjectData`, and `ResourceData` to distinguish them from SDK resource objects.
 - Define `ProviderType` in the canonical `webaiprovider.provider` module and remove the separate `provider_type.py` module.
 - Give `Attachments` the collection-style `create`, metadata-only `update`, and local `delete` API.
-- Place `Attachments` in the collections package and use the shared queryable collection behavior; keep `Attachment` as a resource value.
+- Group chat, message, and project implementations under `webaiprovider.resources`; keep shared collection behavior in `webaiprovider.collections`.
+- Use plain names for the synchronous API and the `Async` prefix for asynchronous providers, resources, and collections; remove the former resource and collection module paths.
+- Keep `Attachments` with message resources and use shared query behavior; keep `Attachment` as a resource value.
 - Split the public API into shared `BaseProvider`, async `AsyncProvider`, blocking `Provider`, and provider-specific sync/async classes. Provider-only chat operations are exposed by the corresponding provider chat types.
 - Move shared model selection, caching, and resolution into `webaiprovider.catalogs`; keep each provider's static model and effort definitions in `providers/<provider>/catalogs.py`.
 - Make `webaiprovider` the sole import package for the v2 API and remove the `webai_provider` re-export namespace.

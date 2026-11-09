@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, call
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
 from webaiprovider.catalogs import (
+    AsyncModelsCollection,
     Models,
-    ModelsCollection,
     SelectionResolver,
     StaticModelCatalog,
 )
@@ -230,7 +230,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             loads += 1
             return [model]
 
-        catalog = ModelsCollection(load)
+        catalog = AsyncModelsCollection(load)
         found = await catalog.find("Sonnet")
         self.assertEqual(found, model)
         self.assertEqual((await catalog.get(model.id)).efforts.get("medium").id, "medium")
@@ -254,7 +254,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("temporary catalog failure")
             return [model]
 
-        catalog = ModelsCollection(load)
+        catalog = AsyncModelsCollection(load)
         self.assertEqual((await catalog.list())[0], model)
         with self.assertRaises(RuntimeError):
             await catalog.refresh()

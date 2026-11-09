@@ -9,7 +9,7 @@ from eventflow import LoopPortal
 T = TypeVar("T")
 
 
-class SyncPortalBridge:
+class PortalBridge:
     __slots__ = ("_portal",)
 
     def __init__(self, name: str = "ProviderSyncPortal") -> None:
@@ -32,7 +32,7 @@ class SyncPortalBridge:
         if self._portal.running:
             self._portal.cancel()
 
-    def __enter__(self) -> SyncPortalBridge:
+    def __enter__(self) -> PortalBridge:
         self.start()
         return self
 

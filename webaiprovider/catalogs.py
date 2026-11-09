@@ -4,11 +4,15 @@ import asyncio
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
+from typing import TYPE_CHECKING
 
-from .collections.base import AsyncQueryableCollection, QueryableCollection
+from .collections import AsyncQueryableCollection, QueryableCollection, _CollectionFacade
 from .contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from .errors import AmbiguousMatchError, ProviderError, RemoteNotFound
 from .models import ModelCatalog
+
+if TYPE_CHECKING:
+    from .provider import Provider
 
 
 def effort_ref(
@@ -254,7 +258,7 @@ class SelectionResolver:
         raise RemoteNotFound(f"Selection was not found: {target}")
 
 
-class ModelsCollection(AsyncQueryableCollection[ModelRef]):
+class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
     def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
         self._loader = loader
         self._items_tuple: tuple[ModelRef, ...] | None = None
@@ -314,4 +318,22 @@ class ModelsCollection(AsyncQueryableCollection[ModelRef]):
         raise TypeError("Selection did not resolve to a model")
 
 
-__all__ = ["Models", "ModelsCollection", "SelectionResolver", "StaticModelCatalog", "effort_ref"]
+__all__ = ["Models", "AsyncModelsCollection", "SelectionResolver", "StaticModelCatalog", "effort_ref"]
+
+
+class ModelsCollection(_CollectionFacade[ModelRef, ModelRef]):
+    def __init__(self, owner: Provider) -> None:
+        super().__init__(owner, owner._provider.models)
+
+    def list(self, *, refresh: bool = False) -> list[ModelRef]:
+        self._items = self._owner._call(self._collection.list(refresh=refresh))
+        return list(self._items)
+
+    def refresh(self) -> list[ModelRef]:
+        self._items = self._owner._call(self._collection.refresh())
+        return list(self._items)
+
+    def resolve(
+        self, target: Models | EffortRef | ModelRef | ModelSelection | str
+    ) -> ModelSelection:
+        return self._owner._call(self._collection.resolve(target))

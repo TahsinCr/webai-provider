@@ -171,7 +171,7 @@ class _NativeDownloadResponse:
         return self.response.iter_content(chunk_size=chunk_size)
 
 
-async def download_source(source: DownloadSource) -> bytes:
+async def download_source(source: DownloadSource | None) -> bytes:
     from ..errors import ProviderError, UnsupportedOperationError
 
     if not isinstance(source, DownloadSource):

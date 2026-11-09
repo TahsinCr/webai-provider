@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .bridges import SyncPortalBridge
+from .bridges import PortalBridge
 from .cache import MultiDimensionBoundedCache
 from .concurrency import ConcurrencyCoordinator
 from .resilience import ProviderResilienceRegistry
@@ -26,7 +26,7 @@ __all__ = [
     "ProviderResourceScope",
     "ProviderTelemetry",
     "Stopwatch",
-    "SyncPortalBridge",
+    "PortalBridge",
     "correlation_context",
     "current_correlation_id",
 ]

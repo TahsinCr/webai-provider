@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ...resources.chat import AsyncBranchableChat
+from ...resources.chat.chat import AsyncBranchableChat
 
 
 class AsyncGeminiChat(AsyncBranchableChat):
