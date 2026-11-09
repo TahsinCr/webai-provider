@@ -59,6 +59,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Remove the duplicate `Feature`/`ProviderDescription` wrapper and `describe()` API; providers expose their declared capabilities directly through `provider.capabilities`.
 - Move catalog status to `resources.model.ModelCatalogState` and remove unused connector and feature-only status values.
+- Remove the no-op synchronous `Provider.__repr__` override and inherit the shared representation.
 
 - Remove the former root `models.py`, `contracts.py`, `streams.py`, and `catalogs.py` modules without compatibility imports.
 

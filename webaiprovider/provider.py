@@ -164,6 +164,3 @@ class Provider(BaseProvider):
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
-
-    def __repr__(self) -> str:
-        return super().__repr__()
