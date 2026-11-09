@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.provider_fakes import provider_account
 from webaiprovider import Account, AsyncProvider, Chat, Message, MessageOperation
-from webaiprovider.base import FeatureState
 from webaiprovider.errors import AccountPaused, RateLimited
 from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
@@ -23,6 +22,7 @@ from webaiprovider.resources.message.operation import (
     ThinkingDelta,
     ThinkingEnd,
 )
+from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import Model as CatalogModel
 from webaiprovider.resources.model.model import ModelCatalog
 
@@ -39,7 +39,9 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
         )
     ]
     session.models.list = AsyncMock(
-        return_value=ModelCatalog(FeatureState.AVAILABLE, tuple(models_catalog), "default-model")
+        return_value=ModelCatalog(
+            ModelCatalogState.AVAILABLE, tuple(models_catalog), "default-model"
+        )
     )
     return session
 
@@ -118,7 +120,7 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
-            FeatureState.AVAILABLE,
+            ModelCatalogState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )
@@ -164,7 +166,7 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
-            FeatureState.AVAILABLE,
+            ModelCatalogState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )

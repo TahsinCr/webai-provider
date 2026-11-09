@@ -3,13 +3,19 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import KW_ONLY, dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Mapping, TypeVar, cast
 
-from ...base import FeatureState
 from ..common import Choice
 
 if TYPE_CHECKING:
     from .collections import Models
+
+
+class ModelCatalogState(str, Enum):
+    AVAILABLE = "available"
+    UNKNOWN = "unknown"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -172,7 +178,7 @@ class Model:
 
 @dataclass(frozen=True)
 class ModelCatalog:
-    state: FeatureState
+    state: ModelCatalogState
     models: tuple[Model, ...] = ()
     default_model: str | None = None
     reason: str | None = None
@@ -196,7 +202,7 @@ class ModelCatalog:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ModelCatalog":
         return cls(
-            FeatureState(value["state"]),
+            ModelCatalogState(value["state"]),
             tuple(
                 Model(
                     item["id"],

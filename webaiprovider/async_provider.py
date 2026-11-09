@@ -4,13 +4,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from .accounts.status import SessionState, SessionStatus
-from .base import (
-    BaseProvider,
-    Capability,
-    Feature,
-    FeatureState,
-    ProviderDescription,
-)
+from .base import BaseProvider, Capability
 from .collections import Page
 from .core.scope import ProviderResourceScope
 from .core.telemetry import ProviderTelemetry
@@ -328,19 +322,6 @@ class AsyncProvider(BaseProvider):
 
     def _origin(self, remote: str) -> Origin:
         return Origin(getattr(self, "id", ""), getattr(self, "account_id", "default"), remote)
-
-    async def describe(self) -> ProviderDescription:
-        caps = getattr(self, "capabilities", frozenset())
-        return ProviderDescription(
-            getattr(self, "id", ""),
-            tuple(
-                Feature(
-                    c,
-                    FeatureState.AVAILABLE if c in caps else FeatureState.UNSUPPORTED,
-                )
-                for c in Capability
-            ),
-        )
 
     async def authenticate(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "not_implemented")

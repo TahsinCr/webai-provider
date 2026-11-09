@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -25,37 +24,9 @@ class Capability(str, Enum):
     PROJECT_MEMBERSHIP = "project_membership"
     MODELS = "models"
     EFFORT = "effort"
-    CONNECTORS = "connectors"
     MESSAGE_EDIT = "message_edit"
     MESSAGE_RETRY = "message_retry"
     CHAT_BRANCH = "chat_branch"
-
-
-class FeatureState(str, Enum):
-    AVAILABLE = "available"
-    UNSUPPORTED = "unsupported"
-    UNKNOWN = "unknown"
-    UNAVAILABLE = "unavailable"
-    LOGIN_REQUIRED = "login_required"
-
-
-@dataclass(frozen=True)
-class Feature:
-    capability: Capability
-    state: FeatureState
-    reason: str | None = None
-
-
-@dataclass(frozen=True)
-class ProviderDescription:
-    id: str
-    features: tuple[Feature, ...]
-
-    def feature(self, capability: Capability) -> Feature:
-        return next(
-            (item for item in self.features if item.capability == capability),
-            Feature(capability, FeatureState.UNKNOWN),
-        )
 
 
 class BaseProvider:

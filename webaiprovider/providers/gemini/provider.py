@@ -16,10 +16,7 @@ from ...accounts.status import (
     SessionStatus,
 )
 from ...async_provider import AsyncProvider, confirm_deleted
-from ...base import (
-    Capability,
-    FeatureState,
-)
+from ...base import Capability
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
@@ -35,6 +32,7 @@ from ...resources.message.protocol import (
     TextReplacement,
 )
 from ...resources.message.types import MessageAction
+from ...resources.model import ModelCatalogState
 from ...resources.model.model import (
     Model,
     ModelCatalog,
@@ -233,7 +231,7 @@ class AsyncGeminiProvider(AsyncProvider):
                 client.models = await client.discover_models()
                 self._cached_models = client.models
                 self._catalog_at = time.monotonic()
-            return ModelCatalog(FeatureState.AVAILABLE, client.models)
+            return ModelCatalog(ModelCatalogState.AVAILABLE, client.models)
 
     @staticmethod
     def _usable_chat_metadata(metadata, conversation_id):

@@ -609,8 +609,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.message.content, "Direct answer")
 
     async def test_model_resolution_from_string_and_policy(self) -> None:
-        from webaiprovider.base import FeatureState
         from webaiprovider.resources.common import Choice
+        from webaiprovider.resources.model import ModelCatalogState
         from webaiprovider.resources.model.model import Model as CatalogModel
         from webaiprovider.resources.model.model import ModelCatalog
 
@@ -619,7 +619,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider = await self.open_provider(account, provider)
         provider._load_model_catalog = AsyncMock(
             return_value=ModelCatalog(
-                FeatureState.AVAILABLE,
+                ModelCatalogState.AVAILABLE,
                 (
                     CatalogModel("gpt-6-instant", "GPT-6 Instant"),
                     CatalogModel(

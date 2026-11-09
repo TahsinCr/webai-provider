@@ -9,7 +9,6 @@ from tests.provider_fakes import provider_account
 from webaiprovider.accounts.status import SessionState
 from webaiprovider.base import (
     Capability,
-    FeatureState,
 )
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
@@ -21,6 +20,7 @@ from webaiprovider.resources.message.protocol import (
     TextDelta,
     TextReplacement,
 )
+from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import (
     Model,
     ModelCatalog,
@@ -130,11 +130,12 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.metadata["generation"], {"active": True, "started_at": 1_800_000_000})
 
     async def test_discovery_creation_and_deletion_are_available(self):
-        description = await self.provider.describe()
-        self.assertEqual(description.feature(Capability.PROJECTS).state, FeatureState.AVAILABLE)
-        self.client.model_catalog = lambda: ModelCatalog(FeatureState.AVAILABLE)
+        self.assertIn(Capability.PROJECTS, self.provider.capabilities)
+        self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
         self.client.list_projects = lambda cursor: {"items": [], "cursor": None}
-        self.assertEqual((await self.provider._load_model_catalog()).state, FeatureState.AVAILABLE)
+        self.assertEqual(
+            (await self.provider._load_model_catalog()).state, ModelCatalogState.AVAILABLE
+        )
         self.assertEqual((await self.provider.list_projects()).items, ())
         self.client.create_project = lambda name, instructions, **options: {
             "id": "g-p-created",
@@ -192,7 +193,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             ready.set()
             if not release.wait(2):
                 raise TimeoutError("test warmup was not released")
-            return ModelCatalog(FeatureState.AVAILABLE)
+            return ModelCatalog(ModelCatalogState.AVAILABLE)
 
         self.client.model_catalog = prepare_catalog
         warmup = asyncio.create_task(self.provider.prepare())
@@ -208,7 +209,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         import httpx
 
         raw = {"id": "remote", "title": "Example", "messages": []}
-        catalog = ModelCatalog(FeatureState.AVAILABLE)
+        catalog = ModelCatalog(ModelCatalogState.AVAILABLE)
         self.session.load = lambda: ("https://chatgpt.com/", {"authorization": "Bearer test"})
         real_http_client = httpx.Client
         with (
@@ -390,7 +391,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
 
     def test_medium_effort_only_selected_when_catalog_supports_it(self):
         catalog = ModelCatalog(
-            FeatureState.AVAILABLE,
+            ModelCatalogState.AVAILABLE,
             (
                 Model("a", "A", (Choice("low", "Low"), Choice("medium", "Medium")), "low"),
                 Model("b", "B", (Choice("auto", "Automatic"),), "auto"),

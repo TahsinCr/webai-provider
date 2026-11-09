@@ -200,7 +200,7 @@ class CatalogTests(unittest.TestCase):
 
 class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_model_cache_is_reused_and_refreshable(self) -> None:
-        from webaiprovider.base import FeatureState
+        from webaiprovider.resources.model import ModelCatalogState
         from webaiprovider.resources.model.model import (
             Model,
             ModelCatalog,
@@ -208,7 +208,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         account = Account("account-1", "chatgpt", {"session_token": "test"})
         catalog = ModelCatalog(
-            FeatureState.AVAILABLE,
+            ModelCatalogState.AVAILABLE,
             (Model("gpt-6-pro", "GPT-6 Pro"),),
         )
         provider = AsyncProvider(account)
@@ -325,7 +325,7 @@ class EntitlementTests(unittest.TestCase):
 
 class ChatModelLookupTests(unittest.TestCase):
     def test_lookup_keeps_chat_visibility_order_and_unknown_selection(self) -> None:
-        from webaiprovider.base import FeatureState
+        from webaiprovider.resources.model import ModelCatalogState
         from webaiprovider.resources.model.model import (
             Model,
             ModelCatalog,
@@ -334,11 +334,11 @@ class ChatModelLookupTests(unittest.TestCase):
         hidden = Model("shared", "Tool", chat_selectable=False)
         first = Model("shared", "First chat")
         second = Model("shared", "Second chat")
-        catalog = ModelCatalog(FeatureState.AVAILABLE, (hidden, first, second))
+        catalog = ModelCatalog(ModelCatalogState.AVAILABLE, (hidden, first, second))
         self.assertIs(catalog.chat_model("shared"), first)
         self.assertIsNone(catalog.chat_model("missing"))
         self.assertIsNone(catalog.chat_model(None))
-        self.assertIsNone(ModelCatalog(FeatureState.UNKNOWN).chat_model("shared"))
+        self.assertIsNone(ModelCatalog(ModelCatalogState.UNKNOWN).chat_model("shared"))
 
 
 if __name__ == "__main__":

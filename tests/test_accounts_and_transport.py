@@ -27,7 +27,7 @@ from webaiprovider.accounts.importer import (
     CookieReader,
     import_browser_session,
 )
-from webaiprovider.base import Capability, FeatureState
+from webaiprovider.base import Capability
 from webaiprovider.core import BoundedWorkPool
 from webaiprovider.errors import (
     AccountPaused,
@@ -127,12 +127,11 @@ class AccountsTests(unittest.TestCase):
         with self.assertRaises(AccountPaused):
             store.load()
 
-    def test_session_status_and_features(self):
+    def test_session_status(self):
         status = SessionStatus(state=SessionState.AUTHENTICATED, saved_snapshot=True)
         self.assertEqual(status.state, SessionState.AUTHENTICATED)
         self.assertTrue(status.saved_snapshot)
         self.assertIsNone(status.reason)
-        self.assertEqual(FeatureState.AVAILABLE.value, "available")
 
 
 class AuthTests(unittest.TestCase):

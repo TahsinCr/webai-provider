@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...base import FeatureState
 from ...resources.common import Choice
 from ...resources.model.collections import (
     StaticModelCatalog,
@@ -13,6 +12,7 @@ from ...resources.model.model import (
     EffortSet,
     Model,
     ModelCatalog,
+    ModelCatalogState,
     ModelRef,
 )
 from .errors import ClaudeCompatibilityError
@@ -237,4 +237,4 @@ def parse_model_catalog(data) -> ModelCatalog:
         raise ClaudeCompatibilityError("Claude returned no selectable chat model for this account")
     preferred = state.get("model")
     default = preferred if any(x.id == preferred for x in models) else models[0].id
-    return ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)
+    return ModelCatalog(ModelCatalogState.AVAILABLE, tuple(models), default)

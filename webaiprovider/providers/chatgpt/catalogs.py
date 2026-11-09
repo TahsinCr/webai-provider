@@ -1,6 +1,5 @@
 from typing import Any, ClassVar
 
-from ...base import FeatureState
 from ...resources.common import Choice
 from ...resources.model.collections import StaticModelCatalog
 from ...resources.model.model import (
@@ -8,6 +7,7 @@ from ...resources.model.model import (
     EffortSet,
     Model,
     ModelCatalog,
+    ModelCatalogState,
     ModelRef,
 )
 from .errors import ChatGPTError
@@ -143,4 +143,4 @@ def parse_model_catalog(raw: Any) -> ModelCatalog:
         default = next(
             (m.id for m in models.values() if m.metadata.get("is_default") is True), None
         )
-    return ModelCatalog(FeatureState.AVAILABLE, tuple(models.values()), default)
+    return ModelCatalog(ModelCatalogState.AVAILABLE, tuple(models.values()), default)

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...base import FeatureState
 from ...errors import ProviderError
 from ...resources.model.collections import StaticModelCatalog
 from ...resources.model.model import (
     EffortSet,
     Model,
     ModelCatalog,
+    ModelCatalogState,
     ModelRef,
 )
 
@@ -133,7 +133,7 @@ def parse_model_catalog(data, details) -> ModelCatalog:
     if not any(model.id == default for model in models):
         default = models[0].id if models else None
     return ModelCatalog(
-        FeatureState.AVAILABLE if models else FeatureState.UNAVAILABLE,
+        ModelCatalogState.AVAILABLE if models else ModelCatalogState.UNAVAILABLE,
         tuple(models),
         default,
     )

@@ -10,6 +10,7 @@ from .model import (
     EffortSet,
     Model,
     ModelCatalog,
+    ModelCatalogState,
     ModelRef,
     ModelSelection,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "EffortSet",
     "Model",
     "ModelCatalog",
+    "ModelCatalogState",
     "ModelRef",
     "ModelSelection",
     "Models",

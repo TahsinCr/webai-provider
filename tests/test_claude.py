@@ -11,7 +11,6 @@ from tests.fakes import bind_stream
 from tests.provider_fakes import provider_account
 from webaiprovider.base import (
     Capability,
-    FeatureState,
 )
 from webaiprovider.errors import ProviderError
 from webaiprovider.providers.claude import AsyncClaudeProvider
@@ -26,6 +25,7 @@ from webaiprovider.resources.message.protocol import (
     ProviderRequest,
     TextReplacement,
 )
+from webaiprovider.resources.model import ModelCatalogState
 
 CHAT = "12345678-abcd-1234-abcd-123456789abc"
 PROJECT = "87654321-abcd-1234-abcd-123456789abc"
@@ -262,7 +262,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             "default_model": "claude-future",
         }
         result = await self.provider._load_model_catalog()
-        self.assertEqual(result.state, FeatureState.AVAILABLE)
+        self.assertEqual(result.state, ModelCatalogState.AVAILABLE)
         self.assertEqual(result.models[0].default_effort, "high")
         self.assertEqual(result.models[0].id, "claude-future")
 

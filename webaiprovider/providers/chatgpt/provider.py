@@ -18,12 +18,7 @@ from ...accounts.status import (
     SessionStatus,
 )
 from ...async_provider import AsyncProvider, confirm_deleted
-from ...base import (
-    Capability,
-    Feature,
-    FeatureState,
-    ProviderDescription,
-)
+from ...base import Capability
 from ...collections import Page
 from ...errors import (
     FeatureUnavailable,
@@ -281,19 +276,6 @@ class AsyncChatGPTProvider(AsyncProvider):
             with self._http_lock:
                 if self._http_client is not None:
                     self._http_client.forget_conversation(conversation_id)
-
-    async def describe(self) -> ProviderDescription:
-        return ProviderDescription(
-            self.id,
-            tuple(
-                Feature(
-                    cap,
-                    FeatureState.AVAILABLE if cap in self.capabilities else FeatureState.UNKNOWN,
-                    None if cap in self.capabilities else "not_discovered",
-                )
-                for cap in Capability
-            ),
-        )
 
     async def prepare(self) -> None:
         """Warm the saved session and retain its HTTP connection pool."""
