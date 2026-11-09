@@ -114,12 +114,12 @@ Frame decoding is separate from HTTP. `SSEFrameDecoder` preserves `data`, `event
 
 Shared source and file normalization lives in `webaiprovider.normalizers`. Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
 
-For provider extensions, `webaiprovider.streams` exports `ProviderRequest` and normalized event types: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, and `MessageMetadata`. Override `_stream_request` to customize a provider while preserving event order:
+For provider extensions, `webaiprovider.resources.message.protocol` exports `ProviderRequest` and normalized event types: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, and `MessageMetadata`. Override `_stream_request` to customize a provider while preserving event order:
 
 ```python
 from collections.abc import AsyncIterator
 from webaiprovider import AsyncClaudeProvider
-from webaiprovider.streams import ProviderEvent, ProviderRequest
+from webaiprovider.resources.message.protocol import ProviderEvent, ProviderRequest
 
 
 class CustomClaudeProvider(AsyncClaudeProvider):

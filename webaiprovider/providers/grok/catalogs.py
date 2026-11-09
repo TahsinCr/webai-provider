@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...catalogs import StaticModelCatalog
-from ...contracts import EffortSet, ModelRef
+from ...base import FeatureState
 from ...errors import ProviderError
-from ...models import FeatureState, Model, ModelCatalog
+from ...resources.model.collections import StaticModelCatalog
+from ...resources.model.model import (
+    EffortSet,
+    Model,
+    ModelCatalog,
+    ModelRef,
+)
 
 _MODEL_MODES = {
     "auto": "MODEL_MODE_AUTO",

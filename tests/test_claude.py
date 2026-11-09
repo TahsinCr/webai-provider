@@ -9,8 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 from tests.fakes import bind_stream
 from tests.provider_fakes import provider_account
+from webaiprovider.base import (
+    Capability,
+    FeatureState,
+)
 from webaiprovider.errors import ProviderError
-from webaiprovider.models import Capability, FeatureState
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.claude.records import (
@@ -18,7 +21,11 @@ from webaiprovider.providers.claude.records import (
     conversation_attachment_count,
     project,
 )
-from webaiprovider.streams import ConversationBound, ProviderRequest, TextReplacement
+from webaiprovider.resources.message.protocol import (
+    ConversationBound,
+    ProviderRequest,
+    TextReplacement,
+)
 
 CHAT = "12345678-abcd-1234-abcd-123456789abc"
 PROJECT = "87654321-abcd-1234-abcd-123456789abc"

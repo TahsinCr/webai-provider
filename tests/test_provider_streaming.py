@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.provider_fakes import provider_account
 from webaiprovider import Account, AsyncProvider, Chat, Message, MessageOperation
-from webaiprovider.contracts import (
+from webaiprovider.base import FeatureState
+from webaiprovider.errors import AccountPaused, RateLimited
+from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+from webaiprovider.providers.claude.provider import AsyncClaudeProvider
+from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
+from webaiprovider.providers.grok.provider import AsyncGrokProvider
+from webaiprovider.resources.common import Choice
+from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
     OutputDelta,
@@ -16,13 +23,8 @@ from webaiprovider.contracts import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.errors import AccountPaused, RateLimited
-from webaiprovider.models import Choice, FeatureState, ModelCatalog
-from webaiprovider.models import Model as CatalogModel
-from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
-from webaiprovider.providers.claude.provider import AsyncClaudeProvider
-from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
-from webaiprovider.providers.grok.provider import AsyncGrokProvider
+from webaiprovider.resources.model.model import Model as CatalogModel
+from webaiprovider.resources.model.model import ModelCatalog
 
 
 def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:

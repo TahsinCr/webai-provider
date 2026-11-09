@@ -4,11 +4,15 @@ import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ...catalogs import Models
-from ...contracts import EffortRef, ModelRef, ModelSelection
 from ...errors import UnsupportedOperationError
 from ..attachment import Attachment
 from ..chat.chat import AsyncChat, Chat
+from ..model.collections import Models
+from ..model.model import (
+    EffortRef,
+    ModelRef,
+    ModelSelection,
+)
 from .attachments import Attachments
 
 if TYPE_CHECKING:
@@ -229,6 +233,5 @@ class Message:
     def __repr__(self) -> str:
         preview = self.content[:40] + ("..." if len(self.content) > 40 else "")
         return (
-            f"<Message role={self.role!r} content={preview!r} "
-            f"attachments={len(self.attachments)}>"
+            f"<Message role={self.role!r} content={preview!r} attachments={len(self.attachments)}>"
         )

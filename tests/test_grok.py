@@ -13,8 +13,8 @@ from tests.fakes import bind_stream
 from tests.provider_fakes import provider_account
 from webaiprovider.accounts.cookies import select_cookies
 from webaiprovider.async_provider import MessageAction
+from webaiprovider.base import Capability
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited
-from webaiprovider.models import Capability, ResourceData
 from webaiprovider.providers.grok import AsyncGrokProvider
 from webaiprovider.providers.grok.client import (
     _MAX_LINE_BYTES,
@@ -23,7 +23,8 @@ from webaiprovider.providers.grok.client import (
     _iter_bounded_lines,
 )
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
-from webaiprovider.streams import (
+from webaiprovider.resources.common import ResourceData
+from webaiprovider.resources.message.protocol import (
     MessageMetadata,
     ProviderRequest,
     ResponseComplete,

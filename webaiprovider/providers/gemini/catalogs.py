@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...catalogs import StaticModelCatalog, effort_ref
-from ...contracts import EffortRef, EffortSet, ModelRef
 from ...errors import AccountPaused, ProviderError
-from ...models import Choice, Model
+from ...resources.common import Choice
+from ...resources.model.collections import (
+    StaticModelCatalog,
+    effort_ref,
+)
+from ...resources.model.model import (
+    EffortRef,
+    EffortSet,
+    Model,
+    ModelRef,
+)
 from .errors import GeminiCompatibilityError, GeminiError
 from .rpc import nested, rpc_parts
 

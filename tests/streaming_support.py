@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from webaiprovider import Account, AsyncProvider
-from webaiprovider.streams import ProviderRequest
+from webaiprovider.resources.message.protocol import ProviderRequest
 
 
 class StreamTestProvider(AsyncProvider):

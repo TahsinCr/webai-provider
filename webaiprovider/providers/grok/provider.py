@@ -9,21 +9,20 @@ from io import StringIO
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import AsyncProvider
-from ...core import MultiDimensionBoundedCache
-from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
-from ...models import (
-    Capability,
-    Conversation,
-    MessageAction,
-    Page,
+from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
+from ...async_provider import AsyncProvider
+from ...base import Capability
+from ...collections import Page
+from ...core import MultiDimensionBoundedCache
+from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import Chat, MovableChat
-from ...streams import (
+from ...resources.chat.types import Conversation
+from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderEvent,
@@ -32,6 +31,7 @@ from ...streams import (
     TextDelta,
     TextReplacement,
 )
+from ...resources.message.types import MessageAction
 from ...transport import AsyncTransport
 from ...utils.attachments import GROK_ATTACHMENTS
 from .catalogs import parse_model_catalog

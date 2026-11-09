@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -11,24 +12,79 @@ from typing import (
     Coroutine,
 )
 
-from ...contracts import (
-    ArtifactDiscovered,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    SourceDiscovered,
-    StreamEvent,
-    TerminalStatus,
-    TimingMetrics,
-)
 from ...core.state import OperationState, OperationStateMachine
 from ...errors import OperationCancelledError, ProviderError
 from .message import AsyncMessage, Message
-from .response import Response
+from .response import Artifact, Response, Source, TimingMetrics
 
 if TYPE_CHECKING:
     from ...provider import Provider
     from ..chat.chat import AsyncChat, Chat
+
+
+@dataclass(frozen=True)
+class StreamEvent:
+    event: str = field(init=False, default="")
+
+
+@dataclass(frozen=True)
+class ThinkingBegin(StreamEvent):
+    event: str = field(init=False, default="thinking.begin")
+
+
+@dataclass(frozen=True)
+class ThinkingDelta(StreamEvent):
+    delta: str = ""
+    event: str = field(init=False, default="thinking.delta")
+
+
+@dataclass(frozen=True)
+class ThinkingEnd(StreamEvent):
+    text: str = ""
+    event: str = field(init=False, default="thinking.end")
+
+
+@dataclass(frozen=True)
+class OutputBegin(StreamEvent):
+    event: str = field(init=False, default="output.begin")
+
+
+@dataclass(frozen=True)
+class OutputDelta(StreamEvent):
+    delta: str = ""
+    event: str = field(init=False, default="output.delta")
+
+
+@dataclass(frozen=True)
+class OutputReplace(StreamEvent):
+    text: str = ""
+    event: str = field(init=False, default="output.replace")
+
+
+@dataclass(frozen=True)
+class OutputEnd(StreamEvent):
+    text: str = ""
+    event: str = field(init=False, default="output.end")
+
+
+@dataclass(frozen=True)
+class SourceDiscovered(StreamEvent):
+    source: Source = field(default_factory=lambda: Source("", ""))
+    event: str = field(init=False, default="source.discovered")
+
+
+@dataclass(frozen=True)
+class ArtifactDiscovered(StreamEvent):
+    artifact: Artifact = field(default_factory=lambda: Artifact("", "", ""))
+    event: str = field(init=False, default="artifact.discovered")
+
+
+@dataclass(frozen=True)
+class TerminalStatus(StreamEvent):
+    status: str = "completed"
+    error: Any = None
+    event: str = field(init=False, default="status.terminal")
+
 
 HandlerType = Callable[[StreamEvent], Any | Coroutine[Any, Any, Any]]
 

@@ -3,25 +3,29 @@ from __future__ import annotations
 import unittest
 from dataclasses import FrozenInstanceError
 
-from webaiprovider.contracts import (
-    Artifact,
+from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
-    Attribution,
-    EffortRef,
-    EffortSet,
-    ModelRef,
     OutputBegin,
     OutputDelta,
     OutputEnd,
     OutputReplace,
-    Source,
     SourceDiscovered,
     StreamEvent,
     TerminalStatus,
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
+)
+from webaiprovider.resources.message.response import (
+    Artifact,
+    Attribution,
+    Source,
     TimingMetrics,
+)
+from webaiprovider.resources.model.model import (
+    EffortRef,
+    EffortSet,
+    ModelRef,
 )
 
 

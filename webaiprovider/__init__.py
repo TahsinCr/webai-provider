@@ -3,40 +3,12 @@ from __future__ import annotations
 from .accounts.account import Account
 from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 from .async_provider import AsyncProvider
-from .base import BaseProvider
-from .catalogs import (
-    AsyncModelsCollection,
-    Models,
-    ModelsCollection,
-    SelectionResolver,
-    StaticModelCatalog,
-)
+from .base import BaseProvider, Capability
 from .collections import (
     AsyncManageableCollection,
     AsyncQueryableCollection,
     ManageableCollection,
     QueryableCollection,
-)
-from .contracts import (
-    Artifact,
-    ArtifactDiscovered,
-    Attribution,
-    EffortRef,
-    EffortSet,
-    ModelRef,
-    ModelSelection,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    Source,
-    SourceDiscovered,
-    StreamEvent,
-    TerminalStatus,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
-    TimingMetrics,
 )
 from .core.state import OperationState
 from .core.telemetry import ProviderTelemetry
@@ -53,7 +25,6 @@ from .errors import (
     RemoteNotFound,
     UnsupportedOperationError,
 )
-from .models import Capability
 from .provider import Provider, ProviderType
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
@@ -88,11 +59,41 @@ from .resources.message.attachments import Attachments
 from .resources.message.collections import AsyncMessagesCollection, MessagesCollection
 from .resources.message.message import AsyncMessage, Message
 from .resources.message.operation import (
+    ArtifactDiscovered,
     AsyncMessageOperation,
     MessageOperation,
     OperationHooks,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    SourceDiscovered,
+    StreamEvent,
+    TerminalStatus,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
 )
-from .resources.message.response import Response
+from .resources.message.response import (
+    Artifact,
+    Attribution,
+    Response,
+    Source,
+    TimingMetrics,
+)
+from .resources.model.collections import (
+    AsyncModelsCollection,
+    Models,
+    ModelsCollection,
+    SelectionResolver,
+    StaticModelCatalog,
+)
+from .resources.model.model import (
+    EffortRef,
+    EffortSet,
+    ModelRef,
+    ModelSelection,
+)
 from .resources.project.chats import AsyncProjectChatsCollection, ProjectChatsCollection
 from .resources.project.collections import AsyncProjectsCollection, ProjectsCollection
 from .resources.project.project import (

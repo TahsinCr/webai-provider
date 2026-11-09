@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ...collections import AsyncManageableCollection, ManageableCollection, _CollectionFacade
+from ...collections import AsyncManageableCollection, ManageableCollection, Page, _CollectionFacade
 from ...errors import ProviderError
-from ...models import Conversation, Page
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat
+from .types import Conversation
 
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider

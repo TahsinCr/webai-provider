@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .errors import AmbiguousMatchError, RemoteNotFound
@@ -11,6 +12,12 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 U = TypeVar("U")
+
+
+@dataclass(frozen=True)
+class Page(Generic[T]):
+    items: tuple[T, ...]
+    next_cursor: str | None = None
 
 
 class QueryableCollection(Generic[T], ABC):
@@ -287,8 +294,7 @@ class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
 
     def search(self, query: str, /, **match: bool) -> list[U]:
         return [
-            self._wrap(item)
-            for item in self._owner._call(self._collection.search(query, **match))
+            self._wrap(item) for item in self._owner._call(self._collection.search(query, **match))
         ]
 
     def __len__(self) -> int:

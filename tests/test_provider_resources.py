@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock
 
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncProvider, MessageOperation, OperationState
-from webaiprovider.contracts import (
+from webaiprovider.collections import Page
+from webaiprovider.errors import UnsupportedOperationError
+from webaiprovider.resources.chat.types import Conversation
+from webaiprovider.resources.common import (
+    Origin,
+    ResourceData,
+)
+from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
     OutputReplace,
@@ -14,11 +21,7 @@ from webaiprovider.contracts import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.errors import UnsupportedOperationError
-from webaiprovider.models import Content, Conversation, Origin, Page, ResourceData
-from webaiprovider.models import MessageData as NativeMessage
-from webaiprovider.models import ProjectData as NativeProject
-from webaiprovider.streams import (
+from webaiprovider.resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ResponseComplete,
@@ -26,6 +29,9 @@ from webaiprovider.streams import (
     TextReplacement,
     ThoughtDelta,
 )
+from webaiprovider.resources.message.types import Content
+from webaiprovider.resources.message.types import MessageData as NativeMessage
+from webaiprovider.resources.project.types import ProjectData as NativeProject
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):

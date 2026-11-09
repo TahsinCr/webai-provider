@@ -1,11 +1,50 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
-
-from ...contracts import Artifact, Source, TimingMetrics
 
 if TYPE_CHECKING:
     from .message import AsyncMessage, Message
+
+
+@dataclass(frozen=True)
+class Source:
+    id: str
+    url: str
+    title: str = ""
+    snippet: str = ""
+    kind: str = "web"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Attribution:
+    source_id: str
+    start_index: int
+    end_index: int
+    text_segment: str = ""
+
+
+@dataclass(frozen=True)
+class Artifact:
+    id: str
+    kind: str
+    name: str
+    mime_type: str = "application/octet-stream"
+    size: int | None = None
+    download_url: str | None = None
+    content: bytes | str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TimingMetrics:
+    started_at: float = 0.0
+    first_token_at: float | None = None
+    completed_at: float | None = None
+    first_token_ms: float | None = None
+    duration_ms: float = 0.0
+    metrics: Mapping[str, float] = field(default_factory=dict)
 
 
 class Response:

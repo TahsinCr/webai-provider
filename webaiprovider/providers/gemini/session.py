@@ -11,7 +11,7 @@ from pathlib import Path
 from ...accounts import read_session, save_session_async
 from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
-from ...models import Model
+from ...resources.model.model import Model
 from ...transport import AsyncRequestTransport, AsyncTransport, TransportConfig
 
 ORIGIN = "https://gemini.google.com"

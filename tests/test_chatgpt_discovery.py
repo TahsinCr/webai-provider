@@ -14,7 +14,6 @@ from unittest.mock import Mock, patch
 import httpx
 
 from tests.provider_fakes import provider_account
-from webaiprovider.models import ModelCatalog
 from webaiprovider.providers.chatgpt import (
     AsyncChatGPTProvider,
     BrowserSession,
@@ -24,6 +23,7 @@ from webaiprovider.providers.chatgpt import (
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.errors import ChatGPTError
 from webaiprovider.providers.chatgpt.formats import normalize_conversation
+from webaiprovider.resources.model.model import ModelCatalog
 
 from .fixtures import CATALOG
 

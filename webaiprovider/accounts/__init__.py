@@ -33,7 +33,7 @@ from .profiles import (
     list_profiles,
     snapshot_sqlite_file,
 )
-from .status import FeatureState, SessionState, SessionStatus
+from .status import SessionState, SessionStatus
 
 __all__ = [
     "Account",
@@ -45,7 +45,6 @@ __all__ = [
     "save_session",
     "save_session_async",
     "session_exists",
-    "FeatureState",
     "SessionState",
     "SessionStatus",
     "BrowserProfile",

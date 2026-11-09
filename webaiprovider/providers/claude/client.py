@@ -13,7 +13,11 @@ from ...async_provider import confirm_deleted
 from ...core import ConcurrencyCoordinator
 from ...errors import AccountPaused, ProviderError, RemoteNotFound
 from ...frames import SSEFrameDecoder
-from ...models import MessageAction, ProjectOptions, source_file
+from ...resources.message.types import MessageAction
+from ...resources.project.types import (
+    ProjectOptions,
+    source_file,
+)
 from ...transport import HttpSession
 from ...utils.timing import current_send_timing
 from .catalogs import parse_model_catalog
@@ -312,7 +316,7 @@ class ClaudeClient:
                 raise ClaudeRequestNotSent("Claude temporary conversation could not be verified")
             parent = history.get("current_leaf_message_uuid")
             if v.get("action"):
-                from ...models import target_message
+                from ...resources.message.types import target_message
                 from .records import conversation
 
                 role = "user" if v["action"] == MessageAction.EDIT else "assistant"

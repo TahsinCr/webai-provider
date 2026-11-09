@@ -93,7 +93,7 @@ class NotebookEditor:
         pass
 
     async def options(self, project_id=None):
-        from ...models import ProjectOptions
+        from ...resources.project.types import ProjectOptions
 
         return ProjectOptions(
             fields=("name", "instructions") if project_id else ("name",),

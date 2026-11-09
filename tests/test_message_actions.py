@@ -9,13 +9,15 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 
 from tests.fakes import bind_stream
-from webaiprovider.models import MessageAction, Model, Origin
 from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import history
-from webaiprovider.streams import ProviderRequest
+from webaiprovider.resources.common import Origin
+from webaiprovider.resources.message.protocol import ProviderRequest
+from webaiprovider.resources.message.types import MessageAction
+from webaiprovider.resources.model.model import Model
 from webaiprovider.transport import HTTPTransport
 
 

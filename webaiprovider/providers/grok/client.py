@@ -8,7 +8,10 @@ from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
-from ...models import ProjectOptions, source_file
+from ...resources.project.types import (
+    ProjectOptions,
+    source_file,
+)
 from ...transport import HttpSession
 from ...utils.attachments import GROK_ATTACHMENTS
 

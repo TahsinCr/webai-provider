@@ -1,15 +1,17 @@
 """Lossless Claude records mapped to the shared provider contract."""
 
-from ...models import (
-    Content,
-    Conversation,
-    MessageData,
+from ...normalizers import files_from, sources_from
+from ...resources.chat.types import Conversation
+from ...resources.common import (
     Origin,
-    ProjectData,
     ResourceData,
+)
+from ...resources.message.types import (
+    Content,
+    MessageData,
     actions_for,
 )
-from ...normalizers import files_from, sources_from
+from ...resources.project.types import ProjectData
 from .errors import ClaudeCompatibilityError
 
 

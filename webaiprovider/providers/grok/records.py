@@ -3,16 +3,18 @@
 import re
 
 from ...errors import ProviderError
-from ...models import (
-    Content,
-    Conversation,
-    MessageAction,
-    MessageData,
+from ...normalizers import sources_from
+from ...resources.chat.types import Conversation
+from ...resources.common import (
     Origin,
-    ProjectData,
     ResourceData,
 )
-from ...normalizers import sources_from
+from ...resources.message.types import (
+    Content,
+    MessageAction,
+    MessageData,
+)
+from ...resources.project.types import ProjectData
 
 
 def _text(value):

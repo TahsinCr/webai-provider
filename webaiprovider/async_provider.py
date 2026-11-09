@@ -4,48 +4,35 @@ import asyncio
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from .accounts.status import SessionState, SessionStatus
-from .base import BaseProvider
-from .catalogs import AsyncModelsCollection, Models, _model_refs_from_catalog
-from .contracts import (
-    Artifact,
+from .base import (
+    BaseProvider,
+    Capability,
+    Feature,
+    FeatureState,
+    ProviderDescription,
+)
+from .collections import Page
+from .core.scope import ProviderResourceScope
+from .core.telemetry import ProviderTelemetry
+from .errors import FeatureUnavailable, ProviderError, RemoteNotFound, UnsupportedOperationError
+from .provider import ProviderType, _provider_class
+from .resources.chat.chat import AsyncChat
+from .resources.chat.collections import AsyncChatsCollection
+from .resources.chat.types import Conversation
+from .resources.common import Origin
+from .resources.message.operation import (
     ArtifactDiscovered,
-    EffortRef,
-    ModelRef,
-    ModelSelection,
     OutputBegin,
     OutputDelta,
     OutputEnd,
     OutputReplace,
-    Source,
     SourceDiscovered,
     StreamEvent,
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
 )
-from .core.scope import ProviderResourceScope
-from .core.telemetry import ProviderTelemetry
-from .errors import FeatureUnavailable, ProviderError, RemoteNotFound, UnsupportedOperationError
-from .models import (
-    Capability,
-    Conversation,
-    Feature,
-    FeatureState,
-    MessageAction,
-    ModelCatalog,
-    Origin,
-    Page,
-    ProjectData,
-    ProjectOptions,
-    ProviderDescription,
-)
-from .provider import ProviderType, _provider_class
-from .resources.chat.chat import AsyncChat
-from .resources.chat.collections import AsyncChatsCollection
-from .resources.message.response import Response
-from .resources.project.collections import AsyncProjectsCollection
-from .resources.project.project import AsyncProject
-from .streams import (
+from .resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderEvent,
@@ -53,6 +40,29 @@ from .streams import (
     TextDelta,
     TextReplacement,
     ThoughtDelta,
+)
+from .resources.message.response import (
+    Artifact,
+    Response,
+    Source,
+)
+from .resources.message.types import MessageAction
+from .resources.model.collections import (
+    AsyncModelsCollection,
+    Models,
+    _model_refs_from_catalog,
+)
+from .resources.model.model import (
+    EffortRef,
+    ModelCatalog,
+    ModelRef,
+    ModelSelection,
+)
+from .resources.project.collections import AsyncProjectsCollection
+from .resources.project.project import AsyncProject
+from .resources.project.types import (
+    ProjectData,
+    ProjectOptions,
 )
 from .transport import AsyncTransport
 

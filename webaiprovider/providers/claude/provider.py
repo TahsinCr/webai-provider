@@ -7,12 +7,17 @@ import time
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
+from ...accounts.status import (
+    SessionState,
+    SessionStatus,
+)
 from ...async_provider import AsyncProvider
+from ...base import Capability
+from ...collections import Page
 from ...errors import AccountPaused, FeatureUnavailable
-from ...models import Capability, Page, SessionState, SessionStatus
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import Chat, MovableChat
-from ...streams import (
+from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ResponseComplete,

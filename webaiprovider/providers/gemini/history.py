@@ -2,8 +2,14 @@
 
 import re
 
-from ...models import Content, Conversation, MessageData, ResourceData, actions_for
 from ...normalizers import sources_from
+from ...resources.chat.types import Conversation
+from ...resources.common import ResourceData
+from ...resources.message.types import (
+    Content,
+    MessageData,
+    actions_for,
+)
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 

@@ -11,24 +11,22 @@ from typing import TYPE_CHECKING
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
-from ...async_provider import AsyncProvider, confirm_deleted
-from ...core import MultiDimensionBoundedCache
-from ...errors import AccountPaused, FeatureUnavailable, ProviderError
-from ...models import (
-    Capability,
-    FeatureState,
-    MessageAction,
-    Model,
-    ModelCatalog,
-    Page,
-    ProjectOptions,
+from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
+from ...async_provider import AsyncProvider, confirm_deleted
+from ...base import (
+    Capability,
+    FeatureState,
+)
+from ...collections import Page
+from ...core import MultiDimensionBoundedCache
+from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...normalizers import files_from, sources_from
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import BranchableChat, Chat
-from ...streams import (
+from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderEvent,
@@ -36,6 +34,12 @@ from ...streams import (
     ResponseComplete,
     TextReplacement,
 )
+from ...resources.message.types import MessageAction
+from ...resources.model.model import (
+    Model,
+    ModelCatalog,
+)
+from ...resources.project.types import ProjectOptions
 from ...transport import AsyncTransport
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
@@ -281,7 +285,7 @@ class AsyncGeminiProvider(AsyncProvider):
         return await asyncio.to_thread(history, parts[0], self._origin, conversation_id)
 
     async def branch_chat(self, conversation_id, message_id):
-        from ...models import target_message
+        from ...resources.message.types import target_message
         from .rpc import nested
 
         current = await self.get_chat(conversation_id)
@@ -485,7 +489,7 @@ class AsyncGeminiProvider(AsyncProvider):
                         turns = nested(parts[0], 0, default=[])
                         turn = turns[0] if turns else None
                         if request.action:
-                            from ...models import target_message
+                            from ...resources.message.types import target_message
                             from .history import history
 
                             if request.message_id is None:

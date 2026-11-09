@@ -1,14 +1,10 @@
-"""Typed request and event contracts for provider implementations.
-
-Providers interpret their protocol and yield these normalized values; AsyncProvider
-owns the public operation lifecycle and emits the user-facing StreamEvent types.
-"""
+"""Normalized request and low-level provider events emitted by adapters."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import MessageAction
+from .types import MessageAction
 
 __all__ = [
     "ProviderRequest",

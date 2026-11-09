@@ -6,19 +6,25 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from tests.provider_fakes import provider_account
-from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
-from webaiprovider.models import (
+from webaiprovider.accounts.status import SessionState
+from webaiprovider.base import (
     Capability,
-    Choice,
     FeatureState,
-    Model,
-    ModelCatalog,
-    SessionState,
 )
+from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
-from webaiprovider.streams import ProviderRequest, TextDelta, TextReplacement
+from webaiprovider.resources.common import Choice
+from webaiprovider.resources.message.protocol import (
+    ProviderRequest,
+    TextDelta,
+    TextReplacement,
+)
+from webaiprovider.resources.model.model import (
+    Model,
+    ModelCatalog,
+)
 from webaiprovider.utils.timing import SendTiming, use_send_timing
 
 from .fakes import FakeClient

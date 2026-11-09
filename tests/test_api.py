@@ -40,9 +40,12 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.contracts import EffortSet, ModelRef
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
-from webaiprovider.streams import TextDelta
+from webaiprovider.resources.message.protocol import TextDelta
+from webaiprovider.resources.model.model import (
+    EffortSet,
+    ModelRef,
+)
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
@@ -227,7 +230,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def fake_stream(_operation: MessageOperation):
             yield OutputBegin()
             yield OutputDelta(delta="Relativity explained.")
-            from webaiprovider.contracts import ArtifactDiscovered, SourceDiscovered
+            from webaiprovider.resources.message.operation import (
+                ArtifactDiscovered,
+                SourceDiscovered,
+            )
 
             yield SourceDiscovered(
                 source=Source(
@@ -290,8 +296,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_project_lifecycle_methods(self) -> None:
         from dataclasses import replace
 
-        from webaiprovider.models import Origin, ResourceData
-        from webaiprovider.models import ProjectData as NativeProject
+        from webaiprovider.resources.common import (
+            Origin,
+            ResourceData,
+        )
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
@@ -379,7 +388,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         mock_provider.delete_project.assert_awaited_once_with("proj-abc")
 
     async def test_message_branch_retry_edit(self) -> None:
-        from webaiprovider.models import Conversation, Origin
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.common import Origin
 
         acc = Account.from_cookies("chatgpt", {"session_token": "token"})
         session = await self.open_provider(acc, AsyncChatGPTProvider(acc))
@@ -484,8 +494,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider._close_provider.assert_awaited_once_with()
 
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
-        from webaiprovider.models import Origin
-        from webaiprovider.models import ProjectData as NativeProject
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         provider = AsyncChatGPTProvider(account)
@@ -599,8 +609,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.message.content, "Direct answer")
 
     async def test_model_resolution_from_string_and_policy(self) -> None:
-        from webaiprovider.models import Choice, FeatureState, ModelCatalog
-        from webaiprovider.models import Model as CatalogModel
+        from webaiprovider.base import FeatureState
+        from webaiprovider.resources.common import Choice
+        from webaiprovider.resources.model.model import Model as CatalogModel
+        from webaiprovider.resources.model.model import ModelCatalog
 
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
         provider = StreamTestProvider(account.provider, account.id, (TextDelta("hi"),))
@@ -664,8 +676,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
 class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
-        from webaiprovider.models import Origin
-        from webaiprovider.models import ProjectData as NativeProject
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
             def __init__(self, account: Account, **options) -> None:

@@ -10,7 +10,6 @@ import httpx
 
 from webaiprovider.accounts import (
     Account,
-    FeatureState,
     FileCredentialStore,
     MemoryCredentialStore,
     SessionState,
@@ -28,6 +27,7 @@ from webaiprovider.accounts.importer import (
     CookieReader,
     import_browser_session,
 )
+from webaiprovider.base import Capability, FeatureState
 from webaiprovider.core import BoundedWorkPool
 from webaiprovider.errors import (
     AccountPaused,
@@ -35,7 +35,6 @@ from webaiprovider.errors import (
     RateLimited,
     RemoteNotFound,
 )
-from webaiprovider.models import Capability
 from webaiprovider.transport import (
     HttpSession,
     RetryPolicy,

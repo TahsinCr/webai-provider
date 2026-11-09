@@ -3,21 +3,26 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from ...catalogs import Models
 from ...collections import (
     AsyncManageableCollection,
     ManageableCollection,
     QueryableCollection,
     _CollectionFacade,
 )
-from ...contracts import EffortRef, ModelRef, ModelSelection, StreamEvent
 from ...errors import ProviderError
-from ...models import Conversation
 from ..attachment import Attachment
 from ..chat.chat import AsyncChat
+from ..chat.types import Conversation
 from ..message.attachments import Attachments
 from ..message.message import AsyncMessage, Message
 from ..message.operation import AsyncMessageOperation, MessageOperation
+from ..model.collections import Models
+from ..model.model import (
+    EffortRef,
+    ModelRef,
+    ModelSelection,
+)
+from .operation import StreamEvent
 
 if TYPE_CHECKING:
     from ...provider import Provider

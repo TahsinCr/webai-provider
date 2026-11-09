@@ -5,7 +5,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from ...models import Conversation, Origin, Page, ProjectData, ResourceData
+from ...collections import Page
+from ...resources.chat.types import Conversation
+from ...resources.common import (
+    Origin,
+    ResourceData,
+)
+from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError, GeminiError
 from .history import timestamp
 

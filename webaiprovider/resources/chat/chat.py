@@ -3,10 +3,10 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from ...contracts import Artifact
 from ...errors import ProviderError, UnsupportedOperationError
-from ...models import Conversation
 from ...utils.files import DownloadSource, download_source
+from ..message.response import Artifact
+from .types import Conversation
 
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider

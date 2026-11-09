@@ -6,13 +6,6 @@ from unittest.mock import AsyncMock, call
 
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
-from webaiprovider.catalogs import (
-    AsyncModelsCollection,
-    Models,
-    SelectionResolver,
-    StaticModelCatalog,
-)
-from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
 from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels, parse_model_catalog
 from webaiprovider.providers.claude.catalogs import (
@@ -23,6 +16,18 @@ from webaiprovider.providers.claude.catalogs import (
 )
 from webaiprovider.providers.gemini.catalogs import GeminiModels
 from webaiprovider.providers.grok.catalogs import GrokModels
+from webaiprovider.resources.model.collections import (
+    AsyncModelsCollection,
+    Models,
+    SelectionResolver,
+    StaticModelCatalog,
+)
+from webaiprovider.resources.model.model import (
+    EffortRef,
+    EffortSet,
+    ModelRef,
+    ModelSelection,
+)
 
 
 def _claude_selector_fixture() -> dict:
@@ -195,7 +200,11 @@ class CatalogTests(unittest.TestCase):
 
 class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_model_cache_is_reused_and_refreshable(self) -> None:
-        from webaiprovider.models import FeatureState, Model, ModelCatalog
+        from webaiprovider.base import FeatureState
+        from webaiprovider.resources.model.model import (
+            Model,
+            ModelCatalog,
+        )
 
         account = Account("account-1", "chatgpt", {"session_token": "test"})
         catalog = ModelCatalog(
@@ -316,7 +325,11 @@ class EntitlementTests(unittest.TestCase):
 
 class ChatModelLookupTests(unittest.TestCase):
     def test_lookup_keeps_chat_visibility_order_and_unknown_selection(self) -> None:
-        from webaiprovider.models import FeatureState, Model, ModelCatalog
+        from webaiprovider.base import FeatureState
+        from webaiprovider.resources.model.model import (
+            Model,
+            ModelCatalog,
+        )
 
         hidden = Model("shared", "Tool", chat_selectable=False)
         first = Model("shared", "First chat")

@@ -13,35 +13,32 @@ from typing import Callable, cast
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
+from ...accounts.status import (
+    SessionState,
+    SessionStatus,
+)
 from ...async_provider import AsyncProvider, confirm_deleted
+from ...base import (
+    Capability,
+    Feature,
+    FeatureState,
+    ProviderDescription,
+)
+from ...collections import Page
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
     RateLimited,
 )
-from ...models import (
-    Capability,
-    Content,
-    Conversation,
-    Feature,
-    FeatureState,
-    MessageData,
-    ModelCatalog,
-    Origin,
-    Page,
-    ProjectData,
-    ProviderDescription,
-    ResourceData,
-    SessionState,
-    SessionStatus,
-    actions_for,
-)
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import BranchableChat, Chat, MovableChat
-from ...resources.project.collections import ProjectsCollection
-from ...resources.project.project import Project
-from ...streams import (
+from ...resources.chat.types import Conversation
+from ...resources.common import (
+    Origin,
+    ResourceData,
+)
+from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderRequest,
@@ -49,6 +46,15 @@ from ...streams import (
     TextDelta,
     TextReplacement,
 )
+from ...resources.message.types import (
+    Content,
+    MessageData,
+    actions_for,
+)
+from ...resources.model.model import ModelCatalog
+from ...resources.project.collections import ProjectsCollection
+from ...resources.project.project import Project
+from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport, PortalTransport, ThreadedTransport
 from ...utils.timing import current_send_timing
 from .client import ChatGPTClient
@@ -676,7 +682,7 @@ class AsyncChatGPTProvider(AsyncProvider):
     async def branch_chat(self, conversation_id: str, message_id: str) -> Conversation:
         from urllib.parse import quote
 
-        from ...models import target_message
+        from ...resources.message.types import target_message
 
         def branch():
             with self._client_scope() as client:

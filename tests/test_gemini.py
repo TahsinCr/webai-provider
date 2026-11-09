@@ -13,11 +13,15 @@ from unittest.mock import AsyncMock, Mock, patch
 from tests.provider_fakes import provider_account
 from webaiprovider.async_provider import MessageAction
 from webaiprovider.errors import AccountPaused, ProviderError
-from webaiprovider.models import Choice, Model
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.gemini.generation import generation_request, upload_files
 from webaiprovider.providers.gemini.session import GeminiSession
-from webaiprovider.streams import ProviderRequest, TextReplacement
+from webaiprovider.resources.common import Choice
+from webaiprovider.resources.message.protocol import (
+    ProviderRequest,
+    TextReplacement,
+)
+from webaiprovider.resources.model.model import Model
 from webaiprovider.transport import AsyncRequestTransport
 
 

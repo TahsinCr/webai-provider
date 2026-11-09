@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from ...collections import AsyncManageableCollection, ManageableCollection, _CollectionFacade
+from ...collections import AsyncManageableCollection, ManageableCollection, Page, _CollectionFacade
 from ...errors import ProviderError
-from ...models import Page
-from ...models import ProjectData as ProviderProject
 from .project import AsyncProject, Project
+from .types import ProjectData as ProviderProject
 
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider

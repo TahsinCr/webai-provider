@@ -16,7 +16,11 @@ from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.grok import AsyncGrokProvider
-from webaiprovider.streams import ProviderEvent, ProviderRequest, TextDelta
+from webaiprovider.resources.message.protocol import (
+    ProviderEvent,
+    ProviderRequest,
+    TextDelta,
+)
 from webaiprovider.transport import (
     AsyncHTTPTransport,
     AsyncHTTPXTransport,

@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 from ...collections import AsyncManageableCollection, QueryableCollection, _CollectionFacade
 from ...errors import ProviderError, UnsupportedOperationError
-from ...models import ProjectData as ProviderProject
-from ...models import ResourceData as ProviderResource
 from ...utils.files import DownloadSource, download_source
+from ..common import ResourceData as ProviderResource
+from .types import ProjectData as ProviderProject
 
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
@@ -134,9 +134,7 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
         **options: Any,
     ) -> dict[str, Any]:
         resource_id = (
-            resource
-            if isinstance(resource, str)
-            else QueryableCollection._extract_id(resource)
+            resource if isinstance(resource, str) else QueryableCollection._extract_id(resource)
         )
         target = await self.get(resource_id)
         if self.project.session is not None and self.project.remote_id:

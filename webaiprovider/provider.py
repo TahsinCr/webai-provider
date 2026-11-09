@@ -6,13 +6,20 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .base import BaseProvider
-from .catalogs import Models, ModelsCollection
-from .contracts import EffortRef, ModelRef, ModelSelection
 from .core.bridges import PortalBridge
 from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
 from .resources.message.response import Response
+from .resources.model.collections import (
+    Models,
+    ModelsCollection,
+)
+from .resources.model.model import (
+    EffortRef,
+    ModelRef,
+    ModelSelection,
+)
 from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .transport import AsyncTransport, PortalTransport, Transport

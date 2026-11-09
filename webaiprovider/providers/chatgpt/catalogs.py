@@ -1,8 +1,15 @@
 from typing import Any, ClassVar
 
-from ...catalogs import StaticModelCatalog
-from ...contracts import EffortRef, EffortSet, ModelRef
-from ...models import Choice, FeatureState, Model, ModelCatalog
+from ...base import FeatureState
+from ...resources.common import Choice
+from ...resources.model.collections import StaticModelCatalog
+from ...resources.model.model import (
+    EffortRef,
+    EffortSet,
+    Model,
+    ModelCatalog,
+    ModelRef,
+)
 from .errors import ChatGPTError
 
 

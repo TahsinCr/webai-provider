@@ -5,8 +5,11 @@ from collections.abc import Iterable
 from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Mapping, TypeVar, cast
 
+from ...base import FeatureState
+from ..common import Choice
+
 if TYPE_CHECKING:
-    from .catalogs import Models
+    from .collections import Models
 
 
 @dataclass(frozen=True)
@@ -59,13 +62,13 @@ class EffortSet:
         for effort in cls.list():
             if effort.id == effort_id:
                 return effort
-        from .errors import RemoteNotFound
+        from ...errors import RemoteNotFound
 
         raise RemoteNotFound(f"Effort ID {effort_id!r} is not available")
 
     @classmethod
     def find(cls, query: str) -> EffortRef:
-        from .catalogs import SelectionResolver
+        from .collections import SelectionResolver
 
         result = SelectionResolver.resolve(
             query,
@@ -118,7 +121,7 @@ class ModelRef(Generic[E]):
         if effort is None or (isinstance(effort, str) and effort.casefold() == "auto"):
             return ModelSelection(self)
 
-        from .catalogs import Models, SelectionResolver
+        from .collections import Models, SelectionResolver
 
         if isinstance(effort, Models) and effort is Models.AUTO:
             return ModelSelection(self)
@@ -157,104 +160,66 @@ class ModelSelection:
 
 
 @dataclass(frozen=True)
-class Source:
+class Model:
     id: str
-    url: str
-    title: str = ""
-    snippet: str = ""
-    kind: str = "web"
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    title: str
+    efforts: tuple[Choice, ...] = ()
+    default_effort: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict, repr=False)
+    chat_selectable: bool = True
+    chat_title: str | None = None
 
 
 @dataclass(frozen=True)
-class Attribution:
-    source_id: str
-    start_index: int
-    end_index: int
-    text_segment: str = ""
+class ModelCatalog:
+    state: FeatureState
+    models: tuple[Model, ...] = ()
+    default_model: str | None = None
+    reason: str | None = None
 
+    @property
+    def chat_models(self) -> tuple[Model, ...]:
+        return tuple(model for model in self.models if model.chat_selectable)
 
-@dataclass(frozen=True)
-class Artifact:
-    id: str
-    kind: str
-    name: str
-    mime_type: str = "application/octet-stream"
-    size: int | None = None
-    download_url: str | None = None
-    content: bytes | str | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    def chat_model(self, model_id: str | None) -> Model | None:
+        return next(
+            (model for model in self.models if model.chat_selectable and model.id == model_id), None
+        )
 
+    @property
+    def default_chat_model(self) -> Model | None:
+        return next(
+            (model for model in self.chat_models if model.id == self.default_model),
+            next(iter(self.chat_models), None),
+        )
 
-@dataclass(frozen=True)
-class TimingMetrics:
-    started_at: float = 0.0
-    first_token_at: float | None = None
-    completed_at: float | None = None
-    first_token_ms: float | None = None
-    duration_ms: float = 0.0
-    metrics: Mapping[str, float] = field(default_factory=dict)
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ModelCatalog":
+        return cls(
+            FeatureState(value["state"]),
+            tuple(
+                Model(
+                    item["id"],
+                    item["title"],
+                    tuple(Choice(**effort) for effort in item.get("efforts", [])),
+                    item.get("default_effort"),
+                    item.get("metadata", {}),
+                    item.get("chat_selectable", True),
+                    item.get("chat_title"),
+                )
+                for item in value.get("models", [])
+            ),
+            value.get("default_model"),
+            value.get("reason"),
+        )
 
-
-@dataclass(frozen=True)
-class StreamEvent:
-    event: str = field(init=False, default="")
-
-
-@dataclass(frozen=True)
-class ThinkingBegin(StreamEvent):
-    event: str = field(init=False, default="thinking.begin")
-
-
-@dataclass(frozen=True)
-class ThinkingDelta(StreamEvent):
-    delta: str = ""
-    event: str = field(init=False, default="thinking.delta")
-
-
-@dataclass(frozen=True)
-class ThinkingEnd(StreamEvent):
-    text: str = ""
-    event: str = field(init=False, default="thinking.end")
-
-
-@dataclass(frozen=True)
-class OutputBegin(StreamEvent):
-    event: str = field(init=False, default="output.begin")
-
-
-@dataclass(frozen=True)
-class OutputDelta(StreamEvent):
-    delta: str = ""
-    event: str = field(init=False, default="output.delta")
-
-
-@dataclass(frozen=True)
-class OutputReplace(StreamEvent):
-    text: str = ""
-    event: str = field(init=False, default="output.replace")
-
-
-@dataclass(frozen=True)
-class OutputEnd(StreamEvent):
-    text: str = ""
-    event: str = field(init=False, default="output.end")
-
-
-@dataclass(frozen=True)
-class SourceDiscovered(StreamEvent):
-    source: Source = field(default_factory=lambda: Source("", ""))
-    event: str = field(init=False, default="source.discovered")
-
-
-@dataclass(frozen=True)
-class ArtifactDiscovered(StreamEvent):
-    artifact: Artifact = field(default_factory=lambda: Artifact("", "", ""))
-    event: str = field(init=False, default="artifact.discovered")
-
-
-@dataclass(frozen=True)
-class TerminalStatus(StreamEvent):
-    status: str = "completed"
-    error: Any = None
-    event: str = field(init=False, default="status.terminal")
+    def effort(self, model_id: str, preferred: str = "medium") -> str | None:
+        model = next((m for m in self.models if m.id == model_id), None)
+        if model is None:
+            return None
+        supported = {e.id for e in model.efforts}
+        if model.default_effort is None and preferred == "medium":
+            return None
+        if preferred in supported:
+            return preferred
+        return model.default_effort if model.default_effort in supported else None

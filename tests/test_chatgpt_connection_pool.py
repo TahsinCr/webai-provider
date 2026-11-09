@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 from tests.provider_fakes import provider_account
 from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
-from webaiprovider.streams import ConversationBound, ProviderRequest, TextDelta
+from webaiprovider.resources.message.protocol import (
+    ConversationBound,
+    ProviderRequest,
+    TextDelta,
+)
 
 
 class PersistentClient:

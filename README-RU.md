@@ -114,12 +114,12 @@ Claude и Grok используют `HttpSession`. Gemini использует `
 
 Общие преобразования источников и файлов находятся в `webaiprovider.normalizers`. История провайдера, RPC-данные, идентификаторы продолжения и интерпретация ответов остаются в пакетах отдельных провайдеров.
 
-Для расширений `webaiprovider.streams` предоставляет `ProviderRequest` и нормализованные события: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound` и `MessageMetadata`. Переопределяйте `_stream_request`, сохраняя порядок событий:
+Для расширений `webaiprovider.resources.message.protocol` предоставляет `ProviderRequest` и нормализованные события: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound` и `MessageMetadata`. Переопределяйте `_stream_request`, сохраняя порядок событий:
 
 ```python
 from collections.abc import AsyncIterator
 from webaiprovider import AsyncClaudeProvider
-from webaiprovider.streams import ProviderEvent, ProviderRequest
+from webaiprovider.resources.message.protocol import ProviderEvent, ProviderRequest
 
 
 class CustomClaudeProvider(AsyncClaudeProvider):

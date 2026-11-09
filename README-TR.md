@@ -114,12 +114,12 @@ Frame çözümleme HTTP’den ayrıdır. `SSEFrameDecoder`, `data`, `event`, `id
 
 Kaynak ve dosya normalizasyonu `webaiprovider.normalizers` içindedir. Sağlayıcı geçmişi, RPC yükleri, devam kimlikleri ve yanıt yorumlama ise her sağlayıcının kendi paketinde kalır.
 
-Sağlayıcı uzantıları için `webaiprovider.streams`; `ProviderRequest` ve `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata` gibi ortak olay türlerini sunar. Olay sırasını koruyarak özelleştirme yapmak için `_stream_request` metodunu genişletin:
+Sağlayıcı uzantıları için `webaiprovider.resources.message.protocol`; `ProviderRequest` ve `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata` gibi ortak olay türlerini sunar. Olay sırasını koruyarak özelleştirme yapmak için `_stream_request` metodunu genişletin:
 
 ```python
 from collections.abc import AsyncIterator
 from webaiprovider import AsyncClaudeProvider
-from webaiprovider.streams import ProviderEvent, ProviderRequest
+from webaiprovider.resources.message.protocol import ProviderEvent, ProviderRequest
 
 
 class CustomClaudeProvider(AsyncClaudeProvider):

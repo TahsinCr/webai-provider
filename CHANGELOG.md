@@ -7,7 +7,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Added
 
 - Include the PEP 561 `py.typed` marker in wheels and source distributions for the public typed API.
-- Publish provider request and normalized stream event contracts in `webaiprovider.streams` for implementations using the same operation pipeline as built-in providers.
+- Publish provider request and normalized stream event contracts in `webaiprovider.resources.message.protocol` for implementations using the same operation pipeline as built-in providers.
 
 - Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded `PortalBridge` orchestration.
 
@@ -19,6 +19,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - `await provider.models.list()` preloads and caches the account's catalog for the current session; `refresh()` forces a fresh provider request.
 
 ### Changed
+
+- Group shared provider contracts in `base.py`, model catalog and typed selection APIs under `resources/model`, and chat, message, and project data by resource ownership.
 
 - Remove duplicate Grok cookie persistence and ChatGPT header preparation; shared worker execution now supports keyword arguments through the same bounded submission path.
 
@@ -41,7 +43,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Use plain names for the synchronous API and the `Async` prefix for asynchronous providers, resources, and collections; remove the former resource and collection module paths.
 - Keep `Attachments` with message resources and use shared query behavior; keep `Attachment` as a resource value.
 - Split the public API into shared `BaseProvider`, async `AsyncProvider`, blocking `Provider`, and provider-specific sync/async classes. Provider-only chat operations are exposed by the corresponding provider chat types.
-- Move shared model selection, caching, and resolution into `webaiprovider.catalogs`; keep each provider's static model and effort definitions in `providers/<provider>/catalogs.py`.
+- Move shared model selection, caching, and resolution into `webaiprovider.resources.model`; keep each provider's static model and effort definitions in `providers/<provider>/catalogs.py`.
 - Make `webaiprovider` the sole import package for the v2 API and remove the `webai_provider` re-export namespace.
 - `chat.messages.create`, edit, retry, and provider `ask` accept one `model=` selection; separate public `effort=` selection was removed. The selected model and effort are checked against that account's live catalog before send, with no silent downgrade.
 - Keep ChatGPT web IDs separate from API IDs. ChatGPT's Pro thinking option is powered by Astra; discover its account-eligible web model and effort references instead of modeling it as API ID `gpt-6-astra` with API-only effort levels.
@@ -54,6 +56,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Require an attached provider session before sending a message; detached chats now raise a `ProviderError` instead of producing a local echo as if it were a provider response.
 
 ### Removed
+
+- Remove the former root `models.py`, `contracts.py`, `streams.py`, and `catalogs.py` modules without compatibility imports.
 
 - Remove the former top-level `session.py`, `sync.py`, `facade.py`, and `catalogs/` package layout; no compatibility imports are provided for the new API.
 - Remove the `WebSession` and `ChatGPTWebError` aliases; use `HttpSession` and `ChatGPTError` directly.
@@ -107,7 +111,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Optimize Sentinel Proof-of-Work solver by pre-encoding JSON buffer segments and amortizing timing measurements to once per 128 iterations.
 - Reuse persistent `json.JSONDecoder` instance across frames in `JSPBFramer`.
 - Optimize `SSEFramer` with C-accelerated line scanning (`find`) handling CRLF, standalone CR, and split chunk boundaries with zero byte-by-byte loop overhead.
-- Consolidate `SessionState`, `SessionStatus`, and `FeatureState` in `models.py` by importing from `webai_provider.accounts.status` to eliminate duplicate model definitions.
+- Keep provider capability state and descriptions in `base.py`; keep account session state in `accounts/status.py`.
 - Refactor `ProviderClient` parameters, local variables, and test doubles to replace legacy `backend` naming with `adapter`.
 - Enhance `NativeDownloadClient` with hostname validation and resilient default timeout configuration.
 - Expand `CredentialContractTests` to verify memory store injection across all four bundled providers (ChatGPT, Claude, Gemini, Grok).

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from ...frames import JSPBFrameDecoder
-from ...models import MessageAction
+from ...resources.message.types import MessageAction
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
