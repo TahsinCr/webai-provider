@@ -10,7 +10,7 @@ import httpx
 
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
-from webaiprovider.providers.chatgpt.discovery import model_catalog
+from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 
 from .fixtures import CATALOG
@@ -65,7 +65,7 @@ class SendOptionsTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.client.create_sentinel_headers = Mock(return_value={})
         self.client.trigger_sentinel_prewarm = Mock()
-        self.client.model_catalog = Mock(return_value=model_catalog(CATALOG))
+        self.client.model_catalog = Mock(return_value=parse_model_catalog(CATALOG))
 
     def test_temporary_multiturn_has_no_history_get(self):
         self.client.get_conversation = Mock(side_effect=AssertionError("no temporary GET"))

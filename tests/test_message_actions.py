@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 
 from tests.fakes import bind_stream
+from tests.provider_fakes import claude_model_catalog
 from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.client import ClaudeClient
@@ -457,10 +458,7 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = ClaudeClient(None, session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
-        transport.catalog = {
-            "default_model": "available-model",
-            "models": [{"id": "available-model", "efforts": []}],
-        }
+        transport.catalog = claude_model_catalog("available-model")
         for action, target in ((MessageAction.EDIT, user_id), (MessageAction.RETRY, answer_id)):
             events = [
                 event

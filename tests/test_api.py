@@ -17,6 +17,8 @@ from webaiprovider import (
     AsyncClaudeProvider,
     AsyncGeminiProvider,
     AsyncGrokProvider,
+    AsyncMessage,
+    AsyncMessageOperation,
     AsyncProvider,
     Attachment,
     Attachments,
@@ -26,7 +28,6 @@ from webaiprovider import (
     GeminiModels,
     GrokModels,
     Message,
-    MessageOperation,
     Models,
     OutputBegin,
     OutputDelta,
@@ -127,7 +128,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             model=ChatGPTModels.GPT_6_THINKING.select(ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM),
         )
 
-        self.assertIsInstance(op, MessageOperation)
+        self.assertIsInstance(op, AsyncMessageOperation)
         self.assertEqual(op.message.content, "Hello AI")
         self.assertEqual(op.message.model.model, ChatGPTModels.GPT_6_THINKING)
         self.assertEqual(op.message.model.effort.id, "standard")
@@ -145,7 +146,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         op.hooks.add("thinking.delta", on_thought)
 
-        async def fake_stream(_operation: MessageOperation):
+        async def fake_stream(_operation: AsyncMessageOperation):
             yield ThinkingBegin()
             yield ThinkingDelta(delta="Reasoning step 1")
             yield ThinkingEnd()
@@ -176,7 +177,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         release = asyncio.Event()
         send_count = 0
 
-        async def fake_stream(_operation: MessageOperation):
+        async def fake_stream(_operation: AsyncMessageOperation):
             nonlocal send_count
             send_count += 1
             entered.set()
@@ -227,7 +228,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         chat = await provider.chats.create()
         op = chat.messages.create("Explain relativity")
 
-        async def fake_stream(_operation: MessageOperation):
+        async def fake_stream(_operation: AsyncMessageOperation):
             yield OutputBegin()
             yield OutputDelta(delta="Relativity explained.")
             from webaiprovider.resources.message.operation import (
@@ -275,8 +276,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await session.chats.update(chat, title="Updated Via Collection")
         await session.chats.update(chat.id, title="Updated Via ID")
         self.assertEqual(chat.title, "Updated Via ID")
-        self.assertEqual(session.chats.find("Updated", startswith=True).id, chat.id)
-        self.assertEqual(session.chats.find("ID", endswith=True).id, chat.id)
+        self.assertEqual((await session.chats.find("Updated", startswith=True)).id, chat.id)
+        self.assertEqual((await session.chats.find("ID", endswith=True)).id, chat.id)
 
         with patch(
             "webaiprovider.resources.chat.chat.download_source",
@@ -289,7 +290,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dl, b"file-bytes")
 
         op = chat.messages.create("Hello test")
-        self.assertEqual(chat.get(op.message.id).content, "Hello test")
+        self.assertEqual((await chat.get(op.message.id)).content, "Hello test")
         await chat.delete()
         mock_provider.delete_chat.assert_awaited_once_with("chat-123")
 
@@ -379,7 +380,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(UnsupportedOperationError):
             await project.resources.update(added["id"], data="Updated Doc")
-        self.assertEqual(project.resources.get(added["id"])["data"], "Doc")
+        self.assertEqual((await project.resources.get(added["id"]))["data"], "Doc")
 
         await project.resources.delete(created_res["id"])
         await project.resources.remove(added["id"])
@@ -395,7 +396,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         session = await self.open_provider(acc, AsyncChatGPTProvider(acc))
         chat = await session.chats.create()
         chat.remote_id = "remote-chat-id"
-        msg = Message(
+        msg = AsyncMessage(
             content="Original prompt",
             role="user",
             id="msg-orig-1",
@@ -404,7 +405,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
 
         retry_op = msg.retry()
-        self.assertIsInstance(retry_op, MessageOperation)
+        self.assertIsInstance(retry_op, AsyncMessageOperation)
         self.assertEqual(retry_op.message.metadata.get("action"), "retry")
         edit_op = msg.edit("Edited prompt")
         self.assertEqual(edit_op.message.content, "Edited prompt")

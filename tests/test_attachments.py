@@ -6,6 +6,7 @@ from pathlib import Path
 
 from webaiprovider.resources.attachment import Attachment
 from webaiprovider.resources.message.attachments import Attachments
+from webaiprovider.utils.attachments import AttachmentPolicy, fit_attachments
 
 
 class AttachmentsTests(unittest.TestCase):
@@ -52,3 +53,50 @@ class AttachmentsTests(unittest.TestCase):
 
         col.delete(att2.id)
         self.assertEqual(len(col), 0)
+
+
+class AttachmentPolicyTests(unittest.TestCase):
+    def test_policy_filters_by_file_type_size_and_count(self):
+        policy = AttachmentPolicy(
+            max_files=2,
+            max_bytes=10,
+            max_image_bytes=3,
+            max_spreadsheet_bytes=5,
+            allowed_extensions=(".txt", ".png", ".csv"),
+        )
+        items = [
+            {"name": "first.txt", "size_bytes": 8},
+            {"name": "large.png", "mime_type": "image/png", "size_bytes": 4},
+            {"name": "large.csv", "size_bytes": 6},
+            {"name": "unsupported.bin", "size_bytes": 1},
+            {"name": "second.txt", "size_bytes": 2},
+            {"name": "third.txt", "size_bytes": 1},
+        ]
+
+        accepted, rejected = fit_attachments(items, policy)
+
+        self.assertEqual(accepted, [items[0], items[4]])
+        self.assertEqual(rejected, [items[1], items[2], items[3], items[5]])
+
+    def test_total_limit_keeps_earliest_and_unknown_size_can_pass(self):
+        items = [
+            {"name": "first.txt", "size_bytes": 4},
+            {"name": "unknown.txt"},
+            {"name": "last.txt", "size_bytes": 4},
+        ]
+
+        accepted, rejected = fit_attachments(
+            items,
+            AttachmentPolicy(max_files=3, max_bytes=10, max_total_bytes=6),
+        )
+
+        self.assertEqual(accepted, items[:2])
+        self.assertEqual(rejected, [items[2]])
+
+    def test_missing_policy_rejects_all_attachments(self):
+        items = [{"name": "file.txt", "size_bytes": 1}]
+
+        accepted, rejected = fit_attachments(items, None)
+
+        self.assertEqual(accepted, [])
+        self.assertEqual(rejected, items)

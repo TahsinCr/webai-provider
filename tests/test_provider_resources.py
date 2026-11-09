@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from tests.streaming_support import StreamTestProvider
-from webaiprovider import Account, AsyncProvider, MessageOperation, OperationState
+from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState
 from webaiprovider.collections import Page
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
@@ -160,7 +160,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         operation = chat.messages.create("prompt")
         events = [event async for event in operation.stream()]
 
-        self.assertIsInstance(operation, MessageOperation)
+        self.assertIsInstance(operation, AsyncMessageOperation)
         self.assertEqual(stream_provider.requests[0].prompt, "prompt")
         self.assertEqual(chat.remote_id, "conversation-1")
         self.assertTrue(any(isinstance(event, SourceDiscovered) for event in events))
@@ -208,7 +208,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.message.id, "msg-user-99")
         self.assertEqual(response.message.id, "msg-assistant-99")
         self.assertEqual(response.text, "Final output")
-        self.assertIn(response.message, chat.messages.list())
+        self.assertIn(response.message, await chat.messages.list())
         self.assertEqual(self.provider.telemetry.snapshot()["successful"], 1)
         self.assertIsInstance(events[0], ThinkingBegin)
         self.assertEqual(

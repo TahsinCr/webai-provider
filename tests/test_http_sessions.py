@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 
 from tests.fakes import bind_stream
+from tests.provider_fakes import claude_model_catalog
 from webaiprovider.accounts.credentials import read_session, save_session, save_session_async
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.claude.client import ClaudeClient, organization_from_bootstrap
@@ -184,7 +185,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = ClaudeClient("unused", session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
-        transport.catalog = {"default_model": "model", "models": [{"id": "model", "efforts": []}]}
+        transport.catalog = claude_model_catalog()
         with self.assertRaises(ClaudeRequestNotSent):
             _ = [
                 event
@@ -216,7 +217,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = ClaudeClient("unused", session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
-        transport.catalog = {"default_model": "model", "models": [{"id": "model", "efforts": []}]}
+        transport.catalog = claude_model_catalog()
         with self.assertRaises(ProviderError):
             _ = [
                 event
@@ -360,7 +361,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             await transport.prepare()
 
         self.assertEqual(transport.organization, current_organization)
-        self.assertEqual(transport.catalog["default_model"], "model")
+        self.assertEqual(transport.catalog.default_model, "model")
         self.assertEqual(calls.count("/api/bootstrap"), 1)
         self.assertEqual(
             calls.count(f"/api/organizations/{old_organization}/model_selector/chat"), 1
@@ -450,7 +451,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
         async def discover():
             transport.organization = "org"
-            transport.catalog = {"models": []}
+            transport.catalog = claude_model_catalog()
             transport._discovered_at = asyncio.get_running_loop().time()
             return transport.catalog
 
@@ -513,10 +514,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = ClaudeClient(Path("unused"), session=bind_stream(session))
         transport.organization = cid
-        transport.catalog = {
-            "default_model": "model",
-            "models": [{"id": "model", "efforts": [], "native": {}}],
-        }
+        transport.catalog = claude_model_catalog()
         timing = SendTiming("claude")
         with patch("asyncio.create_subprocess_exec", side_effect=AssertionError("browser")):
             with use_send_timing(timing):

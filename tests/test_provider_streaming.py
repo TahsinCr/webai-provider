@@ -4,7 +4,13 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.provider_fakes import provider_account
-from webaiprovider import Account, AsyncProvider, Chat, Message, MessageOperation
+from webaiprovider import (
+    Account,
+    AsyncChat,
+    AsyncMessage,
+    AsyncMessageOperation,
+    AsyncProvider,
+)
 from webaiprovider.errors import AccountPaused, RateLimited
 from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
@@ -49,9 +55,9 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
 class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_updates_operation(self) -> None:
         session = _create_mock_session("claude")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Claude", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello Claude", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
         provider.client.authenticated = True
@@ -99,9 +105,9 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execute_stream_rejects_unauthenticated_session(self) -> None:
         session = _create_mock_session("claude")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Claude", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello Claude", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
         provider.client.authenticated = False
@@ -114,9 +120,9 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_caches_continuation(self) -> None:
         session = _create_mock_session("grok")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Grok", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello Grok", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
@@ -160,9 +166,9 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execute_stream_raises_on_rate_limit(self) -> None:
         session = _create_mock_session("grok")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Grok", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello Grok", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
@@ -190,9 +196,9 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_resolves_image_links(self) -> None:
         session = _create_mock_session("gemini")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello Gemini", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello Gemini", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncGeminiProvider(provider_account("gemini", "cookie_file", "acc-test"))
         provider._connect = AsyncMock()
@@ -245,9 +251,9 @@ class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncChatGPTProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_v2_events_and_updates_remote_ids(self) -> None:
         session = _create_mock_session("chatgpt")
-        chat = Chat(title="Test Chat", session=session)
-        message = Message("Hello ChatGPT", chat=chat)
-        operation = MessageOperation(chat, message)
+        chat = AsyncChat(title="Test Chat", session=session)
+        message = AsyncMessage("Hello ChatGPT", chat=chat)
+        operation = AsyncMessageOperation(chat, message)
 
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)

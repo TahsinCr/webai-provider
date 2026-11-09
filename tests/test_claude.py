@@ -8,12 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from tests.fakes import bind_stream
-from tests.provider_fakes import provider_account
+from tests.provider_fakes import claude_model_catalog, provider_account
 from webaiprovider.base import (
     Capability,
 )
 from webaiprovider.errors import ProviderError
 from webaiprovider.providers.claude import AsyncClaudeProvider
+from webaiprovider.providers.claude.catalogs import parse_model_catalog
 from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.claude.records import (
     conversation,
@@ -251,36 +252,29 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.provider.client.request.assert_awaited_once_with("history", conversation_id=CHAT)
 
     async def test_dynamic_models_keep_only_discovered_efforts_and_default(self):
-        self.provider.client.request.return_value = {
-            "models": [
-                {
-                    "id": "claude-future",
-                    "title": "Future",
-                    "efforts": [{"id": "high", "title": "High", "selected": True}],
-                }
-            ],
-            "default_model": "claude-future",
-        }
+        self.provider.client.request.return_value = parse_model_catalog(
+            {
+                "model_selector_config": [
+                    {
+                        "id": "chat",
+                        "models": [
+                            {
+                                "id": "claude-future",
+                                "name": "Future",
+                                "thinking": {"effort_options": [{"id": "high", "name": "High"}]},
+                            }
+                        ],
+                    }
+                ],
+                "model_selector_state": [
+                    {"id": "chat", "model": "claude-future", "thinking": {"effort": "high"}}
+                ],
+            }
+        )
         result = await self.provider._load_model_catalog()
         self.assertEqual(result.state, ModelCatalogState.AVAILABLE)
         self.assertEqual(result.models[0].default_effort, "high")
         self.assertEqual(result.models[0].id, "claude-future")
-
-    async def test_one_model_feature_failure_does_not_remove_working_models(self):
-        self.provider.client.request.return_value = {
-            "models": [
-                {"id": "claude-main", "title": "Main", "efforts": [], "effort_error": "changed"},
-                {
-                    "id": "claude-broken",
-                    "title": "Broken",
-                    "efforts": [],
-                    "selection_error": "unavailable",
-                },
-            ]
-        }
-        catalog = await self.provider._load_model_catalog()
-        self.assertEqual([x.id for x in catalog.chat_models], ["claude-main"])
-        self.assertEqual(catalog.chat_models[0].metadata["effort_error"], "changed")
 
     async def test_chat_and_project_queries_use_scoped_transport(self):
         self.provider.client.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
@@ -382,10 +376,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = ClaudeClient(Path("unused"), session=bind_stream(session))
         transport.organization = PROJECT
-        transport.catalog = {
-            "default_model": "claude-test",
-            "models": [{"id": "claude-test", "efforts": []}],
-        }
+        transport.catalog = claude_model_catalog("claude-test")
         result = [
             event
             async for event in transport.events(

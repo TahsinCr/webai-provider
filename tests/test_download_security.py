@@ -3,9 +3,18 @@ from __future__ import annotations
 import socket
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from webaiprovider.utils.files import NativeDownloadClient, validate_network_address
+from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.utils.files import (
+    DownloadSource,
+    NativeDownloadClient,
+    cookie_header,
+    download_source,
+    redact_sensitive_url,
+    validate_network_address,
+)
 
 
 class DownloadAddressTests(unittest.TestCase):
@@ -57,6 +66,56 @@ class DownloadAddressTests(unittest.TestCase):
             ["cdn.example:443:93.184.216.34"],
         )
         self.assertEqual(download.client.request[3], False)
+
+
+class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_requires_provider_resolved_source(self):
+        with self.assertRaises(UnsupportedOperationError):
+            await download_source(None)
+
+    async def test_download_streams_success_and_rejects_http_failure(self):
+        class Client(NativeDownloadClient):
+            def __init__(self, status):
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @contextmanager
+            def stream(self, *_args, **_kwargs):
+                yield SimpleNamespace(
+                    status_code=self.status, iter_bytes=lambda: iter((b"a", b"b"))
+                )
+
+        success = DownloadSource("https://files.example/test", client_factory=lambda: Client(200))
+        self.assertEqual(await download_source(success), b"ab")
+
+        failure = DownloadSource("https://files.example/test", client_factory=lambda: Client(403))
+        with self.assertRaisesRegex(ProviderError, "HTTP 403"):
+            await download_source(failure)
+
+    async def test_download_rejects_custom_transport_outside_native_boundary(self):
+        source = DownloadSource("https://files.example/test", client_factory=object)
+
+        with self.assertRaisesRegex(ProviderError, "unsupported download transport"):
+            await download_source(source)
+
+    def test_sensitive_cookie_and_url_values_are_redacted(self):
+        self.assertEqual(
+            cookie_header({"sessionKey": "cookie"}, ("sessionKey",)), "sessionKey=cookie"
+        )
+        with self.assertRaises(ValueError):
+            cookie_header({"sessionKey": "bad\r\nvalue"}, ("sessionKey",))
+
+        redacted = redact_sensitive_url(
+            "https://user:password@files.example/a?token=secret&name=file#part"
+        )
+        self.assertNotIn("password", redacted)
+        self.assertNotIn("secret", redacted)
+        self.assertIn("[REDACTED]", redacted)
 
 
 if __name__ == "__main__":
