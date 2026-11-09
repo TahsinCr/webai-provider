@@ -68,7 +68,67 @@ with ChatGPTProvider(account) as provider:
 
 ## Низкоуровневый transport API
 
-Все провайдеры предоставляют `provider.transport` для запросов `send`, обработки JSON через `request` и потокового чтения `stream` в пределах своего origin. Синхронный и асинхронный API используют один жизненный цикл соединения. Можно подключить собственный transport или использовать инструменты HTTP, SSE и JSPB для расширений. Контракты, границы учётных данных и освобождение ресурсов описаны в [руководстве по transport и framing](docs/transport.md).
+Все провайдеры предоставляют `provider.transport` для запросов `send`, обработки JSON через `request` и потокового чтения `stream` в пределах своего origin. Жизненным циклом transport управляет провайдер; синхронные и асинхронные вызовы используют существующее соединение, а не создают новый пул или цикл событий для каждого запроса.
+
+```python
+from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider.transport import HttpSession, TransportConfig
+
+account = Account.from_browser(ProviderType.CLAUDE)
+transport = HttpSession(
+    "https://claude.ai",
+    account.store(),
+    "sessionKey",
+    config=TransportConfig(timeout=30, max_stream_bytes=64 * 1024 * 1024),
+)
+
+async with AsyncClaudeProvider(account, transport=transport) as provider:
+    response = await provider.transport.send("GET", "/api/bootstrap")
+    endpoint, payload = "/api/path", {}  # Укажите endpoint, поддерживаемый провайдером.
+    async with provider.transport.stream("POST", endpoint, json=payload) as stream:
+        async for chunk in stream.aiter_bytes():
+            ...
+```
+
+`send()` возвращает `TransportResponse`. `request()` декодирует JSON и возвращает `None` для пустого ответа. Контекст потока владеет ответом до выхода из блока. При досрочном завершении закройте контекст, чтобы освободить ответ и связанный с ним рабочий поток. Для синхронного провайдера используйте `with` и `iter_bytes()`.
+
+| Тип | Назначение |
+| --- | --- |
+| `AsyncTransport` / `Transport` | Контракты асинхронных и синхронных расширений |
+| `AsyncHTTPTransport` | Асинхронный HTTP-клиент с потоковым контекстом; по умолчанию используется curl-cffi |
+| `AsyncRequestTransport` | Асинхронный клиент, открывающий поток через `request(stream=True)` |
+| `AsyncHTTPXTransport` | Асинхронный HTTPX-клиент с его правилами перенаправления и потоков |
+| `HTTPTransport` | Синхронный HTTPX-клиент |
+| `HttpSession` | Сохранение cookies аккаунта через общий асинхронный transport |
+| `ThreadedTransport` | Ограниченный мост для scoped синхронного transport |
+
+Claude и Grok используют `HttpSession`. Gemini использует `AsyncRequestTransport` для собственного RPC и обновления cookies. ChatGPT использует `HTTPTransport` внутри своего клиента и предоставляет его асинхронно через `ThreadedTransport`. Провайдеры управляют собственными клиентами и синхронизацией.
+
+Собственная реализация может предоставить `send`, `stream` и `close` для `AsyncTransport` либо настроить встроенную реализацию через `client_factory`. Стандартные параметры HTTP, такие как заголовки, параметры, JSON и данные, передаются выбранному backend. Форматы multipart и специфичные для backend параметры относятся к его API расширения.
+
+`TransportConfig` задаёт тайм-ауты и пределы буферизованных/потоковых ответов; стандартный предел буферизованного ответа — 16 MiB. При необходимости задайте предел потока отдельно. Вызовы отдельных endpoint могут переопределять тайм-аут. Расширенный код может указать `check_status=False`, чтобы самостоятельно проверить HTTP-ошибку; проверки origin и перенаправлений при этом остаются включёнными. Пути задаются относительно фиксированного origin. Абсолютные и protocol-relative URL, обход пути, конфликтующие заголовки `Host` и перенаправления отклоняются. Заголовки по умолчанию задаются отображением или функцией `(method, path)`; заголовки вызова имеют приоритет без учёта регистра. Используйте `inherit_headers=False`, если запрос, например обновление учётных данных, не должен наследовать заголовки. Подписанная загрузка на другой origin использует отдельный transport без заголовков аккаунта.
+
+Мутации автоматически не повторяются. Периоды ожидания относятся к transport/аккаунту: ограничение одного аккаунта не блокирует другие аккаунты того же провайдера. Переданный transport должен использовать точный origin провайдера и тот же аккаунт; при завершении работы провайдер закрывает его. Клиент, переданный через `client_getter`, закрывает его владелец. Cookies и пул соединений переиспользуются операциями высокого и низкого уровня.
+
+Декодирование кадров не зависит от HTTP. `SSEFrameDecoder` сохраняет поля `data`, `event`, `id` и числовой `retry`; обрабатывает разделённый UTF-8, CR, LF, CRLF, многострочные данные, комментарии и ограниченное число строк данных. Также доступны синхронные и асинхронные помощники для байтовых итераторов. `JSPBFrameDecoder` декодирует ограниченные JSON-кадры с префиксом длины и принимает `prefix`, `max_frame_units` и `length_includes_separator`; Gemini передаёт настройки anti-XSSI-префикса и разделителя. Каждый результат — целый JSON-кадр. Передайте `final=True` для последнего фрагмента, чтобы обнаружить незавершённые кадры; незавершённый JSPB-кадр приводит к `FrameDecodeError`. Смысл кадров и завершение операции определяет код провайдера.
+
+Общие преобразования источников и файлов находятся в `webaiprovider.normalizers`. История провайдера, RPC-данные, идентификаторы продолжения и интерпретация ответов остаются в пакетах отдельных провайдеров.
+
+Для расширений `webaiprovider.streams` предоставляет `ProviderRequest` и нормализованные события: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound` и `MessageMetadata`. Переопределяйте `_stream_request`, сохраняя порядок событий:
+
+```python
+from collections.abc import AsyncIterator
+from webaiprovider import AsyncClaudeProvider
+from webaiprovider.streams import ProviderEvent, ProviderRequest
+
+
+class CustomClaudeProvider(AsyncClaudeProvider):
+    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
+        async for event in super()._stream_request(request):
+            yield event
+```
+
+Встроенные провайдеры используют те же контракты. Обычное приложение отправляет сообщения через `chat.messages`, оставляя wire-запросы и повторы провайдеру. `ProviderType` обозначает четыре поддерживаемых веб-провайдера. Использование transport и декодеров кадров с другим origin само по себе не добавляет поддержку его аутентификации, моделей, возможностей или ресурсов.
 
 ## Безопасность и поведение
 

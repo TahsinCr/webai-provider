@@ -68,7 +68,67 @@ The package exports model references and effort choices for typed use. Account-d
 
 ## Advanced transport API
 
-All providers expose `provider.transport` for origin-scoped `send`, JSON `request`, and incremental `stream` operations. Blocking and async APIs share the same connection lifecycle. Supply a custom transport or reuse the HTTP, SSE, and JSPB tools to build extensions. See the [transport and framing guide](docs/transport.md) for supported contracts, credential scope, and cleanup.
+Every provider exposes `provider.transport` for origin-scoped `send`, JSON `request`, and incremental `stream` operations. The provider owns the transport lifecycle; blocking and async calls reuse the provider's existing connection rather than opening a new pool or event loop per request.
+
+```python
+from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider.transport import HttpSession, TransportConfig
+
+account = Account.from_browser(ProviderType.CLAUDE)
+transport = HttpSession(
+    "https://claude.ai",
+    account.store(),
+    "sessionKey",
+    config=TransportConfig(timeout=30, max_stream_bytes=64 * 1024 * 1024),
+)
+
+async with AsyncClaudeProvider(account, transport=transport) as provider:
+    response = await provider.transport.send("GET", "/api/bootstrap")
+    endpoint, payload = "/api/path", {}  # Use an endpoint supported by this provider.
+    async with provider.transport.stream("POST", endpoint, json=payload) as stream:
+        async for chunk in stream.aiter_bytes():
+            ...
+```
+
+`send()` returns `TransportResponse`; `request()` decodes JSON and returns `None` for an empty response. A stream context owns its response until exit. Close the context when stopping early so the response and any worker are released. A blocking provider uses `with` and `iter_bytes()`.
+
+| Type | Use |
+| --- | --- |
+| `AsyncTransport` / `Transport` | Async and blocking extension contracts |
+| `AsyncHTTPTransport` | Async HTTP client with streaming context; defaults to curl-cffi |
+| `AsyncRequestTransport` | Async client that opens streams with `request(stream=True)` |
+| `AsyncHTTPXTransport` | Async HTTPX client and its redirect/stream conventions |
+| `HTTPTransport` | Blocking HTTPX client |
+| `HttpSession` | Account cookie persistence over the shared async transport |
+| `ThreadedTransport` | Bounded bridge for a scoped blocking transport |
+
+Claude and Grok use `HttpSession`; Gemini uses `AsyncRequestTransport` for its native RPC and cookie-refresh flow. ChatGPT uses `HTTPTransport` behind its existing client and exposes it asynchronously through `ThreadedTransport`. Providers retain ownership of their native clients and synchronization gates.
+
+A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
+
+`TransportConfig` sets timeouts and buffered/streaming response limits; the default buffered limit is 16 MiB. Set a streaming limit when needed. Endpoint calls can override the timeout and select `check_status=False` when advanced code needs to inspect an HTTP error response. Origin and redirect checks still apply. Paths are relative to a fixed origin. Absolute or protocol-relative URLs, traversal, conflicting `Host` headers, and redirects are rejected. Default headers can be a mapping or a `(method, path)` callable; per-call overrides are case-insensitive. Use `inherit_headers=False` when a request, such as credential refresh, must omit inherited headers. Signed cross-origin uploads use a separate origin-bound transport without account headers.
+
+Mutations are never replayed automatically. Cooldowns are scoped to the transport/account, so one account does not block other accounts using the same provider. A supplied transport must use the provider's exact origin and authenticate the same account; the provider closes it on shutdown. A borrowed `client_getter` client remains owned by its creator. Cookie persistence and connection pools are reused by high- and low-level operations.
+
+Frame decoding is separate from HTTP. `SSEFrameDecoder` preserves `data`, `event`, `id`, and numeric `retry` fields; it handles split UTF-8, CR, LF, CRLF, multiline data, comments, and bounded data-line counts. It also provides sync and async byte-iterator helpers. `JSPBFrameDecoder` decodes bounded length-prefixed JSON frames and accepts `prefix`, `max_frame_units`, and `length_includes_separator`; Gemini supplies its anti-XSSI prefix and separator settings. Each output is a complete JSON frame. Pass `final=True` on the last feed to detect incomplete frames; incomplete JSPB frames raise `FrameDecodeError`. Provider code interprets the decoded frames and owns completion semantics.
+
+Shared source and file normalization lives in `webaiprovider.normalizers`. Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
+
+For provider extensions, `webaiprovider.streams` exports `ProviderRequest` and normalized event types: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, and `MessageMetadata`. Override `_stream_request` to customize a provider while preserving event order:
+
+```python
+from collections.abc import AsyncIterator
+from webaiprovider import AsyncClaudeProvider
+from webaiprovider.streams import ProviderEvent, ProviderRequest
+
+
+class CustomClaudeProvider(AsyncClaudeProvider):
+    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
+        async for event in super()._stream_request(request):
+            yield event
+```
+
+Built-in providers use the same contracts. Normal application code should send through `chat.messages` and let the provider own wire requests and retry semantics. `ProviderType` identifies the four supported web providers; using the transport and frame tools with another origin does not add that provider's authentication, model, capability, or resource support.
 
 ## Security and behavior
 

@@ -68,7 +68,67 @@ Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri su
 
 ## Alt seviye transport API’si
 
-Tüm sağlayıcılar, kendi origin’iyle sınırlı `send`, JSON `request` ve parçalı `stream` işlemleri için `provider.transport` sunar. Senkron ve asenkron API aynı bağlantı yaşam döngüsünü kullanır. Özel transport sağlayabilir veya HTTP, SSE ve JSPB araçlarını kullanarak kendi uzantılarınızı oluşturabilirsiniz. Sözleşmeler, oturum sınırları ve kapanış davranışı için [transport ve frame rehberine](docs/transport.md) bakın.
+Tüm sağlayıcılar, kendi origin’iyle sınırlı `send`, JSON `request` ve parçalı `stream` işlemleri için `provider.transport` sunar. Transport’un yaşam döngüsünü sağlayıcı yönetir; senkron ve asenkron çağrılar her istekte yeni bir bağlantı havuzu veya olay döngüsü açmaz.
+
+```python
+from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider.transport import HttpSession, TransportConfig
+
+account = Account.from_browser(ProviderType.CLAUDE)
+transport = HttpSession(
+    "https://claude.ai",
+    account.store(),
+    "sessionKey",
+    config=TransportConfig(timeout=30, max_stream_bytes=64 * 1024 * 1024),
+)
+
+async with AsyncClaudeProvider(account, transport=transport) as provider:
+    response = await provider.transport.send("GET", "/api/bootstrap")
+    endpoint, payload = "/api/path", {}  # Sağlayıcının desteklediği bir uç nokta kullanın.
+    async with provider.transport.stream("POST", endpoint, json=payload) as stream:
+        async for chunk in stream.aiter_bytes():
+            ...
+```
+
+`send()` bir `TransportResponse` döndürür. `request()` JSON yanıtını çözer; yanıt boşsa `None` verir. Akış bağlamı, yanıtı bağlam kapatılana kadar açık tutar. Erken dururken yanıtın ve varsa iş parçacığının bırakılması için bağlamı kapatın. Senkron sağlayıcıda `with` ve `iter_bytes()` kullanılır.
+
+| Tür | Kullanım |
+| --- | --- |
+| `AsyncTransport` / `Transport` | Asenkron ve senkron uzantı sözleşmeleri |
+| `AsyncHTTPTransport` | Akış bağlamı sunan asenkron HTTP istemcisi; varsayılanı curl-cffi’dir |
+| `AsyncRequestTransport` | Akışı `request(stream=True)` ile açan asenkron istemci |
+| `AsyncHTTPXTransport` | Yönlendirme ve akış kurallarıyla asenkron HTTPX istemcisi |
+| `HTTPTransport` | Senkron HTTPX istemcisi |
+| `HttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
+| `ThreadedTransport` | Kapsamı belirli senkron transport için sınırlı köprü |
+
+Claude ve Grok `HttpSession` kullanır. Gemini, yerel RPC ve çerez yenileme akışı için `AsyncRequestTransport` kullanır. ChatGPT, mevcut istemcisinin arkasında `HTTPTransport` kullanır ve bunu `ThreadedTransport` üzerinden asenkron sunar. Sağlayıcılar kendi istemcilerini ve eşzamanlama kapılarını yönetir.
+
+Özel bir uygulama, `AsyncTransport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
+
+`TransportConfig` zaman aşımını ve tamponlanmış/akış yanıtı boyut sınırlarını belirler; varsayılan tampon sınırı 16 MiB’dir. Gerektiğinde akış sınırını ayrıca belirleyin. Uç nokta çağrıları zaman aşımını geçersiz kılabilir; gelişmiş kod HTTP hata yanıtını incelemek için `check_status=False` seçebilir. Bu, origin ve yönlendirme denetimlerini kapatmaz. Yollar sabit bir origin’e göredir. Mutlak veya protokole göreli URL’ler, yol geçişi, çakışan `Host` başlıkları ve yönlendirmeler reddedilir. Varsayılan başlıklar eşleme veya `(method, path)` alan bir işlev olabilir; çağrı başlıkları büyük/küçük harf duyarsız biçimde önceliklidir. Kimlik bilgisi yenileme gibi bir istekte kalıtılan başlıkları göndermemek için `inherit_headers=False` kullanın. İmzalı origin dışı yüklemeler, hesap başlıklarını taşımayan ayrı bir origin-sınırlı transport kullanır.
+
+Mutasyonlar kendiliğinden yeniden gönderilmez. Bekleme süreleri transport/hesap kapsamında tutulur; bir hesabın sınırlandırılması aynı sağlayıcıdaki diğer hesapları engellemez. Sağlanan transport, sağlayıcının tam origin’ini kullanmalı ve aynı hesabı doğrulamalıdır; kapanırken sağlayıcı transport’u kapatır. `client_getter` ile ödünç alınan istemciyi sahibi kapatır. Üst ve alt seviye işlemler çerezleri ve bağlantı havuzunu yeniden kullanır.
+
+Frame çözümleme HTTP’den ayrıdır. `SSEFrameDecoder`, `data`, `event`, `id` ve sayısal `retry` alanlarını korur; parçalanmış UTF-8’i, CR/LF/CRLF satır sonlarını, çok satırlı veriyi, yorumları ve sınırlı satır sayılarını işler. Senkron ve asenkron bayt yineleyici yardımcıları da sunar. `JSPBFrameDecoder`, sınırlandırılmış uzunluk önekli JSON frame’lerini çözer; `prefix`, `max_frame_units` ve `length_includes_separator` seçeneklerini alır. Gemini anti-XSSI önekini ve ayırıcı ayarlarını sağlar. Her çıktı tam bir JSON frame’idir. Son parçada eksik frame’leri denetlemek için `final=True` verin; tamamlanmamış JSPB frame’i `FrameDecodeError` üretir. Çözümlenen frame’leri sağlayıcı kodu yorumlar ve tamamlanma davranışını yönetir.
+
+Kaynak ve dosya normalizasyonu `webaiprovider.normalizers` içindedir. Sağlayıcı geçmişi, RPC yükleri, devam kimlikleri ve yanıt yorumlama ise her sağlayıcının kendi paketinde kalır.
+
+Sağlayıcı uzantıları için `webaiprovider.streams`; `ProviderRequest` ve `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata` gibi ortak olay türlerini sunar. Olay sırasını koruyarak özelleştirme yapmak için `_stream_request` metodunu genişletin:
+
+```python
+from collections.abc import AsyncIterator
+from webaiprovider import AsyncClaudeProvider
+from webaiprovider.streams import ProviderEvent, ProviderRequest
+
+
+class CustomClaudeProvider(AsyncClaudeProvider):
+    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
+        async for event in super()._stream_request(request):
+            yield event
+```
+
+Yerleşik sağlayıcılar da aynı sözleşmeleri kullanır. Normal uygulama kodu mesajları `chat.messages` üzerinden göndermeli; wire isteklerini ve yeniden deneme davranışını sağlayıcıya bırakmalıdır. `ProviderType` desteklenen dört web sağlayıcısını tanımlar. Taşıma ve frame araçlarını başka bir origin için kullanmak o sağlayıcının kimlik doğrulama, model, yetenek veya kaynak desteğini eklemez.
 
 ## Güvenlik ve çalışma biçimi
 
