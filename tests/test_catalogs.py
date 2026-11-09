@@ -14,9 +14,13 @@ from webaiprovider.catalogs import (
 )
 from webaiprovider.contracts import EffortRef, EffortSet, ModelRef, ModelSelection
 from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
-from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels
-from webaiprovider.providers.chatgpt.discovery import model_catalog
-from webaiprovider.providers.claude.catalogs import ClaudeModels, selector_catalog
+from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels, parse_model_catalog
+from webaiprovider.providers.claude.catalogs import (
+    ClaudeModels,
+)
+from webaiprovider.providers.claude.catalogs import (
+    parse_model_catalog as parse_claude_catalog,
+)
 from webaiprovider.providers.gemini.catalogs import GeminiModels
 from webaiprovider.providers.grok.catalogs import GrokModels
 
@@ -264,25 +268,30 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
 class EntitlementTests(unittest.TestCase):
     def test_unavailable_models_never_enter_the_selectable_catalog(self) -> None:
-        catalog = selector_catalog(_claude_selector_fixture())
-        self.assertEqual([x["id"] for x in catalog["models"]], ["allowed"])
-        self.assertEqual(catalog["default_model"], "allowed")
-        model = catalog["models"][0]
+        catalog = parse_claude_catalog(_claude_selector_fixture())
+        self.assertEqual([x.id for x in catalog.models], ["allowed"])
+        self.assertEqual(catalog.default_model, "allowed")
+        model = catalog.models[0]
         self.assertEqual(
-            model["selections"]["medium"], {"effort": "medium", "thinking_mode": "auto"}
+            model.metadata["selections"]["medium"],
+            {"effort": "medium", "thinking_mode": "auto"},
         )
-        self.assertEqual(next(x["id"] for x in model["efforts"] if x["selected"]), "low")
+        self.assertEqual(model.default_effort, "low")
 
     def test_two_thinking_axes_remain_selectable_without_inventing_values(self) -> None:
         data = _claude_selector_fixture()
         model = data["model_selector_config"][0]["models"][1]
         model["thinking"]["mode_options"].append({"id": "off", "name": "Off"})
         before = copy.deepcopy(data)
-        result = selector_catalog(data)["models"][0]
+        result = parse_claude_catalog(data).models[0]
         self.assertEqual(
-            set(result["selections"]), {"low:auto", "low:off", "medium:auto", "medium:off"}
+            set(result.metadata["selections"]),
+            {"low:auto", "low:off", "medium:auto", "medium:off"},
         )
-        self.assertEqual(result["selections"]["low:off"], {"effort": "low", "thinking_mode": "off"})
+        self.assertEqual(
+            result.metadata["selections"]["low:off"],
+            {"effort": "low", "thinking_mode": "off"},
+        )
         self.assertEqual(data, before)
 
     def test_changed_or_empty_authoritative_catalog_does_not_fall_back_to_global_models(
@@ -290,10 +299,10 @@ class EntitlementTests(unittest.TestCase):
     ) -> None:
         for data in [{}, {"model_selector_config": [{"id": "chat", "models": []}]}]:
             with self.assertRaises(ProviderError):
-                selector_catalog(data)
+                parse_claude_catalog(data)
 
     def test_gpt_disabled_or_account_inaccessible_models_are_filtered(self) -> None:
-        catalog = model_catalog(
+        catalog = parse_model_catalog(
             {
                 "models": [
                     {"slug": "live"},

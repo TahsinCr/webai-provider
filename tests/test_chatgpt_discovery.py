@@ -21,7 +21,7 @@ from webaiprovider.providers.chatgpt import (
     ChatGPTClient,
     SessionPaths,
 )
-from webaiprovider.providers.chatgpt.discovery import model_catalog
+from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.errors import ChatGPTError
 from webaiprovider.providers.chatgpt.formats import normalize_conversation
 
@@ -116,7 +116,7 @@ class DiscoveryTests(unittest.TestCase):
             ],
             "default_model_slug": "gpt-future-thinking",
         }
-        catalog = model_catalog(raw)
+        catalog = parse_model_catalog(raw)
         self.assertEqual(len(catalog.models), 3)
         self.assertEqual([m.id for m in catalog.chat_models], ["gpt-future-thinking"])
         self.assertEqual(catalog.chat_models[0].chat_title, "GPT-42 Thinking")
@@ -125,7 +125,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(restored.models[1].metadata["title"], "Future work model")
 
     def test_work_variants_stay_hidden_if_an_older_response_has_no_categories(self):
-        catalog = model_catalog({"models": [{"slug": "normal"}, {"slug": "private-wm"}]})
+        catalog = parse_model_catalog({"models": [{"slug": "normal"}, {"slug": "private-wm"}]})
         self.assertEqual([m.id for m in catalog.chat_models], ["normal"])
 
     def test_project_sidebar_and_details_preserve_instructions_and_files(self):
@@ -173,7 +173,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):
         for value in ({}, {"models": {}}, {"models": [None]}, {"models": [{"title": "No slug"}]}):
             with self.subTest(value=value), self.assertRaises(ChatGPTError):
-                model_catalog(value)
+                parse_model_catalog(value)
         self.client.http.close()
         self.client.http = httpx.Client(
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"unexpected": []}))
@@ -396,7 +396,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_model_catalog_reuses_valid_cache_and_refreshes_expired_cache(self):
         import time
 
-        cached = model_catalog(CATALOG)
+        cached = parse_model_catalog(CATALOG)
         self.client._model_catalog = (time.monotonic(), cached)
         with patch.object(self.client, "request") as request:
             self.assertIs(self.client.model_catalog(), cached)

@@ -13,7 +13,6 @@ from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...models import Model
 from ...transport import AsyncRequestTransport, AsyncTransport, TransportConfig
-from .errors import GeminiCompatibilityError, GeminiError
 
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
@@ -22,32 +21,6 @@ GRAPHQL_PATH = "/_/BardChatUi/"
 GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
 RENAME_CONVERSATION_SIGNATURE = "2/AK6lUKXaLqlYDDOn9zA0qKcCFN+eXBsWI9SXBtcRr1o="
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="
-# Gemini's protocol enum values, not a list of options advertised to the user.
-THINKING_VALUES = {
-    "THINKING_LEVEL_STANDARD": 1,
-    "THINKING_LEVEL_EXTENDED": 2,
-    "THINKING_LEVEL_DEEP_THINK": 3,
-    "THINKING_LEVEL_MEDIUM": 4,
-}
-
-
-def nested(value, *path, default=None):
-    for index in path:
-        if not isinstance(value, list) or not isinstance(index, int) or not 0 <= index < len(value):
-            return default
-        value = value[index]
-    return default if value is None else value
-
-
-def rpc_parts(text, rpc):
-    for line in text.splitlines():
-        if not line.startswith("[["):
-            continue
-        for row in json.loads(line):
-            if nested(row, 0) == "wrb.fr" and nested(row, 1) == rpc:
-                body = nested(row, 2)
-                if body is not None:
-                    yield json.loads(body)
 
 
 class GeminiSession:
@@ -323,7 +296,7 @@ class GeminiSession:
         raise ProviderError("Gemini web query response is incomplete")
 
     async def discover_models(self):
-        from ...models import Choice, Model
+        from .catalogs import parse_model_catalog
         from .rpc import RPCPayload
 
         endpoint, xsrf_endpoint = self.graphql_endpoints()
@@ -377,110 +350,7 @@ class GeminiSession:
         data = result.get("data") or {}
         viewer = data.get("viewer") or {}
         status = (viewer.get("rpcs") or {}).get("getUserStatus")
-        if not isinstance(status, dict):
-            raise ProviderError("Gemini model policy could not be retrieved")
-        native = {item["modeCategory"]: item["id"] for item in status.get("bardModeConfigs") or []}
-        policy = status.get("geminiModePolicy")
-        if not isinstance(policy, dict) or not isinstance(policy.get("configs"), list):
-            raise GeminiCompatibilityError("Gemini reasoning options contract has changed")
-        policies = {}
-        for item in policy["configs"]:
-            config = item.get("modeConfig") or {}
-            hosts = item.get("hosts") or []
-            if (
-                hosts
-                and "MODE_PICKER_HOST_CHAT" not in hosts
-                or config.get("isDisabled")
-                or config.get("upsellConfig")
-            ):
-                continue
-            remote = (
-                config.get("modeVariantId")
-                or config.get("id")
-                or native.get(config.get("modeCategory"))
-            )
-            if remote:
-                policies[remote] = item
-
-        parts = list(rpc_parts(rpc_response.text, "otAQ7b"))
-        if len(parts) != 1 or nested(parts[0], 14) == 1016:
-            raise AccountPaused("Gemini account could not be verified; guest mode was not used")
-        body = parts[0]
-        rows = nested(body, 15)
-        if not isinstance(rows, list):
-            raise GeminiCompatibilityError("Gemini model catalog contract has changed")
-        tiers, flags = nested(body, 16, default=[]), nested(body, 17, default=[])
-        capacity, slot = (
-            (1, 13)
-            if 21 in tiers
-            else (2, 13)
-            if 22 in tiers
-            else (4, 12)
-            if 115 in flags
-            else (3, 12)
-            if 16 in tiers or 106 in flags
-            else (2, 12)
-            if 8 in tiers or 19 in flags
-            else (1, 12)
-        )
-        models = []
-        for row in rows:
-            remote = nested(row, 0)
-            if not isinstance(remote, str) or remote not in policies:
-                continue
-            policy = policies[remote]
-            config = policy["modeConfig"]
-            efforts, values = [], {}
-            for option in policy.get("thinkingLevelConfigs") or []:
-                if option.get("isDisabled"):
-                    continue
-                level = option.get("thinkingLevel")
-                if level == "THINKING_LEVEL_UNSPECIFIED":
-                    continue
-                if level not in THINKING_VALUES:
-                    raise GeminiCompatibilityError("Gemini returned an unknown thinking protocol.")
-                identifier = level.removeprefix("THINKING_LEVEL_").lower()
-                if identifier not in values:
-                    efforts.append(Choice(identifier, identifier))
-                    values[identifier] = THINKING_VALUES[level]
-            implicit = policy.get("implicitThinkingLevel") or ""
-            default = implicit.removeprefix("THINKING_LEVEL_").lower()
-            if default not in values:
-                default = None
-            category = nested(row, 1) or nested(row, 10) or remote
-            title = config.get("titleForPicker") or config.get("title") or category
-            number = nested(row, 17)
-            if not isinstance(number, int):
-                number = nested(row, 9, default=1)
-            mode_category = str(config.get("modeCategory") or "").strip().upper()
-            category_name = str(category).strip().lower()
-            variant_name = f"{category_name} {str(title).strip().lower()}".replace(
-                "-", " "
-            ).replace("_", " ")
-            is_fast = (
-                mode_category in {"FAST", "MODE_CATEGORY_FAST"}
-                and "lite" not in variant_name.split()
-            )
-            models.append(
-                Model(
-                    "gemini-" + str(category).lower().replace(" ", "-"),
-                    str(title),
-                    tuple(efforts),
-                    default_effort=default,
-                    metadata={
-                        "model_id": remote,
-                        "selector_id": None if is_fast else remote,
-                        "capacity": capacity,
-                        "capacity_slot": slot,
-                        "number": None if is_fast else number,
-                        "effort_values": values,
-                        "description": nested(row, 12) or nested(row, 2),
-                    },
-                )
-            )
-        if not models:
-            raise GeminiError("Gemini returned no available models")
-        return tuple(models)
+        return parse_model_catalog(status, rpc_response.text)
 
     async def persist(self):
         async with self._save_lock:

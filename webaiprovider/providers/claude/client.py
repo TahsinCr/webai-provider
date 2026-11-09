@@ -16,7 +16,7 @@ from ...frames import SSEFrameDecoder
 from ...models import MessageAction, ProjectOptions, source_file
 from ...transport import HttpSession
 from ...utils.timing import current_send_timing
-from .catalogs import selector_catalog
+from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}
@@ -110,7 +110,7 @@ class ClaudeClient:
             selected = await self.http.request(
                 "GET", "/api/organizations/" + remote_id(organization) + "/model_selector/chat"
             )
-        catalog = selector_catalog(selected)
+        catalog = parse_model_catalog(selected)
         self.organization = organization
         self.catalog = catalog
         self.authenticated = True
@@ -285,10 +285,10 @@ class ClaudeClient:
         base = await self.base()
         if client_started is not None:
             timing.record("provider_client_ready_ms", time.perf_counter_ns() - client_started)
-        model = v.get("model") or self.catalog["default_model"]
-        choice = next((x for x in self.catalog["models"] if x["id"] == model), None)
+        model = v.get("model") or self.catalog.default_model
+        choice = next((x for x in self.catalog.models if x.id == model), None)
         if choice is None or (
-            v.get("effort") and not any(x["id"] == v["effort"] for x in choice["efforts"])
+            v.get("effort") and not any(x.id == v["effort"] for x in choice.efforts)
         ):
             raise ValueError("Select a model/thinking option from this account")
         pid = remote_id(v["project_id"]) if v.get("project_id") else None
@@ -375,8 +375,8 @@ class ClaudeClient:
             body["parent_message_uuid"] = parent
         effort = v.get("effort")
         if effort:
-            if "selections" in choice:
-                body.update(choice["selections"][effort])
+            if "selections" in choice.metadata:
+                body.update(choice.metadata["selections"][effort])
             else:
                 body["thinking_mode"] = effort
         completed, completion_notified, blocks = False, False, {}

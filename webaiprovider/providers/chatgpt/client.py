@@ -21,10 +21,8 @@ from ...errors import RateLimited
 from ...frames import SSEFrameDecoder
 from ...transport import HTTPTransport, Transport, TransportConfig
 from ...utils.timing import SendTiming, current_send_timing
+from .catalogs import parse_model_catalog
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
-from .discovery import (
-    model_catalog as parse_model_catalog,
-)
 from .discovery import (
     page as parse_page,
 )

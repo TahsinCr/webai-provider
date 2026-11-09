@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from ...catalogs import StaticModelCatalog, effort_ref
 from ...contracts import EffortRef, EffortSet, ModelRef
+from ...models import Choice, FeatureState, Model, ModelCatalog
 from .errors import ClaudeCompatibilityError
 
 
@@ -154,7 +155,7 @@ class ClaudeModels(StaticModelCatalog):
     )
 
 
-def selector_catalog(data):
+def parse_model_catalog(data) -> ModelCatalog:
     config = next((x for x in data.get("model_selector_config", []) if x.get("id") == "chat"), None)
     state = next((x for x in data.get("model_selector_state", []) if x.get("id") == "chat"), {})
     if not config or not isinstance(config.get("models"), list):
@@ -212,21 +213,18 @@ def selector_catalog(data):
                     }
                 )
         models.append(
-            {
-                "id": entry["id"],
-                "title": entry.get("name") or entry["id"],
-                "efforts": choices,
-                "selections": selections,
-                "native": entry,
-            }
+            Model(
+                entry["id"],
+                entry.get("name") or entry["id"],
+                tuple(Choice(choice["id"], choice["title"]) for choice in choices),
+                default_effort=next(
+                    (choice["id"] for choice in choices if choice["selected"]), None
+                ),
+                metadata={"native": entry, "selections": selections},
+            )
         )
     if not models:
         raise ClaudeCompatibilityError("Claude returned no selectable chat model for this account")
     preferred = state.get("model")
-    return {
-        "models": models,
-        "default_model": preferred
-        if any(x["id"] == preferred for x in models)
-        else models[0]["id"],
-        "source": "model_selector/chat",
-    }
+    default = preferred if any(x.id == preferred for x in models) else models[0].id
+    return ModelCatalog(FeatureState.AVAILABLE, tuple(models), default)

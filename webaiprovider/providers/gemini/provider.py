@@ -282,7 +282,7 @@ class AsyncGeminiProvider(AsyncProvider):
 
     async def branch_chat(self, conversation_id, message_id):
         from ...models import target_message
-        from .session import nested
+        from .rpc import nested
 
         current = await self.get_chat(conversation_id)
         _, target = target_message(current.messages, message_id, "assistant")
@@ -480,7 +480,7 @@ class AsyncGeminiProvider(AsyncProvider):
                                     "pre_send_get_conversation_ms",
                                     time.perf_counter_ns() - history_started,
                                 )
-                        from .session import nested
+                        from .rpc import nested
 
                         turns = nested(parts[0], 0, default=[])
                         turn = turns[0] if turns else None

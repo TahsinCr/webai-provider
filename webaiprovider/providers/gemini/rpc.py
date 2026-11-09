@@ -8,6 +8,25 @@ from ...errors import ProviderError
 from .notebooks import notebook_id
 
 
+def nested(value, *path, default=None):
+    for index in path:
+        if not isinstance(value, list) or not isinstance(index, int) or not 0 <= index < len(value):
+            return default
+        value = value[index]
+    return default if value is None else value
+
+
+def rpc_parts(text, rpc):
+    for line in text.splitlines():
+        if not line.startswith("[["):
+            continue
+        for row in json.loads(line):
+            if nested(row, 0) == "wrb.fr" and nested(row, 1) == rpc:
+                body = nested(row, 2)
+                if body is not None:
+                    yield json.loads(body)
+
+
 @dataclass(frozen=True)
 class RPCPayload:
     rpcid: str

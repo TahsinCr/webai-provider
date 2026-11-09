@@ -9,16 +9,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
 from ...async_provider import AsyncProvider
 from ...errors import AccountPaused, FeatureUnavailable
-from ...models import (
-    Capability,
-    Choice,
-    FeatureState,
-    Model,
-    ModelCatalog,
-    Page,
-    SessionState,
-    SessionStatus,
-)
+from ...models import Capability, Page, SessionState, SessionStatus
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import Chat, MovableChat
 from ...streams import (
@@ -166,26 +157,7 @@ class AsyncClaudeProvider(AsyncProvider):
 
     async def _load_model_catalog(self, *, force: bool = False):
         async with self._gate:
-            data = await self.client.request("models", force=force)
-            models = []
-            for item in data["models"]:
-                efforts = tuple(Choice(x["id"], x["title"]) for x in item["efforts"])
-                default = next((x["id"] for x in item["efforts"] if x.get("selected")), None)
-                models.append(
-                    Model(
-                        item["id"],
-                        item["title"],
-                        efforts,
-                        default_effort=default,
-                        chat_selectable=not bool(item.get("selection_error")),
-                        metadata={
-                            k: item[k]
-                            for k in ("effort_error", "selection_error", "native", "selections")
-                            if item.get(k)
-                        },
-                    )
-                )
-            return ModelCatalog(FeatureState.AVAILABLE, tuple(models), data.get("default_model"))
+            return await self.client.request("models", force=force)
 
     async def list_chats(self, cursor=None, limit=50):
         values = await self.client.request("chats", cursor=cursor, limit=limit)
