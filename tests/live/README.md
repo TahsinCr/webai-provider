@@ -1,12 +1,12 @@
-# Optional live provider API checks
+# Live provider API tests
 
-These checks use real web sessions. They are excluded from the normal `test_*.py` discovery and from CI. Importing the module and running it without `--execute` never reads credentials or opens a network connection.
+This package tests the public provider API against one real account at a time. It is separate from the deterministic offline suite. Live requests run only when `WEBAI_LIVE_TESTS=1` is explicitly set; otherwise the test class is skipped. There is no CLI runner.
 
-## Credentials
+Feature files define test mixins; `test_api.py` composes them into one `unittest.TestCase`. This keeps session setup, rate limiting, and cleanup shared across the API scenarios instead of repeating provider preparation for each feature.
 
-The ignored local file `.config/credentials.json` is created with an empty account list. Fill it locally; never commit it or paste its contents into chat. The file must be owned by your user with mode `0600`, and `.config/` must be mode `0700` on POSIX systems. The runner refuses symlinks, permissive permissions, malformed data, or a credential path that Git does not ignore. The JSON is plaintext at rest; filesystem permissions are not encryption.
+## Account setup
 
-Example shape (replace the placeholder locally with the exact credential payload accepted by the account/provider):
+Use the ignored local file `.config/credentials.json`. The file must be owned by your user with mode `0600`, and `.config/` must have mode `0700` on POSIX systems. The test suite rejects symlinks, permissive files, malformed JSON, and credential files that Git does not ignore. Values are plaintext at rest; permissions are not encryption.
 
 ```json
 {
@@ -25,30 +25,32 @@ Example shape (replace the placeholder locally with the exact credential payload
 }
 ```
 
-`id` is a private local alias. The runner uses only the provider and alias you explicitly select; it never searches browser profiles or tries other accounts.
+Keep the credential payload in the format accepted by the selected provider. `id` is a local alias; credentials are never printed or committed.
 
-## Run modes
+## Run one provider and API style
 
-From the repository root:
-
-```sh
-python -m tests.live
-python -m tests.live --execute --provider chatgpt --account personal
-python -m tests.live --execute --provider chatgpt --account personal --api sync
-python -m tests.live --execute --provider chatgpt --account personal --allow-temporary-writes
-python -m tests.live --execute --provider chatgpt --account personal --allow-temporary-writes --allow-one-generation
-```
-
-The first command is a no-network plan. A live run always selects one provider, one account, and one API style (`async` by default; `sync` is available separately). Run each mode in a separate invocation if both public APIs need verification. Read-only mode opens one session and checks the model catalog plus chat/project metadata supported by that account; it does not open existing conversations or read message content. The project-write mode creates one uniquely marked project, edits only that project, adds/removes one short text resource, then deletes and verifies the project. The optional generation mode sends exactly one low-effort prompt in a uniquely marked temporary chat, checks its stream/history, and deletes and verifies that chat. It never calls `provider.ask()`, whose convenience result does not expose the temporary chat handle for cleanup.
-
-Public API actions are serial, separated by a fixed one-second cooldown, bounded to 20 actions, and never retried automatically. Provider implementations may make multiple internal HTTP requests for a single public action; these cannot all be paced by this harness. Async calls have a 90-second action timeout. Sync calls use their provider transport's configured timeout. A rate-limit, authentication, network, or provider error stops the run. Log output includes only action names, status, and duration; response text, prompt text, cookies, tokens, account IDs, and remote IDs are suppressed.
-
-Before each remote create, the runner writes a private cleanup journal. It removes only remote IDs returned by the test-created resource or a unique test marker found during recovery. Deletion is verified with a follow-up lookup. If the provider or network prevents verification, the run stops, preserves the journal, and refuses further tests until recovery:
+From the repository root, explicitly select one provider account and API style:
 
 ```sh
-python -m tests.live --execute --provider chatgpt --account personal --recover
+WEBAI_LIVE_TESTS=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal WEBAI_LIVE_API=async \
+  python -m unittest tests.live.test_api -v
 ```
 
-No client can guarantee deletion while a provider is unavailable. In that case the test deliberately fails closed; inspect the provider UI for the unique `webai-live-...` marker, then retry recovery. Never delete a resource unless its test marker/record confirms it was created by this runner. If a stale `.config/live-run.lock` remains after a forced process kill, verify no runner is active before removing that lock and running recovery.
+Use `WEBAI_LIVE_API=sync` to test the synchronous API. Run providers separately by setting `WEBAI_LIVE_PROVIDER` to `chatgpt`, `gemini`, `claude`, or `grok`. Each run opens one session and shares it across the test modules.
 
-Uploads/downloads, retries, branches, and additional generations are intentionally not run live: they can leave provider-side files/branches or consume extra quota without a universal reversible operation. Their deterministic behavior stays in the offline test suite. The live suite checks the common, safely reversible API path and account-specific capabilities; it does not claim every model or every provider-internal operation was exercised.
+## Coverage and limits
+
+The suite checks session setup, the available model catalog, chat and project metadata, and a disposable project lifecycle (create, rename, instruction update, text resource add/remove, delete verification). It also sends one low-effort prompt in a disposable chat, checks streaming and history, optionally renames the chat, and verifies deletion. Provider capabilities determine which optional actions run.
+
+Calls are serialized with a one-second cooldown between public API actions, a 20-action run limit, and no automatic retries. Providers may make multiple HTTP requests inside one API action, so the harness cannot pace every internal request. Async calls have a 90-second timeout; sync calls use the provider transport timeout. The report contains action names and durations only, never prompts, responses, credentials, or remote IDs.
+
+Before creating a remote test object, the suite writes a private cleanup journal. It deletes only an object whose remote title contains the run's unique random marker, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
+
+```sh
+WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal WEBAI_LIVE_API=async \
+  python -m unittest tests.live.test_api -v
+```
+
+Recovery performs no new API tests. If the provider remains unavailable or deletion cannot be confirmed, inspect its UI for the `webai-live-...` marker and resolve the pending object before running the suite again. No test harness can guarantee remote deletion while a provider is unavailable.
+
+Uploads, downloads, retries, edits, and branching are excluded from live execution because they can consume additional quota or leave provider-side artifacts without a universal reversible operation. Their behavior remains covered by offline provider tests.

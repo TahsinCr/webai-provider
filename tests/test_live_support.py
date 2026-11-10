@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import tempfile
@@ -8,19 +9,13 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import Mock, patch
 
-from tests.live.runner import (
-    ActionGate,
-    CleanupError,
-    LiveAccount,
-    LiveSuite,
-    SafetyError,
-    _write_private_json,
-    load_accounts,
-    parse_accounts,
-    select_account,
-)
+from tests.live.support.actions import ActionGate
+from tests.live.support.config import LiveAccount, load_accounts, parse_accounts, select_account
+from tests.live.support.context import LiveContext
+from tests.live.support.errors import CleanupError, SafetyError
+from tests.live.support.journal import write_private_json
 
 
 class LiveCredentialTests(unittest.TestCase):
@@ -100,10 +95,15 @@ class LiveCredentialTests(unittest.TestCase):
 
     def test_cleanup_journal_rejects_nested_credentials(self) -> None:
         with self.assertRaisesRegex(SafetyError, "must never contain credentials"):
-            _write_private_json(self.path, {"resources": [{"credentials": {"token": "secret"}}]})
+            write_private_json(self.path, {"resources": [{"credentials": {"token": "secret"}}]})
 
 
 class ActionGateTests(unittest.TestCase):
+    def test_scenario_modules_compose_into_a_unittest_case(self) -> None:
+        from tests.live.test_api import TestLiveProviderAPI
+
+        self.assertTrue(issubclass(TestLiveProviderAPI, unittest.TestCase))
+
     def test_serializes_actions_and_stops_at_fixed_budget(self) -> None:
         async def scenario() -> list[float]:
             gate = ActionGate(interval=0.02, timeout=1, limit=2)
@@ -112,39 +112,36 @@ class ActionGateTests(unittest.TestCase):
             async def action() -> None:
                 started.append(asyncio.get_running_loop().time())
 
-            await gate.call(action)
-            await gate.call(action)
+            await gate.call_async(action)
+            await gate.call_async(action)
             with self.assertRaisesRegex(SafetyError, "action limit"):
-                await gate.call(action)
+                await gate.call_async(action)
             return started
 
         starts = asyncio.run(scenario())
         self.assertEqual(len(starts), 2)
         self.assertGreaterEqual(starts[1] - starts[0], 0.018)
 
-    def test_supports_sync_api_actions_with_the_same_cooldown(self) -> None:
-        async def scenario() -> list[float]:
-            gate = ActionGate(interval=0.02, limit=2)
-            started: list[float] = []
+    def test_sync_api_actions_share_the_cooldown_and_budget(self) -> None:
+        gate = ActionGate(interval=0.02, limit=2)
+        starts: list[float] = []
 
-            def action() -> None:
-                started.append(time.monotonic())
+        def action() -> None:
+            starts.append(time.monotonic())
 
-            await gate.call(action, asynchronous=False)
-            await gate.call(action, asynchronous=False)
-            return started
-
-        starts = asyncio.run(scenario())
+        gate.call_sync(action)
+        gate.call_sync(action)
         self.assertEqual(len(starts), 2)
         self.assertGreaterEqual(starts[1] - starts[0], 0.018)
+        with self.assertRaisesRegex(SafetyError, "action limit"):
+            gate.call_sync(action)
 
-    def test_default_cli_plan_does_not_load_credentials_or_start_network(self) -> None:
-        from tests.live import runner
+    def test_live_api_suite_is_disabled_without_explicit_opt_in(self) -> None:
+        from tests.live import test_api
 
-        with patch.object(
-            runner, "load_accounts", side_effect=AssertionError("must not read secrets")
-        ):
-            self.assertEqual(runner.main([]), 0)
+        with patch.dict(os.environ, {"WEBAI_LIVE_TESTS": "0"}):
+            module = importlib.reload(test_api)
+        self.assertTrue(module.TestLiveProviderAPI.__unittest_skip__)
 
 
 class CleanupSafetyTests(unittest.TestCase):
@@ -152,11 +149,11 @@ class CleanupSafetyTests(unittest.TestCase):
         marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
         remote = SimpleNamespace(remote_id="existing-chat", title="A pre-existing conversation")
         session = SimpleNamespace(
-            chats=SimpleNamespace(refresh=AsyncMock()),
-            get_chat=AsyncMock(return_value=remote),
-            delete_chat=AsyncMock(),
+            chats=SimpleNamespace(refresh=Mock()),
+            get_chat=Mock(return_value=remote),
+            delete_chat=Mock(),
         )
-        suite = LiveSuite(session, LiveAccount("personal", "chatgpt", {}))
+        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
         entry = {
             "kind": "chat",
             "markers": [marker],
@@ -164,11 +161,6 @@ class CleanupSafetyTests(unittest.TestCase):
             "attempted": True,
         }
 
-        async def scenario() -> None:
-            from webaiprovider.errors import RemoteNotFound
-
-            with self.assertRaisesRegex(CleanupError, "unique test marker"):
-                await suite._cleanup_one(entry, RemoteNotFound)
-
-        asyncio.run(scenario())
-        session.delete_chat.assert_not_awaited()
+        with self.assertRaisesRegex(CleanupError, "unique test marker"):
+            context.cleanup_entry(entry)
+        session.delete_chat.assert_not_called()
