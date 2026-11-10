@@ -71,17 +71,21 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 "chats.create", lambda: self.context.session.chats.create(title=marker)
             )
             self.context.record_chat_id(entry, chat)
-            operation = await self.call_api(
-                "messages.create",
-                lambda: chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW),
-            )
+
+            async def create_operation():
+                return chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
+
+            operation = await self.call_api("messages.create", create_operation)
 
             async def consume_stream() -> int:
                 events = 0
-                async for _event in operation.stream():
-                    events += 1
+                try:
+                    async for _event in operation.stream():
+                        events += 1
+                        self.context.record_chat_id(entry, chat)
+                    return events
+                finally:
                     self.context.record_chat_id(entry, chat)
-                return events
 
             event_count = await self.call_api("messages.create.stream", consume_stream)
             response = await self.call_api("messages.wait", operation.wait)

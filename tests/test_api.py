@@ -575,6 +575,17 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider.account_id, account.id)
             await provider.close()
 
+    def test_sync_provider_exposes_native_capabilities(self) -> None:
+        from types import SimpleNamespace
+
+        from webaiprovider.base import Capability
+
+        provider = object.__new__(Provider)
+        capabilities = frozenset({Capability.CHAT, Capability.MODELS})
+        provider._provider = SimpleNamespace(capabilities=capabilities)
+
+        self.assertIs(provider.capabilities, capabilities)
+
     async def test_provider_stream_preserves_typed_errors(self) -> None:
         from webaiprovider.errors import RateLimited
 

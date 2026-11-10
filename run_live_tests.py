@@ -63,11 +63,8 @@ def main() -> int:
         return 2
 
     failures: list[tuple[str, str, int]] = []
-    failed_providers: set[str] = set()
     started = False
     for provider, api in matrix:
-        if provider in failed_providers:
-            continue
         if started:
             time.sleep(1)
         started = True
@@ -90,7 +87,6 @@ def main() -> int:
                 ".",
                 "-p",
                 "test_*.py",
-                "-f",
                 "-v",
             ]
         )
@@ -102,9 +98,6 @@ def main() -> int:
         )
         if result.returncode:
             failures.append((provider, api, result.returncode))
-            failed_providers.add(provider)
-            if api == "async" and (provider, "sync") in matrix:
-                print("Skipping this provider's sync run after its async run failed.")
         if CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink():
             print(
                 "A cleanup journal remains; stopping the live matrix so its account can be recovered first.",

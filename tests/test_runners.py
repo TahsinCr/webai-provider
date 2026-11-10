@@ -60,10 +60,34 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(len(calls), 9)
         self.assertTrue(calls[0].args[0][1].endswith("run_tests.py"))
         self.assertEqual(calls[1].args[0][2:6], ["unittest", "discover", "-s", "tests/live"])
-        self.assertEqual(calls[1].args[0][-3:], ["test_*.py", "-f", "-v"])
+        self.assertEqual(calls[1].args[0][-3:], ["-p", "test_*.py", "-v"])
         self.assertEqual(calls[1].kwargs["env"]["WEBAI_LIVE_TESTS"], "1")
         self.assertEqual(calls[-1].kwargs["env"]["WEBAI_LIVE_PROVIDER"], "grok")
         self.assertEqual(calls[-1].kwargs["env"]["WEBAI_LIVE_API"], "sync")
+
+    def test_live_runner_continues_api_matrix_after_failures(self) -> None:
+        results = [CompletedProcess([], 0), CompletedProcess([], 1), *[CompletedProcess([], 0)] * 7]
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+                patch("run_live_tests.subprocess.run", side_effect=results) as run,
+                patch("run_live_tests.time.sleep"),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(run_live_tests.main(), 1)
+
+        calls = run.call_args_list
+        self.assertEqual(len(calls), 9)
+        self.assertNotIn("-f", calls[1].args[0])
+        self.assertEqual(
+            [
+                (call.kwargs["env"]["WEBAI_LIVE_PROVIDER"], call.kwargs["env"]["WEBAI_LIVE_API"])
+                for call in calls[1:]
+            ],
+            [(provider, api) for provider in sorted(PROVIDERS) for api in ("async", "sync")],
+        )
 
     def test_live_matrix_can_be_narrowed_to_one_provider_and_api(self) -> None:
         with patch.dict(

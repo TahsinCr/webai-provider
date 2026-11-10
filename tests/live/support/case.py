@@ -12,6 +12,23 @@ from .errors import SafetyError
 from .journal import RunLock, read_cleanup_state
 
 _ACTION_GATE = ActionGate(limit=32)
+_FAILED_SESSION_OPENS: set[tuple[str, str]] = set()
+
+
+def _session_key(api: str) -> tuple[str, str]:
+    return os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold(), api
+
+
+def _skip_after_session_open_failure(api: str) -> None:
+    key = _session_key(api)
+    if key in _FAILED_SESSION_OPENS:
+        raise unittest.SkipTest(
+            f"{key[0]} session setup already failed; no further provider requests were sent"
+        )
+
+
+def _record_session_open_failure(api: str) -> None:
+    _FAILED_SESSION_OPENS.add(_session_key(api))
 
 
 class LiveSession:
@@ -239,8 +256,13 @@ class LiveSyncTestCase(unittest.TestCase):
         recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
         if recovering != cls.recovery_only:
             raise unittest.SkipTest("Recovery mode runs only cleanup recovery tests")
+        _skip_after_session_open_failure("sync")
         cls.live = LiveSession("sync")
-        cls.context = cls.live.open_sync()
+        try:
+            cls.context = cls.live.open_sync()
+        except Exception:
+            _record_session_open_failure("sync")
+            raise
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -267,8 +289,13 @@ class LiveAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
         if recovering != self.recovery_only:
             self.skipTest("Recovery mode runs only cleanup recovery tests")
+        _skip_after_session_open_failure("async")
         self.live = LiveSession("async")
-        self.context = await self.live.open_async()
+        try:
+            self.context = await self.live.open_async()
+        except Exception:
+            _record_session_open_failure("async")
+            raise
 
     async def asyncTearDown(self) -> None:
         if hasattr(self, "live"):

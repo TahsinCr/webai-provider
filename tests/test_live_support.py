@@ -11,7 +11,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from tests.live.support.actions import ActionGate
-from tests.live.support.case import LiveAsyncTestCase, LiveSession, LiveSyncTestCase
+from tests.live.support.case import (
+    _FAILED_SESSION_OPENS,
+    LiveAsyncTestCase,
+    LiveSession,
+    LiveSyncTestCase,
+    _skip_after_session_open_failure,
+)
 from tests.live.support.config import (
     LiveAccount,
     load_accounts,
@@ -367,13 +373,61 @@ class CleanupSafetyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             journal = Path(temporary) / "cleanup.json"
-            with patch("tests.live.support.context.CLEANUP_FILE", journal):
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
                 context.cleanup_entry(entry)
 
         session.delete_project.assert_called_once_with(remote.remote_id)
         session.projects.refresh.assert_called_once_with()
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
+
+    def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
+        from webaiprovider.errors import RemoteNotFound
+
+        marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
+        remote = SimpleNamespace(
+            remote_id="temporary-chat",
+            title="Claude sohbeti",
+            messages=(SimpleNamespace(content=(SimpleNamespace(text=f"{marker} prompt"),)),),
+        )
+        session = SimpleNamespace(
+            chats=SimpleNamespace(refresh=Mock(return_value=[remote])),
+            get_chat=Mock(side_effect=[remote, RemoteNotFound("missing")]),
+            delete_chat=Mock(),
+        )
+        context = LiveContext(session, LiveAccount("default-browser", "claude", {}), "sync", None)
+        context.gate = ActionGate(interval=0)
+        entry = {"kind": "chat", "markers": [marker], "attempted": True}
+        context.state["resources"].append(entry)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = Path(temporary) / "cleanup.json"
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
+                context.cleanup_entry(entry)
+
+        session.delete_chat.assert_called_once_with(remote.remote_id)
+        self.assertEqual(context.state["resources"], [])
+        self.assertFalse(journal.exists())
+
+
+class AsyncCleanupMarkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lazy_chat_messages_are_refreshed_for_marker_verification(self) -> None:
+        marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
+        refresh = AsyncMock(return_value=(SimpleNamespace(content=f"{marker} prompt"),))
+        chat = SimpleNamespace(
+            title="Temporary conversation", messages=SimpleNamespace(refresh=refresh)
+        )
+        context = LiveContext(None, LiveAccount("default-browser", "gemini", {}), "async", None)
+        context.gate = ActionGate(interval=0)
+
+        self.assertTrue(await context._matches_marker_async(chat, "chat", (marker,)))
+        refresh.assert_awaited_once_with()
 
 
 class LiveSessionLifecycleTests(unittest.TestCase):
@@ -391,6 +445,19 @@ class LiveSessionLifecycleTests(unittest.TestCase):
 
         context.close.assert_called_once_with()
         lock.__exit__.assert_called_once_with(None, None, None)
+
+
+class LiveSessionSetupCacheTests(unittest.TestCase):
+    def test_failed_setup_skips_only_the_same_provider_api_pair(self) -> None:
+        key = ("gemini", "async")
+        with patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": key[0]}):
+            _FAILED_SESSION_OPENS.add(key)
+            try:
+                with self.assertRaisesRegex(unittest.SkipTest, "no further provider requests"):
+                    _skip_after_session_open_failure(key[1])
+                _skip_after_session_open_failure("sync")
+            finally:
+                _FAILED_SESSION_OPENS.discard(key)
 
 
 class AsyncLiveSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):

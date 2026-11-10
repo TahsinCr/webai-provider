@@ -78,6 +78,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Continue the live matrix after failures; skip a provider/API's remaining tests after session setup fails, without sending duplicate requests.
+- Expose provider capability metadata through the synchronous API.
+- Preserve async message-operation handles in live tests so the stream is consumed through the intended API.
 - Translate provider, profile, catalog, timeout, and persistence exception messages to English.
 
 ### Security

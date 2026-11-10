@@ -164,11 +164,7 @@ class LiveContext:
         if not remote_id:
             values = await self.call_async(f"cleanup.locate_{kind}", collection.refresh)
             markers = tuple(entry.get("markers", ()))
-            matches = [
-                value
-                for value in values
-                if any(marker in self._title(value, kind) for marker in markers)
-            ]
+            matches = [value for value in values if self._matches_marker(value, kind, markers)]
             if len(matches) != 1 or not getattr(matches[0], "remote_id", None):
                 raise CleanupError("A possibly-created object could not be uniquely located")
             remote_id = entry["remote_id"] = str(matches[0].remote_id)
@@ -176,12 +172,8 @@ class LiveContext:
 
         async def listed_remote() -> Any | None:
             values = await self.call_async(f"cleanup.verify_{kind}_list", collection.refresh)
-            markers = tuple(entry.get("markers", ()))
             matches = [
-                value
-                for value in values
-                if str(getattr(value, "remote_id", "")) == str(remote_id)
-                or any(marker in self._title(value, kind) for marker in markers)
+                value for value in values if str(getattr(value, "remote_id", "")) == str(remote_id)
             ]
             if len(matches) > 1:
                 raise CleanupError("The temporary object could not be uniquely verified")
@@ -201,7 +193,7 @@ class LiveContext:
         if remote is None:
             self._remove_entry(entry)
             return
-        if not any(marker in self._title(remote, kind) for marker in entry["markers"]):
+        if not await self._matches_marker_async(remote, kind, tuple(entry["markers"])):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
         await self.call_async(f"cleanup.delete_{kind}", lambda: delete_remote(str(remote_id)))
@@ -237,11 +229,7 @@ class LiveContext:
         if not remote_id:
             values = self.call(f"cleanup.locate_{kind}", collection.refresh)
             markers = tuple(entry.get("markers", ()))
-            matches = [
-                value
-                for value in values
-                if any(marker in self._title(value, kind) for marker in markers)
-            ]
+            matches = [value for value in values if self._matches_marker(value, kind, markers)]
             if len(matches) != 1 or not getattr(matches[0], "remote_id", None):
                 raise CleanupError("A possibly-created object could not be uniquely located")
             remote_id = entry["remote_id"] = str(matches[0].remote_id)
@@ -249,12 +237,8 @@ class LiveContext:
 
         def listed_remote() -> Any | None:
             values = self.call(f"cleanup.verify_{kind}_list", collection.refresh)
-            markers = tuple(entry.get("markers", ()))
             matches = [
-                value
-                for value in values
-                if str(getattr(value, "remote_id", "")) == str(remote_id)
-                or any(marker in self._title(value, kind) for marker in markers)
+                value for value in values if str(getattr(value, "remote_id", "")) == str(remote_id)
             ]
             if len(matches) > 1:
                 raise CleanupError("The temporary object could not be uniquely verified")
@@ -274,7 +258,7 @@ class LiveContext:
         if remote is None:
             self._remove_entry(entry)
             return
-        if not any(marker in self._title(remote, kind) for marker in entry["markers"]):
+        if not self._matches_marker_sync(remote, kind, tuple(entry["markers"])):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
         self.call(f"cleanup.delete_{kind}", lambda: delete_remote(str(remote_id)))
@@ -298,6 +282,57 @@ class LiveContext:
         if not title and kind == "project":
             title = getattr(value, "title", "")
         return title if isinstance(title, str) else ""
+
+    @classmethod
+    def _matches_marker(cls, value: Any, kind: str, markers: tuple[str, ...]) -> bool:
+        if any(marker in cls._title(value, kind) for marker in markers):
+            return True
+        return kind == "chat" and cls._messages_match_markers(
+            getattr(value, "messages", ()), markers
+        )
+
+    def _matches_marker_sync(self, value: Any, kind: str, markers: tuple[str, ...]) -> bool:
+        if self._matches_marker(value, kind, markers):
+            return True
+        if kind != "chat":
+            return False
+        refresh = getattr(getattr(value, "messages", None), "refresh", None)
+        return callable(refresh) and self._messages_match_markers(
+            self.call("cleanup.read_chat_history", refresh), markers
+        )
+
+    async def _matches_marker_async(self, value: Any, kind: str, markers: tuple[str, ...]) -> bool:
+        if self._matches_marker(value, kind, markers):
+            return True
+        if kind != "chat":
+            return False
+        refresh = getattr(getattr(value, "messages", None), "refresh", None)
+        if not callable(refresh):
+            return False
+        messages = await self.call_async("cleanup.read_chat_history", refresh)
+        return self._messages_match_markers(messages, markers)
+
+    @staticmethod
+    def _messages_match_markers(messages: Any, markers: tuple[str, ...]) -> bool:
+        try:
+            iterator = iter(messages)
+        except TypeError:
+            return False
+        for message in iterator:
+            content = getattr(message, "content", ())
+            if isinstance(content, str):
+                if any(marker in content for marker in markers):
+                    return True
+                continue
+            try:
+                blocks = iter(content)
+            except TypeError:
+                continue
+            for block in blocks:
+                text = getattr(block, "text", "")
+                if isinstance(text, str) and any(marker in text for marker in markers):
+                    return True
+        return False
 
     def _remove_entry(self, entry: dict[str, Any]) -> None:
         self.state["resources"].remove(entry)

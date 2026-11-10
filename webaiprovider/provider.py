@@ -5,7 +5,7 @@ from enum import Enum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from .base import BaseProvider
+from .base import BaseProvider, Capability
 from .core.bridges import PortalBridge
 from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import Chat
@@ -108,6 +108,10 @@ class Provider(BaseProvider):
 
     def _wrap_project(self, resource: AsyncProject) -> Project:
         return (self.project_wrapper_type or Project)(self, resource)
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return self._provider.capabilities
 
     @property
     def telemetry(self) -> ProviderTelemetry:
