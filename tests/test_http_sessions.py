@@ -266,13 +266,13 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             save_session(path, {"cookies": {"lastActiveOrg": organization}})
             calls = []
             bootstrap_started = asyncio.Event()
-            selector_started = asyncio.Event()
+            release_bootstrap = asyncio.Event()
 
             async def request(method, endpoint, **_kwargs):
                 calls.append(endpoint)
                 if endpoint == "/api/bootstrap":
                     bootstrap_started.set()
-                    await asyncio.wait_for(selector_started.wait(), 1)
+                    await release_bootstrap.wait()
                     return {
                         "account": {
                             "memberships": [
@@ -286,8 +286,6 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                         }
                     }
                 if endpoint.endswith("/model_selector/chat"):
-                    selector_started.set()
-                    await asyncio.wait_for(bootstrap_started.wait(), 1)
                     return {
                         "model_selector_config": [
                             {"id": "chat", "models": [{"id": "model", "name": "Model"}]}
@@ -305,16 +303,23 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             )
             transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
-            _, chats = await asyncio.gather(
-                transport.prepare(), transport.request("chats", cursor=0, limit=50)
-            )
+            preparing = asyncio.create_task(transport.prepare())
+            listing = asyncio.create_task(transport.request("chats", cursor=0, limit=50))
+            await asyncio.wait_for(bootstrap_started.wait(), 1)
+            await asyncio.sleep(0)
+            self.assertEqual(calls, ["/api/bootstrap"])
+            release_bootstrap.set()
+            _, chats = await asyncio.gather(preparing, listing)
 
         self.assertEqual(chats, [])
-        self.assertEqual(calls.count("/api/bootstrap"), 1)
-        selector = f"/api/organizations/{organization}/model_selector/chat"
-        chats_endpoint = f"/api/organizations/{organization}/chat_conversations?limit=50&offset=0"
-        self.assertEqual(calls.count(selector), 1)
-        self.assertGreater(calls.index(chats_endpoint), calls.index(selector))
+        self.assertEqual(
+            calls,
+            [
+                "/api/bootstrap",
+                f"/api/organizations/{organization}/model_selector/chat",
+                f"/api/organizations/{organization}/chat_conversations?limit=50&offset=0",
+            ],
+        )
 
     async def test_stale_saved_claude_workspace_uses_only_unambiguous_bootstrap_fallback(self):
         old_organization = "11111111-1111-1111-1111-111111111111"
@@ -340,8 +345,6 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                         }
                     }
                 if endpoint.endswith("/model_selector/chat"):
-                    if old_organization in endpoint:
-                        raise RemoteNotFound("old workspace no longer exists")
                     return {
                         "model_selector_config": [
                             {"id": "chat", "models": [{"id": "model", "name": "Model"}]}
@@ -357,17 +360,13 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             )
             transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
-
             await transport.prepare()
 
         self.assertEqual(transport.organization, current_organization)
         self.assertEqual(transport.catalog.default_model, "model")
-        self.assertEqual(calls.count("/api/bootstrap"), 1)
         self.assertEqual(
-            calls.count(f"/api/organizations/{old_organization}/model_selector/chat"), 1
-        )
-        self.assertEqual(
-            calls.count(f"/api/organizations/{current_organization}/model_selector/chat"), 1
+            calls,
+            ["/api/bootstrap", f"/api/organizations/{current_organization}/model_selector/chat"],
         )
 
     async def test_stale_claude_workspace_does_not_guess_when_account_has_multiple_workspaces(self):
@@ -397,8 +396,6 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
                             ]
                         }
                     }
-                if endpoint.endswith("/model_selector/chat"):
-                    raise RemoteNotFound("old workspace no longer exists")
                 raise AssertionError(endpoint)
 
             session = SimpleNamespace(
@@ -408,42 +405,64 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             )
             transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
-
             with self.assertRaises(ProviderError):
                 await transport.prepare()
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls, ["/api/bootstrap"])
 
-    async def test_parallel_discovery_cancels_peer_without_retry_on_failure(self):
+    async def test_discovery_waits_for_bootstrap_before_loading_catalog(self):
         organization = "11111111-1111-1111-1111-111111111111"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.json"
             save_session(path, {"cookies": {"lastActiveOrg": organization}})
-            started = asyncio.Event()
-            cancelled = asyncio.Event()
+            bootstrap_started = asyncio.Event()
+            release_bootstrap = asyncio.Event()
             calls = []
 
-            async def request(method, endpoint, **kwargs):
+            async def request(method, endpoint, **_kwargs):
                 calls.append(endpoint)
                 if endpoint == "/api/bootstrap":
-                    started.set()
-                    try:
-                        await asyncio.Event().wait()
-                    finally:
-                        cancelled.set()
-                await started.wait()
-                raise ProviderError("selector failed")
+                    bootstrap_started.set()
+                    await release_bootstrap.wait()
+                    return {
+                        "account": {
+                            "memberships": [
+                                {
+                                    "organization": {
+                                        "uuid": organization,
+                                        "capabilities": ["chat"],
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                if endpoint.endswith("/model_selector/chat"):
+                    return {
+                        "model_selector_config": [
+                            {"id": "chat", "models": [{"id": "model", "name": "Model"}]}
+                        ],
+                        "model_selector_state": [],
+                    }
+                raise AssertionError(endpoint)
 
             session = SimpleNamespace(
-                path=path, request=AsyncMock(side_effect=request), close=AsyncMock()
+                path=path,
+                request=AsyncMock(side_effect=request),
+                close=AsyncMock(),
             )
             transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
-            with self.assertRaisesRegex(ProviderError, "selector failed"):
-                await transport.prepare()
-            self.assertTrue(cancelled.is_set())
-            self.assertEqual(calls.count("/api/bootstrap"), 1)
-            self.assertEqual(len(calls), 2)
+            preparing = asyncio.create_task(transport.prepare())
+            await bootstrap_started.wait()
+            await asyncio.sleep(0)
+            self.assertEqual(calls, ["/api/bootstrap"])
+            release_bootstrap.set()
+            await preparing
+
+        self.assertEqual(
+            calls,
+            ["/api/bootstrap", f"/api/organizations/{organization}/model_selector/chat"],
+        )
 
     async def test_model_catalog_expires_and_explicit_refresh_bypasses_cache(self):
         transport = ClaudeClient("unused")

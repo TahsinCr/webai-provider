@@ -53,6 +53,27 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
             self.assertFalse(http.get.call_args.kwargs["allow_redirects"])
             self.assertEqual(http.get.call_args.args[0], "https://chatgpt.com/api/auth/session")
 
+    def test_provider_open_prepares_cookie_credentials_before_catalog(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
+        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+
+        cookie_name = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
+        cookies = {f"{cookie_name}.0": "part-zero", f"{cookie_name}.1": "part-one"}
+        provider = AsyncChatGPTProvider(Account.from_cookies("chatgpt", cookies))
+
+        with (
+            patch.object(provider.session, "import_cookies") as import_cookies,
+            patch.object(provider, "_load_model_catalog", new_callable=AsyncMock) as load_catalog,
+        ):
+            asyncio.run(provider.prepare())
+
+        import_cookies.assert_called_once_with(cookies)
+        load_catalog.assert_awaited_once_with()
+
     def test_bootstrap_rejection_retains_previous_snapshot_and_does_not_follow_redirect(self):
         from unittest.mock import MagicMock
 

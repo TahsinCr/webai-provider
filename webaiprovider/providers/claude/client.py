@@ -1,6 +1,5 @@
 """Account-scoped Claude HTTPS operations and completion streams."""
 
-import asyncio
 import json
 import mimetypes
 import time
@@ -11,7 +10,7 @@ from urllib.parse import quote
 from ...accounts import read_session
 from ...async_provider import confirm_deleted
 from ...core import ConcurrencyCoordinator
-from ...errors import AccountPaused, ProviderError, RemoteNotFound
+from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
 from ...resources.message.types import MessageAction
 from ...resources.project.types import (
@@ -61,59 +60,19 @@ class ClaudeClient:
         self._discovered_at = 0.0
 
     async def _discover(self):
+        data = await self.http.request("GET", "/api/bootstrap")
         values = read_session(self.path)
         last_org = values.get("cookies", values).get("lastActiveOrg")
         try:
-            saved_id = remote_id(last_org) if last_org else None
-        except ValueError:
-            saved_id = None
-        if saved_id:
-            bootstrap = asyncio.create_task(self.http.request("GET", "/api/bootstrap"))
-            selector = asyncio.create_task(
-                self.http.request("GET", "/api/organizations/" + saved_id + "/model_selector/chat")
-            )
-            try:
-                data, selected = await asyncio.gather(bootstrap, selector)
-            except BaseException as error:
-                selector_error = (
-                    selector.exception() if selector.done() and not selector.cancelled() else None
-                )
-                if isinstance(selector_error, RemoteNotFound):
-                    try:
-                        data = await bootstrap
-                    except BaseException:
-                        await asyncio.gather(bootstrap, selector, return_exceptions=True)
-                        raise
-                    try:
-                        organization = organization_from_bootstrap(data, last_org)
-                    except AccountPaused:
-                        raise
-                    except ProviderError:
-                        # A stale saved workspace can be replaced only when the
-                        # authenticated account has exactly one chat workspace.
-                        organization = organization_from_bootstrap(data, None)
-                    if organization != saved_id:
-                        selected = await self.http.request(
-                            "GET",
-                            "/api/organizations/"
-                            + remote_id(organization)
-                            + "/model_selector/chat",
-                        )
-                    else:
-                        raise selector_error
-                else:
-                    bootstrap.cancel()
-                    selector.cancel()
-                    await asyncio.gather(bootstrap, selector, return_exceptions=True)
-                    raise error
-            else:
-                organization = organization_from_bootstrap(data, last_org)
-        else:
-            data = await self.http.request("GET", "/api/bootstrap")
             organization = organization_from_bootstrap(data, last_org)
-            selected = await self.http.request(
-                "GET", "/api/organizations/" + remote_id(organization) + "/model_selector/chat"
-            )
+        except AccountPaused:
+            raise
+        except ProviderError:
+            organization = organization_from_bootstrap(data, None)
+        organization = remote_id(organization)
+        selected = await self.http.request(
+            "GET", "/api/organizations/" + organization + "/model_selector/chat"
+        )
         catalog = parse_model_catalog(selected)
         self.organization = organization
         self.catalog = catalog

@@ -162,12 +162,16 @@ class LiveContext:
         delete_remote = getattr(self.session, "delete_chat" if kind == "chat" else "delete_project")
         remote_id = entry.get("remote_id")
         if not remote_id:
-            values = await self.call_async(f"cleanup.locate_{kind}", collection.refresh)
+            values = (
+                await self._all_projects_async()
+                if kind == "project"
+                else await self.call_async(f"cleanup.locate_{kind}", collection.refresh)
+            )
             markers = tuple(entry.get("markers", ()))
             matches = [value for value in values if self._matches_marker(value, kind, markers)]
-            if len(matches) != 1 or not getattr(matches[0], "remote_id", None):
+            if len(matches) != 1 or not (remote_id := self._remote_id(matches[0])):
                 raise CleanupError("A possibly-created object could not be uniquely located")
-            remote_id = entry["remote_id"] = str(matches[0].remote_id)
+            remote_id = entry["remote_id"] = str(remote_id)
             self.save()
 
         async def listed_remote() -> Any | None:
@@ -227,12 +231,16 @@ class LiveContext:
         delete_remote = getattr(self.session, "delete_chat" if kind == "chat" else "delete_project")
         remote_id = entry.get("remote_id")
         if not remote_id:
-            values = self.call(f"cleanup.locate_{kind}", collection.refresh)
+            values = (
+                self._all_projects()
+                if kind == "project"
+                else self.call(f"cleanup.locate_{kind}", collection.refresh)
+            )
             markers = tuple(entry.get("markers", ()))
             matches = [value for value in values if self._matches_marker(value, kind, markers)]
-            if len(matches) != 1 or not getattr(matches[0], "remote_id", None):
+            if len(matches) != 1 or not (remote_id := self._remote_id(matches[0])):
                 raise CleanupError("A possibly-created object could not be uniquely located")
-            remote_id = entry["remote_id"] = str(matches[0].remote_id)
+            remote_id = entry["remote_id"] = str(remote_id)
             self.save()
 
         def listed_remote() -> Any | None:
@@ -282,6 +290,48 @@ class LiveContext:
         if not title and kind == "project":
             title = getattr(value, "title", "")
         return title if isinstance(title, str) else ""
+
+    @staticmethod
+    def _remote_id(value: Any) -> Any:
+        return getattr(value, "remote_id", None) or getattr(
+            getattr(value, "origin", None), "remote_id", None
+        )
+
+    def _all_projects(self) -> list[Any]:
+        provider = self.session._require_provider()
+        cursor = None
+        seen: set[str] = set()
+        projects = []
+        for _ in range(100):
+            page = self.call("cleanup.locate_project", lambda: provider.list_projects(cursor))
+            projects.extend(page.items)
+            next_cursor = page.cursor
+            if next_cursor is None:
+                return projects
+            if next_cursor == cursor or next_cursor in seen:
+                raise CleanupError("Project listing returned a repeated cursor")
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise CleanupError("Project listing exceeded the safe recovery page limit")
+
+    async def _all_projects_async(self) -> list[Any]:
+        provider = self.session._require_provider()
+        cursor = None
+        seen: set[str] = set()
+        projects = []
+        for _ in range(100):
+            page = await self.call_async(
+                "cleanup.locate_project", lambda: provider.list_projects(cursor)
+            )
+            projects.extend(page.items)
+            next_cursor = page.cursor
+            if next_cursor is None:
+                return projects
+            if next_cursor == cursor or next_cursor in seen:
+                raise CleanupError("Project listing returned a repeated cursor")
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise CleanupError("Project listing exceeded the safe recovery page limit")
 
     @classmethod
     def _matches_marker(cls, value: Any, kind: str, markers: tuple[str, ...]) -> bool:

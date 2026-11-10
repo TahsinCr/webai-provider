@@ -278,7 +278,21 @@ class AsyncChatGPTProvider(AsyncProvider):
                     self._http_client.forget_conversation(conversation_id)
 
     async def prepare(self) -> None:
-        """Warm the saved session and retain its HTTP connection pool."""
+        """Bootstrap cookie credentials, then warm and retain the authenticated client."""
+        if self._factory is ChatGPTClient:
+            from ...accounts.credentials import read_session
+            from ...accounts.filters import ProviderCookieFilter
+            from .errors import ChatGPTAuthenticationError
+
+            try:
+                self.session.load()
+            except ChatGPTAuthenticationError:
+                stored = read_session(self.session.paths.session_file)
+                cookies = stored.get("cookies", stored)
+                if not isinstance(cookies, dict):
+                    raise
+                cookies = ProviderCookieFilter.filter_cookies("https://chatgpt.com", cookies)
+                await asyncio.to_thread(self.session.import_cookies, cookies)
         await self._load_model_catalog()
 
     async def prepare_for_send(self) -> None:

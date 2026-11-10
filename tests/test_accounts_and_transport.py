@@ -144,9 +144,22 @@ class AuthTests(unittest.TestCase):
                 ProviderCookieFilter.validate_origin(invalid)
 
     def test_cookie_filtering_and_sanitation(self):
+        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
+
         valid = {"sessionKey": "sk_valid_123", "extra": "val"}
         filtered = ProviderCookieFilter.filter_cookies("https://claude.ai", valid)
         self.assertEqual(filtered, valid)
+
+        chatgpt_cookie = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
+        chunked = {f"{chatgpt_cookie}.0": "chunk-zero", f"{chatgpt_cookie}.1": "chunk-one"}
+        self.assertEqual(
+            ProviderCookieFilter.filter_cookies("https://chatgpt.com", chunked), chunked
+        )
+        incomplete = {f"{chatgpt_cookie}.0": "chunk-zero", f"{chatgpt_cookie}.2": "chunk-two"}
+        with self.assertRaises(AccountPaused):
+            ProviderCookieFilter.filter_cookies("https://chatgpt.com", incomplete)
+        with self.assertRaises(AccountPaused):
+            ProviderCookieFilter.filter_cookies("https://chatgpt.com", {1: "invalid"})
 
         with self.assertRaises(AccountPaused):
             ProviderCookieFilter.filter_cookies("https://claude.ai", {"other": "token"})

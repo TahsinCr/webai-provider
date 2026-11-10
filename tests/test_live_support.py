@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from tests.live.support.actions import ActionGate
 from tests.live.support.case import (
@@ -88,8 +88,12 @@ class LiveCredentialTests(unittest.TestCase):
             )
         )
         chatgpt_auth_cookie = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
+        browser_cookies = {
+            f"{chatgpt_auth_cookie}.0": "browser-secret-0",
+            f"{chatgpt_auth_cookie}.1": "browser-secret-1",
+        }
         browser_account = Account.from_cookies(
-            "chatgpt", {chatgpt_auth_cookie: "browser-secret"}, id="default-browser"
+            "chatgpt", browser_cookies, id="default-browser"
         )
         with patch(
             "webaiprovider.accounts.account.Account.from_browser",
@@ -101,8 +105,13 @@ class LiveCredentialTests(unittest.TestCase):
             "chatgpt", browser=None, id="default-browser", name="Chatgpt default browser"
         )
         self.assertEqual((account.provider, account.alias), ("chatgpt", "default-browser"))
+        self.assertEqual(account.credentials, browser_cookies)
         accounts = load_accounts(self.path, require_ignored=False)
         self.assertEqual({item.provider for item in accounts}, {"chatgpt", "claude"})
+        self.assertEqual(
+            select_account(accounts, "chatgpt", "default-browser").credentials,
+            browser_cookies,
+        )
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_existing_browser_import_is_not_refreshed_or_rewritten(self) -> None:
@@ -381,6 +390,53 @@ class CleanupSafetyTests(unittest.TestCase):
 
         session.delete_project.assert_called_once_with(remote.remote_id)
         session.projects.refresh.assert_called_once_with()
+        self.assertEqual(context.state["resources"], [])
+        self.assertFalse(journal.exists())
+
+    def test_project_recovery_paginates_and_uses_native_origin_id(self) -> None:
+        from webaiprovider.errors import RemoteNotFound
+
+        marker = "webai-live-0123456789abcdef0123456789abcdef-project"
+        located = SimpleNamespace(
+            name=marker,
+            origin=SimpleNamespace(remote_id="temporary-project"),
+        )
+        provider = SimpleNamespace(
+            list_projects=Mock(
+                side_effect=(
+                    SimpleNamespace(items=(), cursor="next-page"),
+                    SimpleNamespace(items=(located,), cursor=None),
+                )
+            )
+        )
+        remote = SimpleNamespace(remote_id="temporary-project", name=marker)
+        session = SimpleNamespace(
+            _require_provider=Mock(return_value=provider),
+            projects=SimpleNamespace(refresh=Mock(return_value=[])),
+            get_project=Mock(side_effect=(remote, RemoteNotFound("missing"))),
+            delete_project=Mock(),
+        )
+        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
+        context.gate = ActionGate(interval=0)
+        entry = {"kind": "project", "markers": [marker], "attempted": True}
+        context.state["resources"].append(entry)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = Path(temporary) / "cleanup.json"
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
+                context.cleanup_entry(entry)
+
+        self.assertEqual(
+            [call.args for call in provider.list_projects.call_args_list], [(None,), ("next-page",)]
+        )
+        self.assertEqual(
+            session.get_project.call_args_list,
+            [call("temporary-project"), call("temporary-project")],
+        )
+        session.delete_project.assert_called_once_with("temporary-project")
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
 

@@ -44,7 +44,21 @@ class ProviderCookieFilter:
             raise AccountPaused("Reverify your session once through the Accounts section")
         req = required_cookie or REQUIRED_PROVIDER_COOKIES.get(origin)
         if req is not None and not cookies.get(req):
-            raise AccountPaused("Reverify your session once through the Accounts section")
+            prefix = f"{req}."
+            chunks = {
+                key[len(prefix) :]
+                for key in cookies
+                if isinstance(key, str)
+                and key.startswith(prefix)
+                and key[len(prefix) :].isascii()
+                and key[len(prefix) :].isdigit()
+            }
+            expected = {str(index) for index in range(len(chunks))}
+            chunked_cookie_present = bool(chunks) and chunks == expected and all(
+                cookies.get(prefix + index) for index in expected
+            )
+            if not chunked_cookie_present:
+                raise AccountPaused("Reverify your session once through the Accounts section")
         for key, val in cookies.items():
             if not isinstance(key, str) or not isinstance(val, str):
                 raise AccountPaused("Session record is invalid")
