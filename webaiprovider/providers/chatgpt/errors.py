@@ -1,8 +1,12 @@
-from ...errors import ProviderError
+from ...errors import AuthenticationError, ProviderError
 
 
 class ChatGPTError(ProviderError):
     code = "chatgpt_error"
+
+
+class ChatGPTAuthenticationError(ChatGPTError, AuthenticationError):
+    code = "chatgpt_authentication_error"
 
 
 class SentinelCompatibilityError(ChatGPTError):

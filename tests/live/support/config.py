@@ -171,6 +171,7 @@ def load_or_import_account(
     alias: str = "",
     *,
     browser: str | None = None,
+    refresh: bool = False,
     path: Path = CREDENTIALS_FILE,
     require_ignored: bool = True,
 ) -> LiveAccount:
@@ -179,6 +180,8 @@ def load_or_import_account(
         raise SafetyError("Select a supported provider before running live tests")
     if alias and not _ACCOUNT_ID.fullmatch(alias):
         raise SafetyError("Account IDs must be short local aliases using letters, digits, _ or -")
+    if refresh and alias != "default-browser":
+        raise SafetyError("Automatic cookie refresh is limited to the default-browser account")
 
     _ensure_private_directory(path.parent)
     if require_ignored:
@@ -191,12 +194,16 @@ def load_or_import_account(
         data = read_private_json(path, require_ignored=False)
     accounts = parse_accounts(data)
     matching = [item for item in accounts if item.provider == provider]
+    replacing = False
     if alias:
         selected = [item for item in matching if item.alias == alias]
         if selected:
-            return select_account(accounts, provider, alias)
+            if not refresh:
+                return select_account(accounts, provider, alias)
+            replacing = True
         if matching:
-            raise SafetyError("The selected provider account alias is not configured")
+            if not selected:
+                raise SafetyError("The selected provider account alias is not configured")
     elif matching:
         if len(matching) == 1:
             return matching[0]
@@ -225,6 +232,18 @@ def load_or_import_account(
         raise SafetyError(f"No {provider} session cookies were found in the default browser")
 
     record = {"id": account_alias, "provider": provider, "credentials": credentials}
-    data["accounts"].append(record)
+    if replacing:
+        for index, existing in enumerate(data["accounts"]):
+            if (
+                isinstance(existing, dict)
+                and existing.get("id") == account_alias
+                and str(existing.get("provider", "")).casefold() == provider
+            ):
+                data["accounts"][index] = record
+                break
+        else:
+            raise SafetyError("The selected browser account changed during cookie refresh")
+    else:
+        data["accounts"].append(record)
     _write_private_json(path, data, require_ignored=require_ignored)
     return LiveAccount(account_alias, provider, credentials)

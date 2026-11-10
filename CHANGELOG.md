@@ -20,6 +20,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Type rejected ChatGPT sessions as the common `AuthenticationError`; browser-cookie refresh and retry remain limited to the live-test harness.
+
 - Group shared provider contracts in `base.py`, model catalog and typed selection APIs under `resources/model`, and chat, message, and project data by resource ownership.
 
 - Remove duplicate Grok cookie persistence and ChatGPT header preparation; shared worker execution now supports keyword arguments through the same bounded submission path.

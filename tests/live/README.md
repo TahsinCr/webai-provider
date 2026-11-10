@@ -27,6 +27,8 @@ The live suite first reuses the selected provider's account in `.config/credenti
 
 Manual credential setup is optional. Keep a local alias in `id` and use the credential shape accepted by that provider. Credentials are never printed or committed.
 
+When opening a live-test session fails with a typed authentication error, the harness reimports cookies from the selected browser and retries once only for the `default-browser` account. It does not refresh named accounts, and network, rate-limit, or other failures do not trigger a retry. This behavior is confined to `tests/live`; normal provider and SiopeChat runtime behavior is unchanged.
+
 ## Run the suites
 
 From the repository root:
@@ -59,7 +61,7 @@ Use `WEBAI_LIVE_API=sync` to test the synchronous API. The test base class skips
 
 The live suite checks the public session, model, chat, project, and message flows: session opening/capabilities, model listing, chat/project metadata, temporary project create/rename/instruction update/text resource add/remove/delete, and one short message stream plus history/rename/delete in a temporary chat. Provider capabilities determine which optional project actions run. This is a safe integration smoke suite, not a live call of every public method: offline tests cover deterministic API contracts, while upload/download and additional-generation operations remain excluded to limit quota and remote side effects.
 
-Calls are serialized with a one-second cooldown between public API actions, a 32-action limit per provider/API run, and no automatic retries. Each feature opens and closes its own session so async clients stay on their isolated test loop; session opens count toward the action limit, while closes release local resources. Providers may make multiple HTTP requests inside one API action, so the harness cannot pace every internal request. Async calls have a 90-second timeout; sync calls use the provider transport timeout. The report contains action names and durations only, never prompts, responses, credentials, or remote IDs.
+Calls are serialized with a one-second cooldown between public API actions and a 32-action limit per provider/API run. The only harness retry is the single default-browser cookie refresh described above; session opens count toward the action limit, while closes release local resources. Each feature opens and closes its own session so async clients stay on their isolated test loop. Providers may make multiple HTTP requests inside one API action, so the harness cannot pace every internal request. Async calls have a 90-second timeout; sync calls use the provider transport timeout. The report contains action names and durations only, never prompts, responses, credentials, or remote IDs.
 
 Before creating a remote test object, the suite writes a private cleanup journal. It deletes only an object whose remote title contains the run's unique random marker, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
 

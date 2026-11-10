@@ -19,7 +19,7 @@ from ...accounts import CredentialStore, read_session, save_session
 from ...errors import AccountPaused
 from ...utils.cdp import DevToolsError, capture_chatgpt_auth, is_devtools_available
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
-from .errors import ChatGPTError
+from .errors import ChatGPTAuthenticationError, ChatGPTError
 
 CHATGPT_ROOT = Path(__file__).resolve().parent
 
@@ -140,21 +140,33 @@ class BrowserSession:
             url = value["url"]
             headers = value["headers"]
         except (FileNotFoundError, AccountPaused) as error:
-            raise ChatGPTError("No saved ChatGPT session; authenticate the account") from error
+            raise ChatGPTAuthenticationError(
+                "No saved ChatGPT session; authenticate the account"
+            ) from error
         except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
-            raise ChatGPTError("saved ChatGPT session is invalid") from error
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session is invalid; verify the account"
+            ) from error
         if not isinstance(url, str):
-            raise ChatGPTError("saved ChatGPT session has an invalid origin")
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session has an invalid origin; verify the account"
+            )
         try:
             parsed = urlsplit(url)
         except ValueError as error:
-            raise ChatGPTError("saved ChatGPT session has an invalid origin") from error
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session has an invalid origin; verify the account"
+            ) from error
         if parsed.scheme != "https" or parsed.netloc != "chatgpt.com":
-            raise ChatGPTError("saved ChatGPT session has an invalid origin")
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session has an invalid origin; verify the account"
+            )
         if not isinstance(headers, dict) or not all(
             isinstance(key, str) and isinstance(item, str) for key, item in headers.items()
         ):
-            raise ChatGPTError("saved ChatGPT session has invalid headers")
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session has invalid headers; verify the account"
+            )
         return url, {key.lower(): value for key, value in headers.items()}
 
     def capture_auth(self) -> tuple[str, dict[str, str]]:

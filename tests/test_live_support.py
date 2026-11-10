@@ -123,6 +123,78 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(account.alias, "personal")
         self.assertEqual(self.path.read_bytes(), original)
 
+    def test_refreshes_invalid_browser_cookies_without_replacing_other_accounts(self) -> None:
+        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
+
+        self._write(
+            json.dumps(
+                {
+                    "version": 1,
+                    "accounts": [
+                        {
+                            "id": "default-browser",
+                            "provider": "chatgpt",
+                            "credentials": {"cookies": {"session": "expired"}},
+                        },
+                        {
+                            "id": "personal",
+                            "provider": "claude",
+                            "credentials": {"cookies": {"session": "preserved"}},
+                        },
+                    ],
+                }
+            )
+        )
+        auth_cookie = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
+        browser_account = Account.from_cookies(
+            "chatgpt", {auth_cookie: "fresh"}, id="default-browser"
+        )
+        with patch(
+            "webaiprovider.accounts.account.Account.from_browser",
+            return_value=browser_account,
+        ) as from_browser:
+            account = load_or_import_account(
+                "chatgpt",
+                "default-browser",
+                refresh=True,
+                path=self.path,
+                require_ignored=False,
+            )
+
+        from_browser.assert_called_once()
+        self.assertEqual(account.credentials[auth_cookie], "fresh")
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(len(saved["accounts"]), 2)
+        self.assertEqual(saved["accounts"][0]["credentials"], account.credentials)
+        self.assertEqual(saved["accounts"][1]["credentials"], {"cookies": {"session": "preserved"}})
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_automatic_cookie_refresh_does_not_replace_named_accounts(self) -> None:
+        self._write(
+            json.dumps(
+                {
+                    "version": 1,
+                    "accounts": [
+                        {
+                            "id": "personal",
+                            "provider": "grok",
+                            "credentials": {"cookies": {"session": "saved"}},
+                        }
+                    ],
+                }
+            )
+        )
+        with (
+            patch("webaiprovider.accounts.account.Account.from_browser") as from_browser,
+            self.assertRaisesRegex(SafetyError, "default-browser"),
+        ):
+            load_or_import_account(
+                "grok", "personal", refresh=True, path=self.path, require_ignored=False
+            )
+        from_browser.assert_not_called()
+        self.assertEqual(load_accounts(self.path, require_ignored=False)[0].alias, "personal")
+
     def test_browser_import_without_required_auth_cookie_is_not_saved(self) -> None:
         from webaiprovider.accounts.account import Account
 
@@ -337,3 +409,88 @@ class AsyncLiveSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         context.aclose.assert_awaited_once_with()
         lock.__exit__.assert_called_once_with(None, None, None)
+
+
+class LiveSessionCookieRefreshTests(unittest.TestCase):
+    def test_sync_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
+        from webaiprovider.errors import AccountPaused
+
+        account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "old"}})
+        refreshed_account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "new"}})
+        old_provider = Mock()
+        old_provider.open.side_effect = AccountPaused("expired")
+        new_provider = Mock()
+        old_context = LiveContext(old_provider, account, "sync", gate=ActionGate(interval=0))
+        live = LiveSession("sync")
+        live.context, live.session = old_context, old_provider
+        gate = ActionGate(interval=0, limit=4)
+
+        with (
+            patch("tests.live.support.case._ACTION_GATE", gate),
+            patch.object(live, "_prepare", return_value=old_context),
+            patch.object(live, "_create_provider_session", return_value=new_provider),
+            patch(
+                "tests.live.support.case.load_or_import_account", return_value=refreshed_account
+            ) as refresh,
+        ):
+            context = live.open_sync()
+            refresh.assert_called_once()
+            self.assertEqual(refresh.call_args.kwargs["refresh"], True)
+            self.assertEqual(old_context.gate.calls + gate.calls, 2)
+            self.assertIs(context.session, new_provider)
+            live.close_sync()
+
+    def test_sync_network_failure_does_not_refresh_cookies(self) -> None:
+        from webaiprovider.errors import NetworkError
+
+        account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "saved"}})
+        provider = Mock()
+        provider.open.side_effect = NetworkError("unavailable")
+        context = LiveContext(provider, account, "sync", gate=ActionGate(interval=0))
+        live = LiveSession("sync")
+        live.context, live.session = context, provider
+
+        from tests.live.support.errors import LiveApiError
+
+        with (
+            patch("tests.live.support.case._ACTION_GATE", ActionGate(interval=0)),
+            patch.object(live, "_prepare", return_value=context),
+            patch("tests.live.support.case.load_or_import_account") as refresh,
+            self.assertRaises(LiveApiError),
+        ):
+            live.open_sync()
+        refresh.assert_not_called()
+        self.assertIsNone(live.context)
+
+
+class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
+        from webaiprovider.errors import AccountPaused
+
+        account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "old"}})
+        refreshed_account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "new"}})
+        old_provider = Mock()
+        old_provider.open = AsyncMock(side_effect=AccountPaused("expired"))
+        old_provider.close = AsyncMock()
+        new_provider = Mock()
+        new_provider.open = AsyncMock(return_value=None)
+        new_provider.close = AsyncMock()
+        old_context = LiveContext(old_provider, account, "async", gate=ActionGate(interval=0))
+        live = LiveSession("async")
+        live.context, live.session = old_context, old_provider
+        gate = ActionGate(interval=0, limit=4)
+
+        with (
+            patch("tests.live.support.case._ACTION_GATE", gate),
+            patch.object(live, "_prepare", return_value=old_context),
+            patch.object(live, "_create_provider_session", return_value=new_provider),
+            patch(
+                "tests.live.support.case.load_or_import_account", return_value=refreshed_account
+            ) as refresh,
+        ):
+            context = await live.open_async()
+            refresh.assert_called_once()
+            self.assertEqual(refresh.call_args.kwargs["refresh"], True)
+            self.assertEqual(old_context.gate.calls + gate.calls, 2)
+            self.assertIs(context.session, new_provider)
+            await live.close_async()

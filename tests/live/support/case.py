@@ -47,18 +47,21 @@ class LiveSession:
 
             for logger_name in ("httpx", "httpcore", "curl_cffi", "websockets", "urllib3"):
                 logging.getLogger(logger_name).setLevel(logging.WARNING)
-            self.session = self._create_provider_session(account)
-            self.context = LiveContext(
-                self.session,
-                account,
-                self.api,
-                state=state,
-                gate=_ACTION_GATE,
-            )
-            return self.context
+            return self._new_context(account, state)
         except BaseException:
             self._release_lock()
             raise
+
+    def _new_context(self, account: LiveAccount, state=None) -> LiveContext:
+        self.session = self._create_provider_session(account)
+        self.context = LiveContext(
+            self.session,
+            account,
+            self.api,
+            state=state,
+            gate=_ACTION_GATE,
+        )
+        return self.context
 
     def _create_provider_session(self, account: LiveAccount) -> Any:
         from webaiprovider.accounts.account import Account
@@ -78,30 +81,98 @@ class LiveSession:
         return Provider(account_object)
 
     def open_sync(self) -> LiveContext:
+        from webaiprovider.errors import AuthenticationError
+
         context = self._prepare()
         try:
-            context.call("session.open", self.session.open)
-        except BaseException:
             try:
-                context.close()
-            except Exception:
-                pass
+                context.call(
+                    "session.open",
+                    self.session.open,
+                    expected_errors=(AuthenticationError,),
+                )
+            except AuthenticationError:
+                account, state = context.account, context.state
+                self._close_sync()
+                refreshed = load_or_import_account(
+                    account.provider,
+                    account.alias,
+                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
+                    refresh=True,
+                )
+                context = self._new_context(refreshed, state)
+                try:
+                    context.call(
+                        "session.open.after_cookie_refresh",
+                        self.session.open,
+                        expected_errors=(AuthenticationError,),
+                    )
+                except AuthenticationError:
+                    raise SafetyError(
+                        f"{account.provider} browser cookies remain invalid after one refresh"
+                    ) from None
+        except BaseException:
+            self._close_sync(suppress=True)
             self._release_lock()
             raise
         return context
 
     async def open_async(self) -> LiveContext:
+        from webaiprovider.errors import AuthenticationError
+
         context = self._prepare()
         try:
-            await context.call_async("session.open", self.session.open)
-        except BaseException:
             try:
-                await context.aclose()
-            except Exception:
-                pass
+                await context.call_async(
+                    "session.open",
+                    self.session.open,
+                    expected_errors=(AuthenticationError,),
+                )
+            except AuthenticationError:
+                account, state = context.account, context.state
+                await self._close_async()
+                refreshed = load_or_import_account(
+                    account.provider,
+                    account.alias,
+                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
+                    refresh=True,
+                )
+                context = self._new_context(refreshed, state)
+                try:
+                    await context.call_async(
+                        "session.open.after_cookie_refresh",
+                        self.session.open,
+                        expected_errors=(AuthenticationError,),
+                    )
+                except AuthenticationError:
+                    raise SafetyError(
+                        f"{account.provider} browser cookies remain invalid after one refresh"
+                    ) from None
+        except BaseException:
+            await self._close_async(suppress=True)
             self._release_lock()
             raise
         return context
+
+    def _close_sync(self, *, suppress: bool = False) -> None:
+        context, self.context = self.context, None
+        self.session = None
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                if not suppress:
+                    raise
+
+    async def _close_async(self, *, suppress: bool = False) -> None:
+        context, self.context = self.context, None
+        self.session = None
+        if context is not None:
+            try:
+                await context.aclose()
+            except Exception:
+                if not suppress:
+                    raise
 
     def close_sync(self) -> None:
         error: Exception | None = None

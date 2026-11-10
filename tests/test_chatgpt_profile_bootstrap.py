@@ -9,6 +9,16 @@ from .fakes import cookie
 
 
 class ChatGPTProfileBootstrapTests(unittest.TestCase):
+    def test_missing_saved_session_uses_the_common_authentication_error(self):
+        from webaiprovider.errors import AuthenticationError
+        from webaiprovider.providers.chatgpt import BrowserSession, SessionPaths
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            session = BrowserSession(SessionPaths(root / "missing.json", root / "profile"))
+            with self.assertRaises(AuthenticationError):
+                session.load()
+
     def test_bootstrap_saves_provider_token_and_browser_headers_without_cdp(self):
         from unittest.mock import MagicMock
 

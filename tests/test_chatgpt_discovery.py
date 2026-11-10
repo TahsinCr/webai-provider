@@ -71,6 +71,21 @@ class DiscoveryTests(unittest.TestCase):
 
         self.client.http = httpx.Client(transport=httpx.MockTransport(respond))
 
+    def test_rejected_session_uses_the_common_authentication_error(self):
+        from unittest.mock import patch
+
+        from webaiprovider.errors import AuthenticationError
+
+        request = httpx.Request("GET", "https://chatgpt.com/backend-api/models")
+        response = httpx.Response(401, request=request)
+        with (
+            patch.object(self.client, "_transport_headers", return_value={}),
+            patch.object(self.client, "refresh_session"),
+            patch.object(self.client.transport, "send", return_value=response),
+            self.assertRaises(AuthenticationError),
+        ):
+            self.client.request("GET", str(request.url))
+
     def test_http_project_create_reads_back_and_never_launches_a_process(self):
         from unittest.mock import Mock
 

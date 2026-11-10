@@ -32,7 +32,7 @@ from .discovery import (
 from .discovery import (
     project_id as extract_project_id,
 )
-from .errors import ChatGPTError, SentinelCompatibilityError
+from .errors import ChatGPTAuthenticationError, ChatGPTError, SentinelCompatibilityError
 from .formats import message_parts, text_from_parts
 from .sentinel import SentinelRuntime
 from .session import BrowserSession
@@ -270,7 +270,7 @@ class ChatGPTClient:
             try:
                 self.refresh_session()
             except ChatGPTError:
-                raise ChatGPTError(
+                raise ChatGPTAuthenticationError(
                     "The session could not be refreshed; verify it again in the Accounts section."
                 ) from None
         if response.status_code == 429:
@@ -283,6 +283,10 @@ class ChatGPTClient:
             from ...errors import RemoteNotFound
 
             raise RemoteNotFound("ChatGPT conversation no longer exists")
+        if response.status_code in (401, 403):
+            raise ChatGPTAuthenticationError(
+                "ChatGPT session expired or was rejected; verify the account"
+            )
         if response.status_code >= 400:
             raise ChatGPTError(
                 f"ChatGPT returned HTTP {response.status_code} for {method} {response.url.path}"
