@@ -52,8 +52,8 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
     return session
 
 
-class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_execute_stream_emits_v2_events_and_updates_operation(self) -> None:
+class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_events_and_updates_operation(self) -> None:
         session = _create_mock_session("claude")
         chat = AsyncChat(title="Test Chat", session=session)
         message = AsyncMessage("Hello Claude", chat=chat)
@@ -117,8 +117,8 @@ class AsyncClaudeProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
                 _ = [event async for event in provider.execute_stream(operation)]
 
 
-class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_execute_stream_emits_v2_events_and_caches_continuation(self) -> None:
+class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_events_and_caches_continuation(self) -> None:
         session = _create_mock_session("grok")
         chat = AsyncChat(title="Test Chat", session=session)
         message = AsyncMessage("Hello Grok", chat=chat)
@@ -193,8 +193,8 @@ class AsyncGrokProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.retry_after, 12.5)
 
 
-class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_execute_stream_emits_v2_events_and_resolves_image_links(self) -> None:
+class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_events_and_resolves_image_links(self) -> None:
         session = _create_mock_session("gemini")
         chat = AsyncChat(title="Test Chat", session=session)
         message = AsyncMessage("Hello Gemini", chat=chat)
@@ -248,8 +248,8 @@ class AsyncGeminiProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(OutputEnd, event_types)
 
 
-class AsyncChatGPTProviderV2StreamingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_execute_stream_emits_v2_events_and_updates_remote_ids(self) -> None:
+class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_stream_emits_events_and_updates_remote_ids(self) -> None:
         session = _create_mock_session("chatgpt")
         chat = AsyncChat(title="Test Chat", session=session)
         message = AsyncMessage("Hello ChatGPT", chat=chat)

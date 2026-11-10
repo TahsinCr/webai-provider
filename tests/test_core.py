@@ -83,11 +83,11 @@ class CoreCacheTests(unittest.TestCase):
         )
 
         cache.put("k1", "v1")
-        cache.put("k2", "v2")
+        cache.put("k2", "value-2")
         cache.put("k3", "v3")
 
         self.assertIsNone(cache.get("k1"))
-        self.assertEqual(cache.get("k2"), "v2")
+        self.assertEqual(cache.get("k2"), "value-2")
         self.assertEqual(cache.get("k3"), "v3")
 
     def test_cache_evicts_when_byte_limit_exceeded(self) -> None:

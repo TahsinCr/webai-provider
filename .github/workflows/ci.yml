@@ -44,7 +44,19 @@ jobs:
       - run: python -m pip install --force-reinstall dist/*.whl
       - run: python -m pip check
       - run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
-      - run: python tests/package_smoke.py
+      - name: Verify installed wheel metadata and typing marker
+        run: >-
+          python -I -c
+          "import importlib.metadata as m, importlib.resources as r, importlib.util as u, webaiprovider;
+          assert m.version('webai-provider') == webaiprovider.__version__;
+          assert u.find_spec('webai_provider') is None;
+          assert r.files('webaiprovider').joinpath('py.typed').is_file()"
       - run: python -m pip install --force-reinstall --no-deps dist/*.tar.gz
       - run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
-      - run: python tests/package_smoke.py
+      - name: Verify installed source distribution metadata and typing marker
+        run: >-
+          python -I -c
+          "import importlib.metadata as m, importlib.resources as r, importlib.util as u, webaiprovider;
+          assert m.version('webai-provider') == webaiprovider.__version__;
+          assert u.find_spec('webai_provider') is None;
+          assert r.files('webaiprovider').joinpath('py.typed').is_file()"

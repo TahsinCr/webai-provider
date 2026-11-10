@@ -20,6 +20,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Keep `webaiprovider.__version__` as the single package-version source and derive build metadata from it.
+
 - Type rejected ChatGPT sessions as the common `AuthenticationError`; browser-cookie refresh and retry remain limited to the live-test harness.
 
 - Group shared provider contracts in `base.py`, model catalog and typed selection APIs under `resources/model`, and chat, message, and project data by resource ownership.
@@ -58,6 +60,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Require an attached provider session before sending a message; detached chats now raise a `ProviderError` instead of producing a local echo as if it were a provider response.
 
 ### Removed
+
+- Remove the standalone package smoke script; run isolated wheel and source-distribution checks in CI and keep behavior coverage in `unittest`.
 
 - Remove the duplicate `Feature`/`ProviderDescription` wrapper and `describe()` API; providers expose their declared capabilities directly through `provider.capabilities`.
 - Move catalog status to `resources.model.ModelCatalogState` and remove unused connector and feature-only status values.
