@@ -8,9 +8,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Include the PEP 561 `py.typed` marker in wheels and source distributions for the public typed API.
 - Publish provider request and normalized stream event contracts in `webaiprovider.resources.message.protocol` for implementations using the same operation pipeline as built-in providers.
-
 - Expose origin-scoped `provider.transport` in async and blocking APIs, custom transport injection, HTTP/request-stream strategies, and bounded `PortalBridge` orchestration.
-
 - Add provider-specific async and sync provider facades, explicit `open()`/`close()` lifecycle, and paginated project chat access with chat moves.
 - Add ChatGPT project memory selection as `memory_share: bool`; `True` uses the provider's default/global memory scope and `False` selects project-only memory.
 - Model-specific typed effort namespaces; a static choice is available as `ChatGPTModels.GPT_5_6_THINKING.efforts.MEDIUM` and each value is an `EffortRef`.
@@ -21,25 +19,15 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Changed
 
 - Keep `webaiprovider.__version__` as the single package-version source and derive build metadata from it.
-
 - Type rejected ChatGPT sessions as the common `AuthenticationError`; browser-cookie refresh and retry remain limited to the live-test harness.
-
 - Group shared provider contracts in `base.py`, model catalog and typed selection APIs under `resources/model`, and chat, message, and project data by resource ownership.
-
 - Remove duplicate Grok cookie persistence and ChatGPT header preparation; shared worker execution now supports keyword arguments through the same bounded submission path.
-
 - Keep transport origins immutable and describe buffered/streamed responses with backend-independent public protocols; synchronous stream closure reaches its async owner exactly once.
-
 - Make generic `Provider` and `AsyncProvider` constructors select the concrete provider class directly, preserving provider-specific behavior when switching `ProviderType`.
-
 - Route provider HTTP streams through the shared transport contract; keep provider protocol clients in their own `client.py` modules and move generic work pools to `core`. Rate-limit cooldowns are isolated per transport session.
-
 - Flatten reference normalization into `webaiprovider.normalizers` and use direct imports instead of routing normalization helpers through data models.
-
 - Share bounded SSE framing across ChatGPT, Claude, and Grok; expose a provider-independent `JSPBFrameDecoder` with Gemini framing settings supplied by Gemini.
-
 - Repair provider imports and sync/async resource exports after removing the old provider adapter layer.
-
 - Rename immutable normalized model types to `MessageData`, `ProjectData`, and `ResourceData` to distinguish them from SDK resource objects.
 - Define `ProviderType` in the canonical `webaiprovider.provider` module and remove the separate `provider_type.py` module.
 - Give `Attachments` the collection-style `create`, metadata-only `update`, and local `delete` API.
