@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Consolidate provider-construction, account-isolation, capability, and chat-operation contracts in one table-driven test; remove obsolete namespace and compatibility-removal assertions.
 - Scan each message-operation event once per stage waiter and share terminal-event publication with the normal event path.
 - Scan coalesced SSE packets once and avoid copying incomplete line tails when checking payload limits.
 - Keep `webaiprovider.__version__` as the single package-version source and derive build metadata from it.

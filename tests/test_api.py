@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import threading
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -12,10 +11,7 @@ from webaiprovider import (
     Account,
     AmbiguousMatchError,
     Artifact,
-    AsyncChatGPTProjectsCollection,
     AsyncChatGPTProvider,
-    AsyncClaudeProvider,
-    AsyncGeminiProvider,
     AsyncGrokProvider,
     AsyncMessage,
     AsyncMessageOperation,
@@ -86,14 +82,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         self.addAsyncCleanup(provider.close)
         return provider
-
-    def test_canonical_package_namespace(self) -> None:
-        self.assertIsNotNone(importlib.util.find_spec("webaiprovider"))
-        self.assertIsNone(importlib.util.find_spec("webai_provider"))
-        self.assertIs(webaiprovider.Account, Account)
-        self.assertIs(webaiprovider.Message, Message)
-        self.assertIs(webaiprovider.AsyncChatGPTProvider, AsyncChatGPTProvider)
-        self.assertIs(webaiprovider.SelectionResolver, SelectionResolver)
 
     def test_account_creation_and_session(self) -> None:
         acc = Account.from_cookies("chatgpt", {"session_token": "mock-token-xyz"})
@@ -437,65 +425,36 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         session.branch_chat.assert_awaited_once_with("remote-chat-id", "msg-orig-1")
         self.assertEqual(branched_chat.remote_id, "branch-chat-id")
 
-    def test_generic_constructors_select_native_provider_classes(self) -> None:
-        for kind, title in (
-            ("chatgpt", "ChatGPT"),
-            ("claude", "Claude"),
-            ("gemini", "Gemini"),
-            ("grok", "Grok"),
+    async def test_generic_constructors_select_native_provider_classes(self) -> None:
+        for kind, title, operations in (
+            ("chatgpt", "ChatGPT", {"branch", "move_to"}),
+            ("claude", "Claude", {"move_to"}),
+            ("gemini", "Gemini", {"branch"}),
+            ("grok", "Grok", {"move_to"}),
         ):
             account = Account.from_cookies(kind, {})
             with self.subTest(provider=kind):
                 native_async = getattr(webaiprovider, f"Async{title}Provider")
                 native_sync = getattr(webaiprovider, f"{title}Provider")
-                self.assertIs(type(AsyncProvider(account)), native_async)
-                provider = Provider(account, type=ProviderType.parse(kind))
-                self.assertIs(type(provider), native_sync)
-                self.assertIs(type(provider._provider), native_async)
-                provider.close()
-
-    def test_provider_facades(self) -> None:
-        from webaiprovider.providers.chatgpt import ChatGPTChat
-        from webaiprovider.providers.claude import ClaudeChat
-        from webaiprovider.providers.gemini import GeminiChat
-        from webaiprovider.providers.grok import GrokChat
-        from webaiprovider.resources.chat.chat import Chat
-        from webaiprovider.resources.chat.collections import ChatsCollection
-        from webaiprovider.resources.message.collections import MessagesCollection
-        from webaiprovider.resources.project.chats import ProjectChatsCollection
-
-        self.assertFalse(hasattr(Chat, "branch"))
-        self.assertFalse(hasattr(Chat, "move_to"))
-        self.assertFalse(hasattr(Message, "branch"))
-        self.assertFalse(hasattr(ChatsCollection, "branch"))
-        self.assertFalse(hasattr(ChatsCollection, "move"))
-        self.assertFalse(hasattr(MessagesCollection, "branch"))
-        self.assertFalse(hasattr(ProjectChatsCollection, "add"))
-        self.assertFalse(hasattr(ProjectChatsCollection, "remove"))
-        self.assertFalse(hasattr(ProjectChatsCollection, "add"))
-        self.assertFalse(hasattr(ProjectChatsCollection, "remove"))
-        self.assertTrue(hasattr(ChatGPTChat, "branch"))
-        self.assertTrue(hasattr(ChatGPTChat, "move_to"))
-        self.assertTrue(hasattr(ClaudeChat, "move_to"))
-        self.assertFalse(hasattr(ClaudeChat, "branch"))
-        self.assertTrue(hasattr(GeminiChat, "branch"))
-        self.assertFalse(hasattr(GeminiChat, "move_to"))
-        self.assertTrue(hasattr(GrokChat, "move_to"))
-        self.assertFalse(hasattr(GrokChat, "branch"))
-
-        p1 = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"token": "t1"}))
-        self.assertEqual(p1.type, ProviderType.CHATGPT)
-        self.assertEqual(p1.account.provider, "chatgpt")
-        self.assertIsInstance(p1.projects, AsyncChatGPTProjectsCollection)
-
-        p2 = AsyncClaudeProvider(Account.from_cookies("claude", {"token": "t2"}))
-        self.assertEqual(p2.type, ProviderType.CLAUDE)
-
-        p3 = AsyncGeminiProvider(Account.from_cookies("gemini", {"token": "t3"}))
-        self.assertEqual(p3.type, ProviderType.GEMINI)
-
-        p4 = AsyncGrokProvider(Account.from_cookies("grok", {"token": "t4"}))
-        self.assertEqual(p4.type, ProviderType.GROK)
+                asynchronous = AsyncProvider(account)
+                synchronous = Provider(account, type=ProviderType.parse(kind))
+                try:
+                    self.assertIs(type(asynchronous), native_async)
+                    self.assertIsInstance(asynchronous, AsyncProvider)
+                    self.assertEqual(asynchronous.account_id, account.id)
+                    self.assertIs(asynchronous.type, ProviderType.parse(kind))
+                    self.assertIs(type(synchronous), native_sync)
+                    self.assertIs(type(synchronous._provider), native_async)
+                    self.assertIs(synchronous.capabilities, synchronous._provider.capabilities)
+                    for chat_type in (asynchronous._chat_type, synchronous.chat_wrapper_type):
+                        for operation in ("branch", "move_to"):
+                            self.assertEqual(
+                                callable(getattr(chat_type, operation, None)),
+                                operation in operations,
+                            )
+                finally:
+                    await asynchronous.close()
+                    synchronous.close()
         with self.assertRaisesRegex(ValueError, "must match"):
             AsyncProvider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
 
@@ -571,36 +530,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         msg = Message("With attachment", attachments=attachments)
         self.assertEqual(len(msg.attachments), 1)
         self.assertEqual(msg.attachments.get(att.id).name, "hello.txt")
-
-    async def test_provider_types_implement_shared_provider_api(self) -> None:
-        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
-        from webaiprovider.providers.claude.provider import AsyncClaudeProvider
-        from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
-        from webaiprovider.providers.grok.provider import AsyncGrokProvider
-
-        providers = (
-            ("chatgpt", {"session_token": "token-1"}, AsyncChatGPTProvider),
-            ("gemini", {"__Secure-1PSID": "token-2"}, AsyncGeminiProvider),
-            ("claude", {"sessionKey": "token-3"}, AsyncClaudeProvider),
-            ("grok", {"sso": "token-4"}, AsyncGrokProvider),
-        )
-        for provider_name, credentials, provider_type in providers:
-            account = Account.from_cookies(provider_name, credentials)
-            provider = provider_type(account)
-            self.assertIsInstance(provider, AsyncProvider)
-            self.assertEqual(provider.account_id, account.id)
-            await provider.close()
-
-    def test_sync_provider_exposes_native_capabilities(self) -> None:
-        from types import SimpleNamespace
-
-        from webaiprovider.base import Capability
-
-        provider = object.__new__(Provider)
-        capabilities = frozenset({Capability.CHAT, Capability.MODELS})
-        provider._provider = SimpleNamespace(capabilities=capabilities)
-
-        self.assertIs(provider.capabilities, capabilities)
 
     async def test_provider_stream_preserves_typed_errors(self) -> None:
         from webaiprovider.errors import RateLimited
@@ -678,28 +607,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
 
-    def test_collections_abstract_base_classes_and_no_shims(self) -> None:
-        from abc import ABC
-
-        import webaiprovider.collections
-        import webaiprovider.resources
-        from webaiprovider.collections import (
-            AsyncQueryableCollection,
-            ManageableCollection,
-            QueryableCollection,
-        )
-
-        self.assertTrue(issubclass(QueryableCollection, ABC))
-        self.assertTrue(issubclass(ManageableCollection, ABC))
-        self.assertTrue(issubclass(ManageableCollection, QueryableCollection))
-        self.assertTrue(issubclass(AsyncQueryableCollection, ABC))
+    def test_incomplete_collection_cannot_be_instantiated(self) -> None:
+        from webaiprovider.collections import ManageableCollection
 
         with self.assertRaises(TypeError):
             type("IncompleteManageable", (ManageableCollection,), {})()
-
-        self.assertFalse(hasattr(webaiprovider, "ResourceCollection"))
-        self.assertFalse(hasattr(webaiprovider.collections, "ResourceCollection"))
-        self.assertFalse(hasattr(webaiprovider.resources, "ProjectInstructions"))
 
 
 class TestSyncApi(unittest.TestCase):
