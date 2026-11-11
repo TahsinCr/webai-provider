@@ -75,7 +75,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Reject oversized project-source events before JSON decoding even when the entire line arrives in one chunk, and use shared `Retry-After` parsing for upload rate limits.
 - Resolve exact model and effort IDs before display names or partial matches, including IDs that prefix another catalog entry.
 - Await hook results implementing the awaitable protocol, including futures, before continuing the operation.
-- Count multiline SSE separators toward the event payload limit.
+- Count multiline SSE separators toward the event payload limit while excluding the optional initial UTF-8 byte-order mark.
 - Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.
 - Keep disposable live project names within the service limit and verify temporary chats and projects through the shared provider contract during cleanup.
 - Continue the live matrix after failures; skip a provider/API's remaining tests after session setup fails, without sending duplicate requests.

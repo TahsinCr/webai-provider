@@ -50,18 +50,18 @@ class SSEFrameDecoder:
             value_size -= first == b" "
             if self._size + bool(self._data) + value_size > self.max_event_bytes:
                 raise FrameDecodeError("SSE event payload exceeds the size limit")
-        if length + len(piece) > self.max_event_bytes + 6:
+        if length + len(piece) > self.max_event_bytes + (9 if self._first_line else 6):
             raise FrameDecodeError("SSE line exceeds the size limit")
         self._line.extend(piece)
 
     def feed_line(self, line: bytes | str) -> Iterator[SSEFrame]:
         """Consume one line without its CR/LF terminator."""
         raw = line.encode("utf-8") if isinstance(line, str) else line
-        if len(raw) > self.max_event_bytes + 6:
-            raise FrameDecodeError("SSE line exceeds the size limit")
         if self._first_line:
             raw = raw.removeprefix(b"\xef\xbb\xbf")
             self._first_line = False
+        if len(raw) > self.max_event_bytes + 6:
+            raise FrameDecodeError("SSE line exceeds the size limit")
         if not raw:
             if self._data:
                 yield SSEFrame("\n".join(self._data), self._event, self._id, self._retry)

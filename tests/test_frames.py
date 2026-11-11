@@ -103,14 +103,19 @@ class FrameTests(unittest.TestCase):
         with self.assertRaisesRegex(FrameDecodeError, "size limit"):
             list(sse_data(chunks))
 
-    def test_sse_event_limit_includes_multiline_separators(self):
-        wire = b"data:a\ndata:b\ndata:c\n\n"
-        for split in range(len(wire) + 1):
-            with self.subTest(split=split):
-                chunks = (wire[:split], wire[split:])
-                self.assertEqual(sse_data(chunks, max_event_bytes=5), ["a\nb\nc"])
-                with self.assertRaisesRegex(FrameDecodeError, "size limit"):
-                    sse_data(chunks, max_event_bytes=4)
+    def test_sse_payload_limits_exclude_bom_and_include_separators(self):
+        for data, expected in (
+            (b"data:a\ndata:b\ndata:c\n\n", "a\nb\nc"),
+            (b"data: abcde\n\n", "abcde"),
+        ):
+            for prefix in (b"", b"\xef\xbb\xbf"):
+                wire = prefix + data
+                for split in range(len(wire) + 1):
+                    with self.subTest(prefix=prefix, split=split, data=data):
+                        chunks = (wire[:split], wire[split:])
+                        self.assertEqual(sse_data(chunks, max_event_bytes=5), [expected])
+                        with self.assertRaisesRegex(FrameDecodeError, "size limit"):
+                            sse_data(chunks, max_event_bytes=4)
 
     def test_sse_parser_handles_split_data_prefix_and_crlf(self):
         chunks = (b"da", b'ta:{"text":"hello"}\r', b"\n\r", b"\n")
