@@ -20,6 +20,7 @@ from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
 from ...frames import SSEFrameDecoder
 from ...transport import HTTPTransport, Transport, TransportConfig
+from ...transport.retry import parse_retry_after
 from ...utils.timing import SendTiming, current_send_timing
 from .catalogs import parse_model_catalog
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
@@ -1290,11 +1291,7 @@ class ChatGPTClient:
                     timeout=httpx.Timeout(300.0),
                 ) as processing:
                     if processing.status_code == 429:
-                        try:
-                            delay = float(processing.headers.get("retry-after", ""))
-                        except ValueError:
-                            delay = None
-                        raise RateLimited(delay)
+                        raise RateLimited(parse_retry_after(processing.headers.get("retry-after")))
                     if processing.status_code in (401, 403):
                         raise ChatGPTAuthenticationError(
                             "ChatGPT session expired or was rejected; verify the account"
@@ -1310,6 +1307,8 @@ class ChatGPTClient:
                     completed = False
 
                     def consume_event(line):
+                        if len(line) > 1024 * 1024:
+                            raise ChatGPTError("ChatGPT returned an oversized project source event")
                         if not line.strip():
                             return False
                         try:
@@ -1326,14 +1325,15 @@ class ChatGPTClient:
                     for chunk in processing.iter_bytes():
                         ensure_active()
                         pending.extend(chunk)
-                        while b"\n" in pending:
-                            line, _, remaining = pending.partition(b"\n")
-                            pending = bytearray(remaining)
-                            completed = consume_event(line)
+                        offset = 0
+                        while (end := pending.find(b"\n", offset)) >= 0:
+                            completed = consume_event(pending[offset:end])
+                            offset = end + 1
                             if completed:
                                 break
                         if completed:
                             break
+                        del pending[:offset]
                         if len(pending) > 1024 * 1024:
                             raise ChatGPTError("ChatGPT returned an oversized project source event")
                     if not completed:

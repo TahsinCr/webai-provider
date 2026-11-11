@@ -25,66 +25,60 @@ class AttachmentPolicyContractTests(unittest.TestCase):
 
 
 class ChatGPTStreamingUploadTests(unittest.TestCase):
-    def test_project_upload_waits_for_processing_completion(self):
-        client = object.__new__(ChatGPTClient)
-        client.request = Mock(
-            return_value=SimpleNamespace(
-                json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
-            )
-        )
-        client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
-        response = SimpleNamespace(
-            status_code=200,
-            headers={"content-type": "text/event-stream"},
-            iter_bytes=lambda: iter(
-                (
-                    b'{"type":"file.processing.file_ready"}\n',
-                    b'{"type":"file.indexing.completed"}\n',
-                    b'{"type":"file.processing.completed"}',
-                )
+    def test_project_upload_validates_processing_events_before_finalization(self):
+        ready = b'{"type":"file.processing.file_ready"}\n'
+        completed = b'{"type":"file.processing.completed"}'
+        cases = (
+            ("completed", (ready, completed), None),
+            ("fragmented", (ready + completed[:13], completed[13:] + b"\n"), None),
+            ("coalesced", (ready * 100 + completed,), None),
+            ("truncated", (ready,), "without completion"),
+            ("failed", (b'{"type":"file.processing.failed"}\n',), "could not process"),
+            ("invalid", (b"not JSON\n",), "invalid project source event"),
+            ("nonobject", (b"[]\n",), "invalid project source event"),
+            (
+                "oversized",
+                (b'{"data":"' + b"x" * (1024 * 1024) + b'"}\n' + completed,),
+                "oversized",
             ),
         )
-        client.transport = SimpleNamespace(stream=Mock(return_value=nullcontext(response)))
+        for label, chunks, error in cases:
+            with self.subTest(case=label):
+                client = object.__new__(ChatGPTClient)
+                client.request = Mock(
+                    return_value=SimpleNamespace(
+                        json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
+                    )
+                )
+                client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
+                response = SimpleNamespace(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream"},
+                    iter_bytes=lambda: iter(chunks),
+                )
+                client.transport = SimpleNamespace(stream=Mock(return_value=nullcontext(response)))
+                with self.assertRaisesRegex(ChatGPTError, error) if error else nullcontext():
+                    result = client.upload_file(
+                        "source.txt", "text/plain", b"source", project_id="project-id"
+                    )
+                    self.assertEqual(result["id"], "file-id")
 
-        result = client.upload_file("source.txt", "text/plain", b"source", project_id="project-id")
-
-        client.transport.stream.assert_called_once_with(
-            "POST",
-            "/backend-api/files/process_upload_stream",
-            check_status=False,
-            json={
-                "entry_surface": "project_sources",
-                "file_id": "file-id",
-                "file_name": "source.txt",
-                "gizmo_id": "project-id",
-                "index_for_retrieval": True,
-                "mime_type": "text/plain",
-                "use_case": "gizmo",
-            },
-            timeout=ANY,
-        )
-        client.request.assert_called_once()
-        self.assertEqual(result["id"], "file-id")
-
-    def test_project_upload_rejects_stream_without_completion(self):
-        client = object.__new__(ChatGPTClient)
-        client.request = Mock(
-            return_value=SimpleNamespace(
-                json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
-            )
-        )
-        client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
-        response = SimpleNamespace(
-            status_code=200,
-            headers={"content-type": "text/event-stream"},
-            iter_bytes=lambda: iter((b'{"type":"file.processing.file_ready"}\n',)),
-        )
-        client.transport = SimpleNamespace(stream=Mock(return_value=nullcontext(response)))
-
-        with self.assertRaisesRegex(ChatGPTError, "without completion"):
-            client.upload_file("source.txt", "text/plain", b"source", project_id="project-id")
-
-        client.request.assert_called_once()
+                client.request.assert_called_once()
+                client.transport.stream.assert_called_once_with(
+                    "POST",
+                    "/backend-api/files/process_upload_stream",
+                    check_status=False,
+                    json={
+                        "entry_surface": "project_sources",
+                        "file_id": "file-id",
+                        "file_name": "source.txt",
+                        "gizmo_id": "project-id",
+                        "index_for_retrieval": True,
+                        "mime_type": "text/plain",
+                        "use_case": "gizmo",
+                    },
+                    timeout=ANY,
+                )
 
     def test_path_upload_streams_chunks_instead_of_reading_the_whole_file(self):
         with tempfile.TemporaryDirectory() as folder:

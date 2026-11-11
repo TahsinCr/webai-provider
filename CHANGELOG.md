@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Parse project-source processing events without repeatedly copying the remaining upload buffer; share malformed and fragmented upload scenarios in one test fixture.
 - Consolidate provider-construction, account-isolation, capability, and chat-operation contracts in one table-driven test; remove obsolete namespace and compatibility-removal assertions.
 - Scan each message-operation event once per stage waiter and share terminal-event publication with the normal event path.
 - Scan coalesced SSE packets once and avoid copying incomplete line tails when checking payload limits.
@@ -69,6 +70,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Reject oversized project-source events before JSON decoding even when the entire line arrives in one chunk, and use shared `Retry-After` parsing for upload rate limits.
 - Resolve exact model and effort IDs before display names or partial matches, including IDs that prefix another catalog entry.
 - Await hook results implementing the awaitable protocol, including futures, before continuing the operation.
 - Count multiline SSE separators toward the event payload limit.

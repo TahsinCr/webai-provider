@@ -8,6 +8,7 @@ from ..errors import FrameDecodeError
 
 _LINE_END = re.compile(rb"\r\n|\r|\n")
 
+
 class SSEFrame(NamedTuple):
     data: str
     event: str = "message"
