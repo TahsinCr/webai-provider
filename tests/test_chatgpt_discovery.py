@@ -107,6 +107,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "project_v2")
         self.client.get_project.assert_called_once_with("g-p-created")
         self.client.request.reset_mock()
+        self.client.create_project("x" * 50)
+        self.assertEqual(len(self.client.request.call_args.kwargs["json"]["name"]), 50)
+        self.client.request.reset_mock()
+        with self.assertRaisesRegex(ValueError, "1–50"):
+            self.client.create_project("x" * 51)
+        self.client.request.assert_not_called()
+
         self.client.create_project("Demo")
         self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "global")
         self.client.request.reset_mock()

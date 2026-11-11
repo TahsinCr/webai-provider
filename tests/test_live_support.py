@@ -394,6 +394,7 @@ class CleanupSafetyTests(unittest.TestCase):
         self.assertFalse(journal.exists())
 
     def test_project_recovery_paginates_and_uses_native_origin_id(self) -> None:
+        from webaiprovider.collections import Page
         from webaiprovider.errors import RemoteNotFound
 
         marker = "webai-live-0123456789abcdef0123456789abcdef-project"
@@ -404,8 +405,8 @@ class CleanupSafetyTests(unittest.TestCase):
         provider = SimpleNamespace(
             list_projects=Mock(
                 side_effect=(
-                    SimpleNamespace(items=(), cursor="next-page"),
-                    SimpleNamespace(items=(located,), cursor=None),
+                    Page(items=(), next_cursor="next-page"),
+                    Page(items=(located,)),
                 )
             )
         )
@@ -439,6 +440,27 @@ class CleanupSafetyTests(unittest.TestCase):
         session.delete_project.assert_called_once_with("temporary-project")
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
+
+    def test_async_project_listing_uses_next_cursor(self) -> None:
+        import asyncio
+
+        from webaiprovider.collections import Page
+
+        located = SimpleNamespace(name="marker")
+        provider = SimpleNamespace(
+            list_projects=AsyncMock(
+                side_effect=(Page(items=(), next_cursor="next-page"), Page(items=(located,)))
+            )
+        )
+        session = SimpleNamespace(_require_provider=Mock(return_value=provider))
+        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "async", None)
+        context.gate = ActionGate(interval=0)
+
+        self.assertEqual(asyncio.run(context._all_projects_async()), [located])
+        self.assertEqual(
+            provider.list_projects.await_args_list,
+            [call(None), call("next-page")],
+        )
 
     def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
         from webaiprovider.errors import RemoteNotFound
@@ -536,6 +558,9 @@ class AsyncLiveSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 class LiveSessionCookieRefreshTests(unittest.TestCase):
     def test_sync_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
         from webaiprovider.errors import AccountPaused
 
         account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "old"}})
@@ -555,6 +580,7 @@ class LiveSessionCookieRefreshTests(unittest.TestCase):
             patch(
                 "tests.live.support.case.load_or_import_account", return_value=refreshed_account
             ) as refresh,
+            redirect_stdout(StringIO()),
         ):
             context = live.open_sync()
             refresh.assert_called_once()
@@ -588,6 +614,9 @@ class LiveSessionCookieRefreshTests(unittest.TestCase):
 
 class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
         from webaiprovider.errors import AccountPaused
 
         account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "old"}})
@@ -610,6 +639,7 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "tests.live.support.case.load_or_import_account", return_value=refreshed_account
             ) as refresh,
+            redirect_stdout(StringIO()),
         ):
             context = await live.open_async()
             refresh.assert_called_once()

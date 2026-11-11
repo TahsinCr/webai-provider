@@ -17,7 +17,7 @@ class ProjectApiTests(LiveSyncTestCase):
             self.context.skip("projects.create/delete: unsupported")
             return
 
-        marker = f"{self.context.marker}-project"
+        marker = f"{self.context.marker}-p"
         entry = self.context.new_remote("project", marker)
         entry["attempted"] = True
         self.context.save()
@@ -73,7 +73,7 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
             self.context.skip("projects.create/delete: unsupported")
             return
 
-        marker = f"{self.context.marker}-project"
+        marker = f"{self.context.marker}-p"
         entry = self.context.new_remote("project", marker)
         entry["attempted"] = True
         self.context.save()

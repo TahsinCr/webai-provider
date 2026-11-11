@@ -305,7 +305,7 @@ class LiveContext:
         for _ in range(100):
             page = self.call("cleanup.locate_project", lambda: provider.list_projects(cursor))
             projects.extend(page.items)
-            next_cursor = page.cursor
+            next_cursor = page.next_cursor
             if next_cursor is None:
                 return projects
             if next_cursor == cursor or next_cursor in seen:
@@ -324,7 +324,7 @@ class LiveContext:
                 "cleanup.locate_project", lambda: provider.list_projects(cursor)
             )
             projects.extend(page.items)
-            next_cursor = page.cursor
+            next_cursor = page.next_cursor
             if next_cursor is None:
                 return projects
             if next_cursor == cursor or next_cursor in seen:

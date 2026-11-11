@@ -346,8 +346,8 @@ class ChatGPTClient:
         return {"items": projects, "cursor": next_cursor}
 
     def create_project(self, name, instructions="", *, memory_share=True):
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-            raise ValueError("project name must contain 1–80 characters")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 50:
+            raise ValueError("project name must contain 1–50 characters")
         if type(memory_share) is not bool:
             raise TypeError("memory_share must be a bool")
         raw = self.request(
