@@ -1272,22 +1272,82 @@ class ChatGPTClient:
 
                 if signature(before) != signature(after):
                     raise ChatGPTError("file changed while it was being uploaded")
-            result = self.request(
-                "POST",
-                urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
-                json={
-                    "gizmo_id": project_id,
-                    "use_case": "gizmo",
+            if project_id:
+                payload = {
                     "entry_surface": "project_sources",
+                    "file_id": file_id,
                     "file_name": file_name,
-                    "mime_type": mime_type,
+                    "gizmo_id": project_id,
                     "index_for_retrieval": True,
+                    "mime_type": mime_type,
+                    "use_case": "gizmo",
                 }
-                if project_id
-                else {},
-            ).json()
-            if result.get("status") != "success":
-                raise ChatGPTError("provider did not finalize the file upload")
+                with self.transport.stream(
+                    "POST",
+                    "/backend-api/files/process_upload_stream",
+                    check_status=False,
+                    json=payload,
+                    timeout=httpx.Timeout(300.0),
+                ) as processing:
+                    if processing.status_code == 429:
+                        try:
+                            delay = float(processing.headers.get("retry-after", ""))
+                        except ValueError:
+                            delay = None
+                        raise RateLimited(delay)
+                    if processing.status_code in (401, 403):
+                        raise ChatGPTAuthenticationError(
+                            "ChatGPT session expired or was rejected; verify the account"
+                        )
+                    if processing.status_code >= 400:
+                        raise ChatGPTError(
+                            f"ChatGPT project source processing returned HTTP {processing.status_code}"
+                        )
+                    if "text/event-stream" not in processing.headers.get("content-type", ""):
+                        raise ChatGPTError("ChatGPT returned an invalid project source processing stream")
+
+                    pending = bytearray()
+                    completed = False
+
+                    def consume_event(line):
+                        if not line.strip():
+                            return False
+                        try:
+                            event = json.loads(line)
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            raise ChatGPTError("ChatGPT returned an invalid project source event") from None
+                        if not isinstance(event, dict):
+                            raise ChatGPTError("ChatGPT returned an invalid project source event")
+                        event_type = event.get("type") or event.get("event")
+                        if event_type in ("file.processing.error", "file.processing.failed"):
+                            raise ChatGPTError("ChatGPT could not process the project source")
+                        return event_type == "file.processing.completed"
+
+                    for chunk in processing.iter_bytes():
+                        ensure_active()
+                        pending.extend(chunk)
+                        while b"\n" in pending:
+                            line, _, remaining = pending.partition(b"\n")
+                            pending = bytearray(remaining)
+                            completed = consume_event(line)
+                            if completed:
+                                break
+                        if completed:
+                            break
+                        if len(pending) > 1024 * 1024:
+                            raise ChatGPTError("ChatGPT returned an oversized project source event")
+                    if not completed:
+                        completed = consume_event(pending)
+                    if not completed:
+                        raise ChatGPTError("ChatGPT ended project source processing without completion")
+            else:
+                result = self.request(
+                    "POST",
+                    urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
+                    json={},
+                ).json()
+                if result.get("status") != "success":
+                    raise ChatGPTError("provider did not finalize the file upload")
             return {"id": file_id, "name": file_name, "mime_type": mime_type, "size_bytes": size}
         finally:
             if stream is not None:

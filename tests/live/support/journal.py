@@ -68,7 +68,8 @@ def read_cleanup_state() -> dict[str, Any] | None:
     if (
         not isinstance(data, dict)
         or data.get("version") != 1
-        or data.get("provider") not in _PROVIDERS
+        or not isinstance(data.get("provider"), str)
+        or data["provider"] not in _PROVIDERS
         or not isinstance(data.get("account"), str)
         or not _ACCOUNT_ID.fullmatch(data["account"])
         or not isinstance(run_id, str)
@@ -88,13 +89,15 @@ def read_cleanup_state() -> dict[str, Any] | None:
         }:
             raise SafetyError("Cleanup journal contains an invalid resource record")
         kind, markers = item.get("kind"), item.get("markers")
-        prefix = f"{run_id}-{kind}" if kind in {"chat", "project"} else ""
+        if not isinstance(kind, str) or kind not in {"chat", "project"}:
+            raise SafetyError("Cleanup journal contains an invalid resource record")
+        prefix = f"{run_id}-chat" if kind == "chat" else f"{run_id}-p"
+        renamed = f"{prefix}-renamed" if kind == "chat" else f"{run_id}-r"
         if (
-            not prefix
-            or kind in kinds
+            kind in kinds
             or not isinstance(markers, list)
             or not markers
-            or any(marker not in {prefix, f"{prefix}-renamed"} for marker in markers)
+            or any(not isinstance(marker, str) or marker not in {prefix, renamed} for marker in markers)
             or not isinstance(item.get("attempted"), bool)
             or (item.get("remote_id") is not None and not isinstance(item["remote_id"], str))
         ):

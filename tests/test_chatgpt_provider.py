@@ -253,10 +253,16 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(data, Path) and data.resolve() == path.resolve()
             else self.fail("expected a disk path")
         )
+        requests = []
+        self.client.request = lambda method, url, **kwargs: requests.append((method, url, kwargs))
         editor = ChatGPTProjectEditor(self.session, lambda _: self.client)
         with patch("pathlib.Path.read_bytes", side_effect=AssertionError("must stream")):
             await editor.write("add_source", "project", kind="file", path=path)
         self.assertTrue(self.client.closed.is_set())
+        self.assertEqual(
+            requests[0][2]["json"]["files"][0]["last_modified"],
+            path.stat().st_mtime_ns // 1_000_000,
+        )
 
     async def test_completed_snapshot_publishes_thinking_summaries(self):
         self.client.closed.set()

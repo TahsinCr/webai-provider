@@ -30,7 +30,7 @@ class ProjectApiTests(LiveSyncTestCase):
             self.context.save()
 
             if Capability.PROJECT_UPDATE in capabilities:
-                renamed = f"{marker}-renamed"
+                renamed = f"{self.context.marker}-r"
                 entry["markers"].append(renamed)
                 self.context.save()
                 self.call_api("projects.rename", lambda: project.rename(renamed))
@@ -86,7 +86,7 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
             self.context.save()
 
             if Capability.PROJECT_UPDATE in capabilities:
-                renamed = f"{marker}-renamed"
+                renamed = f"{self.context.marker}-r"
                 entry["markers"].append(renamed)
                 self.context.save()
                 await self.call_api("projects.rename", lambda: project.rename(renamed))

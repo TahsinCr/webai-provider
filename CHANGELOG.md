@@ -66,6 +66,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.
+- Keep disposable live project names within the service limit and verify temporary chats and projects through their public collections during cleanup.
 - Continue the live matrix after failures; skip a provider/API's remaining tests after session setup fails, without sending duplicate requests.
 - Expose provider capability metadata through the synchronous API.
 - Preserve async message-operation handles in live tests so the stream is consumed through the intended API.

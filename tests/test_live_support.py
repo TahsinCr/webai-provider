@@ -265,6 +265,39 @@ class LiveCredentialTests(unittest.TestCase):
         with self.assertRaisesRegex(SafetyError, "must never contain credentials"):
             write_private_json(self.path, {"resources": [{"credentials": {"token": "secret"}}]})
 
+    def test_cleanup_journal_accepts_live_marker_formats(self) -> None:
+        from tests.live.support.journal import read_cleanup_state
+
+        run_id = "webai-live-" + "0" * 32
+        state = {
+            "version": 1,
+            "provider": "chatgpt",
+            "account": "default-browser",
+            "run_id": run_id,
+            "resources": [
+                {
+                    "kind": "chat",
+                    "markers": [f"{run_id}-chat", f"{run_id}-chat-renamed"],
+                    "remote_id": "chat-id",
+                    "attempted": True,
+                },
+                {
+                    "kind": "project",
+                    "markers": [f"{run_id}-p", f"{run_id}-r"],
+                    "remote_id": "project-id",
+                    "attempted": True,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = Path(temporary) / "live-cleanup.json"
+            journal.touch()
+            with (
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.read_private_json", return_value=state),
+            ):
+                self.assertEqual(read_cleanup_state(), state)
+
 
 class ActionGateTests(unittest.TestCase):
     def test_feature_scenarios_use_standard_unittest_cases(self) -> None:
@@ -339,36 +372,76 @@ class ActionGateTests(unittest.TestCase):
         self.assertFalse(result.failures)
 
 
+class LiveContextErrorTests(unittest.TestCase):
+    def test_chatgpt_http_error_reports_status_without_request_details(self) -> None:
+        from tests.live.support.context import _safe_error_label
+        from webaiprovider.providers.chatgpt.errors import ChatGPTError
+
+        error = ChatGPTError(
+            "ChatGPT returned HTTP 400 for PATCH /backend-api/projects/private-id"
+        )
+        summary = _safe_error_label(error)
+
+        self.assertEqual(summary, "ChatGPTError (HTTP 400)")
+        self.assertNotIn("private-id", summary)
+
+
 class CleanupSafetyTests(unittest.TestCase):
     def test_existing_unmarked_remote_object_is_never_deleted(self) -> None:
-        marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
-        remote = SimpleNamespace(remote_id="existing-chat", title="A pre-existing conversation")
+        from webaiprovider.collections import Page
+
+        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
+        remote = SimpleNamespace(remote_id="temporary-project", name="unrelated project")
+        provider = SimpleNamespace(list_projects=Mock(return_value=Page((remote,))))
+        projects = SimpleNamespace(delete=Mock())
         session = SimpleNamespace(
-            chats=SimpleNamespace(refresh=Mock()),
-            get_chat=Mock(return_value=remote),
-            delete_chat=Mock(),
+            _provider=provider,
+            _call=Mock(side_effect=lambda operation: operation),
+            projects=projects,
         )
         context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
+        context.gate = ActionGate(interval=0)
         entry = {
-            "kind": "chat",
+            "kind": "project",
             "markers": [marker],
             "remote_id": remote.remote_id,
             "attempted": True,
         }
+        context.state["resources"].append(entry)
 
-        with self.assertRaisesRegex(CleanupError, "unique test marker"):
-            context.cleanup_entry(entry)
-        session.delete_chat.assert_not_called()
+        with tempfile.TemporaryDirectory() as temporary:
+            journal = Path(temporary) / "cleanup.json"
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
+                with self.assertRaises(CleanupError):
+                    context.cleanup_entry(entry)
+
+        projects.delete.assert_not_called()
+        self.assertEqual(context.state["resources"], [entry])
 
     def test_provider_error_after_delete_is_verified_against_collection(self) -> None:
+        from webaiprovider.collections import Page
         from webaiprovider.errors import ProviderError
 
-        marker = "webai-live-0123456789abcdef0123456789abcdef-project"
-        remote = SimpleNamespace(remote_id="temporary-project", name=marker, title=marker)
+        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
+        remote = SimpleNamespace(
+            remote_id="temporary-project",
+            origin=SimpleNamespace(remote_id="temporary-project"),
+            name=marker,
+            title=marker,
+        )
+        target = SimpleNamespace(remote_id=remote.remote_id)
+        provider = SimpleNamespace(
+            list_projects=Mock(side_effect=(Page((remote,)), Page(()))),
+            _project_type=Mock(return_value=target),
+        )
+        projects = SimpleNamespace(delete=Mock(side_effect=ProviderError("delete result is uncertain")))
         session = SimpleNamespace(
-            projects=SimpleNamespace(refresh=Mock(return_value=[])),
-            get_project=Mock(side_effect=[remote, ProviderError("not found")]),
-            delete_project=Mock(),
+            _provider=provider,
+            _call=Mock(side_effect=lambda operation: operation),
+            projects=projects,
         )
         context = LiveContext(session, LiveAccount("default-browser", "gemini", {}), "sync", None)
         context.gate = ActionGate(interval=0)
@@ -388,18 +461,18 @@ class CleanupSafetyTests(unittest.TestCase):
             ):
                 context.cleanup_entry(entry)
 
-        session.delete_project.assert_called_once_with(remote.remote_id)
-        session.projects.refresh.assert_called_once_with()
+        projects.delete.assert_called_once_with(target)
+        self.assertEqual(provider.list_projects.call_count, 2)
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
 
     def test_project_recovery_paginates_and_uses_native_origin_id(self) -> None:
         from webaiprovider.collections import Page
-        from webaiprovider.errors import RemoteNotFound
 
-        marker = "webai-live-0123456789abcdef0123456789abcdef-project"
+        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
         located = SimpleNamespace(
             name=marker,
+            title=marker,
             origin=SimpleNamespace(remote_id="temporary-project"),
         )
         provider = SimpleNamespace(
@@ -407,15 +480,17 @@ class CleanupSafetyTests(unittest.TestCase):
                 side_effect=(
                     Page(items=(), next_cursor="next-page"),
                     Page(items=(located,)),
+                    Page(items=(), next_cursor="next-page"),
+                    Page(items=()),
                 )
-            )
+            ),
+            _project_type=Mock(return_value=SimpleNamespace(remote_id="temporary-project")),
         )
-        remote = SimpleNamespace(remote_id="temporary-project", name=marker)
+        projects = SimpleNamespace(delete=Mock())
         session = SimpleNamespace(
-            _require_provider=Mock(return_value=provider),
-            projects=SimpleNamespace(refresh=Mock(return_value=[])),
-            get_project=Mock(side_effect=(remote, RemoteNotFound("missing"))),
-            delete_project=Mock(),
+            _provider=provider,
+            _call=Mock(side_effect=lambda operation: operation),
+            projects=projects,
         )
         context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
         context.gate = ActionGate(interval=0)
@@ -431,13 +506,10 @@ class CleanupSafetyTests(unittest.TestCase):
                 context.cleanup_entry(entry)
 
         self.assertEqual(
-            [call.args for call in provider.list_projects.call_args_list], [(None,), ("next-page",)]
+            [call.args for call in provider.list_projects.call_args_list],
+            [(None,), ("next-page",), (None,), ("next-page",)],
         )
-        self.assertEqual(
-            session.get_project.call_args_list,
-            [call("temporary-project"), call("temporary-project")],
-        )
-        session.delete_project.assert_called_once_with("temporary-project")
+        projects.delete.assert_called_once_with(provider._project_type.return_value)
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
 
@@ -463,19 +535,14 @@ class CleanupSafetyTests(unittest.TestCase):
         )
 
     def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
-        from webaiprovider.errors import RemoteNotFound
-
         marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
         remote = SimpleNamespace(
             remote_id="temporary-chat",
             title="Claude sohbeti",
             messages=(SimpleNamespace(content=(SimpleNamespace(text=f"{marker} prompt"),)),),
         )
-        session = SimpleNamespace(
-            chats=SimpleNamespace(refresh=Mock(return_value=[remote])),
-            get_chat=Mock(side_effect=[remote, RemoteNotFound("missing")]),
-            delete_chat=Mock(),
-        )
+        chats = SimpleNamespace(refresh=Mock(side_effect=([remote], [])), delete=Mock())
+        session = SimpleNamespace(chats=chats)
         context = LiveContext(session, LiveAccount("default-browser", "claude", {}), "sync", None)
         context.gate = ActionGate(interval=0)
         entry = {"kind": "chat", "markers": [marker], "attempted": True}
@@ -489,7 +556,8 @@ class CleanupSafetyTests(unittest.TestCase):
             ):
                 context.cleanup_entry(entry)
 
-        session.delete_chat.assert_called_once_with(remote.remote_id)
+        chats.delete.assert_called_once_with(remote)
+        self.assertEqual(chats.refresh.call_count, 2)
         self.assertEqual(context.state["resources"], [])
         self.assertFalse(journal.exists())
 

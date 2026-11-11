@@ -2,6 +2,7 @@
 
 import asyncio
 import mimetypes
+import time
 from urllib.parse import quote
 
 from ...resources.common import Choice
@@ -87,6 +88,7 @@ class ChatGPTProjectEditor:
                         },
                     )
                 elif operation == "add_source":
+                    last_modified = int(time.time() * 1000)
                     if values["kind"] == "text":
                         name, data, mime = values["name"], values["text"].encode(), "text/plain"
                         if not name.endswith(".txt"):
@@ -95,7 +97,9 @@ class ChatGPTProjectEditor:
                     elif values["kind"] == "file":
                         file = source_file(values["path"])
                         name, data = file.name, file
-                        size = file.stat().st_size
+                        metadata = file.stat()
+                        size = metadata.st_size
+                        last_modified = metadata.st_mtime_ns // 1_000_000
                         mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
                     else:
                         raise ValueError("Unsupported project source type")
@@ -107,6 +111,7 @@ class ChatGPTProjectEditor:
                             "files": [
                                 {
                                     "file_id": uploaded["id"],
+                                    "last_modified": last_modified,
                                     "name": name,
                                     "size": uploaded.get("size_bytes", size),
                                     "type": mime,

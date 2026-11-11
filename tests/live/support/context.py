@@ -10,6 +10,17 @@ from .errors import CleanupError, LiveApiError, SafetyError
 from .journal import CLEANUP_FILE, write_cleanup_state
 
 
+def _safe_error_label(exc: Exception) -> str:
+    kind = type(exc).__name__
+    prefix = "ChatGPT returned HTTP "
+    message = str(exc)
+    if kind == "ChatGPTError" and message.startswith(prefix):
+        status = message[len(prefix):].split(" ", 1)[0]
+        if len(status) == 3 and status.isdecimal():
+            return f"{kind} (HTTP {status})"
+    return kind
+
+
 class LiveContext:
     def __init__(
         self, session: Any, account: LiveAccount, api: str, loop=None, state=None, gate=None
@@ -45,7 +56,7 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed: {type(exc).__name__}; provider details suppressed"
+                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
             ) from None
         self.results.append((label, round((time.monotonic() - started) * 1000)))
         return value
@@ -62,7 +73,7 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed: {type(exc).__name__}; provider details suppressed"
+                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
             ) from None
         self.results.append((label, round((time.monotonic() - started) * 1000)))
         return value
@@ -85,8 +96,6 @@ class LiveContext:
             self.save()
 
     def cleanup_pending(self) -> None:
-        from webaiprovider.errors import RemoteNotFound
-
         failures = 0
         for entry in list(reversed(self.state["resources"])):
             if id(entry) in self._cleanup_attempted:
@@ -94,7 +103,7 @@ class LiveContext:
                 continue
             self._cleanup_attempted.add(id(entry))
             try:
-                self._cleanup_one(entry, RemoteNotFound)
+                self._cleanup_one(entry)
             except Exception:
                 failures += 1
         if failures:
@@ -109,10 +118,8 @@ class LiveContext:
             pass
 
     def cleanup_entry(self, entry: dict[str, Any]) -> None:
-        from webaiprovider.errors import RemoteNotFound
-
         self._cleanup_attempted.add(id(entry))
-        self._cleanup_one(entry, RemoteNotFound)
+        self._cleanup_one(entry)
 
     async def cleanup_pending_async(self) -> None:
         from webaiprovider.errors import RemoteNotFound
@@ -215,7 +222,7 @@ class LiveContext:
             raise CleanupError("The provider did not confirm deletion of a temporary object")
         self._remove_entry(entry)
 
-    def _cleanup_one(self, entry: dict[str, Any], missing_type: type[Exception]) -> None:
+    def _cleanup_one(self, entry: dict[str, Any]) -> None:
         from webaiprovider.errors import ProviderError
 
         kind = entry["kind"]
@@ -225,62 +232,60 @@ class LiveContext:
             self._remove_entry(entry)
             return
 
-        plural = "chats" if kind == "chat" else "projects"
-        collection = getattr(self.session, plural)
-        get_remote = getattr(self.session, "get_chat" if kind == "chat" else "get_project")
-        delete_remote = getattr(self.session, "delete_chat" if kind == "chat" else "delete_project")
+        collection = getattr(self.session, "chats" if kind == "chat" else "projects")
+        values = (
+            self._all_projects()
+            if kind == "project"
+            else self.call(f"cleanup.locate_{kind}", collection.refresh)
+        )
         remote_id = entry.get("remote_id")
         if not remote_id:
-            values = (
-                self._all_projects()
-                if kind == "project"
-                else self.call(f"cleanup.locate_{kind}", collection.refresh)
-            )
-            markers = tuple(entry.get("markers", ()))
-            matches = [value for value in values if self._matches_marker(value, kind, markers)]
+            matches = [
+                value
+                for value in values
+                if self._matches_marker(value, kind, tuple(entry.get("markers", ())))
+            ]
             if len(matches) != 1 or not (remote_id := self._remote_id(matches[0])):
                 raise CleanupError("A possibly-created object could not be uniquely located")
             remote_id = entry["remote_id"] = str(remote_id)
             self.save()
 
-        def listed_remote() -> Any | None:
-            values = self.call(f"cleanup.verify_{kind}_list", collection.refresh)
-            matches = [
-                value for value in values if str(getattr(value, "remote_id", "")) == str(remote_id)
-            ]
-            if len(matches) > 1:
-                raise CleanupError("The temporary object could not be uniquely verified")
-            return matches[0] if matches else None
+        matches = [
+            value for value in values if str(self._remote_id(value) or "") == str(remote_id)
+        ]
+        if len(matches) > 1:
+            raise CleanupError("The temporary object could not be uniquely verified")
+        if not matches:
+            self._remove_entry(entry)
+            return
 
-        try:
-            remote = self.call(
-                f"cleanup.get_{kind}",
-                lambda: get_remote(str(remote_id)),
-                expected_errors=(missing_type, ProviderError),
-            )
-        except missing_type:
-            self._remove_entry(entry)
-            return
-        except ProviderError:
-            remote = listed_remote()
-        if remote is None:
-            self._remove_entry(entry)
-            return
+        remote = matches[0]
         if not self._matches_marker_sync(remote, kind, tuple(entry["markers"])):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
-        self.call(f"cleanup.delete_{kind}", lambda: delete_remote(str(remote_id)))
-        try:
-            remaining = self.call(
-                f"cleanup.verify_{kind}_deleted",
-                lambda: get_remote(str(remote_id)),
-                expected_errors=(missing_type, ProviderError),
+        target = remote
+        if kind == "project":
+            provider = self.session._provider
+            target = provider._project_type(
+                title=self._title(remote, kind),
+                remote_id=str(remote_id),
+                session=provider,
             )
-        except missing_type:
-            remaining = None
+        try:
+            self.call(
+                f"cleanup.delete_{kind}",
+                lambda: collection.delete(target),
+                expected_errors=(ProviderError,),
+            )
         except ProviderError:
-            remaining = listed_remote()
-        if remaining is not None:
+            pass
+
+        remaining = (
+            self._all_projects()
+            if kind == "project"
+            else self.call(f"cleanup.verify_{kind}_deleted", collection.refresh)
+        )
+        if any(str(self._remote_id(value) or "") == str(remote_id) for value in remaining):
             raise CleanupError("The provider did not confirm deletion of a temporary object")
         self._remove_entry(entry)
 
@@ -298,12 +303,15 @@ class LiveContext:
         )
 
     def _all_projects(self) -> list[Any]:
-        provider = self.session._require_provider()
+        provider = self.session._provider
         cursor = None
         seen: set[str] = set()
         projects = []
         for _ in range(100):
-            page = self.call("cleanup.locate_project", lambda: provider.list_projects(cursor))
+            page = self.call(
+                "cleanup.locate_project",
+                lambda: self.session._call(provider.list_projects(cursor)),
+            )
             projects.extend(page.items)
             next_cursor = page.next_cursor
             if next_cursor is None:
