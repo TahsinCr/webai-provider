@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Share one asynchronous live-test cleanup implementation through the existing synchronous provider portal; remove duplicate cleanup and obsolete manually managed loop paths.
 - Parse project-source processing events without repeatedly copying the remaining upload buffer; share malformed and fragmented upload scenarios in one test fixture.
 - Consolidate provider-construction, account-isolation, capability, and chat-operation contracts in one table-driven test; remove obsolete namespace and compatibility-removal assertions.
 - Scan each message-operation event once per stage waiter and share terminal-event publication with the normal event path.
@@ -70,12 +71,13 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Verify temporary-object identity before cleanup and exhaust remote listing pages before treating an uncertain deletion as complete; retain the cleanup journal when an object remains on a later page.
 - Reject oversized project-source events before JSON decoding even when the entire line arrives in one chunk, and use shared `Retry-After` parsing for upload rate limits.
 - Resolve exact model and effort IDs before display names or partial matches, including IDs that prefix another catalog entry.
 - Await hook results implementing the awaitable protocol, including futures, before continuing the operation.
 - Count multiline SSE separators toward the event payload limit.
 - Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.
-- Keep disposable live project names within the service limit and verify temporary chats and projects through their public collections during cleanup.
+- Keep disposable live project names within the service limit and verify temporary chats and projects through the shared provider contract during cleanup.
 - Continue the live matrix after failures; skip a provider/API's remaining tests after session setup fails, without sending duplicate requests.
 - Expose provider capability metadata through the synchronous API.
 - Preserve async message-operation handles in live tests so the stream is consumed through the intended API.

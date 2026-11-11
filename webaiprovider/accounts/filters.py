@@ -54,8 +54,10 @@ class ProviderCookieFilter:
                 and key[len(prefix) :].isdigit()
             }
             expected = {str(index) for index in range(len(chunks))}
-            chunked_cookie_present = bool(chunks) and chunks == expected and all(
-                cookies.get(prefix + index) for index in expected
+            chunked_cookie_present = (
+                bool(chunks)
+                and chunks == expected
+                and all(cookies.get(prefix + index) for index in expected)
             )
             if not chunked_cookie_present:
                 raise AccountPaused("Reverify your session once through the Accounts section")

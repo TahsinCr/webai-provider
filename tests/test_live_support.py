@@ -28,6 +28,13 @@ from tests.live.support.config import (
 from tests.live.support.context import LiveContext
 from tests.live.support.errors import CleanupError, SafetyError
 from tests.live.support.journal import write_private_json
+from webaiprovider import Account, Provider
+from webaiprovider.collections import Page
+from webaiprovider.errors import ProviderError, RemoteNotFound
+from webaiprovider.resources.chat.types import Conversation
+from webaiprovider.resources.common import Origin
+from webaiprovider.resources.message.types import Content, MessageData
+from webaiprovider.resources.project.types import ProjectData
 
 
 class LiveCredentialTests(unittest.TestCase):
@@ -92,9 +99,7 @@ class LiveCredentialTests(unittest.TestCase):
             f"{chatgpt_auth_cookie}.0": "browser-secret-0",
             f"{chatgpt_auth_cookie}.1": "browser-secret-1",
         }
-        browser_account = Account.from_cookies(
-            "chatgpt", browser_cookies, id="default-browser"
-        )
+        browser_account = Account.from_cookies("chatgpt", browser_cookies, id="default-browser")
         with patch(
             "webaiprovider.accounts.account.Account.from_browser",
             return_value=browser_account,
@@ -377,203 +382,158 @@ class LiveContextErrorTests(unittest.TestCase):
         from tests.live.support.context import _safe_error_label
         from webaiprovider.providers.chatgpt.errors import ChatGPTError
 
-        error = ChatGPTError(
-            "ChatGPT returned HTTP 400 for PATCH /backend-api/projects/private-id"
-        )
+        error = ChatGPTError("ChatGPT returned HTTP 400 for PATCH /backend-api/projects/private-id")
         summary = _safe_error_label(error)
 
         self.assertEqual(summary, "ChatGPTError (HTTP 400)")
         self.assertNotIn("private-id", summary)
 
 
-class CleanupSafetyTests(unittest.TestCase):
-    def test_existing_unmarked_remote_object_is_never_deleted(self) -> None:
-        from webaiprovider.collections import Page
-
-        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
-        remote = SimpleNamespace(remote_id="temporary-project", name="unrelated project")
-        provider = SimpleNamespace(list_projects=Mock(return_value=Page((remote,))))
-        projects = SimpleNamespace(delete=Mock())
-        session = SimpleNamespace(
-            _provider=provider,
-            _call=Mock(side_effect=lambda operation: operation),
-            projects=projects,
+class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.journal = Path(temporary.name) / "cleanup.json"
+        for module in ("context", "journal"):
+            patcher = patch(f"tests.live.support.{module}.CLEANUP_FILE", self.journal)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.provider = SimpleNamespace()
+        self.context = LiveContext(
+            self.provider,
+            LiveAccount("personal", "chatgpt", {}),
+            "async",
+            gate=ActionGate(interval=0),
         )
-        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
-        context.gate = ActionGate(interval=0)
-        entry = {
-            "kind": "project",
-            "markers": [marker],
-            "remote_id": remote.remote_id,
-            "attempted": True,
-        }
-        context.state["resources"].append(entry)
+        self.origin = Origin("chatgpt", "personal", "temporary-id")
 
-        with tempfile.TemporaryDirectory() as temporary:
-            journal = Path(temporary) / "cleanup.json"
-            with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
-            ):
-                with self.assertRaises(CleanupError):
-                    context.cleanup_entry(entry)
-
-        projects.delete.assert_not_called()
-        self.assertEqual(context.state["resources"], [entry])
-
-    def test_provider_error_after_delete_is_verified_against_collection(self) -> None:
-        from webaiprovider.collections import Page
-        from webaiprovider.errors import ProviderError
-
-        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
-        remote = SimpleNamespace(
-            remote_id="temporary-project",
-            origin=SimpleNamespace(remote_id="temporary-project"),
-            name=marker,
-            title=marker,
+    def track(self, kind="project"):
+        marker = f"{self.context.marker}-p" if kind == "project" else f"{self.context.marker}-chat"
+        remote = (
+            ProjectData(self.origin, marker)
+            if kind == "project"
+            else Conversation(self.origin, marker)
         )
-        target = SimpleNamespace(remote_id=remote.remote_id)
-        provider = SimpleNamespace(
-            list_projects=Mock(side_effect=(Page((remote,)), Page(()))),
-            _project_type=Mock(return_value=target),
+        entry = self.context.new_remote(kind, marker)
+        entry.update(attempted=True, remote_id=self.origin.remote_id)
+        self.context.save()
+        return entry, remote
+
+    async def test_unrelated_marker_or_remote_id_prevents_deletion(self) -> None:
+        entry, tracked = self.track()
+        self.provider.delete_project = AsyncMock()
+        for remote in (
+            ProjectData(self.origin, "Unrelated"),
+            ProjectData(Origin("chatgpt", "personal", "another-id"), tracked.name),
+        ):
+            with self.subTest(remote=remote):
+                self.provider.get_project = AsyncMock(return_value=remote)
+                with self.assertRaisesRegex(CleanupError, "unique test marker"):
+                    await self.context.cleanup_entry_async(entry)
+                self.provider.delete_project.assert_not_awaited()
+                self.assertEqual(self.context.state["resources"], [entry])
+                self.assertTrue(self.journal.exists())
+
+    async def test_uncertain_delete_is_confirmed_without_replaying_the_mutation(self) -> None:
+        entry, remote = self.track()
+        self.provider.get_project = AsyncMock(side_effect=(remote, ProviderError("uncertain")))
+        self.provider.delete_project = AsyncMock(side_effect=ProviderError("uncertain"))
+        self.provider.list_projects = AsyncMock(return_value=Page(()))
+        await self.context.cleanup_entry_async(entry)
+        self.provider.delete_project.assert_awaited_once_with(self.origin.remote_id)
+        self.assertEqual(self.context.state["resources"], [])
+        self.assertFalse(self.journal.exists())
+
+    async def test_project_recovery_paginates_and_uses_native_origin_id(self) -> None:
+        entry, remote = self.track()
+        entry["remote_id"] = None
+        self.provider.list_projects = AsyncMock(
+            side_effect=(Page((), "next-page"), Page((remote,)))
         )
-        projects = SimpleNamespace(delete=Mock(side_effect=ProviderError("delete result is uncertain")))
-        session = SimpleNamespace(
-            _provider=provider,
-            _call=Mock(side_effect=lambda operation: operation),
-            projects=projects,
+        self.provider.get_project = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
+        self.provider.delete_project = AsyncMock()
+        await self.context.cleanup_entry_async(entry)
+        self.assertEqual(
+            self.provider.list_projects.await_args_list, [call(None), call("next-page")]
         )
-        context = LiveContext(session, LiveAccount("default-browser", "gemini", {}), "sync", None)
-        context.gate = ActionGate(interval=0)
-        entry = {
-            "kind": "project",
-            "markers": [marker],
-            "remote_id": remote.remote_id,
-            "attempted": True,
-        }
-        context.state["resources"].append(entry)
+        self.provider.delete_project.assert_awaited_once_with(self.origin.remote_id)
+        self.assertFalse(self.journal.exists())
 
-        with tempfile.TemporaryDirectory() as temporary:
-            journal = Path(temporary) / "cleanup.json"
-            with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
-            ):
-                context.cleanup_entry(entry)
-
-        projects.delete.assert_called_once_with(target)
-        self.assertEqual(provider.list_projects.call_count, 2)
-        self.assertEqual(context.state["resources"], [])
-        self.assertFalse(journal.exists())
-
-    def test_project_recovery_paginates_and_uses_native_origin_id(self) -> None:
-        from webaiprovider.collections import Page
-
-        marker = "webai-live-0123456789abcdef0123456789abcdef-p"
-        located = SimpleNamespace(
-            name=marker,
-            title=marker,
-            origin=SimpleNamespace(remote_id="temporary-project"),
-        )
-        provider = SimpleNamespace(
-            list_projects=Mock(
-                side_effect=(
-                    Page(items=(), next_cursor="next-page"),
-                    Page(items=(located,)),
-                    Page(items=(), next_cursor="next-page"),
-                    Page(items=()),
+    async def test_later_pages_prevent_false_deletion_confirmation(self) -> None:
+        for kind in ("chat", "project"):
+            with self.subTest(kind=kind):
+                self.context.state["resources"].clear()
+                entry, remote = self.track(kind)
+                delete = AsyncMock()
+                listing = AsyncMock(side_effect=(Page((), "next-page"), Page((remote,))))
+                setattr(
+                    self.provider,
+                    f"get_{kind}",
+                    AsyncMock(side_effect=(remote, ProviderError("uncertain"))),
                 )
-            ),
-            _project_type=Mock(return_value=SimpleNamespace(remote_id="temporary-project")),
-        )
-        projects = SimpleNamespace(delete=Mock())
-        session = SimpleNamespace(
-            _provider=provider,
-            _call=Mock(side_effect=lambda operation: operation),
-            projects=projects,
-        )
-        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "sync", None)
-        context.gate = ActionGate(interval=0)
-        entry = {"kind": "project", "markers": [marker], "attempted": True}
-        context.state["resources"].append(entry)
+                setattr(self.provider, f"delete_{kind}", delete)
+                setattr(self.provider, "list_chats" if kind == "chat" else "list_projects", listing)
+                with self.assertRaisesRegex(CleanupError, "did not confirm deletion"):
+                    await self.context.cleanup_entry_async(entry)
+                delete.assert_awaited_once_with(self.origin.remote_id)
+                self.assertEqual(listing.await_args_list, [call(None), call("next-page")])
+                self.assertEqual(self.context.state["resources"], [entry])
+                self.assertTrue(self.journal.exists())
 
+    async def test_repeated_cursor_stops_recovery_without_deleting(self) -> None:
+        entry, _ = self.track()
+        entry["remote_id"] = None
+        self.provider.list_projects = AsyncMock(return_value=Page((), "same-page"))
+        self.provider.get_project = AsyncMock()
+        self.provider.delete_project = AsyncMock()
+        with self.assertRaisesRegex(CleanupError, "repeated cursor"):
+            await self.context.cleanup_entry_async(entry)
+        self.provider.delete_project.assert_not_awaited()
+        self.provider.get_project.assert_not_awaited()
+        self.assertEqual(self.provider.list_projects.await_count, 2)
+
+    async def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
+        entry, remote = self.track("chat")
+        remote = Conversation(
+            self.origin,
+            "Automatic title",
+            (MessageData("user-id", "user", (Content("text", entry["markers"][0]),)),),
+        )
+        self.provider.get_chat = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
+        self.provider.delete_chat = AsyncMock()
+        await self.context.cleanup_entry_async(entry)
+        self.provider.delete_chat.assert_awaited_once_with(self.origin.remote_id)
+        self.assertFalse(self.journal.exists())
+
+
+class SyncCleanupTests(unittest.TestCase):
+    def test_cleanup_runs_shared_core_on_the_existing_provider_portal(self) -> None:
+        provider = Provider(Account(id="personal", provider="chatgpt", credentials={}))
+        self.addCleanup(provider.close)
+        native = provider._provider
+        context = LiveContext(
+            provider, LiveAccount("personal", "chatgpt", {}), "sync", gate=ActionGate(interval=0)
+        )
+        marker = f"{context.marker}-p"
+        origin = Origin("chatgpt", "personal", "temporary-id")
+        native.get_project = AsyncMock(
+            side_effect=(ProjectData(origin, marker), RemoteNotFound("missing"))
+        )
+        native.delete_project = AsyncMock()
         with tempfile.TemporaryDirectory() as temporary:
             journal = Path(temporary) / "cleanup.json"
             with (
                 patch("tests.live.support.context.CLEANUP_FILE", journal),
                 patch("tests.live.support.journal.CLEANUP_FILE", journal),
             ):
+                entry = context.new_remote("project", marker)
+                entry.update(attempted=True, remote_id=origin.remote_id)
                 context.cleanup_entry(entry)
-
-        self.assertEqual(
-            [call.args for call in provider.list_projects.call_args_list],
-            [(None,), ("next-page",), (None,), ("next-page",)],
-        )
-        projects.delete.assert_called_once_with(provider._project_type.return_value)
+                context.cleanup_pending()
+                self.assertFalse(journal.exists())
+        native.delete_project.assert_awaited_once_with(origin.remote_id)
+        self.assertEqual(native.get_project.await_count, 2)
         self.assertEqual(context.state["resources"], [])
-        self.assertFalse(journal.exists())
-
-    def test_async_project_listing_uses_next_cursor(self) -> None:
-        import asyncio
-
-        from webaiprovider.collections import Page
-
-        located = SimpleNamespace(name="marker")
-        provider = SimpleNamespace(
-            list_projects=AsyncMock(
-                side_effect=(Page(items=(), next_cursor="next-page"), Page(items=(located,)))
-            )
-        )
-        session = SimpleNamespace(_require_provider=Mock(return_value=provider))
-        context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), "async", None)
-        context.gate = ActionGate(interval=0)
-
-        self.assertEqual(asyncio.run(context._all_projects_async()), [located])
-        self.assertEqual(
-            provider.list_projects.await_args_list,
-            [call(None), call("next-page")],
-        )
-
-    def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
-        marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
-        remote = SimpleNamespace(
-            remote_id="temporary-chat",
-            title="Claude sohbeti",
-            messages=(SimpleNamespace(content=(SimpleNamespace(text=f"{marker} prompt"),)),),
-        )
-        chats = SimpleNamespace(refresh=Mock(side_effect=([remote], [])), delete=Mock())
-        session = SimpleNamespace(chats=chats)
-        context = LiveContext(session, LiveAccount("default-browser", "claude", {}), "sync", None)
-        context.gate = ActionGate(interval=0)
-        entry = {"kind": "chat", "markers": [marker], "attempted": True}
-        context.state["resources"].append(entry)
-
-        with tempfile.TemporaryDirectory() as temporary:
-            journal = Path(temporary) / "cleanup.json"
-            with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
-            ):
-                context.cleanup_entry(entry)
-
-        chats.delete.assert_called_once_with(remote)
-        self.assertEqual(chats.refresh.call_count, 2)
-        self.assertEqual(context.state["resources"], [])
-        self.assertFalse(journal.exists())
-
-
-class AsyncCleanupMarkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lazy_chat_messages_are_refreshed_for_marker_verification(self) -> None:
-        marker = "webai-live-0123456789abcdef0123456789abcdef-chat"
-        refresh = AsyncMock(return_value=(SimpleNamespace(content=f"{marker} prompt"),))
-        chat = SimpleNamespace(
-            title="Temporary conversation", messages=SimpleNamespace(refresh=refresh)
-        )
-        context = LiveContext(None, LiveAccount("default-browser", "gemini", {}), "async", None)
-        context.gate = ActionGate(interval=0)
-
-        self.assertTrue(await context._matches_marker_async(chat, "chat", (marker,)))
-        refresh.assert_awaited_once_with()
 
 
 class LiveSessionLifecycleTests(unittest.TestCase):

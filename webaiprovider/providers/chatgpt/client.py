@@ -1301,7 +1301,9 @@ class ChatGPTClient:
                             f"ChatGPT project source processing returned HTTP {processing.status_code}"
                         )
                     if "text/event-stream" not in processing.headers.get("content-type", ""):
-                        raise ChatGPTError("ChatGPT returned an invalid project source processing stream")
+                        raise ChatGPTError(
+                            "ChatGPT returned an invalid project source processing stream"
+                        )
 
                     pending = bytearray()
                     completed = False
@@ -1314,7 +1316,9 @@ class ChatGPTClient:
                         try:
                             event = json.loads(line)
                         except (UnicodeDecodeError, json.JSONDecodeError):
-                            raise ChatGPTError("ChatGPT returned an invalid project source event") from None
+                            raise ChatGPTError(
+                                "ChatGPT returned an invalid project source event"
+                            ) from None
                         if not isinstance(event, dict):
                             raise ChatGPTError("ChatGPT returned an invalid project source event")
                         event_type = event.get("type") or event.get("event")
@@ -1339,11 +1343,15 @@ class ChatGPTClient:
                     if not completed:
                         completed = consume_event(pending)
                     if not completed:
-                        raise ChatGPTError("ChatGPT ended project source processing without completion")
+                        raise ChatGPTError(
+                            "ChatGPT ended project source processing without completion"
+                        )
             else:
                 result = self.request(
                     "POST",
-                    urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
+                    urljoin(
+                        CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"
+                    ),
                     json={},
                 ).json()
                 if result.get("status") != "success":

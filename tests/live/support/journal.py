@@ -97,7 +97,9 @@ def read_cleanup_state() -> dict[str, Any] | None:
             kind in kinds
             or not isinstance(markers, list)
             or not markers
-            or any(not isinstance(marker, str) or marker not in {prefix, renamed} for marker in markers)
+            or any(
+                not isinstance(marker, str) or marker not in {prefix, renamed} for marker in markers
+            )
             or not isinstance(item.get("attempted"), bool)
             or (item.get("remote_id") is not None and not isinstance(item["remote_id"], str))
         ):
