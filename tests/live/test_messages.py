@@ -18,14 +18,9 @@ class MessageApiTests(LiveSyncTestCase):
         entry["attempted"] = True
         self.context.save()
         try:
-            chat = self.call_api(
-                "chats.create", lambda: self.context.session.chats.create(title=marker)
-            )
+            chat = self.context.session.chats.create(title=marker)
             self.context.record_chat_id(entry, chat)
-            operation = self.call_api(
-                "messages.create",
-                lambda: chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW),
-            )
+            operation = chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
 
             def consume_stream() -> int:
                 events = 0
@@ -35,7 +30,7 @@ class MessageApiTests(LiveSyncTestCase):
                 return events
 
             event_count = self.call_api("messages.create.stream", consume_stream)
-            response = self.call_api("messages.wait", operation.wait)
+            response = operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")
@@ -67,15 +62,10 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
         entry["attempted"] = True
         self.context.save()
         try:
-            chat = await self.call_api(
-                "chats.create", lambda: self.context.session.chats.create(title=marker)
-            )
+            chat = await self.context.session.chats.create(title=marker)
             self.context.record_chat_id(entry, chat)
 
-            async def create_operation():
-                return chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
-
-            operation = await self.call_api("messages.create", create_operation)
+            operation = chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
 
             async def consume_stream() -> int:
                 events = 0
@@ -88,7 +78,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     self.context.record_chat_id(entry, chat)
 
             event_count = await self.call_api("messages.create.stream", consume_stream)
-            response = await self.call_api("messages.wait", operation.wait)
+            response = await operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")

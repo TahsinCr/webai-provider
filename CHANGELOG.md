@@ -18,6 +18,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Report live-test network and operation timeouts with elapsed time while suppressing provider request details.
+
+- Avoid redundant live-test cleanup journal writes and rate-limit waits for local message operations while retaining request pacing.
+
 - Share one asynchronous live-test cleanup implementation through the existing synchronous provider portal; remove duplicate cleanup and obsolete manually managed loop paths.
 - Parse project-source processing events without repeatedly copying the remaining upload buffer; share malformed and fragmented upload scenarios in one test fixture.
 - Consolidate provider-construction, account-isolation, capability, and chat-operation contracts in one table-driven test; remove obsolete namespace and compatibility-removal assertions.

@@ -378,6 +378,33 @@ class ActionGateTests(unittest.TestCase):
 
 
 class LiveContextErrorTests(unittest.TestCase):
+    def test_chat_id_is_persisted_only_when_it_changes(self) -> None:
+        context = LiveContext.__new__(LiveContext)
+        context.save = Mock()
+        entry = {"remote_id": None}
+        chat = SimpleNamespace(remote_id=None)
+        context.record_chat_id(entry, chat)
+        context.save.assert_not_called()
+        chat.remote_id = "first"
+        context.record_chat_id(entry, chat)
+        context.record_chat_id(entry, chat)
+        self.assertEqual(entry["remote_id"], "first")
+        context.save.assert_called_once_with()
+        chat.remote_id = "second"
+        context.record_chat_id(entry, chat)
+        self.assertEqual(entry["remote_id"], "second")
+        self.assertEqual(context.save.call_count, 2)
+
+    def test_timeout_reports_kind_without_provider_details(self) -> None:
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        from tests.live.support.context import _safe_error_label
+
+        self.assertEqual(
+            _safe_error_label(CurlTimeout("private request")), "provider network timeout"
+        )
+        self.assertEqual(_safe_error_label(TimeoutError("private request")), "operation timeout")
+
     def test_chatgpt_http_error_reports_status_without_request_details(self) -> None:
         from tests.live.support.context import _safe_error_label
         from webaiprovider.providers.chatgpt.errors import ChatGPTError

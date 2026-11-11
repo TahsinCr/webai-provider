@@ -4,6 +4,9 @@ import secrets
 import time
 from typing import Any
 
+import httpx
+from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
 from .actions import ActionGate
 from .config import LiveAccount
 from .errors import CleanupError, LiveApiError, SafetyError
@@ -11,6 +14,10 @@ from .journal import CLEANUP_FILE, write_cleanup_state
 
 
 def _safe_error_label(exc: Exception) -> str:
+    if isinstance(exc, (CurlTimeout, httpx.TimeoutException)):
+        return "provider network timeout"
+    if isinstance(exc, TimeoutError):
+        return "operation timeout"
     kind = type(exc).__name__
     prefix = "ChatGPT returned HTTP "
     message = str(exc)
@@ -50,7 +57,8 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
+                f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
+                f"{_safe_error_label(exc)}; provider details suppressed"
             ) from None
         self.results.append((label, round((time.monotonic() - started) * 1000)))
         return value
@@ -67,7 +75,8 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
+                f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
+                f"{_safe_error_label(exc)}; provider details suppressed"
             ) from None
         self.results.append((label, round((time.monotonic() - started) * 1000)))
         return value
@@ -85,8 +94,9 @@ class LiveContext:
         return entry
 
     def record_chat_id(self, entry: dict[str, Any], chat: Any) -> None:
-        if chat.remote_id:
-            entry["remote_id"] = str(chat.remote_id)
+        remote_id = str(chat.remote_id) if chat.remote_id else None
+        if remote_id and entry.get("remote_id") != remote_id:
+            entry["remote_id"] = remote_id
             self.save()
 
     def cleanup_pending(self) -> None:
