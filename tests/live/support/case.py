@@ -8,7 +8,7 @@ from typing import Any
 from .actions import ActionGate
 from .config import LiveAccount, load_or_import_account
 from .context import LiveContext
-from .errors import SafetyError
+from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_state
 
 _ACTION_GATE = ActionGate(limit=32)
@@ -97,7 +97,25 @@ class LiveSession:
 
         return Provider(account_object)
 
+    @staticmethod
+    def _retryable_open_timeout(error: LiveApiError) -> bool:
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+        from httpx import TimeoutException
+
+        return str(error).startswith("session.open failed after ") and isinstance(
+            error.__context__, (CurlTimeout, TimeoutException, TimeoutError)
+        )
+
     def open_sync(self) -> LiveContext:
+        try:
+            return self._open_sync_once()
+        except LiveApiError as error:
+            if not self._retryable_open_timeout(error):
+                raise
+            print("Retrying session.open once after a network timeout", flush=True)
+            return self._open_sync_once()
+
+    def _open_sync_once(self) -> LiveContext:
         from webaiprovider.errors import AuthenticationError
 
         context = self._prepare()
@@ -135,6 +153,15 @@ class LiveSession:
         return context
 
     async def open_async(self) -> LiveContext:
+        try:
+            return await self._open_async_once()
+        except LiveApiError as error:
+            if not self._retryable_open_timeout(error):
+                raise
+            print("Retrying session.open once after a network timeout", flush=True)
+            return await self._open_async_once()
+
+    async def _open_async_once(self) -> LiveContext:
         from webaiprovider.errors import AuthenticationError
 
         context = self._prepare()

@@ -611,6 +611,66 @@ class AsyncLiveSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         lock.__exit__.assert_called_once_with(None, None, None)
 
 
+class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def timeout_error(label="session.open"):
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        from tests.live.support.errors import LiveApiError
+
+        try:
+            raise CurlTimeout("private provider details")
+        except CurlTimeout:
+            try:
+                raise LiveApiError(
+                    f"{label} failed after 1000 ms: provider network timeout"
+                ) from None
+            except LiveApiError as error:
+                return error
+
+    def test_sync_retries_only_once_for_open_timeout(self) -> None:
+        from tests.live.support.errors import LiveApiError
+
+        live = LiveSession("sync")
+        context = object()
+        with (
+            patch.object(
+                live, "_open_sync_once", side_effect=[self.timeout_error(), context]
+            ) as run,
+            patch("builtins.print"),
+        ):
+            self.assertIs(live.open_sync(), context)
+            self.assertEqual(run.call_count, 2)
+
+        with (
+            patch.object(live, "_open_sync_once", side_effect=self.timeout_error()) as run,
+            patch("builtins.print"),
+            self.assertRaises(LiveApiError),
+        ):
+            live.open_sync()
+        self.assertEqual(run.call_count, 2)
+
+    async def test_async_retries_only_open_timeout(self) -> None:
+        from tests.live.support.errors import LiveApiError
+
+        live = LiveSession("async")
+        context = object()
+        with (
+            patch.object(
+                live, "_open_async_once", AsyncMock(side_effect=[self.timeout_error(), context])
+            ) as run,
+            patch("builtins.print"),
+        ):
+            self.assertIs(await live.open_async(), context)
+            self.assertEqual(run.await_count, 2)
+
+        error = self.timeout_error("session.open.after_cookie_refresh")
+        with patch.object(live, "_open_async_once", AsyncMock(side_effect=error)) as run:
+            with self.assertRaises(LiveApiError):
+                await live.open_async()
+            run.assert_awaited_once()
+
+
 class LiveSessionCookieRefreshTests(unittest.TestCase):
     def test_sync_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
         from contextlib import redirect_stdout
