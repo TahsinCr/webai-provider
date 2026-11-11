@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Scan coalesced SSE packets once and avoid copying incomplete line tails when checking payload limits.
 - Keep `webaiprovider.__version__` as the single package-version source and derive build metadata from it.
 - Type rejected ChatGPT sessions as the common `AuthenticationError`; browser-cookie refresh and retry remain limited to the live-test harness.
 - Group shared provider contracts in `base.py`, model catalog and typed selection APIs under `resources/model`, and chat, message, and project data by resource ownership.
@@ -66,6 +67,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Count multiline SSE separators toward the event payload limit.
 - Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.
 - Keep disposable live project names within the service limit and verify temporary chats and projects through their public collections during cleanup.
 - Continue the live matrix after failures; skip a provider/API's remaining tests after session setup fails, without sending duplicate requests.

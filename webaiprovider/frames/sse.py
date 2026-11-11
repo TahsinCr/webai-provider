@@ -1,10 +1,12 @@
 """Bounded incremental Server-Sent Events framing."""
 
+import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import NamedTuple
 
 from ..errors import FrameDecodeError
 
+_LINE_END = re.compile(rb"\r\n|\r|\n")
 
 class SSEFrame(NamedTuple):
     data: str
@@ -42,9 +44,10 @@ class SSEFrameDecoder:
             is_data = bytes(self._line) + piece[: 5 - length] == b"data:"
         if is_data:
             value_size = max(0, length + len(piece) - 5)
-            first = self._line[5:6] if length > 5 else piece[max(0, 5 - length) :][:1]
+            start = max(0, 5 - length)
+            first = self._line[5:6] if length > 5 else piece[start : start + 1]
             value_size -= first == b" "
-            if self._size + value_size > self.max_event_bytes:
+            if self._size + bool(self._data) + value_size > self.max_event_bytes:
                 raise FrameDecodeError("SSE event payload exceeds the size limit")
         if length + len(piece) > self.max_event_bytes + 6:
             raise FrameDecodeError("SSE line exceeds the size limit")
@@ -74,13 +77,14 @@ class SSEFrameDecoder:
         if field == b"data":
             if len(self._data) >= self.max_data_lines:
                 raise FrameDecodeError("SSE event exceeds the data line limit")
-            if self._size + len(value) > self.max_event_bytes:
+            value_size = len(value) + bool(self._data)
+            if self._size + value_size > self.max_event_bytes:
                 raise FrameDecodeError("SSE event payload exceeds the size limit")
             try:
                 self._data.append(value.decode("utf-8", errors=self.utf8_errors))
             except UnicodeDecodeError as error:
                 raise FrameDecodeError("SSE stream contains invalid UTF-8") from error
-            self._size += len(value)
+            self._size += value_size
         elif field == b"event":
             self._event = value.decode("utf-8", errors="replace") or "message"
         elif field == b"id" and b"\x00" not in value:
@@ -92,25 +96,21 @@ class SSEFrameDecoder:
 
     def feed(self, chunk: bytes, *, final: bool = False) -> Iterator[SSEFrame]:
         offset = 0
-        while offset < len(chunk):
-            if self._skip_lf:
-                self._skip_lf = False
-                if chunk[offset] == 10:
-                    offset += 1
-                    continue
-            lf, cr = chunk.find(b"\n", offset), chunk.find(b"\r", offset)
-            ends = [index for index in (lf, cr) if index >= 0]
-            if not ends:
-                self._append(chunk[offset:])
-                break
-            end = min(ends)
-            self._append(chunk[offset:end])
+        if self._skip_lf and chunk:
+            self._skip_lf = False
+            offset = int(chunk[0] == 10)
+        if not final and chunk.find(b"\n", offset) < 0 and chunk.find(b"\r", offset) < 0:
+            self._append(chunk[offset:])
+            return
+        for match in _LINE_END.finditer(chunk, offset):
+            self._append(chunk[offset : match.start()])
             raw = bytes(self._line)
             self._line.clear()
             yield from self.feed_line(raw)
-            offset = end + 1
-            if chunk[end] == 13:
-                self._skip_lf = True
+            offset = match.end()
+            self._skip_lf = chunk[match.start()] == 13 and offset == len(chunk)
+        if offset < len(chunk):
+            self._append(chunk[offset:])
         if final:
             if self._line:
                 raw = bytes(self._line)
