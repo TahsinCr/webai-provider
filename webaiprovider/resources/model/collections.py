@@ -217,36 +217,31 @@ class SelectionResolver:
         elif not isinstance(target, str):
             raise TypeError(f"Unsupported selection type: {type(target).__name__}")
 
-        target_id = target.id if isinstance(target, (ModelRef, EffortRef)) else None
-        exact_matches = [
-            item
-            for item in candidates
-            if (target_id is not None and item.id == target_id)
-            or (isinstance(target, str) and item.name.casefold() == target.casefold())
-        ]
+        target_id = target.id if isinstance(target, (ModelRef, EffortRef)) else target
+        query = target.casefold() if isinstance(target, str) else None
+        exact_matches = [item for item in candidates if item.id == target_id]
+        if not exact_matches and query is not None:
+            exact_matches = [item for item in candidates if item.name.casefold() == query]
         if len(exact_matches) == 1:
             return exact_matches[0]
         if len(exact_matches) > 1:
             names = [item.id for item in exact_matches]
             raise AmbiguousMatchError(f"Multiple selections matched: {', '.join(names)}")
 
-        if target_id is not None:
+        if query is None:
             raise RemoteNotFound(f"Selection was not found: {target_id}")
-        if not isinstance(target, str):
-            raise RemoteNotFound("Selection was not found")
 
-        target_lower = target.casefold()
         partial_matches = [
             item
             for item in candidates
-            if target_lower in item.id.casefold() or target_lower in item.name.casefold()
+            if query in item.id.casefold() or query in item.name.casefold()
         ]
         if len(partial_matches) == 1:
             return partial_matches[0]
         if len(partial_matches) > 1:
             preferred = next((item for item in candidates if item.id == default_id), None)
             if preferred is not None and (
-                target_lower in preferred.id.casefold() or target_lower in preferred.name.casefold()
+                query in preferred.id.casefold() or query in preferred.name.casefold()
             ):
                 return preferred
             names = [item.id for item in partial_matches]

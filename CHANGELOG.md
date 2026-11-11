@@ -68,6 +68,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Resolve exact model and effort IDs before display names or partial matches, including IDs that prefix another catalog entry.
 - Await hook results implementing the awaitable protocol, including futures, before continuing the operation.
 - Count multiline SSE separators toward the event payload limit.
 - Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.

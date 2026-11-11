@@ -106,6 +106,13 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(SelectionResolver.resolve(Models.HIGH, efforts).id, "high")
 
     def test_find_search_and_ambiguity(self) -> None:
+        overlapping = [*self.models, ModelRef("chatgpt", "model-20", "model-2")]
+        self.assertIs(SelectionResolver.resolve("model-2", overlapping), self.models[1])
+        efforts = (
+            EffortRef("chatgpt", "model-3", "low", "Quick"),
+            EffortRef("chatgpt", "model-3", "low-plus", "Quick Plus"),
+        )
+        self.assertIs(SelectionResolver.resolve("low", efforts), efforts[0])
         self.assertEqual(SelectionResolver.resolve("Model 2", self.models).id, "model-2")
         with self.assertRaises(AmbiguousMatchError):
             SelectionResolver.resolve("Model", self.models)
