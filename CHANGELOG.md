@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Scan each message-operation event once per stage waiter and share terminal-event publication with the normal event path.
 - Scan coalesced SSE packets once and avoid copying incomplete line tails when checking payload limits.
 - Keep `webaiprovider.__version__` as the single package-version source and derive build metadata from it.
 - Type rejected ChatGPT sessions as the common `AuthenticationError`; browser-cookie refresh and retry remain limited to the live-test harness.
@@ -67,6 +68,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Await hook results implementing the awaitable protocol, including futures, before continuing the operation.
 - Count multiline SSE separators toward the event payload limit.
 - Process ChatGPT project-source uploads to completion before attaching them, and include the source timestamp expected by the project API.
 - Keep disposable live project names within the service limit and verify temporary chats and projects through their public collections during cleanup.

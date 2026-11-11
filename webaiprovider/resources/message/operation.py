@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -121,7 +122,7 @@ class OperationHooks:
         for fn in all_handlers:
             try:
                 res = fn(event)
-                if asyncio.iscoroutine(res):
+                if inspect.isawaitable(res):
                     await res
             except Exception:
                 pass
@@ -142,7 +143,6 @@ class AsyncMessageOperation:
         self._response: Response | None = None
         self._assistant_message_id: str | None = None
         self._state_machine = OperationStateMachine()
-        self._started = False
         self._completed = False
         self._cancelled = False
         self._events: list[StreamEvent] = []
@@ -187,7 +187,6 @@ class AsyncMessageOperation:
             if self._executor is None:
                 raise ProviderError("No executor is configured for this operation")
             self._loop = asyncio.get_running_loop()
-            self._started = True
             self._transition_to(OperationState.PREPARING)
             self._stream_task = self._loop.create_task(self._run_internal())
         return self._stream_task
@@ -199,11 +198,8 @@ class AsyncMessageOperation:
         await self.hooks.emit(event)
 
     async def _finish(self, status: TerminalStatus) -> None:
-        self._events.append(status)
         self._completed = True
-        async with self._condition:
-            self._condition.notify_all()
-        await self.hooks.emit(status)
+        await self._publish(status)
 
     async def wait_for(
         self, stage_name: str, *, timeout: float | None = None
@@ -211,16 +207,17 @@ class AsyncMessageOperation:
         self._ensure_started()
 
         async def wait_for_event() -> StreamEvent | None:
+            index = 0
             async with self._condition:
-                await self._condition.wait_for(
-                    lambda: (
-                        any(event.event == stage_name for event in self._events) or self._completed
-                    )
-                )
-                return next(
-                    (event for event in self._events if event.event == stage_name),
-                    None,
-                )
+                while True:
+                    while index < len(self._events):
+                        event = self._events[index]
+                        index += 1
+                        if event.event == stage_name:
+                            return event
+                    if self._completed:
+                        return None
+                    await self._condition.wait()
 
         try:
             if timeout is None:

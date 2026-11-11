@@ -170,6 +170,18 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.message.content, "Hello World!")
         self.assertEqual(res.message.role, "assistant")
 
+    async def test_hooks_await_future_results_before_continuing(self) -> None:
+        from webaiprovider.resources.message.operation import OperationHooks
+
+        hooks = OperationHooks()
+        pending = asyncio.get_running_loop().create_future()
+        hooks.on("output.delta", lambda event: pending)
+        emission = asyncio.create_task(hooks.emit(OutputDelta(delta="text")))
+        await asyncio.sleep(0)
+        self.assertFalse(emission.done())
+        pending.set_result(None)
+        await emission
+
     async def test_operation_uses_one_send_across_entrypoints(self) -> None:
         provider = await self.open_provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
@@ -193,6 +205,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         operation._executor = fake_stream
 
         stage_wait = asyncio.create_task(operation.wait_for("output.delta", timeout=1))
+        missing_stage = asyncio.create_task(operation.wait_for("thinking.end"))
         await asyncio.wait_for(entered.wait(), timeout=1)
         stream_task = asyncio.create_task(consume(operation.stream()))
         start_task = asyncio.create_task(operation.start())
@@ -205,6 +218,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         replayed = await consume(operation.stream())
 
         self.assertIsInstance(event, OutputDelta)
+        self.assertIs(await operation.wait_for("output.delta"), event)
+        self.assertIsNone(await missing_stage)
+        self.assertEqual((await operation.wait_for("status.terminal")).status, "completed")
         self.assertEqual(response.text, "done")
         self.assertEqual(
             [item.event for item in events], ["output.begin", "output.delta", "output.end"]

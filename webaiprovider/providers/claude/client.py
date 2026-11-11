@@ -56,7 +56,6 @@ class ClaudeClient:
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
         self._coordinator = ConcurrencyCoordinator()
-        self._discover_task = None
         self._discovered_at = 0.0
 
     async def _discover(self):
