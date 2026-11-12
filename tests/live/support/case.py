@@ -32,6 +32,15 @@ def _record_session_open_failure(api: str) -> None:
     _FAILED_SESSION_OPENS.add(_session_key(api))
 
 
+async def _run_blocking(action, *args, **kwargs):
+    task = asyncio.create_task(asyncio.to_thread(action, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
 class LiveSession:
     """Own one real provider session and its guarded cleanup lifecycle."""
 
@@ -165,11 +174,9 @@ class LiveSession:
     async def _open_async_once(self) -> LiveContext:
         from webaiprovider.errors import AuthenticationError
 
-        prepare_task = asyncio.create_task(asyncio.to_thread(self._prepare))
         try:
-            context = await asyncio.shield(prepare_task)
+            context = await _run_blocking(self._prepare)
         except BaseException:
-            await asyncio.gather(prepare_task, return_exceptions=True)
             await self._close_async(suppress=True)
             self._release_lock()
             raise
@@ -183,20 +190,13 @@ class LiveSession:
             except AuthenticationError:
                 account, state = context.account, context.state
                 await self._close_async()
-                refresh_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        load_or_import_account,
-                        account.provider,
-                        account.alias,
-                        browser=os.environ.get("WEBAI_LIVE_BROWSER"),
-                        refresh=True,
-                    )
+                refreshed = await _run_blocking(
+                    load_or_import_account,
+                    account.provider,
+                    account.alias,
+                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
+                    refresh=True,
                 )
-                try:
-                    refreshed = await asyncio.shield(refresh_task)
-                except BaseException:
-                    await asyncio.gather(refresh_task, return_exceptions=True)
-                    raise
                 context = self._new_context(refreshed, state)
                 try:
                     await context.call_async(
