@@ -76,20 +76,12 @@ async def upload_files(session, items):
     for filename, content_type, content, local_path in specs:
         mime = CurlMime()
         try:
-            if content is not None:
-                mime.addpart(
-                    name="file",
-                    content_type=content_type,
-                    filename=filename,
-                    data=content,
-                )
-            else:
-                mime.addpart(
-                    name="file",
-                    content_type=content_type,
-                    filename=filename,
-                    local_path=local_path,
-                )
+            mime.addpart(
+                name="file",
+                content_type=content_type,
+                filename=filename,
+                **({"data": content} if content is not None else {"local_path": local_path}),
+            )
             response = await session.upload_transport.send(
                 "POST",
                 "/upload",
