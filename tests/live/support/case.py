@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import unittest
@@ -164,7 +165,14 @@ class LiveSession:
     async def _open_async_once(self) -> LiveContext:
         from webaiprovider.errors import AuthenticationError
 
-        context = self._prepare()
+        prepare_task = asyncio.create_task(asyncio.to_thread(self._prepare))
+        try:
+            context = await asyncio.shield(prepare_task)
+        except BaseException:
+            await asyncio.gather(prepare_task, return_exceptions=True)
+            await self._close_async(suppress=True)
+            self._release_lock()
+            raise
         try:
             try:
                 await context.call_async(
@@ -175,12 +183,20 @@ class LiveSession:
             except AuthenticationError:
                 account, state = context.account, context.state
                 await self._close_async()
-                refreshed = load_or_import_account(
-                    account.provider,
-                    account.alias,
-                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
-                    refresh=True,
+                refresh_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        load_or_import_account,
+                        account.provider,
+                        account.alias,
+                        browser=os.environ.get("WEBAI_LIVE_BROWSER"),
+                        refresh=True,
+                    )
                 )
+                try:
+                    refreshed = await asyncio.shield(refresh_task)
+                except BaseException:
+                    await asyncio.gather(refresh_task, return_exceptions=True)
+                    raise
                 context = self._new_context(refreshed, state)
                 try:
                     await context.call_async(

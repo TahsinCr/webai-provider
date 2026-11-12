@@ -14,7 +14,14 @@ from .journal import CLEANUP_FILE, write_cleanup_state
 
 
 def _safe_error_label(exc: Exception) -> str:
-    if isinstance(exc, (CurlTimeout, httpx.TimeoutException)):
+    if isinstance(exc, CurlTimeout):
+        message = str(exc)
+        if "Resolving timed out" in message:
+            return "provider DNS resolution timeout"
+        if "Connection timed out" in message or "Connection timeout" in message:
+            return "provider connection timeout"
+        return "provider network timeout"
+    if isinstance(exc, httpx.TimeoutException):
         return "provider network timeout"
     if isinstance(exc, TimeoutError):
         return "operation timeout"

@@ -403,6 +403,14 @@ class LiveContextErrorTests(unittest.TestCase):
         self.assertEqual(
             _safe_error_label(CurlTimeout("private request")), "provider network timeout"
         )
+        self.assertEqual(
+            _safe_error_label(CurlTimeout("curl: (28) Resolving timed out after 10000 ms")),
+            "provider DNS resolution timeout",
+        )
+        self.assertEqual(
+            _safe_error_label(CurlTimeout("curl: (28) Connection timed out after 10000 ms")),
+            "provider connection timeout",
+        )
         self.assertEqual(_safe_error_label(TimeoutError("private request")), "operation timeout")
 
     def test_chatgpt_http_error_reports_status_without_request_details(self) -> None:
@@ -650,6 +658,40 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
             live.open_sync()
         self.assertEqual(run.call_count, 2)
 
+    async def test_cancelled_cookie_refresh_finishes_before_lock_release(self) -> None:
+        import threading
+
+        from webaiprovider.errors import AuthenticationError
+
+        started, finish = threading.Event(), threading.Event()
+        account = LiveAccount("default", "gemini", {})
+        provider = SimpleNamespace(open=AsyncMock(side_effect=AuthenticationError("expired")))
+        context = LiveContext(provider, account, "async", gate=ActionGate(interval=0))
+        live = LiveSession("async")
+        live.context, live.session = context, provider
+
+        def refresh(*args, **kwargs):
+            started.set()
+            finish.wait(5)
+            return account
+
+        with (
+            patch.object(live, "_prepare", return_value=context),
+            patch.object(live, "_close_async", AsyncMock()),
+            patch.object(live, "_release_lock") as release,
+            patch("tests.live.support.case.load_or_import_account", side_effect=refresh),
+        ):
+            task = asyncio.create_task(live.open_async())
+            await asyncio.to_thread(started.wait, 5)
+            self.assertTrue(started.is_set())
+            task.cancel()
+            await asyncio.sleep(0)
+            release.assert_not_called()
+            finish.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            release.assert_called_once()
+
     async def test_async_retries_only_open_timeout(self) -> None:
         from tests.live.support.errors import LiveApiError
 
@@ -762,3 +804,36 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(old_context.gate.calls + gate.calls, 2)
             self.assertIs(context.session, new_provider)
             await live.close_async()
+
+    async def test_cancelling_async_prepare_waits_for_worker_and_releases_lock(self) -> None:
+        import threading
+
+        started = threading.Event()
+        finish = threading.Event()
+        released = False
+        live = LiveSession("async")
+
+        def slow_prepare():
+            nonlocal released
+            started.set()
+            finish.wait(1)
+            live.lock = SimpleNamespace(release=lambda: None)
+            live.context = SimpleNamespace(aclose=AsyncMock())
+            return live.context
+
+        def track_release():
+            nonlocal released
+            released = True
+
+        with (
+            patch.object(live, "_prepare", side_effect=slow_prepare),
+            patch.object(live, "_release_lock", side_effect=track_release),
+        ):
+            task = asyncio.create_task(live.open_async())
+            await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            await asyncio.sleep(0.02)
+            finish.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        self.assertTrue(released)

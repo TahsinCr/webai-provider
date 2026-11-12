@@ -18,6 +18,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Keep live-test session setup and cookie refresh cancellation safe and report timeout phases without request details.
+
 - Prepare local path and in-memory chat attachments for provider uploads with provider-specific validation and ChatGPT cancellation.
 
 - Bound DNS preparation and preserve concurrent transport operations when retrying timed-out read requests.
