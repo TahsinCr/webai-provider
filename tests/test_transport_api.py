@@ -50,6 +50,31 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         await transport.close()
         client.close.assert_awaited_once()
 
+    async def test_cancelled_stream_open_releases_owned_client_reference(self):
+        client = SimpleNamespace(close=AsyncMock())
+        transport = AsyncHTTPTransport("https://example.com", client_factory=lambda **_: client)
+        started = asyncio.Event()
+
+        @asynccontextmanager
+        async def pending(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+            yield
+
+        async def open_stream():
+            async with transport.stream("GET", "/"):
+                pass
+
+        with patch.object(transport, "_open_stream", side_effect=pending):
+            task = asyncio.create_task(open_stream())
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertFalse(transport._owned_refs)
+        await transport.close()
+        client.close.assert_awaited_once()
+
     async def test_old_timeout_cannot_retire_a_new_client(self):
         first = SimpleNamespace(close=AsyncMock())
         second = SimpleNamespace(close=AsyncMock())
