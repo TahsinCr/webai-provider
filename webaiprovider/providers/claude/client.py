@@ -117,39 +117,59 @@ class ClaudeClient:
             if self.http is not self.session:
                 await self.session.close()
 
-    async def upload_file(self, path):
-        """Upload a local file through Claude's web document conversion endpoint."""
+    _ALLOWED_UPLOAD_SUFFIXES = frozenset(
+        {
+            ".pdf",
+            ".docx",
+            ".csv",
+            ".txt",
+            ".html",
+            ".htm",
+            ".odt",
+            ".rtf",
+            ".epub",
+            ".json",
+            ".xlsx",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+        }
+    )
+
+    async def upload_file(self, path=None, *, content=None, name=None, mime_type=None):
+        """Upload a local file or byte payload through Claude's web document conversion endpoint."""
         from curl_cffi import CurlMime
 
-        path = Path(path).expanduser().resolve(strict=True)
-        if (
-            not path.is_file()
-            or path.suffix.lower()
-            not in {
-                ".pdf",
-                ".docx",
-                ".csv",
-                ".txt",
-                ".html",
-                ".htm",
-                ".odt",
-                ".rtf",
-                ".epub",
-                ".json",
-                ".xlsx",
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".gif",
-                ".webp",
-            }
-            or not 0 < path.stat().st_size <= 30 * 1024 * 1024
-        ):
+        if content is not None:
+            filename = name or (Path(path).name if path is not None else "attachment")
+            suffix = Path(filename).suffix.lower()
+            size = len(content)
+            local_path = None
+        elif path is not None:
+            resolved = Path(path).expanduser().resolve(strict=True)
+            if not resolved.is_file():
+                raise ValueError("Claude files must not exceed 30 MB")
+            filename = name or resolved.name
+            suffix = resolved.suffix.lower()
+            size = resolved.stat().st_size
+            local_path = str(resolved)
+        else:
+            raise ValueError("Claude upload requires a file path or byte content")
+
+        if suffix not in self._ALLOWED_UPLOAD_SUFFIXES or not 0 < size <= 30 * 1024 * 1024:
             raise ValueError("Claude files must not exceed 30 MB")
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+        mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
         body = CurlMime()
         try:
-            body.addpart(name="file", filename=path.name, local_path=str(path), content_type=mime)
+            if content is not None:
+                body.addpart(name="file", filename=filename, data=content, content_type=mime)
+            else:
+                body.addpart(
+                    name="file", filename=filename, local_path=local_path, content_type=mime
+                )
             result = await self.http.request(
                 "POST", await self.base() + "/convert_document", multipart=body
             )
@@ -162,9 +182,9 @@ class ClaudeClient:
             raise ClaudeCompatibilityError("Claude file upload returned no file identity")
         return {
             "id": file_id,
-            "name": path.name,
+            "name": filename,
             "mime_type": mime,
-            "size_bytes": path.stat().st_size,
+            "size_bytes": size,
             "provider": "claude",
         }
 

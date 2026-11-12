@@ -18,6 +18,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Prepare local path and in-memory chat attachments for provider uploads with provider-specific validation and ChatGPT cancellation.
+
 - Bound DNS preparation and preserve concurrent transport operations when retrying timed-out read requests.
 
 - Retry live-test session opening once after a network timeout, without replaying message or project mutations.

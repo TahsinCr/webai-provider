@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+from pathlib import Path
 from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
@@ -65,6 +66,29 @@ async def _iter_bounded_lines(response):
             raise ProviderError("Grok stream response format has changed") from None
 
 
+def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=None):
+    if content is not None:
+        filename = name or (Path(path).name if path is not None else "attachment")
+        if Path(filename).suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
+            raise ValueError("Grok chat file type is not supported")
+        size = len(content)
+        if not 0 < size <= GROK_ATTACHMENTS.max_bytes:
+            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
+        file = None
+    elif path is not None:
+        file = source_file(path, error="Grok chat files must not exceed 3 MiB")
+        if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
+            raise ValueError("Grok chat file type is not supported")
+        size = file.stat().st_size
+        if not 0 < size <= GROK_ATTACHMENTS.max_bytes:
+            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
+        filename = name or file.name
+    else:
+        raise ValueError("Grok chat file upload requires a file path or byte content")
+    resolved_mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return filename, resolved_mime, size, file
+
+
 class GrokClient:
     def __init__(self, credential_file, *, client_factory=None, transport=None):
         self.session = HttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
@@ -105,25 +129,22 @@ class GrokClient:
             self.session.authenticated = False
             raise
 
-    async def upload_file(self, path):
-        file = source_file(path, error="Grok chat files must not exceed 3 MiB")
-        if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
-            raise ValueError("Grok chat file type is not supported")
-        if not 0 < file.stat().st_size <= GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
-        content = await asyncio.to_thread(_read_limited, file)
-        if not content or len(content) > GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
-
-        mime_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+    async def upload_file(self, path=None, *, content=None, name=None, mime_type=None):
+        filename, resolved_mime, _, file = validate_upload_candidate(
+            path, content=content, name=name, mime_type=mime_type
+        )
+        if content is None:
+            content = await asyncio.to_thread(_read_limited, file)
+            if not content or len(content) > GROK_ATTACHMENTS.max_bytes:
+                raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
         result = await self.request(
             "POST",
             "/rest/app-chat/upload-file-v2/complete",
             json={
                 "directUpload": {
                     "fileData": base64.b64encode(content).decode("ascii"),
-                    "fileName": file.name,
-                    "fileMimeType": mime_type,
+                    "fileName": filename,
+                    "fileMimeType": resolved_mime,
                     "fileSource": "SELF_UPLOAD_FILE_SOURCE",
                 }
             },
@@ -140,8 +161,8 @@ class GrokClient:
             raise ProviderError("Grok chat file upload failed")
         return {
             "id": asset_id,
-            "name": metadata.get("name") or file.name,
-            "mime_type": metadata.get("mimeType") or mime_type,
+            "name": metadata.get("name") or filename,
+            "mime_type": metadata.get("mimeType") or resolved_mime,
             "size_bytes": len(content),
             "grok_file": metadata,
         }

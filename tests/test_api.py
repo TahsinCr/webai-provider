@@ -549,7 +549,35 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RateLimited) as ctx:
             await operation.start()
         self.assertEqual(ctx.exception.retry_after, 42.0)
+
+        async def fail_validation(_request):
+            raise ValueError("invalid effort level")
+            yield TextDelta("unreachable")
+
+        provider._stream_request = fail_validation
+        with self.assertRaisesRegex(ValueError, "invalid effort level"):
+            await chat.messages.create("Hello").start()
+        self.assertTrue(repr(provider).startswith("<AsyncProvider "))
         await provider.close()
+
+    async def test_prepare_operation_preserves_attachment_mime_type(self) -> None:
+        from webaiprovider.async_provider import _prepare_operation
+
+        provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        await provider.open()
+        try:
+            chat = await provider.chats.create()
+            att = Attachment.from_bytes(b"hello", name="notes.txt", mime_type="text/plain")
+            msg = Message("Read", attachments=[att])
+            op = chat.messages.create(msg)
+            request = await _prepare_operation(op, provider)
+            self.assertEqual(request.attachments[0]["mime_type"], "text/plain")
+            self.assertNotIn("mime", request.attachments[0])
+            self.assertEqual(request.attachments[0]["bytes"], b"hello")
+        finally:
+            await provider.close()
 
     async def test_provider_ask_convenience_method(self) -> None:
         p = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))

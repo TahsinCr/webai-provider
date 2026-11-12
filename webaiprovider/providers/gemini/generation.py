@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ...frames import JSPBFrameDecoder
 from ...resources.message.types import MessageAction
+from ...utils.attachments import GEMINI_ATTACHMENTS
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .media import candidate_files
@@ -15,20 +16,80 @@ from .rpc import nested
 from .session import BASE, HEADERS
 
 
-async def upload_files(session, paths):
+def _gemini_upload_spec(value):
+    if isinstance(value, dict):
+        content = value.get("bytes")
+        raw_path = value.get("path")
+        if content is not None:
+            filename = value.get("name") or (
+                Path(raw_path).name if raw_path is not None else "attachment"
+            )
+            content_type = (
+                value.get("mime_type")
+                or mimetypes.guess_type(filename)[0]
+                or "application/octet-stream"
+            )
+            size = len(content)
+            local_path = None
+        elif raw_path is not None:
+            resolved = Path(raw_path).expanduser().resolve(strict=True)
+            if not resolved.is_file():
+                raise ValueError("File was not found")
+            filename = value.get("name") or resolved.name
+            content_type = (
+                value.get("mime_type")
+                or mimetypes.guess_type(filename)[0]
+                or "application/octet-stream"
+            )
+            size = resolved.stat().st_size
+            local_path = str(resolved)
+        else:
+            raise ValueError("Gemini attachment requires a file path or byte content")
+    else:
+        resolved = Path(value).expanduser().resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError("File was not found")
+        filename = resolved.name
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        size = resolved.stat().st_size
+        content = None
+        local_path = str(resolved)
+
+    limit = (
+        GEMINI_ATTACHMENTS.max_video_bytes
+        if content_type.startswith("video/") and GEMINI_ATTACHMENTS.max_video_bytes is not None
+        else GEMINI_ATTACHMENTS.max_bytes
+    )
+    if not 0 < size <= limit:
+        raise ValueError("Gemini file is empty or exceeds the size limit")
+    return filename, content_type, content, local_path
+
+
+async def upload_files(session, items):
     from curl_cffi import CurlMime
 
+    if len(items) > GEMINI_ATTACHMENTS.max_files:
+        raise ValueError("Too many Gemini attachments")
+    specs = [_gemini_upload_spec(value) for value in items]
+
     files = []
-    for value in paths:
-        path = Path(value)
+    for filename, content_type, content, local_path in specs:
         mime = CurlMime()
         try:
-            mime.addpart(
-                name="file",
-                content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-                filename=path.name,
-                local_path=str(path),
-            )
+            if content is not None:
+                mime.addpart(
+                    name="file",
+                    content_type=content_type,
+                    filename=filename,
+                    data=content,
+                )
+            else:
+                mime.addpart(
+                    name="file",
+                    content_type=content_type,
+                    filename=filename,
+                    local_path=local_path,
+                )
             response = await session.upload_transport.send(
                 "POST",
                 "/upload",
@@ -41,7 +102,7 @@ async def upload_files(session, paths):
                 multipart=mime,
                 allow_redirects=False,
             )
-            files.append([[response.text], path.name])
+            files.append([[response.text], filename])
         finally:
             mime.close()
     return files
@@ -135,7 +196,7 @@ async def generate(
     from .history import candidate_metadata, published_activity, published_thoughts
 
     if files is None:
-        files = await upload_files(session, [item["path"] for item in request.attachments])
+        files = await upload_files(session, request.attachments)
     headers, data = generation_request(session, request, metadata, files, notebook)
     frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
     completed = False

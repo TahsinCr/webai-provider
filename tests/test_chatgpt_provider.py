@@ -320,6 +320,62 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.client.closed.is_set())
         self.assertGreater(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
 
+    async def test_stream_uploads_inline_bytes_attachment_before_sending(self):
+        uploaded = []
+        sent = []
+        self.client.upload_file = lambda name, mime, data, **kwargs: (
+            uploaded.append((name, mime, data, kwargs))
+            or {"id": "chatgpt-file-1", "name": name, "mime_type": mime, "size_bytes": len(data)}
+        )
+
+        def send_prompt(conversation_id, prompt, on_event, **kwargs):
+            sent.append(kwargs)
+            on_event({"type": "replace", "text": "finished"})
+            return "remote", self.client.raw, set()
+
+        self.client.send_prompt = send_prompt
+        request = ProviderRequest(
+            "read",
+            attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
+        )
+        _ = [event async for event in self.provider._stream_request(request)]
+        self.assertEqual(len(uploaded), 1)
+        self.assertEqual(uploaded[0][:3], ("note.txt", "text/plain", b"hello"))
+        self.assertEqual(sent[0]["attachments"][0]["id"], "chatgpt-file-1")
+
+    async def test_stream_inline_attachment_upload_honors_cancellation(self):
+        import threading
+
+        started = threading.Event()
+        saw_cancel = False
+
+        def slow_upload(name, mime, data, *, project_id=None, cancel_event=None):
+            nonlocal saw_cancel
+            started.set()
+            saw_cancel = bool(cancel_event and cancel_event.wait(1))
+            return {
+                "id": "chatgpt-file-1",
+                "name": name,
+                "mime_type": mime,
+                "size_bytes": len(data),
+            }
+
+        self.client.upload_file = slow_upload
+        self.client.send_prompt = lambda *_args, **_kwargs: self.fail(
+            "send_prompt must not run after cancellation"
+        )
+        request = ProviderRequest(
+            "read",
+            attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
+        )
+        stream = self.provider._stream_request(request)
+        task = asyncio.create_task(anext(stream))
+        await asyncio.to_thread(started.wait, 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        self.assertTrue(saw_cancel)
+
     async def test_upload_cancellation_signals_transport_and_waits_for_worker(self):
         import threading
         import time

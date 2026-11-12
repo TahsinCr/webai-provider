@@ -389,6 +389,29 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item[1] for item in files], ["one.txt", "two.txt"])
             self.assertEqual(http.post.await_count, 2)
 
+            byte_files = await upload_files(
+                session,
+                [{"bytes": b"inline data", "name": "inline.txt", "mime_type": "text/plain"}],
+            )
+            self.assertEqual(byte_files, [[["uploaded"], "inline.txt"]])
+            self.assertEqual(http.post.await_count, 3)
+
+            http.post.reset_mock()
+            with self.assertRaisesRegex(ValueError, "empty or exceeds"):
+                await upload_files(
+                    session,
+                    [{"bytes": b"", "name": "empty.txt", "mime_type": "text/plain"}],
+                )
+            with self.assertRaisesRegex(ValueError, "Too many Gemini attachments"):
+                await upload_files(
+                    session,
+                    [
+                        {"bytes": b"x", "name": f"{i}.txt", "mime_type": "text/plain"}
+                        for i in range(11)
+                    ],
+                )
+            http.post.assert_not_awaited()
+
     async def test_rpc_is_account_owned_and_never_retries_writes(self):
         from webaiprovider.providers.gemini.rpc import NotebookRPC
 

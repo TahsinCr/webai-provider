@@ -9,6 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Callable, cast
 
 from ...accounts import delete_session, session_exists
@@ -784,15 +785,36 @@ class AsyncChatGPTProvider(AsyncProvider):
                     holder.append(client)
                     if stopped.is_set():
                         return
+                    attachments = []
+                    for item in request.attachments:
+                        if stopped.is_set():
+                            return
+                        if isinstance(item, dict) and ("bytes" in item or "path" in item):
+                            attachments.append(
+                                client.upload_file(
+                                    item.get("name")
+                                    or (
+                                        Path(item["path"]).name
+                                        if item.get("path")
+                                        else "attachment"
+                                    ),
+                                    item.get("mime_type") or "application/octet-stream",
+                                    item["bytes"]
+                                    if item.get("bytes") is not None
+                                    else Path(item["path"]),
+                                    project_id=request.project_id or None,
+                                    cancel_event=stopped,
+                                )
+                            )
+                        else:
+                            attachments.append(item)
+                    if stopped.is_set():
+                        return
                     remote_id, completed, previous = client.send_prompt(
                         request.conversation_id,
                         request.prompt,
                         on_event=event,
-                        **(
-                            {"attachments": list(request.attachments)}
-                            if request.attachments
-                            else {}
-                        ),
+                        **({"attachments": attachments} if attachments else {}),
                         **({"model": request.model} if request.model is not None else {}),
                         **({"effort": request.effort} if request.effort is not None else {}),
                         **({"project_id": request.project_id} if request.project_id else {}),

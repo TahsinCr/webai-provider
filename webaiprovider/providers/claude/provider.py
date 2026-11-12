@@ -256,6 +256,19 @@ class AsyncClaudeProvider(AsyncProvider):
         async with self._gate:
             if gate_started is not None:
                 timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
+            attachments = tuple(
+                [
+                    await self.client.upload_file(
+                        item.get("path"),
+                        content=item.get("bytes"),
+                        name=item.get("name"),
+                        mime_type=item.get("mime_type"),
+                    )
+                    if isinstance(item, dict) and ("bytes" in item or "path" in item)
+                    else item
+                    for item in request.attachments
+                ]
+            )
             completed = False
             async for event in self.client.events(
                 "send",
@@ -265,7 +278,7 @@ class AsyncClaudeProvider(AsyncProvider):
                 model=request.model,
                 effort=request.effort,
                 temporary=request.temporary,
-                attachments=request.attachments,
+                attachments=attachments,
                 **(
                     {"action": request.action, "message_id": request.message_id}
                     if request.action

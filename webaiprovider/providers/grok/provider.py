@@ -35,7 +35,7 @@ from ...resources.message.types import MessageAction
 from ...transport import AsyncTransport
 from ...utils.attachments import GROK_ATTACHMENTS
 from .catalogs import parse_model_catalog
-from .client import GrokClient, GrokProjectEditor, remote_id
+from .client import GrokClient, GrokProjectEditor, remote_id, validate_upload_candidate
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .resources import AsyncGrokChat
 
@@ -44,6 +44,27 @@ _CATALOG_TTL = 300
 _CONTINUATION_TTL = 60
 
 _CONTINUATION_LIMIT = 128
+
+
+def _validated_grok_attachment(attachment):
+    metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
+    asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
+    size = attachment.get("size_bytes") if isinstance(attachment, dict) else None
+    if (
+        not isinstance(asset_id, str)
+        or not asset_id
+        or asset_id != attachment.get("id")
+        or not isinstance(size, int)
+        or isinstance(size, bool)
+        or not 0 < size <= GROK_ATTACHMENTS.max_bytes
+    ):
+        raise ValueError("Grok chat attachment metadata is invalid")
+    mime = str(
+        attachment.get("mime_type")
+        or (metadata.get("mimeType") if isinstance(metadata, dict) else "")
+        or ""
+    ).lower()
+    return metadata, size, mime
 
 
 class AsyncGrokProvider(AsyncProvider):
@@ -341,37 +362,6 @@ class AsyncGrokProvider(AsyncProvider):
             raise FeatureUnavailable(Capability.EFFORT, "Grok does not expose shared effort levels")
         if len(request.attachments) > GROK_ATTACHMENTS.max_files:
             raise ValueError("Too many Grok chat attachments")
-        file_attachments = []
-        image_attachments = []
-        total_attachment_bytes = 0
-        for attachment in request.attachments:
-            metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
-            asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
-            size = attachment.get("size_bytes") if isinstance(attachment, dict) else None
-            if (
-                not isinstance(asset_id, str)
-                or not asset_id
-                or asset_id != attachment.get("id")
-                or not isinstance(size, int)
-                or isinstance(size, bool)
-                or not 0 < size <= GROK_ATTACHMENTS.max_bytes
-            ):
-                raise ValueError("Grok chat attachment metadata is invalid")
-            total_attachment_bytes += size
-            mime = str(
-                attachment.get("mime_type")
-                or (metadata.get("mimeType") if isinstance(metadata, dict) else "")
-                or ""
-            ).lower()
-            if mime.startswith("image/"):
-                image_attachments.append(metadata)
-            else:
-                file_attachments.append(metadata)
-        if (
-            GROK_ATTACHMENTS.max_total_bytes
-            and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
-        ):
-            raise ValueError("Grok chat attachments exceed the total size limit")
         if request.temporary and request.project_id:
             raise FeatureUnavailable(
                 Capability.TEMPORARY, "Temporary chats cannot belong to a project"
@@ -382,6 +372,32 @@ class AsyncGrokProvider(AsyncProvider):
             raise ValueError("Grok retry requires the selected assistant response")
         if request.action == MessageAction.EDIT and not request.message_id:
             raise ValueError("Grok edit requires the selected user prompt")
+
+        total_attachment_bytes = 0
+        pending_uploads: list[tuple[int, dict]] = []
+        prepared: list[dict] = list(request.attachments)
+        for index, attachment in enumerate(request.attachments):
+            if (
+                isinstance(attachment, dict)
+                and attachment.get("grok_file") is None
+                and ("bytes" in attachment or "path" in attachment)
+            ):
+                _, _, size, _ = validate_upload_candidate(
+                    attachment.get("path"),
+                    content=attachment.get("bytes"),
+                    name=attachment.get("name"),
+                    mime_type=attachment.get("mime_type"),
+                )
+                total_attachment_bytes += size
+                pending_uploads.append((index, attachment))
+            else:
+                _, size, _ = _validated_grok_attachment(attachment)
+                total_attachment_bytes += size
+        if (
+            GROK_ATTACHMENTS.max_total_bytes
+            and total_attachment_bytes > GROK_ATTACHMENTS.max_total_bytes
+        ):
+            raise ValueError("Grok chat attachments exceed the total size limit")
 
         catalog = await self._load_model_catalog()
         selected = catalog.chat_model(request.model) if request.model else None
@@ -396,6 +412,23 @@ class AsyncGrokProvider(AsyncProvider):
         model_mode = selected.metadata.get("modelMode")
         if not isinstance(model_mode, str) or not model_mode:
             model_mode = None
+
+        for index, attachment in pending_uploads:
+            prepared[index] = await self.client.upload_file(
+                attachment.get("path"),
+                content=attachment.get("bytes"),
+                name=attachment.get("name"),
+                mime_type=attachment.get("mime_type"),
+            )
+
+        file_attachments = []
+        image_attachments = []
+        for attachment in prepared:
+            metadata, _, mime = _validated_grok_attachment(attachment)
+            if mime.startswith("image/"):
+                image_attachments.append(metadata)
+            else:
+                file_attachments.append(metadata)
 
         async with self._gate:
             conversation_id = request.conversation_id

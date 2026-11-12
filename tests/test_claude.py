@@ -448,3 +448,24 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             )
             mime_type.return_value.addpart.assert_called_once()
             mime_type.return_value.close.assert_called_once()
+
+            captured = {}
+
+            async def events(_mode, **kwargs):
+                captured.update(kwargs)
+                yield {"type": "bound", "id": CHAT}
+                yield {"type": "done"}
+
+            self.provider.client.events = events
+            _ = [
+                x
+                async for x in self.provider._stream_request(
+                    ProviderRequest(
+                        "Q",
+                        attachments=(
+                            {"bytes": b"hello", "name": "notes.txt", "mime_type": "text/plain"},
+                        ),
+                    )
+                )
+            ]
+            self.assertEqual(captured["attachments"][0]["id"], "remote-file")

@@ -706,6 +706,58 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
         self.assertEqual(transport.bodies[0]["imageAttachments"], [])
 
+    async def test_grok_send_auto_uploads_inline_bytes_attachment(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        transport = GrokClientFixture()
+        metadata = {"assetId": "asset-bytes", "name": "note.txt", "mimeType": "text/plain"}
+        transport.upload_file = AsyncMock(
+            return_value={
+                "id": "asset-bytes",
+                "name": "note.txt",
+                "mime_type": "text/plain",
+                "size_bytes": 5,
+                "grok_file": metadata,
+            }
+        )
+        provider.client = transport
+        request = ProviderRequest(
+            prompt="Read this note",
+            conversation_id="chat",
+            model="fast",
+            attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
+        )
+        try:
+            [event async for event in provider._stream_request(request)]
+        finally:
+            await provider.close()
+
+        transport.upload_file.assert_awaited_once_with(
+            None, content=b"hello", name="note.txt", mime_type="text/plain"
+        )
+        self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
+
+    async def test_grok_send_rejects_oversized_batch_before_uploading(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        transport = GrokClientFixture()
+        transport.upload_file = AsyncMock()
+        provider.client = transport
+        chunk = b"x" * (3 * 1024 * 1024)
+        request = ProviderRequest(
+            prompt="Too large",
+            conversation_id="chat",
+            model="fast",
+            attachments=tuple(
+                {"bytes": chunk, "name": f"f{i}.txt", "mime_type": "text/plain"} for i in range(4)
+            ),
+        )
+        try:
+            with self.assertRaisesRegex(ValueError, "total size limit"):
+                [event async for event in provider._stream_request(request)]
+        finally:
+            await provider.close()
+
+        transport.upload_file.assert_not_awaited()
+
     async def test_project_updates_only_send_changed_editable_fields(self):
         for changes, expected in (
             ({"name": " Renamed "}, {"name": "Renamed"}),

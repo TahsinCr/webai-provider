@@ -103,7 +103,7 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
                 "path": str(item.path) if item.path is not None else None,
                 "bytes": item._content,
                 "name": item.name,
-                "mime": item.mime_type,
+                "mime_type": item.mime_type,
                 "size_bytes": getattr(item, "size", None),
                 "grok_file": getattr(item, "grok_file", None),
             }.items()
@@ -306,7 +306,7 @@ class AsyncProvider(BaseProvider):
                 yield ThinkingEnd(text=thinking_text)
             if output_started:
                 yield OutputEnd()
-        except ProviderError:
+        except (ProviderError, ValueError):
             raise
         except Exception as exc:
             raise ProviderError("Provider request failed") from exc
@@ -489,7 +489,7 @@ class AsyncProvider(BaseProvider):
         await self.close()
 
     def __repr__(self) -> str:
-        return f"<Provider type={self.type.value!r} account={self.account.id!r}>"
+        return f"<AsyncProvider type={self.type.value!r} account={self.account.id!r}>"
 
 
 async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
