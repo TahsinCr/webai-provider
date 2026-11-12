@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -41,14 +42,29 @@ class AsyncStreamResponse(_ResponseHead, Protocol):
     def aiter_bytes(self) -> AsyncIterator[bytes]: ...
 
 
+def _is_positive_finite(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
 @dataclass(frozen=True)
 class TransportConfig:
-    timeout: float = 60
+    timeout: float | tuple[float, float] = (10.0, 50.0)
     max_response_bytes: int = 16 * 1024 * 1024
     max_stream_bytes: int | None = None
 
     def __post_init__(self):
-        if self.timeout <= 0 or self.max_response_bytes <= 0:
+        if isinstance(self.timeout, tuple):
+            valid_timeout = len(self.timeout) == 2 and all(
+                _is_positive_finite(part) for part in self.timeout
+            )
+        else:
+            valid_timeout = _is_positive_finite(self.timeout)
+        if not valid_timeout or self.max_response_bytes <= 0:
             raise ValueError("Transport timeout and response limit must be positive")
         if self.max_stream_bytes is not None and self.max_stream_bytes <= 0:
             raise ValueError("Transport stream limit must be positive")

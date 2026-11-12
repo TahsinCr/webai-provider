@@ -18,6 +18,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Bound DNS preparation and preserve concurrent transport operations when retrying timed-out read requests.
+
 - Retry live-test session opening once after a network timeout, without replaying message or project mutations.
 
 - Report live-test network and operation timeouts with elapsed time while suppressing provider request details.

@@ -32,19 +32,19 @@ class GeminiSession:
         self._provided_transport = transport
         self.http = None
         self.transport = transport or AsyncRequestTransport(
-            ORIGIN, client_getter=lambda: self.http, config=TransportConfig(timeout=45)
+            ORIGIN, client_getter=lambda: self.http, config=TransportConfig(timeout=(10.0, 35.0))
         )
         if self.transport.origin != ORIGIN:
             raise ValueError("Gemini transport must use the Gemini origin")
         self.auth_transport = AsyncRequestTransport(
             "https://accounts.google.com",
             client_getter=lambda: self.http,
-            config=TransportConfig(timeout=45),
+            config=TransportConfig(timeout=(10.0, 35.0)),
         )
         self.upload_transport = AsyncRequestTransport(
             "https://content-push.googleapis.com",
             client_getter=lambda: self.http,
-            config=TransportConfig(timeout=45),
+            config=TransportConfig(timeout=(10.0, 35.0)),
         )
         self.refresh_task = None
         self.language = "en"
@@ -75,7 +75,7 @@ class GeminiSession:
         if not cookies.get("__Secure-1PSID"):
             raise AccountPaused("Gemini session cookies are missing")
         self.http = (self.http_factory or AsyncSession)(
-            cookies=cookies, impersonate="chrome145", timeout=45
+            cookies=cookies, impersonate="chrome145", timeout=(10.0, 35.0)
         )
         try:
             response = await self.request(

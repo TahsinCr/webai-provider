@@ -5,7 +5,7 @@ import threading
 import unittest
 from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -31,6 +31,35 @@ from webaiprovider.transport import (
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_request_releases_owned_client_reference(self):
+        client = SimpleNamespace(close=AsyncMock())
+        transport = AsyncHTTPTransport("https://example.com", client_factory=lambda **_: client)
+        started = asyncio.Event()
+
+        async def pending(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        with patch.object(transport, "_send", side_effect=pending):
+            task = asyncio.create_task(transport.send("GET", "/"))
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertFalse(transport._owned_refs)
+        await transport.close()
+        client.close.assert_awaited_once()
+
+    async def test_old_timeout_cannot_retire_a_new_client(self):
+        first = SimpleNamespace(close=AsyncMock())
+        second = SimpleNamespace(close=AsyncMock())
+        transport = AsyncHTTPTransport("https://example.com")
+        transport.client = second
+        await transport._reset_owned_client(first)
+        self.assertIs(transport.client, second)
+        second.close.assert_not_awaited()
+        await transport.close()
+
     async def test_custom_implementation_uses_public_events_and_the_shared_operation_pipeline(self):
         class CustomProvider(AsyncProvider):
             provider_type = ProviderType.GROK
@@ -67,6 +96,164 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             async with transport.stream("GET", "/fixture") as response:
                 content = b"".join([chunk async for chunk in response.aiter_bytes()])
             self.assertEqual(content, b'{"ok":true}')
+            with self.assertRaises(ValueError):
+                TransportConfig(timeout=(0.0, 5.0))
+            with self.assertRaises(ValueError):
+                TransportConfig(timeout=(True, 5.0))
+            tuple_transport = AsyncHTTPXTransport(
+                "https://claude.ai",
+                config=TransportConfig(timeout=(4.0, 19.0)),
+            )
+            client_instance = tuple_transport._connect()
+            try:
+                self.assertEqual(client_instance.timeout.connect, 4.0)
+                self.assertEqual(client_instance.timeout.read, 19.0)
+            finally:
+                await tuple_transport.close()
+
+    async def test_curl_dns_pinning_ssrf_block_and_idempotent_get_retry(self):
+        import socket
+
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests import AsyncSession
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        import webaiprovider.transport.http as transport_http
+        from webaiprovider.core import MultiDimensionBoundedCache
+
+        session = AsyncSession()
+        responses = [
+            CurlTimeout("curl: (28) Resolving timed out"),
+            httpx.Response(200, json={"ok": True}),
+        ]
+
+        async def fake_request(method, url, **options):
+            outcome = responses.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        session.request = AsyncMock(side_effect=fake_request)
+        try:
+            transport = AsyncHTTPTransport("https://claude.ai", client_getter=lambda: session)
+            fresh_cache = MultiDimensionBoundedCache(max_entries=16, max_bytes=4096, default_ttl=60)
+            with (
+                patch.object(transport_http, "_DNS_CACHE", fresh_cache),
+                patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+                patch("asyncio.get_running_loop") as loop_getter,
+            ):
+                loop_getter.return_value.getaddrinfo = AsyncMock(
+                    return_value=[
+                        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+                    ]
+                )
+                self.assertEqual(await transport.request("GET", "/fixture"), {"ok": True})
+                self.assertEqual(session.request.await_count, 2)
+                self.assertEqual(session.curl_options[CurlOpt.IPRESOLVE], 1)
+                self.assertIn("claude.ai:443:93.184.216.34", session.curl_options[CurlOpt.RESOLVE])
+
+                responses.append(CurlTimeout("curl: (28) Operation timed out"))
+                with self.assertRaises(CurlTimeout):
+                    await transport.send("POST", "/fixture")
+                self.assertEqual(session.request.await_count, 3)
+
+                fresh_cache.remove(("claude.ai", 443, False))
+                loop_getter.return_value.getaddrinfo = AsyncMock(
+                    return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+                )
+                with self.assertRaisesRegex(ValueError, "Prohibited destination network address"):
+                    await transport.send("GET", "/fixture")
+
+                async def stalled_getaddrinfo(*_args, **_kwargs):
+                    await asyncio.sleep(1.0)
+
+                fresh_cache.remove(("claude.ai", 443, False))
+                loop_getter.return_value.getaddrinfo = stalled_getaddrinfo
+                short_transport = AsyncHTTPTransport(
+                    "https://claude.ai",
+                    client_getter=lambda: session,
+                    config=TransportConfig(timeout=(0.05, 1.0)),
+                )
+                with self.assertRaisesRegex(CurlTimeout, "Resolving timed out"):
+                    await short_transport.send("POST", "/fixture")
+
+                fresh_cache.remove(("claude.ai", 443, False))
+                loop_getter.return_value.getaddrinfo = AsyncMock(
+                    side_effect=socket.gaierror("offline")
+                )
+                with self.assertRaisesRegex(ProviderError, "Provider host resolution failed"):
+                    await short_transport.send("GET", "/fixture")
+        finally:
+            await session.close()
+
+    async def test_stream_mid_body_timeout_does_not_retry_and_concurrent_retry_defers_close(self):
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        stream_calls = 0
+
+        @asynccontextmanager
+        async def failing_body_stream(*_args, **_kwargs):
+            nonlocal stream_calls
+            stream_calls += 1
+
+            async def chunks():
+                yield b"head"
+                raise CurlTimeout("mid-stream timeout")
+
+            yield SimpleNamespace(status_code=200, headers={}, aiter_content=chunks)
+
+        stream_transport = AsyncHTTPTransport(
+            "https://claude.ai",
+            client_getter=lambda: SimpleNamespace(stream=failing_body_stream),
+        )
+        received = []
+        with self.assertRaises(CurlTimeout):
+            async with stream_transport.stream("GET", "/stream") as response:
+                async for chunk in response.aiter_bytes():
+                    received.append(chunk)
+        self.assertEqual(received, [b"head"])
+        self.assertEqual(stream_calls, 1)
+
+        sibling_entered = asyncio.Event()
+        release_sibling = asyncio.Event()
+        clients = []
+
+        def make_client(timeout=None):
+            client_index = len(clients)
+            closed_flag = False
+
+            async def close():
+                nonlocal closed_flag
+                closed_flag = True
+
+            async def request(method, url, **options):
+                if url.endswith("/slow") and client_index == 0:
+                    sibling_entered.set()
+                    await release_sibling.wait()
+                    if closed_flag:
+                        raise RuntimeError("sibling client closed while in flight")
+                    return httpx.Response(200, json={"sibling": True})
+                if client_index == 0:
+                    raise CurlTimeout("first client timed out")
+                return httpx.Response(200, json={"retried": True})
+
+            client = SimpleNamespace(request=request, close=close, is_closed=lambda: closed_flag)
+            clients.append(client)
+            return client
+
+        shared_transport = AsyncHTTPTransport("https://claude.ai", client_factory=make_client)
+        try:
+            sibling_task = asyncio.create_task(shared_transport.request("GET", "/slow"))
+            await asyncio.wait_for(sibling_entered.wait(), 1)
+            retried = await shared_transport.request("GET", "/fast")
+            self.assertEqual(retried, {"retried": True})
+            self.assertFalse(clients[0].is_closed())
+            release_sibling.set()
+            self.assertEqual(await sibling_task, {"sibling": True})
+            self.assertTrue(clients[0].is_closed())
+            self.assertFalse(clients[1].is_closed())
+        finally:
+            await shared_transport.close()
 
     def transport(self, origin="https://claude.ai", **options):
         client = SimpleNamespace(
