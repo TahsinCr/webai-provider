@@ -17,44 +17,25 @@ from .session import BASE, HEADERS
 
 
 def _gemini_upload_spec(value):
-    if isinstance(value, dict):
-        content = value.get("bytes")
-        raw_path = value.get("path")
-        if content is not None:
-            filename = value.get("name") or (
-                Path(raw_path).name if raw_path is not None else "attachment"
-            )
-            content_type = (
-                value.get("mime_type")
-                or mimetypes.guess_type(filename)[0]
-                or "application/octet-stream"
-            )
-            size = len(content)
-            local_path = None
-        elif raw_path is not None:
-            resolved = Path(raw_path).expanduser().resolve(strict=True)
-            if not resolved.is_file():
-                raise ValueError("File was not found")
-            filename = value.get("name") or resolved.name
-            content_type = (
-                value.get("mime_type")
-                or mimetypes.guess_type(filename)[0]
-                or "application/octet-stream"
-            )
-            size = resolved.stat().st_size
-            local_path = str(resolved)
-        else:
-            raise ValueError("Gemini attachment requires a file path or byte content")
-    else:
-        resolved = Path(value).expanduser().resolve(strict=True)
+    item = value if isinstance(value, dict) else {"path": value}
+    content, raw_path = item.get("bytes"), item.get("path")
+    if content is not None:
+        filename = item.get("name") or (
+            Path(raw_path).name if raw_path is not None else "attachment"
+        )
+        size, local_path = len(content), None
+    elif raw_path is not None:
+        resolved = Path(raw_path).expanduser().resolve(strict=True)
         if not resolved.is_file():
             raise ValueError("File was not found")
-        filename = resolved.name
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        size = resolved.stat().st_size
-        content = None
-        local_path = str(resolved)
+        filename = item.get("name") or resolved.name
+        size, local_path = resolved.stat().st_size, str(resolved)
+    else:
+        raise ValueError("Gemini attachment requires a file path or byte content")
 
+    content_type = (
+        item.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    )
     limit = (
         GEMINI_ATTACHMENTS.max_video_bytes
         if content_type.startswith("video/") and GEMINI_ATTACHMENTS.max_video_bytes is not None
