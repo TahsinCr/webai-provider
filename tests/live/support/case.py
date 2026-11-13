@@ -108,21 +108,28 @@ class LiveSession:
         return Provider(account_object)
 
     @staticmethod
-    def _retryable_open_timeout(error: LiveApiError) -> bool:
+    def _retryable_open_error(error: LiveApiError) -> bool:
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
         from httpx import TimeoutException
 
-        return str(error).startswith("session.open failed after ") and isinstance(
-            error.__context__, (CurlTimeout, TimeoutException, TimeoutError)
-        )
+        from webaiprovider.errors import ProviderError
+
+        if not str(error).startswith("session.open failed after "):
+            return False
+        cause = error.__context__
+        if isinstance(cause, (CurlTimeout, TimeoutException, TimeoutError)):
+            return True
+        # Retry transient edge/5xx bootstrap errors once, but never auth, rate-limit,
+        # compatibility, network-unavailable, or HTTP 403 rejections.
+        return type(cause) is ProviderError and "HTTP 403" not in str(cause)
 
     def open_sync(self) -> LiveContext:
         try:
             return self._open_sync_once()
         except LiveApiError as error:
-            if not self._retryable_open_timeout(error):
+            if not self._retryable_open_error(error):
                 raise
-            print("Retrying session.open once after a network timeout", flush=True)
+            print("Retrying session.open once after a transient failure", flush=True)
             return self._open_sync_once()
 
     def _open_sync_once(self) -> LiveContext:
@@ -166,9 +173,9 @@ class LiveSession:
         try:
             return await self._open_async_once()
         except LiveApiError as error:
-            if not self._retryable_open_timeout(error):
+            if not self._retryable_open_error(error):
                 raise
-            print("Retrying session.open once after a network timeout", flush=True)
+            print("Retrying session.open once after a transient failure", flush=True)
             return await self._open_async_once()
 
     async def _open_async_once(self) -> LiveContext:
@@ -318,6 +325,25 @@ class LiveSyncTestCase(unittest.TestCase):
     def call_api(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
         return self.context.call(label, action, expected_errors=expected_errors)
 
+    def call_or_skip_rate_limit(
+        self,
+        label: str,
+        action,
+        *,
+        entry: dict[str, Any] | None = None,
+        chat: Any = None,
+    ):
+        from webaiprovider.errors import RateLimited
+
+        try:
+            return self.call_api(label, action, expected_errors=(RateLimited,))
+        except RateLimited:
+            if entry is not None and (chat is None or not getattr(chat, "remote_id", None)):
+                entry["attempted"] = False
+                self.context.save()
+            self.context.skip(f"{label}: rate_limited")
+            self.skipTest("Provider rate limit reached")
+
 
 class LiveAsyncTestCase(unittest.IsolatedAsyncioTestCase):
     """Base for one asynchronous live feature scenario."""
@@ -348,6 +374,25 @@ class LiveAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
     ):
         return await self.context.call_async(label, action, expected_errors=expected_errors)
+
+    async def call_or_skip_rate_limit(
+        self,
+        label: str,
+        action,
+        *,
+        entry: dict[str, Any] | None = None,
+        chat: Any = None,
+    ):
+        from webaiprovider.errors import RateLimited
+
+        try:
+            return await self.call_api(label, action, expected_errors=(RateLimited,))
+        except RateLimited:
+            if entry is not None and (chat is None or not getattr(chat, "remote_id", None)):
+                entry["attempted"] = False
+                self.context.save()
+            self.context.skip(f"{label}: rate_limited")
+            self.skipTest("Provider rate limit reached")
 
 
 class LiveSyncRecoveryTestCase(LiveSyncTestCase):

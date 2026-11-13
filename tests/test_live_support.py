@@ -712,6 +712,46 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 await live.open_async()
             run.assert_awaited_once()
 
+    async def test_async_retries_only_transient_provider_open_errors(self) -> None:
+        from tests.live.support.errors import LiveApiError
+        from webaiprovider.errors import ProviderError, RateLimited
+
+        def wrapped(exc: Exception) -> LiveApiError:
+            try:
+                raise exc
+            except Exception:
+                try:
+                    raise LiveApiError(
+                        "session.open failed after 1000 ms: provider error"
+                    ) from None
+                except LiveApiError as error:
+                    return error
+
+        live = LiveSession("async")
+        context = object()
+        transient = wrapped(ProviderError("Provider request failed (HTTP 502)"))
+        with (
+            patch.object(
+                live, "_open_async_once", AsyncMock(side_effect=[transient, context])
+            ) as run,
+            patch("builtins.print"),
+        ):
+            self.assertIs(await live.open_async(), context)
+            self.assertEqual(run.await_count, 2)
+
+        for non_retryable in (
+            wrapped(
+                ProviderError("Provider denied access (HTTP 403); the request was not retried")
+            ),
+            wrapped(RateLimited(5)),
+        ):
+            with patch.object(
+                live, "_open_async_once", AsyncMock(side_effect=non_retryable)
+            ) as run:
+                with self.assertRaises(LiveApiError):
+                    await live.open_async()
+                run.assert_awaited_once()
+
 
 class LiveSessionCookieRefreshTests(unittest.TestCase):
     def test_sync_auth_failure_refreshes_default_browser_cookies_once(self) -> None:

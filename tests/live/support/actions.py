@@ -15,7 +15,7 @@ T = TypeVar("T")
 class ActionGate:
     """Rate-limits public API calls and bounds one live test run."""
 
-    def __init__(self, interval: float = 1.0, timeout: float = 90.0, limit: int = 20):
+    def __init__(self, interval: float = 1.0, timeout: float = 300.0, limit: int = 20):
         self.interval = interval
         self.timeout = timeout
         self.limit = limit

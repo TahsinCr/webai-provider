@@ -131,8 +131,13 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                     loose_chat = await self.context.session.chats.create(title=loose_title)
                     self.context.record_chat_id(chat_entry, loose_chat)
                     self.assertIsNone(loose_chat.project)
-                    op = loose_chat.messages.create("Say OK.", model=Models.LOW)
-                    await self.call_api("projects.chat.create_loose", op.start)
+                    op = loose_chat.messages.create(f"{loose_title} Say OK.", model=Models.LOW)
+                    await self.call_or_skip_rate_limit(
+                        "projects.chat.create_loose",
+                        op.start,
+                        entry=chat_entry,
+                        chat=loose_chat,
+                    )
                     self.context.record_chat_id(chat_entry, loose_chat)
 
                     await self.call_api(

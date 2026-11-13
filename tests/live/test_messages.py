@@ -31,7 +31,9 @@ class MessageApiTests(LiveSyncTestCase):
                     self.context.record_chat_id(entry, chat)
                 return events
 
-            event_count = self.call_api("messages.create.stream", consume_stream)
+            event_count = self.call_or_skip_rate_limit(
+                "messages.create.stream", consume_stream, entry=entry, chat=chat
+            )
             response = operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
@@ -64,7 +66,9 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
         self.assertTrue(chat.temporary)
         try:
             operation = chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
-            response = await self.call_api("messages.temporary.send", operation.start)
+            response = await self.call_or_skip_rate_limit(
+                "messages.temporary.send", operation.start, chat=chat
+            )
             self.assertTrue(
                 getattr(response.message, "content", ""), "Temporary chat returned no text"
             )
@@ -125,7 +129,9 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 finally:
                     self.context.record_chat_id(entry, chat)
 
-            event_count = await self.call_api("messages.create.stream", consume_stream)
+            event_count = await self.call_or_skip_rate_limit(
+                "messages.create.stream", consume_stream, entry=entry, chat=chat
+            )
             response = await operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
@@ -133,64 +139,105 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             self.assertTrue(getattr(response.message, "content", ""), "Message returned no text")
 
             web_op = chat.messages.create(
-                "Search the web for the official Python website URL and include the link.",
+                f"{marker} Search the web for the official Python website URL and include the link.",
                 model=Models.LOW,
             )
-            web_response = await self.call_api("messages.create.web_followup", web_op.start)
+            web_response = await self.call_or_skip_rate_limit(
+                "messages.create.web_followup", web_op.start, entry=entry, chat=chat
+            )
             self.assertTrue(getattr(web_response.message, "content", ""))
             for source in web_response.sources:
                 if source.url:
                     self.assertTrue(source.url.startswith(("http://", "https://")))
 
+            followup_op = chat.messages.create(
+                f"{marker} Reply with the single word GAMMA.", model=Models.LOW
+            )
+            followup_response = await self.call_or_skip_rate_limit(
+                "messages.create.followup", followup_op.start, entry=entry, chat=chat
+            )
+            self.assertTrue(getattr(followup_response.message, "content", ""))
+
             messages = await self.call_api("messages.list_temporary_chat", chat.messages.refresh)
             roles = {getattr(message.role, "value", message.role) for message in messages}
             self.assertTrue({"user", "assistant"}.issubset(roles))
 
+            if Capability.MESSAGE_RETRY in capabilities:
+                assistant_messages = [
+                    m for m in messages if getattr(m.role, "value", m.role) == "assistant"
+                ]
+                self.assertGreaterEqual(len(assistant_messages), 3)
+                retried_last = await self.call_or_skip_rate_limit(
+                    "messages.retry.last",
+                    assistant_messages[-1].retry().start,
+                    entry=entry,
+                    chat=chat,
+                )
+                self.assertTrue(getattr(retried_last.message, "content", ""))
+                messages = await self.call_api(
+                    "messages.refresh_after_retry_last", chat.messages.refresh
+                )
+            else:
+                self.context.skip("messages.retry: unsupported")
+
             if Capability.MESSAGE_EDIT in capabilities:
                 user_messages = [m for m in messages if getattr(m.role, "value", m.role) == "user"]
-                self.assertTrue(user_messages)
-                edited_last = await self.call_api(
+                self.assertGreaterEqual(len(user_messages), 2)
+                edited_last = await self.call_or_skip_rate_limit(
                     "messages.edit.last",
-                    user_messages[-1].edit("Edited last turn: reply with EDITED.").start,
+                    user_messages[-1].edit(f"{marker} Edited last turn: reply with EDITED.").start,
+                    entry=entry,
+                    chat=chat,
                 )
                 self.assertTrue(getattr(edited_last.message, "content", ""))
-                messages = await self.call_api("messages.refresh_after_edit", chat.messages.refresh)
-                user_messages = [m for m in messages if getattr(m.role, "value", m.role) == "user"]
-                if len(user_messages) >= 2:
-                    edited_first = await self.call_api(
-                        "messages.edit.middle",
-                        user_messages[0].edit("Edited earlier turn: reply with MIDDLE.").start,
-                    )
-                    self.assertTrue(getattr(edited_first.message, "content", ""))
-                    messages = await self.call_api(
-                        "messages.refresh_after_middle_edit", chat.messages.refresh
-                    )
+                messages = await self.call_api(
+                    "messages.refresh_after_edit_last", chat.messages.refresh
+                )
             else:
                 self.context.skip("messages.edit: unsupported")
 
             if Capability.MESSAGE_RETRY in capabilities:
-                followup_op = chat.messages.create("Second turn: reply with TWO.", model=Models.LOW)
-                await self.call_api("messages.create.before_retry", followup_op.start)
-                messages = await self.call_api(
-                    "messages.refresh_before_retry", chat.messages.refresh
+                last_user_idx = max(
+                    (
+                        idx
+                        for idx, m in enumerate(messages)
+                        if getattr(m.role, "value", m.role) == "user"
+                    ),
+                    default=len(messages),
                 )
-                assistant_messages = [
-                    m for m in messages if getattr(m.role, "value", m.role) == "assistant"
+                middle_assistants = [
+                    m
+                    for m in messages[:last_user_idx]
+                    if getattr(m.role, "value", m.role) == "assistant"
                 ]
-                self.assertTrue(assistant_messages)
-                retried_last = await self.call_api(
-                    "messages.retry.last",
-                    assistant_messages[-1].retry().start,
-                )
-                self.assertTrue(getattr(retried_last.message, "content", ""))
-                if len(assistant_messages) >= 2:
-                    retried_first = await self.call_api(
+                if not middle_assistants:
+                    middle_assistants = [
+                        m for m in messages if getattr(m.role, "value", m.role) == "assistant"
+                    ][:-1]
+                if middle_assistants:
+                    retried_middle = await self.call_or_skip_rate_limit(
                         "messages.retry.middle",
-                        assistant_messages[0].retry().start,
+                        middle_assistants[-1].retry().start,
+                        entry=entry,
+                        chat=chat,
                     )
-                    self.assertTrue(getattr(retried_first.message, "content", ""))
-            else:
-                self.context.skip("messages.retry: unsupported")
+                    self.assertTrue(getattr(retried_middle.message, "content", ""))
+                    messages = await self.call_api(
+                        "messages.refresh_after_retry_middle", chat.messages.refresh
+                    )
+
+            if Capability.MESSAGE_EDIT in capabilities:
+                user_messages = [m for m in messages if getattr(m.role, "value", m.role) == "user"]
+                if len(user_messages) >= 2:
+                    edited_first = await self.call_or_skip_rate_limit(
+                        "messages.edit.middle",
+                        user_messages[0]
+                        .edit(f"{marker} Edited earlier turn: reply with MIDDLE.")
+                        .start,
+                        entry=entry,
+                        chat=chat,
+                    )
+                    self.assertTrue(getattr(edited_first.message, "content", ""))
 
             if Capability.CHAT_BRANCH in capabilities:
                 messages = await self.call_api(
@@ -206,15 +253,21 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     )
                     if branched.remote_id and branched.remote_id != chat.remote_id:
                         branch_entry = self.context.new_remote("chat", f"{marker}-branch")
+                        branch_entry["markers"].append(marker)
                         branch_entry["attempted"] = True
                         branch_entry["remote_id"] = branched.remote_id
                         self.context.save()
                         branch_op = branched.messages.create(
-                            "Branch check: reply with BRANCH.", model=Models.LOW
+                            f"{marker}-branch Branch check: reply with BRANCH.",
+                            model=Models.LOW,
                         )
-                        branch_res = await self.call_api(
-                            "messages.create.branched", branch_op.start
+                        branch_res = await self.call_or_skip_rate_limit(
+                            "messages.create.branched",
+                            branch_op.start,
+                            entry=branch_entry,
+                            chat=branched,
                         )
+                        self.context.record_chat_id(branch_entry, branched)
                         self.assertTrue(getattr(branch_res.message, "content", ""))
             else:
                 self.context.skip("chats.branch: unsupported")
