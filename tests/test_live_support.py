@@ -814,7 +814,6 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
         live = LiveSession("async")
 
         def slow_prepare():
-            nonlocal released
             started.set()
             finish.wait(1)
             live.lock = SimpleNamespace(release=lambda: None)

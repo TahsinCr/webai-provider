@@ -469,3 +469,19 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
             self.assertEqual(captured["attachments"][0]["id"], "remote-file")
+
+            transport.session.request.reset_mock()
+            with self.assertRaisesRegex(ValueError, "30 MB"):
+                _ = [
+                    x
+                    async for x in self.provider._stream_request(
+                        ProviderRequest(
+                            "Q",
+                            attachments=(
+                                {"bytes": b"hello", "name": "notes.txt", "mime_type": "text/plain"},
+                                {"bytes": b"bad", "name": "script.exe"},
+                            ),
+                        )
+                    )
+                ]
+            transport.session.request.assert_not_awaited()

@@ -6,7 +6,6 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...accounts import delete_session, session_exists
@@ -116,20 +115,13 @@ class AsyncGeminiProvider(AsyncProvider):
         }
 
     async def upload_file(self, path):
-        import mimetypes
+        from .generation import _gemini_upload_spec
 
-        path = Path(path).expanduser().resolve(strict=True)
-        if not path.is_file():
-            raise ValueError("File was not found")
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        size = path.stat().st_size
-        limit = 2 * 1024 * 1024 * 1024 if mime.startswith("video/") else 100 * 1024 * 1024
-        if not 0 < size <= limit:
-            raise ValueError("Gemini file exceeds the size limit")
+        filename, mime, size, _content, local_path = _gemini_upload_spec(path)
         return {
-            "id": path.name,
-            "path": str(path),
-            "name": path.name,
+            "id": filename,
+            "path": local_path,
+            "name": filename,
             "mime_type": mime,
             "size_bytes": size,
             "deferred_upload": True,

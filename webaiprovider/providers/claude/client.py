@@ -18,11 +18,37 @@ from ...resources.project.types import (
     source_file,
 )
 from ...transport import HttpSession
+from ...utils.attachments import CLAUDE_ATTACHMENTS
 from ...utils.timing import current_send_timing
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}
+_ALLOWED_UPLOAD_SUFFIXES = frozenset(CLAUDE_ATTACHMENTS.allowed_extensions)
+
+
+def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=None):
+    """Validate and resolve a local path or byte payload against Claude upload limits."""
+    if content is not None:
+        filename = name or (Path(path).name if path is not None else "attachment")
+        suffix = Path(filename).suffix.lower()
+        size = len(content)
+        local_path = None
+    elif path is not None:
+        resolved = Path(path).expanduser().resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError("Claude files must not exceed 30 MB")
+        filename = name or resolved.name
+        suffix = resolved.suffix.lower()
+        size = resolved.stat().st_size
+        local_path = str(resolved)
+    else:
+        raise ValueError("Claude upload requires a file path or byte content")
+
+    if suffix not in _ALLOWED_UPLOAD_SUFFIXES or not 0 < size <= CLAUDE_ATTACHMENTS.max_bytes:
+        raise ValueError("Claude files must not exceed 30 MB")
+    mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return filename, mime, size, content, local_path
 
 
 def remote_id(value):
@@ -117,59 +143,21 @@ class ClaudeClient:
             if self.http is not self.session:
                 await self.session.close()
 
-    _ALLOWED_UPLOAD_SUFFIXES = frozenset(
-        {
-            ".pdf",
-            ".docx",
-            ".csv",
-            ".txt",
-            ".html",
-            ".htm",
-            ".odt",
-            ".rtf",
-            ".epub",
-            ".json",
-            ".xlsx",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".webp",
-        }
-    )
-
     async def upload_file(self, path=None, *, content=None, name=None, mime_type=None):
         """Upload a local file or byte payload through Claude's web document conversion endpoint."""
         from curl_cffi import CurlMime
 
-        if content is not None:
-            filename = name or (Path(path).name if path is not None else "attachment")
-            suffix = Path(filename).suffix.lower()
-            size = len(content)
-            local_path = None
-        elif path is not None:
-            resolved = Path(path).expanduser().resolve(strict=True)
-            if not resolved.is_file():
-                raise ValueError("Claude files must not exceed 30 MB")
-            filename = name or resolved.name
-            suffix = resolved.suffix.lower()
-            size = resolved.stat().st_size
-            local_path = str(resolved)
-        else:
-            raise ValueError("Claude upload requires a file path or byte content")
-
-        if suffix not in self._ALLOWED_UPLOAD_SUFFIXES or not 0 < size <= 30 * 1024 * 1024:
-            raise ValueError("Claude files must not exceed 30 MB")
-
-        mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        filename, mime, size, content, local_path = validate_upload_candidate(
+            path, content=content, name=name, mime_type=mime_type
+        )
         body = CurlMime()
         try:
-            if content is not None:
-                body.addpart(name="file", filename=filename, data=content, content_type=mime)
-            else:
-                body.addpart(
-                    name="file", filename=filename, local_path=local_path, content_type=mime
-                )
+            body.addpart(
+                name="file",
+                filename=filename,
+                content_type=mime,
+                **({"data": content} if content is not None else {"local_path": local_path}),
+            )
             result = await self.http.request(
                 "POST", await self.base() + "/convert_document", multipart=body
             )

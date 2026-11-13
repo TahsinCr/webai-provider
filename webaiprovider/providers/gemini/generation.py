@@ -43,7 +43,7 @@ def _gemini_upload_spec(value):
     )
     if not 0 < size <= limit:
         raise ValueError("Gemini file is empty or exceeds the size limit")
-    return filename, content_type, content, local_path
+    return filename, content_type, size, content, local_path
 
 
 async def upload_files(session, items):
@@ -54,7 +54,7 @@ async def upload_files(session, items):
     specs = [_gemini_upload_spec(value) for value in items]
 
     files = []
-    for filename, content_type, content, local_path in specs:
+    for filename, content_type, _size, content, local_path in specs:
         mime = CurlMime()
         try:
             mime.addpart(

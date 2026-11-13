@@ -24,8 +24,9 @@ from ...resources.message.protocol import (
     TextDelta,
     TextReplacement,
 )
+from ...utils.attachments import CLAUDE_ATTACHMENTS
 from ...utils.timing import current_send_timing
-from .client import ClaudeClient, ClaudeProjectEditor
+from .client import ClaudeClient, ClaudeProjectEditor, validate_upload_candidate
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
 from .resources import AsyncClaudeChat
@@ -251,6 +252,16 @@ class AsyncClaudeProvider(AsyncProvider):
             )
         if not session_exists(self.credential_file) and not self.client.authenticated:
             raise AccountPaused("Verify the Claude account in the Accounts section")
+        if len(request.attachments) > CLAUDE_ATTACHMENTS.max_files:
+            raise ValueError(f"Claude accepts at most {CLAUDE_ATTACHMENTS.max_files} attachments")
+        for item in request.attachments:
+            if isinstance(item, dict) and ("bytes" in item or "path" in item):
+                validate_upload_candidate(
+                    item.get("path"),
+                    content=item.get("bytes"),
+                    name=item.get("name"),
+                    mime_type=item.get("mime_type"),
+                )
         timing = current_send_timing()
         gate_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:

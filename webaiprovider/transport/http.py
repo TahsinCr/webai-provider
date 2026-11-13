@@ -248,7 +248,7 @@ class AsyncHTTPTransport(AsyncTransport):
         existing.append(f"{prefix}{','.join(formatted)}")
         client.curl_options[CurlOpt.RESOLVE] = existing
 
-    def _invalidate_curl_dns(self):
+    def _invalidate_curl_dns(self, failed_client=None):
         target = urlsplit(self.origin)
         hostname = target.hostname
         if not hostname:
@@ -257,7 +257,11 @@ class AsyncHTTPTransport(AsyncTransport):
         folded = hostname.casefold()
         _DNS_CACHE.remove((folded, port, True))
         _DNS_CACHE.remove((folded, port, False))
-        client = self._client_getter() if self._client_getter is not None else self.client
+        client = (
+            failed_client
+            if failed_client is not None
+            else (self._client_getter() if self._client_getter is not None else self.client)
+        )
         if _is_curl_async_session(client):
             from curl_cffi import CurlOpt
 
@@ -302,7 +306,7 @@ class AsyncHTTPTransport(AsyncTransport):
             except BaseException as exc:
                 await self._release_client(client)
                 if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                    self._invalidate_curl_dns()
+                    self._invalidate_curl_dns(client)
                     await self._reset_owned_client(client)
                     continue
                 raise
@@ -350,7 +354,7 @@ class AsyncHTTPTransport(AsyncTransport):
                     finally:
                         await self._release_client(client)
                     if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                        self._invalidate_curl_dns()
+                        self._invalidate_curl_dns(client)
                         await self._reset_owned_client(client)
                         continue
                     raise
