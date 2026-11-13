@@ -18,6 +18,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Load all paginated `next_cursor` pages per project when fetching chats with `include_projects=True`, raising `ProviderError` on invalid, repeated, or over-limit cursors before marking project chats loaded.
+- Run both `sync` and `async` APIs per provider by default in `run_live_tests.py`, record structured per-`(provider, api)` skip and failure outcomes so skipped/rate-limited/setup-failed runs fail or report separately, and serialize providers when OS process file locks are unavailable.
+- Harden live test recovery and pacing: journal `chat.branch` before the remote call with excluded parent IDs and rename fallback, preserve `attempted=True` across `RateLimited` failures, route legacy and per-provider cleanup journals without silently discarding corrupt/mismatched state, route temporary chat deletes through `ActionGate` with cross-process shared per-`(provider, account)` pacing/budgets, and enforce thread+process credential file locking (`flock`, `msvcrt.locking`, or exclusive create fallback).
 - Keep live-test session setup and cookie refresh cancellation safe and report timeout phases without request details.
 
 - Prepare local path and in-memory chat attachments for provider uploads with provider-specific validation and ChatGPT cancellation.
