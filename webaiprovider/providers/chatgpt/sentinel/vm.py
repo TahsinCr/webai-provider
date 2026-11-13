@@ -135,8 +135,13 @@ def _js_getprop(target: Any, prop: Any) -> Any:
             return target[idx] if 0 <= idx < len(target) else _UNDEFINED
         return _js_bind_string_method(target, key_str)
 
-    if callable(target) and key_str == "bind":
-        return lambda _this=None, *bound_args: lambda *call_args: target(*bound_args, *call_args)
+    if callable(target):
+        if key_str == "bind":
+            return lambda _this=None, *bound_args: (
+                lambda *call_args: target(*bound_args, *call_args)
+            )
+        if key_str == "name":
+            return getattr(target, "__js_name__", getattr(target, "__name__", ""))
 
     if hasattr(target, key_str):
         return getattr(target, key_str)
@@ -360,6 +365,9 @@ def _build_virtual_window(
             return ctor(*seq)
         return {}
 
+    _reflect_set.__name__ = "set"
+    _reflect_construct.__name__ = "construct"
+
     reflect_ns = {
         "set": _reflect_set,
         "get": lambda target, prop, *_a: _js_getprop(target, prop),
@@ -558,6 +566,7 @@ class SentinelVM:
 
         reg: dict[Any, Any] = {}
         step_count = 0
+        try_depth = 0
         resolved: list[str] = []
 
         def invoke(fn_slot: Any, *args: Any) -> Any:
@@ -671,12 +680,16 @@ class SentinelVM:
             reg[dst] = reg
 
         def op_try_call_raw(err_dst: Any, fn_slot: Any, *raw_args: Any) -> None:
+            nonlocal try_depth
+            try_depth += 1
             try:
                 invoke(fn_slot, *raw_args)
             except SentinelCompatibilityError:
                 raise
             except Exception as error:
                 reg[err_dst] = f"Error: {error}"
+            finally:
+                try_depth -= 1
 
         def op_json_parse(dst: Any, src: Any, *_a: Any) -> None:
             try:
@@ -690,11 +703,20 @@ class SentinelVM:
             reg[dst] = _json_value(reg.get(src))
 
         def op_try_call(dst: Any, fn_slot: Any, *arg_slots: Any) -> None:
+            fn = reg.get(fn_slot)
+            if not callable(fn):
+                if try_depth > 0:
+                    raise _JSTypeError(f"TypeError: {fn_slot!r} is not a function")
+                raise SentinelCompatibilityError(
+                    f"Unsupported or non-callable Sentinel VM register: {fn_slot!r}"
+                )
             try:
-                reg[dst] = invoke(fn_slot, *(reg.get(slot) for slot in arg_slots))
+                reg[dst] = fn(*(reg.get(slot) for slot in arg_slots))
             except SentinelCompatibilityError:
                 raise
             except Exception as error:
+                if try_depth > 0:
+                    raise
                 reg[dst] = f"Error: {error}"
 
         def op_atob(slot: Any, *_a: Any) -> None:
@@ -717,12 +739,14 @@ class SentinelVM:
             return None
 
         def op_try_subqueue(err_dst: Any, subqueue: Any, *_a: Any) -> None:
+            nonlocal try_depth
             if not isinstance(subqueue, list):
                 raise SentinelCompatibilityError("Sentinel VM subqueue was not a list")
             saved = list(reg.get(queue_reg) or [])
             reg[queue_reg] = [
                 list(instr) if isinstance(instr, list) else instr for instr in subqueue
             ]
+            try_depth += 1
             try:
                 run_queue()
             except SentinelCompatibilityError:
@@ -730,6 +754,7 @@ class SentinelVM:
             except Exception as error:
                 reg[err_dst] = f"Error: {error}"
             finally:
+                try_depth -= 1
                 reg[queue_reg] = saved
 
         def op_branch_defined(cond_slot: Any, fn_slot: Any, *raw_args: Any) -> Any:

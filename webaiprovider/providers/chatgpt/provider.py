@@ -126,6 +126,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         self._http_client = None
         self._http_lock = threading.RLock()
         self._temporary_conversations = OrderedDict()
+        self._pending_branches = OrderedDict()
         self._gate = asyncio.Lock()
         self._rename_gate = asyncio.Lock()
         self._history_list_gate = asyncio.Lock()
@@ -147,6 +148,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                         )
                     self._http_client = self._factory(self.session, **options)
                     self._http_client.temporary_conversations = self._temporary_conversations
+                    self._http_client.pending_branches = self._pending_branches
                 yield self._http_client
             return
         with self._factory(self.session) as client:
@@ -274,6 +276,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             await self._discard_http_client()
             await asyncio.to_thread(delete_session, self.session.paths.session_file)
             self._temporary_conversations.clear()
+            self._pending_branches.clear()
         return SessionStatus(SessionState.LOGIN_REQUIRED, False, "browser_session_retained")
 
     async def forget_temporary(self, remote_id: str) -> None:
@@ -281,6 +284,7 @@ class AsyncChatGPTProvider(AsyncProvider):
 
     async def forget_conversation(self, conversation_id: str) -> None:
         async with self._gate:
+            self._pending_branches.pop(conversation_id, None)
             with self._http_lock:
                 if self._http_client is not None:
                     self._http_client.forget_conversation(conversation_id)
@@ -725,6 +729,11 @@ class AsyncChatGPTProvider(AsyncProvider):
                     },
                 )
                 preview.pop("mapping", None)
+                client.pending_branches[remote] = preview
+                client.pending_branches.move_to_end(remote)
+                while len(client.pending_branches) > 32:
+                    client.pending_branches.popitem(last=False)
+                client._remember_conversation(preview)
                 return self._conversation(preview)
 
         async with self._gate:

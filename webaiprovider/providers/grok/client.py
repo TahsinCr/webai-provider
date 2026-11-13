@@ -150,7 +150,11 @@ class GrokClient:
             },
         )
         metadata = result.get("fileMetadata") if isinstance(result, dict) else None
-        asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
+        asset_id = (
+            (metadata.get("assetId") or metadata.get("fileMetadataId"))
+            if isinstance(metadata, dict)
+            else None
+        )
         if (
             not isinstance(result, dict)
             or not isinstance(metadata, dict)
@@ -161,8 +165,8 @@ class GrokClient:
             raise ProviderError("Grok chat file upload failed")
         return {
             "id": asset_id,
-            "name": metadata.get("name") or filename,
-            "mime_type": metadata.get("mimeType") or resolved_mime,
+            "name": metadata.get("name") or metadata.get("fileName") or filename,
+            "mime_type": metadata.get("mimeType") or metadata.get("fileMimeType") or resolved_mime,
             "size_bytes": len(content),
             "grok_file": metadata,
         }

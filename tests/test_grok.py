@@ -424,6 +424,43 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
+    async def test_catalog_matches_dotted_mode_ids_to_normalized_model_details(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        transport = GrokClientFixture()
+        provider.client = transport
+        transport.request = AsyncMock(
+            side_effect=lambda _, path, **kw: (
+                {
+                    "models": [
+                        {
+                            "modelId": "grok-420",
+                            "name": "Grok 4.20",
+                            "modelMode": "MODEL_MODE_GROK_420",
+                        }
+                    ]
+                }
+                if path == "/rest/models"
+                else {
+                    "modes": [
+                        {
+                            "id": "grok-4.20",
+                            "title": "Grok 4.20",
+                            "availability": {"available": {}},
+                        }
+                    ],
+                    "defaultModeId": "grok-4.20",
+                }
+            )
+        )
+        try:
+            catalog = await provider._load_model_catalog()
+            model = catalog.chat_model("grok-4.20")
+            self.assertIsNotNone(model)
+            self.assertEqual(model.metadata.get("modelMode"), "MODEL_MODE_GROK_420")
+            self.assertEqual(model.metadata.get("modelName"), "grok-420")
+        finally:
+            await provider.close()
+
     async def test_stream_cleans_provider_markup_and_initial_whitespace(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
@@ -735,6 +772,42 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             None, content=b"hello", name="note.txt", mime_type="text/plain"
         )
         self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
+
+    async def test_grok_upload_file_accepts_file_metadata_id_and_sends_id_list(self):
+        from webaiprovider.providers.grok.client import GrokClient
+
+        complete_response = {
+            "fileMetadata": {
+                "fileMetadataId": "meta-123",
+                "fileName": "note.txt",
+                "fileMimeType": "text/plain",
+            }
+        }
+        client = GrokClient(Path("unused"))
+        client.request = AsyncMock(return_value=complete_response)
+        uploaded = await client.upload_file(
+            None, content=b"hello", name="note.txt", mime_type="text/plain"
+        )
+        self.assertEqual(uploaded["id"], "meta-123")
+        self.assertEqual(uploaded["name"], "note.txt")
+        self.assertEqual(uploaded["mime_type"], "text/plain")
+
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        transport = GrokClientFixture()
+        transport.upload_file = AsyncMock(return_value=uploaded)
+        provider.client = transport
+        request = ProviderRequest(
+            prompt="Read this note",
+            conversation_id="chat",
+            model="fast",
+            attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
+        )
+        try:
+            [event async for event in provider._stream_request(request)]
+        finally:
+            await provider.close()
+
+        self.assertEqual(transport.bodies[0]["fileAttachments"], ["meta-123"])
 
     async def test_grok_send_rejects_oversized_batch_before_uploading(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))

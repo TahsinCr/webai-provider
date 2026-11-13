@@ -156,6 +156,120 @@ class ChatGPTActionsTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "no longer editable"):
             self.run_request(MessageAction.EDIT, "other-conversation-message")
 
+    def test_pending_branch_first_turn_uses_source_identities_without_preview_id(self):
+        sent = []
+
+        def accept(request):
+            sent.append(json.loads(request.content))
+            event = {
+                "conversation_id": "persisted-branch",
+                "message": {
+                    "id": "branch-answer",
+                    "author": {"role": "assistant"},
+                    "channel": "final",
+                    "content": {"content_type": "text", "parts": ["Branch answer"]},
+                },
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
+            )
+
+        conversation = {
+            "conversation_id": "preview-branch",
+            "current_node": "branch-point",
+            "messages": [{"id": "branch-point", "author": {"role": "assistant"}}],
+            "pending_branch": {
+                "conversation_id": "source-chat",
+                "message_id": "branch-point",
+            },
+        }
+        client = ChatGPTClient.__new__(ChatGPTClient)
+        client.headers = {}
+        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
+        client.create_sentinel_headers = dict
+        with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
+            resolved_id, _, _, _ = client.send_prompt_direct(
+                conversation,
+                "Branch prompt",
+                [],
+                model="account-model",
+            )
+        self.assertEqual(resolved_id, "persisted-branch")
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn("conversation_id", sent[0])
+        self.assertEqual(sent[0]["branching_from_conversation_id"], "source-chat")
+        self.assertEqual(sent[0]["branching_from_message_id"], "branch-point")
+        self.assertEqual(sent[0]["parent_message_id"], "branch-point")
+
+    def test_edit_first_turn_without_root_node_fetches_mapping_parent(self):
+        from webaiprovider.providers.chatgpt.client import ChatGPTError
+
+        requests_seen = []
+        mapping_status = 200
+        mapping_payload = {"mapping": {"user": {"parent": "real-root"}}}
+
+        def accept(request):
+            requests_seen.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(mapping_status, json=mapping_payload)
+            requests_seen.append(json.loads(request.content))
+            event = {
+                "conversation_id": "chat",
+                "message": {
+                    "id": "new-answer",
+                    "author": {"role": "assistant"},
+                    "channel": "final",
+                    "content": {"content_type": "text", "parts": ["Edited answer"]},
+                },
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
+            )
+
+        conversation = {
+            "conversation_id": "chat",
+            "current_node": "answer",
+            "messages": [
+                {
+                    "id": "user",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Original"]},
+                },
+                {"id": "answer", "author": {"role": "assistant"}},
+            ],
+        }
+        client = ChatGPTClient.__new__(ChatGPTClient)
+        client.headers = {}
+        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
+        client.create_sentinel_headers = dict
+        with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
+            client.send_prompt_direct(
+                conversation,
+                "Edited first turn",
+                [],
+                model="account-model",
+                action=MessageAction.EDIT,
+                message_id="user",
+            )
+            self.assertEqual(requests_seen[0], ("GET", "/backend-api/conversation/chat"))
+            self.assertEqual(requests_seen[1], ("POST", "/backend-api/f/conversation"))
+            self.assertEqual(requests_seen[2]["parent_message_id"], "real-root")
+
+            mapping_status = 404
+            with self.assertRaisesRegex(ChatGPTError, "parent is unavailable"):
+                client.send_prompt_direct(
+                    conversation,
+                    "Edited first turn",
+                    [],
+                    model="account-model",
+                    action=MessageAction.EDIT,
+                    message_id="user",
+                )
+
 
 class GeminiActionsTests(unittest.TestCase):
     def test_ready_media_resources_survive_a_file_only_history_response(self):
@@ -490,6 +604,7 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(edit[1]["attachments"][0]["extracted_content"], "data")
         self.assertEqual(edit[1]["tools"], [{"type": "web_search_v0", "name": "web_search"}])
         self.assertTrue(retry[0].endswith("/retry_completion"))
+        self.assertEqual(retry[1]["prompt"], "")
         self.assertEqual(retry[1]["parent_message_uuid"], answer_id)
         self.assertEqual(retry[1]["model"], "available-model")
         self.assertEqual(retry[1]["tools"], [{"type": "web_search_v0", "name": "web_search"}])

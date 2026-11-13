@@ -48,7 +48,11 @@ _CONTINUATION_LIMIT = 128
 
 def _validated_grok_attachment(attachment):
     metadata = attachment.get("grok_file") if isinstance(attachment, dict) else None
-    asset_id = metadata.get("assetId") if isinstance(metadata, dict) else None
+    asset_id = (
+        (metadata.get("assetId") or metadata.get("fileMetadataId"))
+        if isinstance(metadata, dict)
+        else None
+    )
     size = attachment.get("size_bytes") if isinstance(attachment, dict) else None
     if (
         not isinstance(asset_id, str)
@@ -61,10 +65,21 @@ def _validated_grok_attachment(attachment):
         raise ValueError("Grok chat attachment metadata is invalid")
     mime = str(
         attachment.get("mime_type")
-        or (metadata.get("mimeType") if isinstance(metadata, dict) else "")
+        or (
+            (metadata.get("mimeType") or metadata.get("fileMimeType"))
+            if isinstance(metadata, dict)
+            else ""
+        )
         or ""
     ).lower()
     return metadata, size, mime
+
+
+def _grok_attachment_entry(metadata: dict) -> dict | str:
+    """Serialize uploaded Grok metadata for conversation creation/edit payloads."""
+    if "fileMetadataId" in metadata and "assetId" not in metadata:
+        return metadata["fileMetadataId"]
+    return metadata
 
 
 class AsyncGrokProvider(AsyncProvider):
@@ -429,10 +444,11 @@ class AsyncGrokProvider(AsyncProvider):
         image_attachments = []
         for attachment in prepared:
             metadata, _, mime = _validated_grok_attachment(attachment)
+            entry = _grok_attachment_entry(metadata)
             if mime.startswith("image/"):
-                image_attachments.append(metadata)
+                image_attachments.append(entry)
             else:
-                file_attachments.append(metadata)
+                file_attachments.append(entry)
 
         async with self._gate:
             conversation_id = request.conversation_id
@@ -502,11 +518,30 @@ class AsyncGrokProvider(AsyncProvider):
                         parent_response_id = target.get("parentResponseId") or ""
                         if not file_attachments and not image_attachments:
                             seen_assets = set()
-                            for item in list(target.get("fileAttachments") or ()) + list(
-                                target.get("imageAttachments") or ()
-                            ):
-                                if isinstance(item, dict):
-                                    aid = item.get("assetId") or item.get("id")
+                            for is_image, item in [
+                                *(
+                                    (False, entry)
+                                    for entry in (target.get("fileAttachments") or ())
+                                ),
+                                *(
+                                    (True, entry)
+                                    for entry in (target.get("imageAttachments") or ())
+                                ),
+                            ]:
+                                if isinstance(item, str) and item:
+                                    if item in seen_assets:
+                                        continue
+                                    seen_assets.add(item)
+                                    if is_image:
+                                        image_attachments.append(item)
+                                    else:
+                                        file_attachments.append(item)
+                                elif isinstance(item, dict):
+                                    aid = (
+                                        item.get("assetId")
+                                        or item.get("fileMetadataId")
+                                        or item.get("id")
+                                    )
                                     if aid and aid in seen_assets:
                                         continue
                                     if aid:
@@ -514,10 +549,11 @@ class AsyncGrokProvider(AsyncProvider):
                                     mime = str(
                                         item.get("mimeType") or item.get("fileMimeType") or ""
                                     ).lower()
-                                    if mime.startswith("image/"):
-                                        image_attachments.append(item)
+                                    serialized = _grok_attachment_entry(item)
+                                    if mime.startswith("image/") or is_image:
+                                        image_attachments.append(serialized)
                                     else:
-                                        file_attachments.append(item)
+                                        file_attachments.append(serialized)
                     elif active:
                         parent_response_id = active[-1].get("responseId") or ""
 

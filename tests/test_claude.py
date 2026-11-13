@@ -489,3 +489,80 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ]
             transport.session.request.assert_not_awaited()
+
+    async def test_claude_convert_document_extracted_content_is_sent_as_inline_attachment(self):
+        doc_response = {
+            "file_name": "note.txt",
+            "file_size": 29,
+            "file_type": "txt",
+            "extracted_content": "Verification token: ALPHA-42\n",
+        }
+        recorded_bodies = []
+
+        class Response:
+            status_code = 200
+            headers = {}
+
+            async def aiter_content(self):
+                for frame in (
+                    {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "ALPHA-42"},
+                    },
+                    {"type": "message_stop"},
+                ):
+                    yield ("data: " + json.dumps(frame) + "\n\n").encode()
+
+        class Stream:
+            def __init__(self, payload):
+                recorded_bodies.append(payload)
+
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_):
+                return False
+
+        class Client:
+            def stream(self, _method, _url, **kwargs):
+                return Stream(kwargs.get("json"))
+
+        session = SimpleNamespace(
+            path="/",
+            request=AsyncMock(side_effect=[doc_response, {"uuid": CHAT}]),
+            connect=lambda: Client(),
+            url=lambda path: path,
+            check=lambda _response: None,
+        )
+        from webaiprovider.providers.claude.client import ClaudeClient
+
+        client = ClaudeClient(Path("unused"), session=bind_stream(session))
+        client.organization = PROJECT
+        client.catalog = claude_model_catalog("claude-test")
+
+        with patch("curl_cffi.CurlMime"):
+            uploaded = await client.upload_file(
+                None,
+                content=b"Verification token: ALPHA-42\n",
+                name="note.txt",
+                mime_type="text/plain",
+            )
+        self.assertEqual(uploaded["claude_document"], doc_response)
+
+        events = [
+            event
+            async for event in client.events(
+                "send",
+                prompt="Read note.txt",
+                model="claude-test",
+                conversation_id=None,
+                temporary=False,
+                action=None,
+                project_id=None,
+                effort=None,
+                attachments=(uploaded,),
+            )
+        ]
+        self.assertTrue(any(event["type"] == "done" for event in events))
+        self.assertEqual(recorded_bodies[0]["attachments"], [doc_response])
+        self.assertEqual(recorded_bodies[0]["files"], [])

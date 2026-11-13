@@ -82,6 +82,7 @@ class ChatGPTClient:
         self.headers: dict[str, str] = {}
         self._conversation_endpoint = "conversations"
         self.temporary_conversations: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.pending_branches: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._continuation_cache = MultiDimensionBoundedCache(
             max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
             max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
@@ -129,6 +130,9 @@ class ChatGPTClient:
             self._continuation_cache.clear()
             self._continuation_cache_text_chars = 0
             self.temporary_conversations.clear()
+            pending = getattr(self, "pending_branches", None)
+            if isinstance(pending, dict):
+                pending.clear()
             self.http.close()
 
     @staticmethod
@@ -185,6 +189,9 @@ class ChatGPTClient:
         return conversation
 
     def _forget_conversation(self, conversation_id: str) -> None:
+        pending = getattr(self, "pending_branches", None)
+        if isinstance(pending, dict):
+            pending.pop(conversation_id, None)
         cached = self._continuation_cache.pop(conversation_id, None)
         if cached is not None:
             self._continuation_cache_text_chars = self._continuation_cache.current_bytes
@@ -528,6 +535,7 @@ class ChatGPTClient:
             raise ChatGPTError("temporary conversations cannot belong to a project")
         previous_ids: set[str] = set()
         previous: dict[str, Any] | None = None
+        is_pending_branch = False
         if conversation_id:
             if temporary:
                 previous = self.temporary_conversations.get(conversation_id)
@@ -535,6 +543,12 @@ class ChatGPTClient:
                     raise ChatGPTError(
                         "temporary conversation expired locally; start a new temporary chat"
                     )
+            elif (
+                isinstance(pending := getattr(self, "pending_branches", None), dict)
+                and conversation_id in pending
+            ):
+                previous = pending[conversation_id]
+                is_pending_branch = isinstance(previous.get("pending_branch"), dict)
             else:
                 timing = current_send_timing()
                 may_reuse_snapshot = action is None
@@ -604,9 +618,11 @@ class ChatGPTClient:
                 )
             )
         except Exception:
-            if conversation_id and not temporary:
+            if conversation_id and not temporary and not is_pending_branch:
                 self._forget_conversation(conversation_id)
             raise
+        if is_pending_branch and conversation_id:
+            self._forget_conversation(conversation_id)
         if temporary:
             submitted_messages = (
                 [submitted_message]
@@ -655,7 +671,8 @@ class ChatGPTClient:
             )
             current_node = last_message.get("id") if isinstance(last_message, dict) else None
             can_build_from_stream = (
-                (conversation_id is None or resolved_id == conversation_id)
+                not is_pending_branch
+                and (conversation_id is None or resolved_id == conversation_id)
                 and action is None
                 and (conversation_id is None or isinstance(previous_messages, list))
                 and isinstance(submitted_message, dict)
@@ -699,10 +716,67 @@ class ChatGPTClient:
             if not temporary:
                 self._forget_conversation(resolved_id)
             raise ChatGPTError("ChatGPT did not attach the submitted message to the conversation")
+        if is_pending_branch:
+            previous_ids = set()
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("id") == submitted_message_id:
+                    break
+                if item.get("id"):
+                    previous_ids.add(item["id"])
         if not temporary:
             self._remember_conversation(conversation)
             self.trigger_sentinel_prewarm()
         return resolved_id, conversation, previous_ids
+
+    def _edit_parent_id(
+        self,
+        conversation: dict[str, Any] | None,
+        conversation_id: str | None,
+        items: list[dict[str, Any]],
+        target_index: int,
+        target: dict[str, Any],
+        message_id: str | None,
+    ) -> str:
+        from ...errors import RemoteNotFound
+
+        for key in ("parent", "parent_message_id"):
+            direct = target.get(key)
+            if isinstance(direct, str) and direct:
+                return direct
+        mapping = conversation.get("mapping") if isinstance(conversation, dict) else None
+        if isinstance(mapping, dict) and message_id:
+            node = mapping.get(message_id)
+            parent = node.get("parent") if isinstance(node, dict) else None
+            if isinstance(parent, str) and parent:
+                return parent
+        if target_index > 0:
+            prev_id = items[target_index - 1].get("id")
+            if isinstance(prev_id, str) and prev_id:
+                return prev_id
+        # Flat `/conversations/{id}` payloads and in-memory streams can omit the
+        # synthetic root node so turn 1 lands at index 0; fetch the singular
+        # mapping view only then to recover the server's real parent UUID.
+        if conversation_id and message_id:
+            url = urljoin(
+                CHATGPT_ORIGIN,
+                f"/backend-api/conversation/{quote(conversation_id, safe='')}",
+            )
+            try:
+                response = self.request("GET", url)
+            except RemoteNotFound:
+                raise ChatGPTError("The original message parent is unavailable") from None
+            try:
+                data = response.json()
+            except ValueError:
+                raise ChatGPTError("The original message parent is unavailable") from None
+            if isinstance(data, dict):
+                node = (data.get("mapping") or {}).get(message_id)
+                parent = node.get("parent") if isinstance(node, dict) else None
+                if isinstance(parent, str) and parent:
+                    return parent
+        raise ChatGPTError("The original message parent is unavailable")
 
     def send_prompt_direct(
         self,
@@ -725,6 +799,21 @@ class ChatGPTClient:
         url = urljoin(CHATGPT_ORIGIN, "/backend-api/f/conversation")
         headers = self.headers.copy()
         body = self.create_conversation_body(conversation, prompt, attachments)
+        pending_branch = (
+            conversation.get("pending_branch") if isinstance(conversation, dict) else None
+        )
+        if isinstance(pending_branch, dict):
+            branch_chat_id = pending_branch.get("conversation_id")
+            branch_msg_id = pending_branch.get("message_id")
+            if not isinstance(branch_chat_id, str) or not isinstance(branch_msg_id, str):
+                raise ChatGPTError("invalid pending branch continuation context")
+            body.pop("conversation_id", None)
+            conversation_id = None
+            body.update(
+                branching_from_conversation_id=branch_chat_id,
+                branching_from_message_id=branch_msg_id,
+                parent_message_id=branch_msg_id,
+            )
         submitted_message_id = body["messages"][0]["id"]
         if action:
             from ...resources.message.types import MessageAction
@@ -755,9 +844,14 @@ class ChatGPTClient:
                 body.update(action="variant", messages=[], parent_message_id=user["id"])
                 submitted_message_id = user["id"]
             elif action == MessageAction.EDIT:
-                if target_index == 0:
-                    raise ChatGPTError("The original message parent is unavailable")
-                body["parent_message_id"] = items[target_index - 1]["id"]
+                body["parent_message_id"] = self._edit_parent_id(
+                    conversation,
+                    conversation_id,
+                    items,
+                    target_index,
+                    target,
+                    message_id,
+                )
                 original = target.get("content") or {}
                 resource_parts = [
                     part for part in original.get("parts", []) if not isinstance(part, str)

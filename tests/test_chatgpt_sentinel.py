@@ -195,6 +195,27 @@ class SentinelVMTests(unittest.TestCase):
             ):
                 run_turnstile(runtime, unknown_op_dx)
 
+    def test_vm_try_call_raw_captures_type_error_for_noncallable_reg_and_reflect_name(self):
+        with SentinelRuntime(user_agent="Mozilla/5.0") as runtime:
+            initial = runtime.create_initial_proof()
+            program = [
+                [2, 20, "Reflect"],
+                [6, 21, 10, 20],
+                [2, 22, "set"],
+                [6, 23, 21, 22],
+                [2, 24, "name"],
+                [6, 25, 23, 24],
+                [13, 30, 17, 31, 999.5],
+                [2, 32, "|"],
+                [5, 25, 32],
+                [5, 25, 30],
+                [7, 3, 25],
+            ]
+            dx = encode_vm_program(program, initial)
+            turnstile = run_turnstile(runtime, dx)
+            decoded = _atob(turnstile)
+            self.assertTrue(decoded.startswith("set|Error: TypeError:"), decoded)
+
     def test_vm_requires_a_resolved_token(self):
         with SentinelRuntime(user_agent="Mozilla/5.0") as runtime:
             initial = runtime.create_initial_proof()

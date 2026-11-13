@@ -951,3 +951,51 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.prompt, prompt)
                 self.assertEqual(metadata[:3], parent)
                 self.assertEqual(files, [{"name": filename}])
+
+    async def test_rename_conversation_uses_extended_timeout_and_refreshes_xsrf_token(self):
+        session = GeminiSession(Path("unused"))
+        session.http = object()
+        session.rpc_path_prefix = "/_/BardChatUi/"
+        session.token = "stale-token"
+        session.persist = AsyncMock()
+        responses = [
+            SimpleNamespace(
+                status_code=400,
+                json=lambda: [
+                    {"error": {"details": [{"@type": "type.googleapis.com/fava.request.XsrfData"}]}}
+                ],
+                headers={},
+            ),
+            SimpleNamespace(status_code=200, text=" fresh-token\n", headers={}),
+            SimpleNamespace(
+                status_code=200,
+                text=json.dumps(
+                    [
+                        {
+                            "data": {
+                                "updateConversation": {
+                                    "clientConversation": {
+                                        "conversationId": "conv_1",
+                                        "title": "Renamed",
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                ),
+                headers={},
+            ),
+        ]
+        session.request = AsyncMock(side_effect=responses)
+
+        await session.rename_conversation("conv_1", " Renamed ")
+
+        self.assertEqual(session.token, "fresh-token")
+        session.persist.assert_awaited_once_with()
+        self.assertEqual(session.request.await_count, 3)
+        for call in session.request.await_args_list:
+            self.assertEqual(call.kwargs["timeout"], (10.0, 60.0))
+        self.assertEqual(
+            session.request.await_args_list[2].kwargs["headers"]["X-Framework-XSRF-Token"],
+            "fresh-token",
+        )

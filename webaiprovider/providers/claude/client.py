@@ -166,15 +166,36 @@ class ClaudeClient:
         if not isinstance(result, dict):
             raise ClaudeCompatibilityError("Claude file upload response changed")
         file_id = result.get("file_uuid") or result.get("uuid") or result.get("id")
-        if not isinstance(file_id, str) or not file_id:
-            raise ClaudeCompatibilityError("Claude file upload returned no file identity")
-        return {
-            "id": file_id,
-            "name": filename,
-            "mime_type": mime,
-            "size_bytes": size,
-            "provider": "claude",
-        }
+        if isinstance(file_id, str) and file_id:
+            return {
+                "id": file_id,
+                "name": filename,
+                "mime_type": mime,
+                "size_bytes": size,
+                "provider": "claude",
+            }
+        extracted = result.get("extracted_content")
+        if isinstance(extracted, str):
+            doc_name = str(result.get("file_name") or filename)
+            raw_size = result.get("file_size")
+            doc_size = (
+                raw_size if isinstance(raw_size, int) and not isinstance(raw_size, bool) else size
+            )
+            doc = {
+                "file_name": doc_name,
+                "file_type": str(result.get("file_type") or ""),
+                "file_size": doc_size,
+                "extracted_content": extracted,
+            }
+            return {
+                "id": doc_name,
+                "name": doc_name,
+                "mime_type": mime,
+                "size_bytes": doc_size,
+                "provider": "claude",
+                "claude_document": doc,
+            }
+        raise ClaudeCompatibilityError("Claude file upload returned no file identity")
 
     async def request(self, mode, **v):
         if mode in ("status", "models"):
@@ -332,12 +353,21 @@ class ClaudeClient:
             if pid:
                 await self.request("move_chat", conversation_id=cid, project_id=pid)
         yield {"type": "bound", "id": cid}
+        inline_docs = [
+            item["claude_document"]
+            for item in v.get("attachments", [])
+            if isinstance(item, dict) and isinstance(item.get("claude_document"), dict)
+        ]
         body = {
-            "prompt": v["prompt"],
+            "prompt": "" if v.get("action") == MessageAction.RETRY else v["prompt"],
             "model": model,
             "timezone": "UTC",
-            "attachments": v.get("original_attachments", []),
-            "files": [item["id"] for item in v.get("attachments", []) if item.get("id")],
+            "attachments": [*v.get("original_attachments", []), *inline_docs],
+            "files": [
+                item["id"]
+                for item in v.get("attachments", [])
+                if isinstance(item, dict) and item.get("id") and not item.get("claude_document")
+            ],
             "rendering_mode": "messages",
             "tools": [_WEB_SEARCH_TOOL.copy()],
         }

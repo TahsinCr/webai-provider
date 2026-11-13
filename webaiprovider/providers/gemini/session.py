@@ -21,6 +21,7 @@ GRAPHQL_PATH = "/_/BardChatUi/"
 GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
 RENAME_CONVERSATION_SIGNATURE = "2/AK6lUKXaLqlYDDOn9zA0qKcCFN+eXBsWI9SXBtcRr1o="
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="
+_RENAME_TIMEOUT = (10.0, 60.0)
 
 
 class GeminiSession:
@@ -190,6 +191,37 @@ class GeminiSession:
             f"{base}/xsrfToken",
         )
 
+    async def _graphql_post(self, payload, *, timeout=None):
+        endpoint, xsrf_endpoint = self.graphql_endpoints()
+        headers = {
+            **HEADERS,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Framework-XSRF-Token": self.token,
+        }
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        request_options = {"headers": headers, "data": body, "allow_redirects": False}
+        if timeout is not None:
+            request_options["timeout"] = timeout
+        response = await self.request("POST", endpoint, **request_options)
+        if response.status_code == 400 and self._has_xsrf_error(response):
+            token_options = {
+                "headers": {**HEADERS, "Accept": "text/plain"},
+                "allow_redirects": False,
+            }
+            if timeout is not None:
+                token_options["timeout"] = timeout
+            token_response = await self.request("GET", xsrf_endpoint, **token_options)
+            AsyncTransport.check(token_response)
+            token = token_response.text.strip()
+            if not token:
+                raise ProviderError("Gemini session validation token could not be refreshed")
+            self.token = token
+            request_options["headers"] = {**headers, "X-Framework-XSRF-Token": token}
+            response = await self.request("POST", endpoint, **request_options)
+        AsyncTransport.check(response)
+        return response
+
     async def rename_conversation(self, conversation_id, title):
         if not isinstance(title, str):
             raise ValueError("Gemini chat title must be text")
@@ -199,48 +231,13 @@ class GeminiSession:
         if self.http is None or not self.token:
             raise AccountPaused("Gemini session is not ready; reverify the account")
 
-        endpoint, xsrf_endpoint = self.graphql_endpoints()
-        headers = {
-            **HEADERS,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Framework-XSRF-Token": self.token,
-        }
-        body = json.dumps(
+        response = await self._graphql_post(
             {
                 "querySignature": RENAME_CONVERSATION_SIGNATURE,
                 "variables": {"conversationId": conversation_id, "title": title},
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
+            timeout=_RENAME_TIMEOUT,
         )
-        response = await self.request(
-            "POST",
-            endpoint,
-            headers=headers,
-            data=body,
-            allow_redirects=False,
-        )
-        if response.status_code == 400 and self._has_xsrf_error(response):
-            token_response = await self.request(
-                "GET",
-                xsrf_endpoint,
-                headers={**HEADERS, "Accept": "text/plain"},
-                allow_redirects=False,
-            )
-            AsyncTransport.check(token_response)
-            token = token_response.text.strip()
-            if not token:
-                raise ProviderError("Gemini session validation token could not be refreshed")
-            self.token = token
-            response = await self.request(
-                "POST",
-                endpoint,
-                headers={**headers, "X-Framework-XSRF-Token": token},
-                data=body,
-                allow_redirects=False,
-            )
-        AsyncTransport.check(response)
         result = self._decode_graphql(response.text)
         errors = result.get("errors")
         if errors:
@@ -299,51 +296,8 @@ class GeminiSession:
         from .catalogs import parse_model_catalog
         from .rpc import RPCPayload
 
-        endpoint, xsrf_endpoint = self.graphql_endpoints()
-        headers = {
-            **HEADERS,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Framework-XSRF-Token": self.token,
-        }
-        body = json.dumps(
-            {"querySignature": MODEL_CATALOG_SIGNATURE},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-
-        async def fetch_graphql():
-            res = await self.request(
-                "POST",
-                endpoint,
-                headers=headers,
-                data=body,
-                allow_redirects=False,
-            )
-            if res.status_code == 400 and self._has_xsrf_error(res):
-                token_response = await self.request(
-                    "GET",
-                    xsrf_endpoint,
-                    headers={**HEADERS, "Accept": "text/plain"},
-                    allow_redirects=False,
-                )
-                AsyncTransport.check(token_response)
-                token = token_response.text.strip()
-                if not token:
-                    raise ProviderError("Gemini session validation token could not be refreshed")
-                self.token = token
-                res = await self.request(
-                    "POST",
-                    endpoint,
-                    headers={**headers, "X-Framework-XSRF-Token": token},
-                    data=body,
-                    allow_redirects=False,
-                )
-            AsyncTransport.check(res)
-            return res
-
         response, rpc_response = await asyncio.gather(
-            fetch_graphql(),
+            self._graphql_post({"querySignature": MODEL_CATALOG_SIGNATURE}),
             self.batch([RPCPayload("otAQ7b", "[]")]),
         )
         result = self._decode_graphql(response.text)

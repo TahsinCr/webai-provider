@@ -166,8 +166,14 @@ def _messages(history, temporary=False):
                 + list(row.get("imageAttachments") or ())
                 + list(row.get("attachments") or ())
             ):
-                if isinstance(item, dict):
-                    fid = str(item.get("assetId") or item.get("id") or "")
+                if isinstance(item, str) and item:
+                    if item not in seen_ids:
+                        seen_ids.add(item)
+                        unique_files.append({"id": item, "name": "Attachment"})
+                elif isinstance(item, dict):
+                    fid = str(
+                        item.get("assetId") or item.get("fileMetadataId") or item.get("id") or ""
+                    )
                     if fid and fid not in seen_ids:
                         seen_ids.add(fid)
                         unique_files.append(item)
@@ -177,13 +183,18 @@ def _messages(history, temporary=False):
                 Content(
                     "resource",
                     resource=ResourceData(
-                        str(item.get("assetId") or item.get("id") or ""),
+                        str(
+                            item.get("assetId")
+                            or item.get("fileMetadataId")
+                            or item.get("id")
+                            or ""
+                        ),
                         str(item.get("name") or item.get("fileName") or "Attachment"),
                         item.get("mimeType") or item.get("fileMimeType"),
                     ),
                 )
                 for item in unique_files
-                if item.get("assetId") or item.get("id")
+                if item.get("assetId") or item.get("fileMetadataId") or item.get("id")
             )
             messages.append(
                 MessageData(

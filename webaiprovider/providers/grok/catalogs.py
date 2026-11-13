@@ -66,6 +66,7 @@ def parse_model_catalog(data, details) -> ModelCatalog:
         if isinstance(identifier, str) and identifier and isinstance(mode, str) and mode:
             by_mode.setdefault(mode, {})[identifier] = item
             by_id[identifier] = item
+            by_id.setdefault(identifier.replace(".", ""), item)
 
     models = []
     for item in data["modes"]:
@@ -101,13 +102,12 @@ def parse_model_catalog(data, details) -> ModelCatalog:
         advertised = advertised if advertised.casefold().startswith("grok ") else ""
         model_mode = item.get("modelMode")
         if not isinstance(model_mode, str) or not model_mode:
-            model_mode = _MODEL_MODES.get(model_id.casefold()) or by_id.get(model_id, {}).get(
-                "modelMode"
-            )
+            detail_entry = by_id.get(model_id) or by_id.get(model_id.replace(".", ""), {})
+            model_mode = _MODEL_MODES.get(model_id.casefold()) or detail_entry.get("modelMode")
         if isinstance(model_mode, str) and model_mode:
             metadata["modelMode"] = model_mode
         matches = by_mode.get(model_mode, {})
-        detail = matches.get(model_id)
+        detail = matches.get(model_id) or matches.get(model_id.replace(".", ""))
         if detail is None and len(matches) == 1:
             detail = next(iter(matches.values()))
         if detail is not None:
