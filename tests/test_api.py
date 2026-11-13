@@ -641,6 +641,183 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TypeError):
             type("IncompleteManageable", (ManageableCollection,), {})()
 
+    async def test_include_projects_paginates_all_pages_and_bounds_concurrency(self) -> None:
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class PaginatedProjectsProvider(AsyncChatGPTProvider):
+            def __init__(self, account, **options) -> None:
+                super().__init__(account, **options)
+                self.active_fetches = 0
+                self.max_active_fetches = 0
+                self.page_calls: list[tuple[str, str | None]] = []
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def list_projects(self, *, cursor: str | None = None):
+                projects = tuple(
+                    NativeProject(Origin("chatgpt", self.account_id, f"p-{idx}"), f"Project {idx}")
+                    for idx in range(1, 7)
+                )
+                return Page(projects, None)
+
+            async def list_chats(self, *, cursor: str | None = None):
+                return Page(
+                    (
+                        Conversation(Origin("chatgpt", self.account_id, "c-loose"), "Loose"),
+                        Conversation(Origin("chatgpt", self.account_id, "c-shared"), "Shared"),
+                    ),
+                    None,
+                )
+
+            async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+                self.page_calls.append((project_id, cursor))
+                self.active_fetches += 1
+                self.max_active_fetches = max(self.max_active_fetches, self.active_fetches)
+                try:
+                    await asyncio.sleep(0.01)
+                finally:
+                    self.active_fetches -= 1
+
+                p1 = NativeProject(Origin("chatgpt", self.account_id, "p-1"), "Project 1")
+                p2 = NativeProject(Origin("chatgpt", self.account_id, "p-2"), "Project 2")
+                if project_id == "p-1":
+                    if cursor is None:
+                        return Page(
+                            (
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-shared"),
+                                    "Shared",
+                                    project=p1,
+                                ),
+                            ),
+                            "p1-page-2",
+                        )
+                    if cursor == "p1-page-2":
+                        return Page(
+                            (
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-p1-2"),
+                                    "P1 Two",
+                                    project=p1,
+                                ),
+                            ),
+                            None,
+                        )
+                if project_id == "p-2":
+                    if cursor is None:
+                        return Page(
+                            (
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-p2-1"),
+                                    "P2 One",
+                                    project=p2,
+                                ),
+                            ),
+                            "p2-page-2",
+                        )
+                    if cursor == "p2-page-2":
+                        return Page(
+                            (
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-p2-1"),
+                                    "P2 One Dup",
+                                    project=p2,
+                                ),
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-p2-2"),
+                                    "P2 Two",
+                                    project=p2,
+                                ),
+                            ),
+                            "p2-page-3",
+                        )
+                    if cursor == "p2-page-3":
+                        return Page(
+                            (
+                                Conversation(
+                                    Origin("chatgpt", self.account_id, "c-p2-3"),
+                                    "P2 Three",
+                                    project=p2,
+                                ),
+                            ),
+                            None,
+                        )
+                return Page((), None)
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        async with PaginatedProjectsProvider(account) as provider:
+            chats = await provider.chats.refresh(include_projects=True)
+
+        self.assertLessEqual(provider.max_active_fetches, 4)
+        self.assertIn(("p-1", None), provider.page_calls)
+        self.assertIn(("p-1", "p1-page-2"), provider.page_calls)
+        self.assertIn(("p-2", None), provider.page_calls)
+        self.assertIn(("p-2", "p2-page-2"), provider.page_calls)
+        self.assertIn(("p-2", "p2-page-3"), provider.page_calls)
+        ids = [chat.remote_id for chat in chats]
+        self.assertEqual(ids, ["c-loose", "c-shared", "c-p1-2", "c-p2-1", "c-p2-2", "c-p2-3"])
+        shared = next(chat for chat in chats if chat.remote_id == "c-shared")
+        self.assertIsNotNone(shared.project)
+        assert shared.project is not None
+        self.assertEqual(shared.project.remote_id, "p-1")
+
+    async def test_include_projects_rejects_repeated_cursor_without_marking_loaded(self) -> None:
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class RepeatingCursorProvider(AsyncChatGPTProvider):
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def list_projects(self, *, cursor: str | None = None):
+                return Page(
+                    (
+                        NativeProject(Origin("chatgpt", self.account_id, "p-1"), "Alpha"),
+                        NativeProject(Origin("chatgpt", self.account_id, "p-2"), "Beta"),
+                    ),
+                    None,
+                )
+
+            async def list_chats(self, *, cursor: str | None = None):
+                return Page(
+                    (Conversation(Origin("chatgpt", self.account_id, "c-loose"), "Loose"),),
+                    None,
+                )
+
+            async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+                if project_id == "p-2":
+                    return Page(
+                        (
+                            Conversation(
+                                Origin("chatgpt", self.account_id, "c-p2"),
+                                "Loop Chat",
+                                project=NativeProject(
+                                    Origin("chatgpt", self.account_id, "p-2"), "Beta"
+                                ),
+                            ),
+                        ),
+                        "repeat-cursor",
+                    )
+                return Page((), None)
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        async with RepeatingCursorProvider(account) as provider:
+            with self.assertRaisesRegex(ProviderError, "cursor"):
+                await provider.chats.refresh(include_projects=True)
+            self.assertFalse(provider.chats._projects_loaded)
+
 
 class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_share_one_portal(self) -> None:

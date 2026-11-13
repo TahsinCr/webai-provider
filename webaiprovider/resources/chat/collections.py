@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ...provider import Provider
 
 _PROJECT_CHAT_CONCURRENCY = 4
+_MAX_PROJECT_CHAT_PAGES = 100
 
 
 def _chat_from_conversation(
@@ -103,18 +104,38 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
 
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
             assert project.remote_id is not None
+            chats: list[AsyncChat] = []
+            cursor: str | None = None
+            seen_cursors: set[str] = set()
             async with semaphore:
-                page = _require_conversation_page(
-                    await provider.list_project_chats(project.remote_id),
-                    label="project conversation",
-                )
-            chats = []
-            for item in page.items:
-                chat = _chat_from_conversation(item, self.session, project_map)
-                if chat.project is None:
-                    chat.project = project
-                chats.append(chat)
-            return chats
+                for _ in range(_MAX_PROJECT_CHAT_PAGES):
+                    raw_page = (
+                        await provider.list_project_chats(project.remote_id)
+                        if cursor is None
+                        else await provider.list_project_chats(project.remote_id, cursor=cursor)
+                    )
+                    page = _require_conversation_page(raw_page, label="project conversation")
+                    for item in page.items:
+                        chat = _chat_from_conversation(item, self.session, project_map)
+                        if chat.project is None:
+                            chat.project = project
+                        chats.append(chat)
+                    next_cursor = page.next_cursor
+                    if next_cursor is None:
+                        return _merge_chat_lists(chats, ())
+                    if (
+                        not isinstance(next_cursor, str)
+                        or not next_cursor
+                        or next_cursor in seen_cursors
+                    ):
+                        raise ProviderError(
+                            "Provider project chat pagination returned an invalid or repeating cursor"
+                        )
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+            raise ProviderError(
+                f"Provider project chat pagination exceeded {_MAX_PROJECT_CHAT_PAGES} pages"
+            )
 
         batches = await asyncio.gather(*(fetch_one(project) for project in project_map.values()))
         return project_map, [chat for batch in batches for chat in batch]
