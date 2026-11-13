@@ -233,15 +233,17 @@ def conversation(value, account_id, history=None):
     if not isinstance(identifier, str) or not identifier:
         raise ProviderError("Grok conversation response contract changed")
     workspaces = value.get("workspaces") or ()
-    project_id = value.get("workspaceId")
-    if not project_id and workspaces and isinstance(workspaces[0], dict):
-        project_id = workspaces[0].get("workspaceId") or workspaces[0].get("id")
+    first_ws = workspaces[0] if workspaces and isinstance(workspaces[0], dict) else {}
+    project_id = value.get("workspaceId") or first_ws.get("workspaceId") or first_ws.get("id")
+    project_name = first_ws.get("name") or value.get("workspaceName") or ""
     is_temporary = bool(value.get("temporary"))
     return Conversation(
         Origin("grok", account_id, identifier),
         value.get("title") or "Grok conversation",
         _messages(history, temporary=is_temporary) if history is not None else (),
-        project_id,
+        ProjectData(Origin("grok", account_id, project_id), str(project_name))
+        if project_id
+        else None,
         {
             "temporary": is_temporary,
             "created_at": value.get("createTime"),

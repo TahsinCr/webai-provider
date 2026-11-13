@@ -118,9 +118,11 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
         attachments=attachments,
         action=action,
         message_id=message_id,
-        temporary=bool(message.metadata.get("temporary", False)),
+        temporary=bool(chat.temporary or message.metadata.get("temporary", False)),
         conversation_id=chat.remote_id,
-        project_id=chat.project_id,
+        project_id=(chat.project.remote_id or chat.project.id)
+        if chat.project is not None
+        else None,
     )
 
 

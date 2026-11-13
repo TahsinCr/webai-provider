@@ -189,7 +189,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(projects.next_cursor, "next")
         self.assertEqual(detail.resources[0].id, "file-ref")
         self.assertEqual(detail.instructions, "Use concise answers.")
-        self.assertEqual(chats.items[0].project_id, "g-p-work")
+        self.assertIsNotNone(chats.items[0].project)
+        assert chats.items[0].project is not None
+        self.assertEqual(chats.items[0].project.origin.remote_id, "g-p-work")
         self.assertEqual(chats.next_cursor, "next-chat")
 
     def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):

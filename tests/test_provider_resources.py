@@ -123,7 +123,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         conversation = Conversation(
             Origin(account.provider, account.id, "chat-1"),
             "Project chat",
-            project_id="project-1",
+            project=NativeProject(Origin(account.provider, account.id, "project-1"), "Research"),
         )
         provider.list_project_chats.return_value = Page((conversation,), "cursor-2")
         await provider.open()
@@ -133,12 +133,18 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         page = await project.chats.refresh()
         self.assertEqual(page.items[0].remote_id, "chat-1")
         self.assertIs(page.items[0].session, provider)
+        self.assertIs(page.items[0].project, project)
         self.assertEqual(project.chats.next_cursor, "cursor-2")
 
         chat = AsyncGrokChat(title="Loose chat", session=provider, remote_id="chat-2")
+        self.assertIsNone(chat.project)
         await chat.move_to(project)
         provider.move_chat.assert_awaited_once_with("chat-2", "project-1")
-        self.assertEqual(chat.project_id, "project-1")
+        self.assertIsNotNone(chat.project)
+        assert chat.project is not None
+        self.assertEqual(chat.project.remote_id, "project-1")
+        with self.assertRaises(UnsupportedOperationError):
+            await chat.move_to(project)
 
     async def test_stream_maps_typed_events_and_remote_identity(self) -> None:
         stream_provider = StreamTestProvider(
@@ -243,6 +249,66 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1].id, "a-1")
         self.assertEqual(messages[1].role, "assistant")
         self.assertEqual(messages[1].content, "Hi there!")
+
+    async def test_chats_include_projects_and_temporary_flag(self) -> None:
+        from webaiprovider.async_provider import _prepare_operation
+
+        account = Account.from_cookies("chatgpt", {"session_token": "tok"})
+        provider = AsyncProvider(account)
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        project_alpha = NativeProject(Origin(account.provider, account.id, "proj-1"), "Alpha")
+        loose_conv = Conversation(Origin(account.provider, account.id, "chat-loose"), "Loose")
+        shared_conv = Conversation(
+            Origin(account.provider, account.id, "chat-shared"), "Shared In Main"
+        )
+        project_shared_conv = Conversation(
+            Origin(account.provider, account.id, "chat-shared"),
+            "Shared In Project",
+            project=project_alpha,
+        )
+        project_only_conv = Conversation(
+            Origin(account.provider, account.id, "chat-proj"),
+            "Project Only",
+            project=project_alpha,
+        )
+        provider.list_chats = AsyncMock(return_value=Page((loose_conv, shared_conv), None))
+        provider.list_projects = AsyncMock(return_value=Page((project_alpha,), None))
+        provider.list_project_chats = AsyncMock(
+            return_value=Page((project_shared_conv, project_only_conv), None)
+        )
+        await provider.open()
+        self.addAsyncCleanup(provider.close)
+
+        main_page = await provider.chats.refresh()
+        self.assertEqual([c.remote_id for c in main_page], ["chat-loose", "chat-shared"])
+        self.assertTrue(all(c.project is None for c in main_page))
+        provider.list_projects.assert_not_awaited()
+        provider.list_project_chats.assert_not_awaited()
+        self.assertEqual(await provider.chats.search("Project Only"), [])
+
+        all_page = await provider.chats.refresh(include_projects=True)
+        self.assertEqual(
+            [c.remote_id for c in all_page],
+            ["chat-loose", "chat-shared", "chat-proj"],
+        )
+        provider.list_projects.assert_awaited()
+        provider.list_project_chats.assert_awaited_with("proj-1")
+        shared = await provider.chats.get("chat-shared", include_projects=True)
+        self.assertEqual(shared.title, "Shared In Project")
+        self.assertIsNotNone(shared.project)
+        assert shared.project is not None
+        self.assertEqual(shared.project.remote_id, "proj-1")
+        self.assertEqual(shared.project.title, "Alpha")
+        matches = await provider.chats.search("Project Only", include_projects=True)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].remote_id, "chat-proj")
+
+        temp_chat = await provider.chats.create("Incognito", temporary=True)
+        self.assertTrue(temp_chat.temporary)
+        op = temp_chat.messages.create("secret")
+        request = await _prepare_operation(op, provider)
+        self.assertTrue(request.temporary)
 
 
 if __name__ == "__main__":

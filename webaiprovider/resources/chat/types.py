@@ -5,6 +5,7 @@ from typing import Any
 
 from ..common import Origin
 from ..message.types import MessageData
+from ..project.types import ProjectData
 
 
 @dataclass(frozen=True)
@@ -12,5 +13,5 @@ class Conversation:
     origin: Origin
     title: str
     messages: tuple[MessageData, ...] = ()
-    project_id: str | None = None
+    project: ProjectData | None = None
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)

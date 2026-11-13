@@ -11,7 +11,7 @@ from ...collections import (
 )
 from ...errors import ProviderError
 from ..attachment import Attachment
-from ..chat.chat import AsyncChat
+from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
 from ..message.attachments import Attachments
 from ..message.message import AsyncMessage, Message
@@ -44,6 +44,12 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
             raise ProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
             self.chat.title = conversation.title
+        if conversation.project is not None:
+            resolved_project = _project_from_data(session, conversation.project)
+            if self.chat.project is None:
+                self.chat.project = resolved_project
+            elif conversation.project.name and not self.chat.project.title:
+                self.chat.project.title = conversation.project.name
         messages = [
             AsyncMessage(
                 content="\n".join(

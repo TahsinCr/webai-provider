@@ -110,7 +110,7 @@ class Notebooks:
                 Conversation(
                     Origin("gemini", self.account_id, row[0]),
                     row[1],
-                    project_id=remote,
+                    project=ProjectData(Origin("gemini", self.account_id, remote), ""),
                     metadata={"native": row},
                 )
             )

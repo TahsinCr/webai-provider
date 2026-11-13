@@ -10,6 +10,7 @@ from ...resources.message.types import (
     MessageData,
     actions_for,
 )
+from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 
@@ -110,12 +111,13 @@ def conversations(pages, origin):
             cid, title = nested(row, 0), nested(row, 1)
             if not isinstance(cid, str) or not cid.startswith("c_"):
                 continue
+            pid = nested(row, 7)
             result[cid] = Conversation(
                 origin(cid),
                 title or "Gemini sohbeti",
-                project_id=(
-                    nested(row, 7)
-                    if isinstance(nested(row, 7), str) and nested(row, 7).startswith("notebooks/")
+                project=(
+                    ProjectData(origin(pid), "")
+                    if isinstance(pid, str) and pid.startswith("notebooks/")
                     else None
                 ),
                 metadata={

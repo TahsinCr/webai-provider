@@ -57,7 +57,9 @@ class ClaudeRecordsTests(unittest.TestCase):
         }
         value = conversation(data, "account")
         self.assertEqual(value.origin.provider_id, "claude")
-        self.assertEqual(value.project_id, PROJECT)
+        self.assertIsNotNone(value.project)
+        assert value.project is not None
+        self.assertEqual(value.project.origin.remote_id, PROJECT)
         self.assertEqual(value.messages[-2].channel, "analysis")
         self.assertEqual(value.messages[-1].content[0].text, "Answer")
         self.assertEqual(value.messages[1].content[0].resource.name, "reference.pdf")
@@ -279,7 +281,9 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_and_project_queries_use_scoped_transport(self):
         self.provider.client.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
         result = await self.provider.list_project_chats(PROJECT)
-        self.assertEqual(result.items[0].project_id, PROJECT)
+        self.assertIsNotNone(result.items[0].project)
+        assert result.items[0].project is not None
+        self.assertEqual(result.items[0].project.origin.remote_id, PROJECT)
         self.provider.client.request.assert_awaited_once_with("project_chats", project_id=PROJECT)
 
     async def test_chatgpt_project_option_is_not_exposed_by_claude(self):

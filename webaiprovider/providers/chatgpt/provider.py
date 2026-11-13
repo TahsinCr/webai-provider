@@ -25,10 +25,17 @@ from ...errors import (
     FeatureUnavailable,
     ProviderError,
     RateLimited,
+    UnsupportedOperationError,
 )
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType
-from ...resources.chat.chat import BranchableChat, Chat, MovableChat
+from ...resources.chat.chat import (
+    AsyncChat,
+    BranchableChat,
+    Chat,
+    MovableChat,
+    _resolve_project_arg,
+)
 from ...resources.chat.types import Conversation
 from ...resources.common import (
     Origin,
@@ -49,7 +56,7 @@ from ...resources.message.types import (
 )
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import ProjectsCollection
-from ...resources.project.project import Project
+from ...resources.project.project import AsyncProject, Project
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport, PortalTransport, ThreadedTransport
 from ...utils.timing import current_send_timing
@@ -512,11 +519,12 @@ class AsyncChatGPTProvider(AsyncProvider):
             ):
                 generation["started_at"] = started_at
             metadata["generation"] = generation
+        pid = project_id(raw)
         return Conversation(
             Origin(self.id, self.account_id, remote_id),
             raw.get("title") or "Untitled",
             tuple(messages),
-            project_id=project_id(raw),
+            project=ProjectData(Origin(self.id, self.account_id, pid), "") if pid else None,
             metadata=metadata,
         )
 
@@ -744,6 +752,34 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             await asyncio.to_thread(move)
 
+    async def move_project_chat(
+        self, chat: AsyncChat | str, project: AsyncProject | str | None
+    ) -> AsyncChat:
+        """Move a ChatGPT chat that already belongs to a project into another project or detach it."""
+        target_chat = (
+            chat
+            if isinstance(chat, AsyncChat)
+            else await self.chats.get(chat, include_projects=True)
+        )
+        if target_chat.session is not self:
+            raise ValueError("Chat must belong to this ChatGPT provider session")
+        if target_chat.project is None:
+            raise UnsupportedOperationError(
+                "Chat does not belong to a project; use chat.move_to(project) instead"
+            )
+        target_project = _resolve_project_arg(self, project)
+        if target_project is not None and target_chat.remote_id and not target_project.remote_id:
+            raise UnsupportedOperationError(
+                "A remote chat cannot be moved into a project that is not persisted remotely"
+            )
+        target_id = (
+            (target_project.remote_id or target_project.id) if target_project is not None else None
+        )
+        if target_chat.remote_id:
+            await self.move_chat(target_chat.remote_id, target_id)
+        target_chat.project = target_project
+        return target_chat
+
     async def _stream_request(self, request: ProviderRequest):
         loop = asyncio.get_running_loop()
         queue = asyncio.Queue(maxsize=32)
@@ -966,3 +1002,16 @@ class ChatGPTProvider(Provider):
     async_provider_type = AsyncChatGPTProvider
     chat_wrapper_type = ChatGPTChat
     projects_collection_type = ChatGPTProjectsCollection
+
+    def move_project_chat(
+        self,
+        chat: Chat | AsyncChat | str,
+        project: Project | AsyncProject | str | None,
+    ) -> Chat:
+        """Move a ChatGPT chat that already belongs to a project into another project or detach it."""
+        raw_chat = chat._resource if isinstance(chat, Chat) else chat
+        raw_project = project._resource if isinstance(project, Project) else project
+        updated = self._call(
+            cast(AsyncChatGPTProvider, self._provider).move_project_chat(raw_chat, raw_project)
+        )
+        return self._wrap_chat(updated)

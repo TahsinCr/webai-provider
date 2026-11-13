@@ -6,6 +6,7 @@ import re
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -166,6 +167,27 @@ def select_account(accounts: tuple[LiveAccount, ...], provider: str, alias: str)
     return matches[0]
 
 
+@contextmanager
+def _credentials_lock(path: Path):
+    _ensure_private_directory(path.parent)
+    if os.name != "posix":
+        yield
+        return
+    import fcntl
+
+    lock_path = path.with_name(".credentials.lock")
+    flags = os.O_RDWR | os.O_CREAT | (getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def load_or_import_account(
     provider: str,
     alias: str = "",
@@ -183,67 +205,67 @@ def load_or_import_account(
     if refresh and alias != "default-browser":
         raise SafetyError("Automatic cookie refresh is limited to the default-browser account")
 
-    _ensure_private_directory(path.parent)
-    if require_ignored:
-        _require_ignored(path)
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        data: dict[str, Any] = {"version": 1, "accounts": []}
-    else:
-        data = read_private_json(path, require_ignored=False)
-    accounts = parse_accounts(data)
-    matching = [item for item in accounts if item.provider == provider]
-    replacing = False
-    if alias:
-        selected = [item for item in matching if item.alias == alias]
-        if selected:
-            if not refresh:
-                return select_account(accounts, provider, alias)
-            replacing = True
-        if matching:
-            if not selected:
-                raise SafetyError("The selected provider account alias is not configured")
-    elif matching:
-        if len(matching) == 1:
-            return matching[0]
-        raise SafetyError("Select one provider account with WEBAI_LIVE_ACCOUNT")
-
-    account_alias = alias or "default-browser"
-    try:
-        from webaiprovider.accounts.account import Account
-        from webaiprovider.accounts.filters import ProviderCookieFilter
-
-        account = Account.from_browser(
-            provider,
-            browser=browser,
-            id=account_alias,
-            name=f"{provider.capitalize()} default browser",
-        )
-        credentials = ProviderCookieFilter.filter_cookies(
-            _PROVIDER_ORIGINS[provider], account.store().load()
-        )
-    except Exception as error:
-        raise SafetyError(
-            f"Could not import {provider} credentials from the default browser "
-            f"({type(error).__name__}); details suppressed"
-        ) from None
-    if not isinstance(credentials, dict) or not credentials:
-        raise SafetyError(f"No {provider} session cookies were found in the default browser")
-
-    record = {"id": account_alias, "provider": provider, "credentials": credentials}
-    if replacing:
-        for index, existing in enumerate(data["accounts"]):
-            if (
-                isinstance(existing, dict)
-                and existing.get("id") == account_alias
-                and str(existing.get("provider", "")).casefold() == provider
-            ):
-                data["accounts"][index] = record
-                break
+    with _credentials_lock(path):
+        if require_ignored:
+            _require_ignored(path)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            data: dict[str, Any] = {"version": 1, "accounts": []}
         else:
-            raise SafetyError("The selected browser account changed during cookie refresh")
-    else:
-        data["accounts"].append(record)
-    _write_private_json(path, data, require_ignored=require_ignored)
-    return LiveAccount(account_alias, provider, credentials)
+            data = read_private_json(path, require_ignored=False)
+        accounts = parse_accounts(data)
+        matching = [item for item in accounts if item.provider == provider]
+        replacing = False
+        if alias:
+            selected = [item for item in matching if item.alias == alias]
+            if selected:
+                if not refresh:
+                    return select_account(accounts, provider, alias)
+                replacing = True
+            if matching:
+                if not selected:
+                    raise SafetyError("The selected provider account alias is not configured")
+        elif matching:
+            if len(matching) == 1:
+                return matching[0]
+            raise SafetyError("Select one provider account with WEBAI_LIVE_ACCOUNT")
+
+        account_alias = alias or "default-browser"
+        try:
+            from webaiprovider.accounts.account import Account
+            from webaiprovider.accounts.filters import ProviderCookieFilter
+
+            account = Account.from_browser(
+                provider,
+                browser=browser,
+                id=account_alias,
+                name=f"{provider.capitalize()} default browser",
+            )
+            credentials = ProviderCookieFilter.filter_cookies(
+                _PROVIDER_ORIGINS[provider], account.store().load()
+            )
+        except Exception as error:
+            raise SafetyError(
+                f"Could not import {provider} credentials from the default browser "
+                f"({type(error).__name__}); details suppressed"
+            ) from None
+        if not isinstance(credentials, dict) or not credentials:
+            raise SafetyError(f"No {provider} session cookies were found in the default browser")
+
+        record = {"id": account_alias, "provider": provider, "credentials": credentials}
+        if replacing:
+            for index, existing in enumerate(data["accounts"]):
+                if (
+                    isinstance(existing, dict)
+                    and existing.get("id") == account_alias
+                    and str(existing.get("provider", "")).casefold() == provider
+                ):
+                    data["accounts"][index] = record
+                    break
+            else:
+                raise SafetyError("The selected browser account changed during cookie refresh")
+        else:
+            data["accounts"].append(record)
+        _write_private_json(path, data, require_ignored=require_ignored)
+        return LiveAccount(account_alias, provider, credentials)

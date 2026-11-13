@@ -690,6 +690,97 @@ class TestSyncApi(unittest.TestCase):
         self.assertTrue(provider._provider.thread_ids)
         self.assertEqual(len(set(provider._provider.thread_ids)), 1)
 
+    def test_sync_include_projects_and_chatgpt_move_project_chat(self) -> None:
+        from webaiprovider.collections import Page
+        from webaiprovider.errors import UnsupportedOperationError
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class RecordingChatGPTProvider(AsyncChatGPTProvider):
+            def __init__(self, account: Account, **options) -> None:
+                super().__init__(account, **options)
+                self.moved: list[tuple[str, str | None]] = []
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def list_projects(self, *, cursor: str | None = None):
+                return Page(
+                    (
+                        NativeProject(Origin("chatgpt", self.account_id, "p-1"), "Alpha"),
+                        NativeProject(Origin("chatgpt", self.account_id, "p-2"), "Beta"),
+                    ),
+                    None,
+                )
+
+            async def list_chats(self, *, cursor: str | None = None):
+                return Page(
+                    (Conversation(Origin("chatgpt", self.account_id, "c-loose"), "Loose"),),
+                    None,
+                )
+
+            async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+                if project_id == "p-1":
+                    return Page(
+                        (
+                            Conversation(
+                                Origin("chatgpt", self.account_id, "c-proj"),
+                                "Proj Chat",
+                                project=NativeProject(
+                                    Origin("chatgpt", self.account_id, "p-1"), "Alpha"
+                                ),
+                            ),
+                        ),
+                        None,
+                    )
+                return Page((), None)
+
+            async def move_chat(self, conversation_id: str, project_id: str | None) -> None:
+                self.moved.append((conversation_id, project_id))
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        with patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider):
+            with ChatGPTProvider(account) as provider:
+                self.assertEqual(provider.chats.search("Proj Chat"), [])
+                found = provider.chats.search("Proj Chat", include_projects=True)
+                self.assertEqual(len(found), 1)
+                self.assertIsNotNone(found[0].project)
+                assert found[0].project is not None
+                self.assertEqual(found[0].project.remote_id, "p-1")
+                self.assertEqual(found[0].project.title, "Alpha")
+
+                loose = provider.chats.get("c-loose")
+                self.assertIsNone(loose.project)
+                p1 = provider.projects.get("p-1")
+                p2 = provider.projects.get("p-2")
+
+                with self.assertRaises(UnsupportedOperationError):
+                    provider.move_project_chat(loose, p1)
+
+                loose.move_to(p1)
+                self.assertIsNotNone(loose.project)
+                assert loose.project is not None
+                self.assertEqual(loose.project.remote_id, "p-1")
+
+                with self.assertRaises(UnsupportedOperationError):
+                    loose.move_to(p2)
+
+                moved = provider.move_project_chat(loose, p2)
+                self.assertIsNotNone(moved.project)
+                assert moved.project is not None
+                self.assertEqual(moved.project.remote_id, "p-2")
+
+                detached = provider.move_project_chat(moved, None)
+                self.assertIsNone(detached.project)
+                self.assertEqual(
+                    provider._provider.moved,
+                    [("c-loose", "p-1"), ("c-loose", "p-2"), ("c-loose", None)],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

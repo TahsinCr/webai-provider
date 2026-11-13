@@ -10,7 +10,7 @@ from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from .actions import ActionGate
 from .config import LiveAccount
 from .errors import CleanupError, LiveApiError, SafetyError
-from .journal import CLEANUP_FILE, write_cleanup_state
+from .journal import _DEFAULT_CLEANUP_FILE, CLEANUP_FILE, cleanup_file, write_cleanup_state
 
 
 def _safe_error_label(exc: Exception) -> str:
@@ -67,7 +67,9 @@ class LiveContext:
                 f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
                 f"{_safe_error_label(exc)}; provider details suppressed"
             ) from None
-        self.results.append((label, round((time.monotonic() - started) * 1000)))
+        elapsed = round((time.monotonic() - started) * 1000)
+        self.results.append((label, elapsed))
+        print(f"PASS  {label}  {elapsed} ms", flush=True)
         return value
 
     async def call_async(
@@ -85,14 +87,26 @@ class LiveContext:
                 f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
                 f"{_safe_error_label(exc)}; provider details suppressed"
             ) from None
-        self.results.append((label, round((time.monotonic() - started) * 1000)))
+        elapsed = round((time.monotonic() - started) * 1000)
+        self.results.append((label, elapsed))
+        print(f"PASS  {label}  {elapsed} ms", flush=True)
         return value
 
     def skip(self, label: str) -> None:
         self.skipped.append(label)
 
+    def _cleanup_path(self):
+        return (
+            cleanup_file(self.account.provider)
+            if CLEANUP_FILE == _DEFAULT_CLEANUP_FILE
+            else CLEANUP_FILE
+        )
+
     def save(self) -> None:
-        write_cleanup_state(self.state)
+        if CLEANUP_FILE == _DEFAULT_CLEANUP_FILE:
+            write_cleanup_state(self.state, provider=self.account.provider)
+        else:
+            write_cleanup_state(self.state)
 
     def new_remote(self, kind: str, marker: str) -> dict[str, Any]:
         entry = {"kind": kind, "markers": [marker], "remote_id": None, "attempted": False}
@@ -130,7 +144,7 @@ class LiveContext:
             )
         self.state["resources"].clear()
         try:
-            CLEANUP_FILE.unlink()
+            self._cleanup_path().unlink()
         except FileNotFoundError:
             pass
 
@@ -278,7 +292,7 @@ class LiveContext:
             self.save()
         else:
             try:
-                CLEANUP_FILE.unlink()
+                self._cleanup_path().unlink()
             except FileNotFoundError:
                 pass
 
@@ -299,8 +313,9 @@ class LiveContext:
             ) from None
 
     def print_report(self) -> None:
-        for label, milliseconds in self.results:
-            print(f"PASS  {label}  {milliseconds} ms")
         for label in self.skipped:
-            print(f"SKIP  {label}")
-        print(f"Completed {self.account.provider} live API checks; {self.gate.calls} actions.")
+            print(f"SKIP  {label}", flush=True)
+        print(
+            f"Completed {self.account.provider} live API checks; {self.gate.calls} actions.",
+            flush=True,
+        )

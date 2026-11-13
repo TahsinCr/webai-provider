@@ -14,6 +14,27 @@ import run_tests
 from tests.live.support.config import PROVIDERS
 
 
+def _fake_popen_factory(returncodes: list[int] | None = None):
+    codes = list(returncodes or [])
+    calls: list[dict[str, object]] = []
+
+    class FakeStdout(io.StringIO):
+        def close(self) -> None:
+            pass
+
+    class FakePopen:
+        def __init__(self, command, **kwargs) -> None:
+            calls.append({"args": (command,), "kwargs": kwargs})
+            self.stdout = FakeStdout("ok\n")
+            self._returncode = codes.pop(0) if codes else 0
+
+        def wait(self) -> int:
+            return self._returncode
+
+    FakePopen.calls = calls
+    return FakePopen
+
+
 class TestRunnerTests(unittest.TestCase):
     def test_offline_runner_filters_live_package(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -35,59 +56,68 @@ class TestRunnerTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("tests.test_") for item in ids))
         self.assertFalse(any(item.startswith("tests.live.") for item in ids))
 
-    def test_default_live_matrix_covers_each_provider_with_both_apis(self) -> None:
+    def test_default_live_matrix_covers_each_provider_with_async_api(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 run_live_tests._matrix(),
-                tuple(
-                    (provider, api) for provider in sorted(PROVIDERS) for api in ("async", "sync")
-                ),
+                tuple((provider, "async") for provider in sorted(PROVIDERS)),
             )
 
-    def test_live_runner_runs_offline_suite_before_provider_matrix(self) -> None:
+    def test_live_runner_runs_offline_suite_before_parallel_provider_matrix(self) -> None:
         result = CompletedProcess([], 0)
+        popen_cls = _fake_popen_factory([0] * len(PROVIDERS))
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
-                patch("run_live_tests.subprocess.run", side_effect=[result] * 9) as run,
+                patch("run_live_tests.subprocess.run", return_value=result) as run,
+                patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
                 patch("run_live_tests.time.sleep"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(run_live_tests.main(), 0)
 
-        calls = run.call_args_list
-        self.assertEqual(len(calls), 9)
-        self.assertTrue(calls[0].args[0][1].endswith("run_tests.py"))
-        self.assertEqual(calls[1].args[0][2:6], ["unittest", "discover", "-s", "tests/live"])
-        self.assertEqual(calls[1].args[0][-3:], ["-p", "test_*.py", "-v"])
-        self.assertEqual(calls[1].kwargs["env"]["WEBAI_LIVE_TESTS"], "1")
-        self.assertEqual(calls[-1].kwargs["env"]["WEBAI_LIVE_PROVIDER"], "grok")
-        self.assertEqual(calls[-1].kwargs["env"]["WEBAI_LIVE_API"], "sync")
+        self.assertEqual(run.call_count, 1)
+        self.assertTrue(run.call_args.args[0][1].endswith("run_tests.py"))
+        self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
+        first_call = popen_cls.calls[0]
+        self.assertEqual(first_call["args"][0][2:6], ["unittest", "discover", "-s", "tests/live"])
+        self.assertEqual(first_call["args"][0][-3:], ["-p", "test_*.py", "-v"])
+        self.assertEqual(first_call["kwargs"]["env"]["WEBAI_LIVE_TESTS"], "1")
+        seen_pairs = {
+            (
+                call["kwargs"]["env"]["WEBAI_LIVE_PROVIDER"],
+                call["kwargs"]["env"]["WEBAI_LIVE_API"],
+            )
+            for call in popen_cls.calls
+        }
+        self.assertEqual(seen_pairs, {(provider, "async") for provider in PROVIDERS})
 
     def test_live_runner_continues_api_matrix_after_failures(self) -> None:
-        results = [CompletedProcess([], 0), CompletedProcess([], 1), *[CompletedProcess([], 0)] * 7]
+        result = CompletedProcess([], 0)
+        popen_cls = _fake_popen_factory([1, 0, 0, 0])
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
-                patch("run_live_tests.subprocess.run", side_effect=results) as run,
+                patch("run_live_tests.subprocess.run", return_value=result),
+                patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
                 patch("run_live_tests.time.sleep"),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 self.assertEqual(run_live_tests.main(), 1)
 
-        calls = run.call_args_list
-        self.assertEqual(len(calls), 9)
-        self.assertNotIn("-f", calls[1].args[0])
-        self.assertEqual(
-            [
-                (call.kwargs["env"]["WEBAI_LIVE_PROVIDER"], call.kwargs["env"]["WEBAI_LIVE_API"])
-                for call in calls[1:]
-            ],
-            [(provider, api) for provider in sorted(PROVIDERS) for api in ("async", "sync")],
-        )
+        self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
+        self.assertNotIn("-f", popen_cls.calls[0]["args"][0])
+        seen_pairs = {
+            (
+                call["kwargs"]["env"]["WEBAI_LIVE_PROVIDER"],
+                call["kwargs"]["env"]["WEBAI_LIVE_API"],
+            )
+            for call in popen_cls.calls
+        }
+        self.assertEqual(seen_pairs, {(provider, "async") for provider in PROVIDERS})
 
     def test_live_matrix_can_be_narrowed_to_one_provider_and_api(self) -> None:
         with patch.dict(

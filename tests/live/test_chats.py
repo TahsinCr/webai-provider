@@ -19,3 +19,20 @@ class AsyncChatApiTests(LiveAsyncTestCase):
             self.skipTest("Provider does not expose chats")
         chats = await self.call_api("chats.list_metadata", self.context.session.chats.refresh)
         self.assertIsInstance(chats, list)
+        self.assertTrue(all(chat.project is None for chat in chats))
+
+        if Capability.PROJECTS in self.context.session.capabilities:
+            all_chats = await self.call_api(
+                "chats.list_include_projects",
+                lambda: self.context.session.chats.refresh(include_projects=True),
+            )
+            self.assertIsInstance(all_chats, list)
+            absent = await self.call_api(
+                "chats.search_include_projects",
+                lambda: self.context.session.chats.search(
+                    "__webai_absent__", include_projects=True
+                ),
+            )
+            self.assertEqual(absent, [])
+        else:
+            self.context.skip("chats.include_projects: unsupported")

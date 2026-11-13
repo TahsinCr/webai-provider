@@ -61,7 +61,7 @@ class QueryableCollection(Generic[T], ABC):
     @classmethod
     def _get_from(cls, items: Sequence[T], item_id: str) -> T:
         for it in items:
-            if cls._extract_id(it) == item_id:
+            if cls._extract_id(it) == item_id or getattr(it, "remote_id", None) == item_id:
                 return it
         raise RemoteNotFound(f"Record was not found: {item_id}")
 
@@ -76,7 +76,11 @@ class QueryableCollection(Generic[T], ABC):
         endswith: bool = False,
     ) -> T:
         if not (startswith or endswith):
-            exact_id = [it for it in items if cls._extract_id(it) == query]
+            exact_id = [
+                it
+                for it in items
+                if cls._extract_id(it) == query or getattr(it, "remote_id", None) == query
+            ]
             if len(exact_id) == 1:
                 return exact_id[0]
 

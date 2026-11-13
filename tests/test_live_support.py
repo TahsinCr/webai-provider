@@ -836,3 +836,13 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 1)
         self.assertTrue(released)
+
+
+class PerProviderIsolationTests(unittest.TestCase):
+    def test_cleanup_and_lock_files_are_isolated_per_provider(self) -> None:
+        from tests.live.support.journal import cleanup_file, lock_file
+
+        self.assertNotEqual(cleanup_file("chatgpt"), cleanup_file("grok"))
+        self.assertNotEqual(lock_file("chatgpt"), lock_file("grok"))
+        self.assertEqual(cleanup_file("chatgpt").name, "live-cleanup-chatgpt.json")
+        self.assertEqual(lock_file("grok").name, "live-run-grok.lock")

@@ -191,11 +191,14 @@ def conversation(value, account_id):
             pending_files = ()
             pending_sources = ()
     flush_files()
+    raw_project = value.get("project") if isinstance(value.get("project"), dict) else {}
+    pid = value.get("project_uuid") or raw_project.get("uuid")
+    pname = raw_project.get("name") or value.get("project_name") or ""
     return Conversation(
         Origin("claude", account_id, value["uuid"]),
         value.get("name") or "Claude sohbeti",
         tuple(messages),
-        value.get("project_uuid"),
+        ProjectData(Origin("claude", account_id, pid), str(pname)) if pid else None,
         {"native": {k: v for k, v in value.items() if k != "chat_messages"}},
     )
 

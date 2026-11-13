@@ -33,7 +33,11 @@ class AsyncProjectChatsCollection(AsyncQueryableCollection[AsyncChat]):
             not isinstance(item, Conversation) for item in page.items
         ):
             raise ProviderError("Provider returned an invalid project conversation page")
-        chats = tuple(_chat_from_conversation(item, session) for item in page.items)
+        project_map = {self.project.remote_id: self.project} if self.project.remote_id else {}
+        chats = tuple(_chat_from_conversation(item, session, project_map) for item in page.items)
+        for chat in chats:
+            if chat.project is None:
+                chat.project = self.project
         if cursor is None:
             self._items = list(chats)
         else:

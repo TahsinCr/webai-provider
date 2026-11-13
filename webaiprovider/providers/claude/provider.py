@@ -189,11 +189,10 @@ class AsyncClaudeProvider(AsyncProvider):
     async def list_projects(self, cursor=None):
         if cursor:
             raise ValueError("Claude project listing does not use a cursor")
-        async with self._gate:
-            values = await self.client.request("projects")
-            if not isinstance(values, list):
-                raise ClaudeCompatibilityError("Claude project list response changed")
-            return Page(tuple(project(x, self.account_id) for x in values))
+        values = await self.client.request("projects")
+        if not isinstance(values, list):
+            raise ClaudeCompatibilityError("Claude project list response changed")
+        return Page(tuple(project(x, self.account_id) for x in values))
 
     async def get_project(self, project_id):
         return project(await self.client.request("project", project_id=project_id), self.account_id)
@@ -201,15 +200,12 @@ class AsyncClaudeProvider(AsyncProvider):
     async def list_project_chats(self, project_id, cursor=None):
         if cursor:
             raise ValueError("Claude project conversation listing does not use a cursor")
-        async with self._gate:
-            values = await self.client.request("project_chats", project_id=project_id)
-            if not isinstance(values, list):
-                raise ClaudeCompatibilityError("Claude project conversation response changed")
-            return Page(
-                tuple(
-                    conversation(dict(x, project_uuid=project_id), self.account_id) for x in values
-                )
-            )
+        values = await self.client.request("project_chats", project_id=project_id)
+        if not isinstance(values, list):
+            raise ClaudeCompatibilityError("Claude project conversation response changed")
+        return Page(
+            tuple(conversation(dict(x, project_uuid=project_id), self.account_id) for x in values)
+        )
 
     async def create_project(self, name, instructions=""):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:

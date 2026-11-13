@@ -594,7 +594,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             origin=None,
             title="Chat",
             messages=(),
-            project_id=None,
+            project=None,
             metadata={},
         )
 

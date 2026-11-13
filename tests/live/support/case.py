@@ -12,7 +12,7 @@ from .context import LiveContext
 from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_state
 
-_ACTION_GATE = ActionGate(limit=32)
+_ACTION_GATE = ActionGate(limit=64)
 _FAILED_SESSION_OPENS: set[tuple[str, str]] = set()
 
 
@@ -55,7 +55,7 @@ class LiveSession:
         alias = os.environ.get("WEBAI_LIVE_ACCOUNT", "")
         if self.api not in {"async", "sync"}:
             raise SafetyError("WEBAI_LIVE_API must be sync or async")
-        self.lock = RunLock()
+        self.lock = RunLock(provider)
         self.lock.__enter__()
         try:
             account = load_or_import_account(
@@ -63,7 +63,7 @@ class LiveSession:
                 alias,
                 browser=os.environ.get("WEBAI_LIVE_BROWSER"),
             )
-            state = read_cleanup_state()
+            state = read_cleanup_state(provider)
             recover = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
             if state and (state["provider"] != provider or state["account"] != account.alias):
                 raise SafetyError("Pending cleanup belongs to a different account")

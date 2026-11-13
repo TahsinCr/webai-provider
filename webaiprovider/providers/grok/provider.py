@@ -225,7 +225,7 @@ class AsyncGrokProvider(AsyncProvider):
                 chat.origin,
                 chat.title,
                 chat.messages,
-                chat.project_id,
+                chat.project,
                 {**chat.metadata, "generation": {"active": True}},
             )
         return chat
@@ -318,10 +318,10 @@ class AsyncGrokProvider(AsyncProvider):
     async def move_chat(self, conversation_id, project_id):
         metadata = await self._conversation_metadata(conversation_id)
         chat = conversation(metadata, self.account_id)
-        if chat.project_id == project_id:
+        old_project = chat.project.origin.remote_id if chat.project is not None else None
+        if old_project == project_id:
             return
         conversation_path = "/conversations/" + remote_id(conversation_id)
-        old_project = chat.project_id
         if project_id:
             await self.client.request(
                 "POST",
@@ -348,7 +348,11 @@ class AsyncGrokProvider(AsyncProvider):
                 raise
         for _ in range(5):
             metadata = await self._conversation_metadata(conversation_id)
-            if conversation(metadata, self.account_id).project_id == project_id:
+            updated = conversation(metadata, self.account_id)
+            updated_project = (
+                updated.project.origin.remote_id if updated.project is not None else None
+            )
+            if updated_project == project_id:
                 return
             await asyncio.sleep(0.2)
         raise ProviderError(
