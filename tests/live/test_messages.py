@@ -277,14 +277,25 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         entry=branch_entry,
                     )
                     if branched.remote_id and branched.remote_id != chat.remote_id:
-                        self.context.record_chat_id(branch_entry, branched)
-                        await self.call_api(
-                            "chats.rename_branched", lambda: branched.rename(branch_marker)
+                        pending_branch = isinstance(
+                            (branched.metadata or {}).get("pending_branch"), dict
                         )
+                        if pending_branch:
+                            excluded = branch_entry.setdefault("exclude_ids", [])
+                            preview_id = str(branched.remote_id)
+                            if preview_id not in excluded:
+                                excluded.append(preview_id)
+                            branch_entry["attempted"] = False
+                            self.context.save()
+                        else:
+                            self.context.record_chat_id(branch_entry, branched)
                         branch_op = branched.messages.create(
                             f"{branch_marker} Branch check: reply with BRANCH.",
                             model=Models.LOW,
                         )
+                        if pending_branch:
+                            branch_entry["attempted"] = True
+                            self.context.save()
                         branch_res = await self.call_or_skip_rate_limit(
                             "messages.create.branched",
                             branch_op.start,
@@ -293,6 +304,10 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         )
                         self.context.record_chat_id(branch_entry, branched)
                         self.assertTrue(getattr(branch_res.message, "content", ""))
+                        await self.call_api(
+                            "chats.rename_branched", lambda: branched.rename(branch_marker)
+                        )
+                        self.assertEqual(branched.title, branch_marker)
             elif Capability.CHAT_BRANCH in capabilities:
                 self.context.skip("chats.branch: unrecoverable_without_rename")
             else:

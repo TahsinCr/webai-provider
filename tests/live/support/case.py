@@ -411,6 +411,23 @@ class _LiveReportingMixin(unittest.TestCase):
         _append_report_entry(self._live_api, self.id(), status, feature_skips)
         return returned
 
+    def _skip_on_rate_limit(
+        self,
+        label: str,
+        exc: Exception,
+        entry: dict[str, Any] | None,
+        chat: Any,
+    ) -> None:
+        if entry is not None:
+            if chat is not None:
+                self.context.record_chat_id(entry, chat)
+            if getattr(exc, "message_submitted", None) is False and not entry.get("remote_id"):
+                entry["attempted"] = False
+                self.context.save()
+        self.context.skip(f"{label}: rate_limited")
+        self._live_skip_kind = "skipped_rate_limited"
+        self.skipTest("Provider rate limit reached")
+
 
 class LiveSyncTestCase(_LiveReportingMixin):
     """Base for one synchronous live feature scenario."""
@@ -466,12 +483,8 @@ class LiveSyncTestCase(_LiveReportingMixin):
 
         try:
             return self.call_api(label, action, expected_errors=(RateLimited,))
-        except RateLimited:
-            if entry is not None and chat is not None:
-                self.context.record_chat_id(entry, chat)
-            self.context.skip(f"{label}: rate_limited")
-            self._live_skip_kind = "skipped_rate_limited"
-            self.skipTest("Provider rate limit reached")
+        except RateLimited as exc:
+            self._skip_on_rate_limit(label, exc, entry, chat)
 
 
 class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
@@ -524,12 +537,8 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
         try:
             return await self.call_api(label, action, expected_errors=(RateLimited,))
-        except RateLimited:
-            if entry is not None and chat is not None:
-                self.context.record_chat_id(entry, chat)
-            self.context.skip(f"{label}: rate_limited")
-            self._live_skip_kind = "skipped_rate_limited"
-            self.skipTest("Provider rate limit reached")
+        except RateLimited as exc:
+            self._skip_on_rate_limit(label, exc, entry, chat)
 
 
 class LiveSyncRecoveryTestCase(LiveSyncTestCase):

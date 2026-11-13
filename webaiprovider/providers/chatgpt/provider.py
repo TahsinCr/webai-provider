@@ -102,6 +102,8 @@ def _emit_chatgpt_post_send_events(
     previous: object,
     request: ProviderRequest,
     publish: Callable[[tuple[str, object]], None],
+    *,
+    emit_bound: bool = True,
 ) -> None:
     response_messages = completed.get("messages", [])
     previous_ids = set(previous or ())
@@ -158,7 +160,8 @@ def _emit_chatgpt_post_send_events(
                 ),
             )
         )
-    publish(("event", ConversationBound(remote_id)))
+    if emit_bound:
+        publish(("event", ConversationBound(remote_id)))
 
 
 class _Stopped(Exception):
@@ -893,6 +896,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         queue = asyncio.Queue(maxsize=32)
         stopped = threading.Event()
         holder = []
+        bound_emitted: str | None = None
 
         def publish(item):
             if stopped.is_set():
@@ -908,13 +912,21 @@ class AsyncChatGPTProvider(AsyncProvider):
                         raise _Stopped() from None
 
         def event(value):
+            nonlocal bound_emitted
             kind = value.get("type")
-            if kind == "delta":
+            if kind == "bound":
+                cid = value.get("conversation_id")
+                if isinstance(cid, str) and cid and cid != bound_emitted:
+                    bound_emitted = cid
+                    publish(("event", ConversationBound(cid)))
+            elif kind == "delta":
                 publish(("event", TextDelta(value.get("text", ""), value.get("channel"))))
             elif kind == "replace":
                 publish(("event", TextReplacement(value.get("text", ""), value.get("channel"))))
             elif kind == "response_complete":
                 publish(("event", ResponseComplete()))
+
+        event._accepts_bound = True
 
         def work():
             try:
@@ -947,7 +959,14 @@ class AsyncChatGPTProvider(AsyncProvider):
                     )
                     # Native summaries can arrive only in the completion snapshot.
                     # The common API must not drop these provider-visible blocks.
-                    _emit_chatgpt_post_send_events(remote_id, completed, previous, request, publish)
+                    _emit_chatgpt_post_send_events(
+                        remote_id,
+                        completed,
+                        previous,
+                        request,
+                        publish,
+                        emit_bound=remote_id != bound_emitted,
+                    )
             except _Stopped:
                 return
             except ProviderError as error:

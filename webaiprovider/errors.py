@@ -44,7 +44,12 @@ class FeatureUnavailable(ProviderError):
 class RateLimited(ProviderError):
     code = "rate_limited"
 
-    def __init__(self, retry_after: float | None = None):
+    def __init__(
+        self,
+        retry_after: float | None = None,
+        *,
+        message_submitted: bool | None = None,
+    ):
         suffix = (
             f"; retry after {retry_after:g} seconds"
             if isinstance(retry_after, (int, float))
@@ -52,6 +57,7 @@ class RateLimited(ProviderError):
         )
         super().__init__(f"provider rate limit{suffix}")
         self.retry_after = retry_after
+        self.message_submitted = message_submitted
 
 
 class CompatibilityError(ProviderError):

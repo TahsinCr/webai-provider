@@ -30,7 +30,7 @@ from tests.live.support.errors import CleanupError, SafetyError
 from tests.live.support.journal import write_private_json
 from webaiprovider import Account, Provider
 from webaiprovider.collections import Page
-from webaiprovider.errors import ProviderError, RemoteNotFound
+from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.common import Origin
 from webaiprovider.resources.message.types import Content, MessageData
@@ -1105,6 +1105,76 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                     provider.delete_chat.assert_awaited_once_with("c_orphan")
                     self.assertFalse(journal.exists())
 
+    async def test_pre_send_rate_limit_clears_attempted_unless_remote_id_bound(self) -> None:
+        class SampleAsyncCase(LiveAsyncTestCase):
+            def runTest(self) -> None:
+                pass
+
+        class SampleSyncCase(LiveSyncTestCase):
+            def runTest(self) -> None:
+                pass
+
+        for is_async in (True, False):
+            with self.subTest(is_async=is_async), tempfile.TemporaryDirectory() as directory:
+                journal = Path(directory) / "live-cleanup-chatgpt.json"
+                with (
+                    patch("tests.live.support.context.CLEANUP_FILE", journal),
+                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                ):
+                    provider = SimpleNamespace(delete_chat=AsyncMock(), delete_chat_sync=Mock())
+                    context = LiveContext(
+                        provider,
+                        LiveAccount("personal", "chatgpt", {}),
+                        "async" if is_async else "sync",
+                        gate=ActionGate(interval=0),
+                    )
+                    entry = context.new_remote("chat", f"{context.marker}-chat")
+                    entry["attempted"] = True
+                    context.save()
+
+                    if is_async:
+                        case = SampleAsyncCase()
+                        case.context = context
+
+                        async def fail_async():
+                            raise RateLimited(1.0, message_submitted=False)
+
+                        with self.assertRaises(unittest.SkipTest):
+                            await case.call_or_skip_rate_limit(
+                                "messages.send", fail_async, entry=entry
+                            )
+                    else:
+                        case = SampleSyncCase()
+                        case.context = context
+
+                        def fail_sync():
+                            raise RateLimited(1.0, message_submitted=False)
+
+                        with self.assertRaises(unittest.SkipTest):
+                            case.call_or_skip_rate_limit("messages.send", fail_sync, entry=entry)
+
+                    self.assertFalse(entry["attempted"])
+                    await context.cleanup_pending_async()
+                    provider.delete_chat.assert_not_awaited()
+                    provider.delete_chat_sync.assert_not_called()
+                    self.assertFalse(journal.exists())
+
+                    bound_entry = context.new_remote("chat", f"{context.marker}-bound")
+                    bound_entry["attempted"] = True
+                    context.record_chat_id(bound_entry, SimpleNamespace(remote_id="c_bound"))
+                    if is_async:
+                        with self.assertRaises(unittest.SkipTest):
+                            await case.call_or_skip_rate_limit(
+                                "messages.send", fail_async, entry=bound_entry
+                            )
+                    else:
+                        with self.assertRaises(unittest.SkipTest):
+                            case.call_or_skip_rate_limit(
+                                "messages.send", fail_sync, entry=bound_entry
+                            )
+                    self.assertTrue(bound_entry["attempted"])
+                    self.assertTrue(journal.exists())
+
 
 class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_journal_routes_to_owning_provider_without_touching_others(self) -> None:
@@ -1477,3 +1547,223 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
                     ("skipped_setup_failed", []),
                 ],
             )
+
+
+class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chatgpt_branch_deferred_rename_preview_exclusion_and_rate_limit(self) -> None:
+        from tests.live.test_messages import AsyncMessageApiTests
+        from webaiprovider.base import Capability
+        from webaiprovider.resources.message.operation import OutputDelta, OutputEnd, TerminalStatus
+
+        gate = ActionGate(interval=0, limit=30)
+
+        for rate_limit_branch in (False, True):
+            with (
+                self.subTest(rate_limit_branch=rate_limit_branch),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                journal = Path(directory) / "live-cleanup-chatgpt.json"
+                events_order = []
+                created_entries = []
+
+                def make_op(chat_obj, chat_id, text, *, fail_rate=False):
+                    class StreamOp:
+                        def __init__(self):
+                            self.chat = chat_obj
+                            self.result = SimpleNamespace(
+                                chat_id=chat_id,
+                                chat=chat_obj,
+                                sources=(),
+                                artifacts=(),
+                                message=MessageData(
+                                    Origin("chatgpt", "personal", f"m-{chat_id}"),
+                                    "assistant",
+                                    (Content("text", text=text),),
+                                    actions=("retry", "branch"),
+                                ),
+                            )
+
+                        async def start(self):
+                            if fail_rate:
+                                raise RateLimited(1.0, message_submitted=False)
+                            events_order.append(("branched_send", chat_id))
+                            chat_obj.id = chat_id
+                            chat_obj.remote_id = chat_id
+                            if isinstance(chat_obj.metadata, dict):
+                                chat_obj.metadata.pop("pending_branch", None)
+                            return self.result
+
+                        async def wait(self):
+                            return self.result
+
+                        async def stream(self):
+                            events_order.append(("stream_bound", chat_id))
+                            chat_obj.id = chat_id
+                            chat_obj.remote_id = chat_id
+                            yield OutputDelta(text)
+                            yield OutputEnd(text)
+                            yield TerminalStatus("completed")
+
+                    return StreamOp()
+
+                async def fake_rename_branched(title):
+                    events_order.append(("rename_branched", branched.id, title))
+                    branched.title = title
+
+                branched = SimpleNamespace(
+                    id="preview-1",
+                    remote_id="preview-1",
+                    title="Branched preview",
+                    metadata={"pending_branch": {"source_conversation_id": "c_root"}},
+                    rename=AsyncMock(side_effect=fake_rename_branched),
+                    delete=AsyncMock(),
+                )
+                branched.messages = SimpleNamespace(
+                    create=lambda *_a, **_kw: make_op(
+                        branched, "c_branch_real", "BR", fail_rate=rate_limit_branch
+                    ),
+                    refresh=AsyncMock(
+                        return_value=[
+                            MessageData(
+                                Origin("chatgpt", "personal", "u-1"),
+                                "user",
+                                (Content("text", text="u1"),),
+                                actions=("edit",),
+                            ),
+                            MessageData(
+                                Origin("chatgpt", "personal", "m-c_branch_real"),
+                                "assistant",
+                                (Content("text", text="BR"),),
+                                actions=("retry", "branch"),
+                            ),
+                        ]
+                    ),
+                )
+
+                root_msgs_data = [
+                    MessageData(
+                        Origin("chatgpt", "personal", "u-1"),
+                        "user",
+                        (Content("text", text="u1"),),
+                        actions=("edit",),
+                    ),
+                    MessageData(
+                        Origin("chatgpt", "personal", "m-c_root"),
+                        "assistant",
+                        (Content("text", text="ROOT"),),
+                        actions=("retry", "branch"),
+                    ),
+                ]
+                root_chat = SimpleNamespace(
+                    id="c_root",
+                    remote_id=None,
+                    title="Root",
+                    temporary=False,
+                    metadata={},
+                    branch=AsyncMock(
+                        side_effect=lambda *_a, **_kw: (
+                            events_order.append(("branch", "preview-1")),
+                            branched,
+                        )[1]
+                    ),
+                    rename=AsyncMock(side_effect=lambda title: setattr(root_chat, "title", title)),
+                    delete=AsyncMock(),
+                )
+                root_chat.messages = SimpleNamespace(
+                    create=lambda *_a, **_kw: make_op(root_chat, "c_root", "ROOT"),
+                    refresh=AsyncMock(return_value=root_msgs_data),
+                )
+                deleted_ids = set()
+
+                async def fake_delete_chat(cid):
+                    deleted_ids.add(cid)
+
+                async def fake_get_chat(cid):
+                    if cid in deleted_ids or rate_limit_branch:
+                        if cid != "c_root" or cid in deleted_ids:
+                            raise RemoteNotFound("gone")
+                    title = branched.title if cid == "c_branch_real" else root_chat.title
+                    return Conversation(Origin("chatgpt", "personal", cid), title)
+
+                session = SimpleNamespace(
+                    capabilities={
+                        Capability.MODELS,
+                        Capability.CHAT,
+                        Capability.DELETE,
+                        Capability.HISTORY,
+                        Capability.RENAME,
+                        Capability.CHAT_BRANCH,
+                    },
+                    models=SimpleNamespace(refresh=AsyncMock(return_value=[])),
+                    chats=SimpleNamespace(
+                        create=AsyncMock(return_value=root_chat),
+                        get=AsyncMock(
+                            side_effect=lambda cid: Conversation(
+                                Origin("chatgpt", "personal", cid),
+                                branched.title if cid == "c_branch_real" else root_chat.title,
+                                messages=tuple(
+                                    root_msgs_data
+                                    if cid == "c_root"
+                                    else branched.messages.refresh.return_value
+                                ),
+                            )
+                        ),
+                        refresh=AsyncMock(
+                            side_effect=lambda: [
+                                Conversation(Origin("chatgpt", "personal", cid), "Title")
+                                for cid in (
+                                    ["c_root"] + ([] if rate_limit_branch else ["c_branch_real"])
+                                )
+                            ]
+                        ),
+                    ),
+                    list_chats=AsyncMock(return_value=Page((), None)),
+                    get_chat=AsyncMock(side_effect=fake_get_chat),
+                    delete_chat=AsyncMock(side_effect=fake_delete_chat),
+                )
+                with (
+                    patch("tests.live.support.context.CLEANUP_FILE", journal),
+                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                ):
+                    test = AsyncMessageApiTests("test_temporary_message_stream_history_and_cleanup")
+                    test.context = LiveContext(
+                        session, LiveAccount("personal", "chatgpt", {}), "async", gate=gate
+                    )
+                    orig_new_remote = test.context.new_remote
+
+                    def capture_new_remote(*args, **kwargs):
+                        created = orig_new_remote(*args, **kwargs)
+                        created_entries.append(created)
+                        return created
+
+                    test.context.new_remote = capture_new_remote
+                    if rate_limit_branch:
+                        with self.assertRaises(unittest.SkipTest):
+                            await test.test_temporary_message_stream_history_and_cleanup()
+                        branch_entries = [
+                            e for e in created_entries if "c_root" in e.get("exclude_ids", [])
+                        ]
+                        self.assertEqual(len(branch_entries), 1)
+                        self.assertFalse(branch_entries[0]["attempted"])
+                        self.assertIn("preview-1", branch_entries[0]["exclude_ids"])
+                        self.assertEqual(test.context.state["resources"], [])
+                        self.assertFalse(journal.exists())
+                        branched.rename.assert_not_awaited()
+                        self.assertEqual(deleted_ids, {"c_root"})
+                    else:
+                        await test.test_temporary_message_stream_history_and_cleanup()
+                        branch_idx = events_order.index(("branch", "preview-1"))
+                        send_idx = events_order.index(("branched_send", "c_branch_real"))
+                        rename_idx = events_order.index(
+                            ("rename_branched", "c_branch_real", branched.title)
+                        )
+                        self.assertLess(branch_idx, send_idx)
+                        self.assertLess(send_idx, rename_idx)
+                        branch_entries = [
+                            e for e in created_entries if "c_root" in e.get("exclude_ids", [])
+                        ]
+                        self.assertEqual(branch_entries[0]["remote_id"], "c_branch_real")
+                        self.assertIn("preview-1", branch_entries[0]["exclude_ids"])
+                        self.assertEqual(deleted_ids, {"c_root", "c_branch_real"})
+                        self.assertEqual(test.context.state["resources"], [])
+                        self.assertFalse(journal.exists())

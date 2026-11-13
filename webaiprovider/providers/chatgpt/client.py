@@ -22,6 +22,7 @@ from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
 from ...frames import SSEFrameDecoder
 from ...transport import HTTPTransport, Transport, TransportConfig
+from ...transport.http import _is_ip_literal, safe_httpx_sync_transport
 from ...transport.retry import parse_retry_after
 from ...utils.timing import SendTiming, current_send_timing
 from .catalogs import parse_model_catalog
@@ -80,6 +81,7 @@ class ChatGPTClient:
         self.list_url = ""
         self.headers: dict[str, str] = {}
         self._conversation_endpoint = "conversations"
+        self._conversation_endpoint_verified = False
         self.temporary_conversations: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.pending_branches: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._continuation_cache = MultiDimensionBoundedCache(
@@ -97,11 +99,16 @@ class ChatGPTClient:
         self._closed = False
         timing = current_send_timing()
         http_started = time.perf_counter_ns() if timing is not None else None
-        self.http = httpx.Client(
-            follow_redirects=False,
-            timeout=httpx.Timeout(30.0),
-            limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=60.0),
-        )
+        limits = httpx.Limits(max_keepalive_connections=5, keepalive_expiry=60.0)
+        safe_transport = safe_httpx_sync_transport(limits=limits) if transport is None else None
+        client_kwargs: dict[str, Any] = {
+            "follow_redirects": False,
+            "timeout": httpx.Timeout(30.0),
+            "limits": limits,
+        }
+        if safe_transport is not None:
+            client_kwargs["transport"] = safe_transport
+        self.http = httpx.Client(**client_kwargs)
         self.transport = transport or HTTPTransport(
             CHATGPT_ORIGIN,
             client_getter=lambda: self.http,
@@ -324,7 +331,7 @@ class ChatGPTClient:
         if response.status_code == 429:
             delay = parse_retry_after(response.headers.get("retry-after"), now=time.time())
             self._record_rate_limit(delay)
-            raise RateLimited(delay)
+            raise RateLimited(delay, message_submitted=False)
         if response.status_code == 404:
             from ...errors import RemoteNotFound
 
@@ -457,10 +464,11 @@ class ChatGPTClient:
 
         with self._state_guard:
             endpoint = self._conversation_endpoint
+            verified = self._conversation_endpoint_verified
         alternate = "conversation" if endpoint == "conversations" else "conversations"
         # ChatGPT accounts currently expose either route; learn the working
         # form after the first 404 so later history reads need only one request.
-        endpoints = (endpoint, alternate)
+        endpoints = (endpoint,) if verified else (endpoint, alternate)
         for index, candidate in enumerate(endpoints):
             url = urljoin(
                 CHATGPT_ORIGIN,
@@ -469,11 +477,12 @@ class ChatGPTClient:
             try:
                 response = self.request("GET", url)
             except RemoteNotFound:
-                if index == 0:
+                if index == 0 and not verified:
                     continue
                 raise
             with self._state_guard:
                 self._conversation_endpoint = candidate
+                self._conversation_endpoint_verified = True
             result = response.json()
             break
         if not isinstance(result, dict):
@@ -889,6 +898,7 @@ class ChatGPTClient:
         on_event: Any,
     ) -> tuple[str, list[dict[str, Any]]]:
         resolved_id: str | None = conversation_id
+        bound_id: str | None = None
         rendered_by_channel: dict[str, str] = {}
         terminal_seen = False
         completion_notified = False
@@ -910,10 +920,9 @@ class ChatGPTClient:
             if response_opened is not None:
                 timing.record("sse_connect_ms", response_opened - sse_connect_started)
             if response.status_code == 429:
-                retry_after = response.headers.get("retry-after")
-                self._record_rate_limit(parse_retry_after(retry_after, now=time.time()))
-                suffix = f"; retry after {retry_after} seconds" if retry_after else ""
-                raise ChatGPTError(f"ChatGPT web rate limit reached{suffix}")
+                delay = parse_retry_after(response.headers.get("retry-after"), now=time.time())
+                self._record_rate_limit(delay)
+                raise RateLimited(delay, message_submitted=False)
             if response.status_code >= 400:
                 raise ChatGPTError(f"ChatGPT submission returned HTTP {response.status_code}")
             content_type = response.headers.get("content-type", "")
@@ -950,6 +959,10 @@ class ChatGPTClient:
                 event_id = event.get("conversation_id")
                 if isinstance(event_id, str) and event_id:
                     resolved_id = event_id
+                    if event_id != bound_id:
+                        bound_id = event_id
+                        if on_event is not None and getattr(on_event, "_accepts_bound", False):
+                            on_event({"type": "bound", "conversation_id": event_id})
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
@@ -1337,7 +1350,13 @@ class ChatGPTClient:
 
     def _upload_request(self, url, **options):
         target = urlsplit(url)
-        if target.scheme != "https" or not target.hostname or target.username or target.password:
+        if (
+            target.scheme != "https"
+            or not target.hostname
+            or _is_ip_literal(target.hostname)
+            or target.username
+            or target.password
+        ):
             raise ChatGPTError("Upload URL must be an HTTPS origin without credentials")
         path = (target.path or "/") + ("?" + target.query if target.query else "")
         transport = HTTPTransport(f"https://{target.netloc}", client_getter=lambda: self.http)
@@ -1387,7 +1406,7 @@ class ChatGPTClient:
             if processing.status_code == 429:
                 delay = parse_retry_after(processing.headers.get("retry-after"), now=time.time())
                 self._record_rate_limit(delay)
-                raise RateLimited(delay)
+                raise RateLimited(delay, message_submitted=False)
             if processing.status_code in (401, 403):
                 raise ChatGPTAuthenticationError(
                     "ChatGPT session expired or was rejected; verify the account"

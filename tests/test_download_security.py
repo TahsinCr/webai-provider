@@ -112,6 +112,32 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             cookie_header({"sessionKey": "bad\r\nvalue"}, ("sessionKey",))
 
+    def test_validate_network_address_uses_af_inet_when_ipv6_unreachable(self):
+        import socket
+        from unittest.mock import patch
+
+        from webaiprovider.utils.files import validate_network_address
+
+        seen_families = []
+
+        def fake_getaddrinfo(_host, _port, family=0, type=0, *_extra):
+            seen_families.append(family)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+        with (
+            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            validate_network_address("https://files.example/asset.png")
+
+        with (
+            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=True),
+            patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            validate_network_address("https://files.example/asset.png")
+
+        self.assertEqual(seen_families, [socket.AF_INET, socket.AF_UNSPEC])
+
 
 if __name__ == "__main__":
     unittest.main()

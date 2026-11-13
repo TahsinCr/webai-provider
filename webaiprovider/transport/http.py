@@ -23,7 +23,7 @@ _PROXY_ENV_VARS = (
 )
 _IDEMPOTENT_METHODS = frozenset(("GET", "HEAD"))
 _DNS_CACHE: MultiDimensionBoundedCache[tuple[str, int, bool], tuple[str, ...]] = (
-    MultiDimensionBoundedCache(max_entries=64, max_bytes=32768, default_ttl=60.0)
+    MultiDimensionBoundedCache(max_entries=64, max_bytes=32768, default_ttl=300.0)
 )
 _IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
@@ -62,12 +62,25 @@ async def _check_ipv6_connectivity() -> bool:
     return await asyncio.to_thread(_has_ipv6_connectivity)
 
 
+def _isinstance_if_type(obj, *classes) -> bool:
+    real_classes = tuple(cls for cls in classes if isinstance(cls, type))
+    return bool(real_classes) and isinstance(obj, real_classes)
+
+
+def _is_curl_sync_session(client) -> bool:
+    if client is None or "curl_cffi" not in sys.modules:
+        return False
+    from curl_cffi.requests import Session as CurlSession
+
+    return _isinstance_if_type(client, CurlSession)
+
+
 def _is_curl_async_session(client) -> bool:
     if client is None or "curl_cffi" not in sys.modules:
         return False
     from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
-    return isinstance(client, CurlAsyncSession)
+    return _isinstance_if_type(client, CurlAsyncSession)
 
 
 def _is_curl_timeout(exc: BaseException) -> bool:
@@ -75,7 +88,7 @@ def _is_curl_timeout(exc: BaseException) -> bool:
         return False
     from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
-    return isinstance(exc, CurlTimeout)
+    return _isinstance_if_type(exc, CurlTimeout)
 
 
 def _is_httpx_client(client) -> bool:
@@ -83,7 +96,9 @@ def _is_httpx_client(client) -> bool:
         return False
     import httpx
 
-    return isinstance(client, (httpx.Client, httpx.AsyncClient))
+    return _isinstance_if_type(
+        client, getattr(httpx, "Client", None), getattr(httpx, "AsyncClient", None)
+    )
 
 
 def _coerce_httpx_timeout(timeout):
@@ -117,10 +132,25 @@ def _validate_resolved_ips(hostname: str, addresses: list[str]) -> tuple[str, ..
     return tuple(addresses)
 
 
+def _validate_ip_literal(hostname: str) -> None:
+    ip = ipaddress.ip_address(hostname.strip("[]").split("%", 1)[0])
+    if ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        raise ValueError("Prohibited destination network address")
+    if not ip.is_global and not ip.is_loopback:
+        raise ValueError("Prohibited destination network address")
+
+
 def _connect_timeout(timeout) -> float:
     if isinstance(timeout, tuple) and len(timeout) == 2:
         return float(timeout[0])
     return float(timeout)
+
+
+def _extract_and_validate_ips(hostname: str, records) -> tuple[str, ...]:
+    addresses = list(dict.fromkeys(record[4][0].split("%", 1)[0] for record in records))
+    if not addresses:
+        raise ProviderError("Provider host resolution failed")
+    return _validate_resolved_ips(hostname, addresses)
 
 
 async def _resolve_host_ips(
@@ -144,10 +174,22 @@ async def _resolve_host_ips(
         raise CurlTimeout(f"Resolving timed out after {int(timeout * 1000)} ms") from None
     except OSError:
         raise ProviderError("Provider host resolution failed") from None
-    addresses = list(dict.fromkeys(record[4][0].split("%", 1)[0] for record in records))
-    if not addresses:
-        raise ProviderError("Provider host resolution failed")
-    validated = _validate_resolved_ips(hostname, addresses)
+    validated = _extract_and_validate_ips(hostname, records)
+    _DNS_CACHE.put(key, validated)
+    return validated
+
+
+def _resolve_host_ips_sync(hostname: str, port: int, *, use_ipv6: bool) -> tuple[str, ...]:
+    key = (hostname.casefold(), port, use_ipv6)
+    cached = _DNS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    family = socket.AF_UNSPEC if use_ipv6 else socket.AF_INET
+    try:
+        records = socket.getaddrinfo(hostname, port, family=family, type=socket.SOCK_STREAM)
+    except OSError:
+        raise ProviderError("Provider host resolution failed") from None
+    validated = _extract_and_validate_ips(hostname, records)
     _DNS_CACHE.put(key, validated)
     return validated
 
@@ -160,6 +202,225 @@ def _has_proxy_configured(client, options) -> bool:
     if getattr(client, "trust_env", True):
         return any(os.environ.get(name) for name in _PROXY_ENV_VARS)
     return False
+
+
+def _format_resolve_entry(prefix: str, ips: tuple[str, ...]) -> str:
+    formatted = [f"[{ip}]" if ":" in ip else ip for ip in ips]
+    return f"{prefix}{','.join(formatted)}"
+
+
+def _apply_curl_resolve(client, prefix: str, entry: str) -> None:
+    from curl_cffi import CurlOpt
+
+    existing_resolve = client.curl_options.get(CurlOpt.RESOLVE)
+    if existing_resolve:
+        if len(existing_resolve) == 1 and existing_resolve[0] == entry:
+            return
+        has_exact = False
+        has_stale = False
+        for item in existing_resolve:
+            if item == entry:
+                has_exact = True
+            elif str(item).startswith(prefix):
+                has_stale = True
+                break
+        if has_exact and not has_stale:
+            return
+        existing = [item for item in existing_resolve if not str(item).startswith(prefix)]
+    else:
+        existing = []
+    existing.append(entry)
+    client.curl_options[CurlOpt.RESOLVE] = existing
+
+
+def _invalidate_host_dns(hostname: str, port: int, client=None) -> None:
+    if not hostname:
+        return
+    folded = hostname.casefold()
+    _DNS_CACHE.remove((folded, port, True))
+    _DNS_CACHE.remove((folded, port, False))
+    if _is_curl_async_session(client) or _is_curl_sync_session(client):
+        from curl_cffi import CurlOpt
+
+        prefix = f"{hostname}:{port}:"
+        existing = client.curl_options.get(CurlOpt.RESOLVE)
+        if existing:
+            client.curl_options[CurlOpt.RESOLVE] = [
+                entry for entry in existing if not str(entry).startswith(prefix)
+            ]
+
+
+def _prepare_curl_session_sync(client, hostname: str, port: int) -> None:
+    if not _is_curl_sync_session(client):
+        return
+    from curl_cffi import CurlOpt
+
+    ipv6 = _has_ipv6_connectivity()
+    if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
+        client.curl_options[CurlOpt.IPRESOLVE] = 1
+    if not hostname or _is_ip_literal(hostname) or _has_proxy_configured(client, {}):
+        return
+    ips = _resolve_host_ips_sync(hostname, port, use_ipv6=ipv6)
+    prefix = f"{hostname}:{port}:"
+    _apply_curl_resolve(client, prefix, _format_resolve_entry(prefix, ips))
+
+
+def _remaining_connect_timeout(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return max(deadline - time.monotonic(), 0.05)
+
+
+def _build_safe_sync_backend(inner):
+    import httpcore
+
+    class _SafeSyncNetworkBackend(httpcore.NetworkBackend):
+        def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,
+            local_address: str | None = None,
+            socket_options=None,
+        ):
+            if _is_ip_literal(host):
+                _validate_ip_literal(host)
+                return inner.connect_tcp(
+                    host,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            try:
+                ips = _resolve_host_ips_sync(host, port, use_ipv6=_has_ipv6_connectivity())
+            except ProviderError as exc:
+                raise httpcore.ConnectError(str(exc)) from exc
+            deadline = time.monotonic() + float(timeout) if timeout is not None else None
+            last_error = None
+            for index, ip in enumerate(ips):
+                if index > 0 and deadline is not None and time.monotonic() >= deadline:
+                    break
+                attempt_timeout = _remaining_connect_timeout(deadline)
+                try:
+                    return inner.connect_tcp(
+                        ip,
+                        port,
+                        timeout=attempt_timeout,
+                        local_address=local_address,
+                        socket_options=socket_options,
+                    )
+                except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                    last_error = exc
+            _invalidate_host_dns(host, port)
+            raise last_error
+
+        def connect_unix_socket(
+            self,
+            path: str,
+            timeout: float | None = None,
+            socket_options=None,
+        ):
+            return inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+        def sleep(self, seconds: float) -> None:
+            inner.sleep(seconds)
+
+    return _SafeSyncNetworkBackend()
+
+
+def _build_safe_async_backend(inner):
+    import httpcore
+
+    class _SafeAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
+        async def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,
+            local_address: str | None = None,
+            socket_options=None,
+        ):
+            if _is_ip_literal(host):
+                _validate_ip_literal(host)
+                return await inner.connect_tcp(
+                    host,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            resolve_timeout = float(timeout) if timeout is not None else 10.0
+            try:
+                ipv6 = await _check_ipv6_connectivity()
+                ips = await _resolve_host_ips(host, port, use_ipv6=ipv6, timeout=resolve_timeout)
+            except Exception as exc:
+                if isinstance(exc, ValueError):
+                    raise
+                if _is_curl_timeout(exc):
+                    raise httpcore.ConnectTimeout(str(exc)) from exc
+                if isinstance(exc, ProviderError):
+                    raise httpcore.ConnectError(str(exc)) from exc
+                raise
+            deadline = time.monotonic() + float(timeout) if timeout is not None else None
+            last_error = None
+            for index, ip in enumerate(ips):
+                if index > 0 and deadline is not None and time.monotonic() >= deadline:
+                    break
+                attempt_timeout = _remaining_connect_timeout(deadline)
+                try:
+                    return await inner.connect_tcp(
+                        ip,
+                        port,
+                        timeout=attempt_timeout,
+                        local_address=local_address,
+                        socket_options=socket_options,
+                    )
+                except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                    last_error = exc
+            _invalidate_host_dns(host, port)
+            raise last_error
+
+        async def connect_unix_socket(
+            self,
+            path: str,
+            timeout: float | None = None,
+            socket_options=None,
+        ):
+            return await inner.connect_unix_socket(
+                path, timeout=timeout, socket_options=socket_options
+            )
+
+        async def sleep(self, seconds: float) -> None:
+            await inner.sleep(seconds)
+
+    return _SafeAsyncNetworkBackend()
+
+
+def safe_httpx_sync_transport(*, limits=None):
+    import httpcore
+    import httpx
+
+    if _has_proxy_configured(None, {}):
+        return None
+    transport = httpx.HTTPTransport(**({"limits": limits} if limits is not None else {}))
+    pool = getattr(transport, "_pool", None)
+    if isinstance(pool, httpcore.ConnectionPool):
+        pool._network_backend = _build_safe_sync_backend(pool._network_backend)
+    return transport
+
+
+def safe_httpx_async_transport(*, limits=None):
+    import httpcore
+    import httpx
+
+    if _has_proxy_configured(None, {}):
+        return None
+    transport = httpx.AsyncHTTPTransport(**({"limits": limits} if limits is not None else {}))
+    pool = getattr(transport, "_pool", None)
+    if isinstance(pool, httpcore.AsyncConnectionPool):
+        pool._network_backend = _build_safe_async_backend(pool._network_backend)
+    return transport
 
 
 class AsyncHTTPTransport(AsyncTransport):
@@ -208,6 +469,13 @@ class AsyncHTTPTransport(AsyncTransport):
 
                 if factory is httpx.AsyncClient:
                     timeout = _coerce_httpx_timeout(timeout)
+                    transport = safe_httpx_async_transport()
+                    self.client = (
+                        factory(timeout=timeout, transport=transport)
+                        if transport is not None
+                        else factory(timeout=timeout)
+                    )
+                    return self.client
             self.client = factory(timeout=timeout)
         return self.client
 
@@ -241,8 +509,7 @@ class AsyncHTTPTransport(AsyncTransport):
         cached = self._resolve_cache
         if cached is not None and cached[0] == ips:
             return cached[1]
-        formatted = [f"[{ip}]" if ":" in ip else ip for ip in ips]
-        entry = f"{self._origin_prefix}{','.join(formatted)}"
+        entry = _format_resolve_entry(self._origin_prefix, ips)
         self._resolve_cache = (ips, entry)
         return entry
 
@@ -264,51 +531,19 @@ class AsyncHTTPTransport(AsyncTransport):
             use_ipv6=ipv6,
             timeout=_connect_timeout(options.get("timeout", self.config.timeout)),
         )
-        entry = self._resolve_entry(ips)
-        existing_resolve = client.curl_options.get(CurlOpt.RESOLVE)
-        prefix = self._origin_prefix
-        if existing_resolve:
-            if len(existing_resolve) == 1 and existing_resolve[0] == entry:
-                return
-            has_exact = False
-            has_stale = False
-            for item in existing_resolve:
-                if item == entry:
-                    has_exact = True
-                elif str(item).startswith(prefix):
-                    has_stale = True
-                    break
-            if has_exact and not has_stale:
-                return
-            existing = [item for item in existing_resolve if not str(item).startswith(prefix)]
-        else:
-            existing = []
-        existing.append(entry)
-        client.curl_options[CurlOpt.RESOLVE] = existing
+        _apply_curl_resolve(client, self._origin_prefix, self._resolve_entry(ips))
 
     def _invalidate_curl_dns(self, failed_client=None):
         hostname = self._origin_host
         if not hostname:
             return
-        port = self._origin_port
-        folded = hostname.casefold()
-        _DNS_CACHE.remove((folded, port, True))
-        _DNS_CACHE.remove((folded, port, False))
         self._resolve_cache = None
         client = (
             failed_client
             if failed_client is not None
             else (self._client_getter() if self._client_getter is not None else self.client)
         )
-        if _is_curl_async_session(client):
-            from curl_cffi import CurlOpt
-
-            prefix = self._origin_prefix
-            existing = client.curl_options.get(CurlOpt.RESOLVE)
-            if existing:
-                client.curl_options[CurlOpt.RESOLVE] = [
-                    entry for entry in existing if not str(entry).startswith(prefix)
-                ]
+        _invalidate_host_dns(hostname, self._origin_port, client)
 
     async def _reset_owned_client(self, failed_client):
         if self._client_getter is not None or self.client is not failed_client:
@@ -476,12 +711,16 @@ class HTTPTransport(Transport):
             import httpx
 
             factory = self.factory or httpx.Client
-            timeout = (
-                _coerce_httpx_timeout(self.config.timeout)
-                if factory is httpx.Client
-                else self.config.timeout
-            )
-            self.client = factory(timeout=timeout)
+            if factory is httpx.Client:
+                timeout = _coerce_httpx_timeout(self.config.timeout)
+                transport = safe_httpx_sync_transport()
+                self.client = (
+                    factory(timeout=timeout, transport=transport)
+                    if transport is not None
+                    else factory(timeout=timeout)
+                )
+            else:
+                self.client = factory(timeout=self.config.timeout)
         return self.client
 
     def send(self, method, path, *, check_status=True, **options):

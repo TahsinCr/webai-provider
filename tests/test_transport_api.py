@@ -1,17 +1,21 @@
 """Public transport extension, stream lifetime and account boundary contracts."""
 
 import asyncio
+import socket
+import tempfile
 import threading
 import unittest
 from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpcore
 import httpx
 
 from webaiprovider import Account, AsyncProvider, Provider, ProviderType
 from webaiprovider.errors import ProviderError, RateLimited
-from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
+from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
@@ -634,3 +638,207 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(await transport_http._check_ipv6_connectivity())
         finally:
             transport_http._ipv6_connectivity_cache = previous_cache
+
+    async def test_safe_httpx_transports_pin_dns_preserve_sni_block_ssrf_and_invalidate(self):
+        import webaiprovider.transport.http as transport_http
+
+        transport_http._DNS_CACHE.clear()
+        calls = []
+        sync_captured = []
+        async_captured = []
+
+        def fake_getaddrinfo(host, port, family=0, type=0, *_extra):
+            calls.append((host, port, family))
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+        class _Done(Exception):
+            pass
+
+        class SpyStream:
+            def __init__(self, sink):
+                self._sink = sink
+
+            def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                self._sink[-1]["sni"] = server_hostname
+                raise _Done
+
+            def close(self):
+                pass
+
+        class SpySyncInner(httpcore.NetworkBackend):
+            def __init__(self, *, fail=False):
+                self.fail = fail
+
+            def connect_tcp(
+                self, host, port, timeout=None, local_address=None, socket_options=None
+            ):
+                sync_captured.append({"tcp_host": host, "port": port})
+                if self.fail:
+                    raise httpcore.ConnectError("down")
+                return SpyStream(sync_captured)
+
+            def connect_unix_socket(self, path, timeout=None, socket_options=None):
+                raise AssertionError("unexpected unix socket")
+
+            def sleep(self, seconds):
+                pass
+
+        class SpyAsyncStream:
+            def __init__(self, sink):
+                self._sink = sink
+
+            async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                self._sink[-1]["sni"] = server_hostname
+                raise _Done
+
+            async def aclose(self):
+                pass
+
+        class SpyAsyncInner(httpcore.AsyncNetworkBackend):
+            def __init__(self, *, fail=False):
+                self.fail = fail
+
+            async def connect_tcp(
+                self, host, port, timeout=None, local_address=None, socket_options=None
+            ):
+                async_captured.append({"tcp_host": host, "port": port})
+                if self.fail:
+                    raise httpcore.ConnectError("down")
+                return SpyAsyncStream(async_captured)
+
+            async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+                raise AssertionError("unexpected unix socket")
+
+            async def sleep(self, seconds):
+                pass
+
+        with patch.dict("os.environ", {"HTTPS_PROXY": "http://proxy.invalid:8080"}):
+            self.assertIsNone(transport_http.safe_httpx_sync_transport())
+            self.assertIsNone(transport_http.safe_httpx_async_transport())
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+            patch.object(transport_http.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
+        ):
+            sync_tr = transport_http.safe_httpx_sync_transport()
+            sync_tr._pool._network_backend = transport_http._build_safe_sync_backend(SpySyncInner())
+            with httpx.Client(transport=sync_tr) as client:
+                with self.assertRaises(_Done):
+                    client.get("https://api.example/v1")
+            with httpx.Client(transport=transport_http.safe_httpx_sync_transport()) as bad_client:
+                with self.assertRaises(ValueError):
+                    bad_client.get("https://169.254.169.254/latest")
+
+            async_tr = transport_http.safe_httpx_async_transport()
+            async_tr._pool._network_backend = transport_http._build_safe_async_backend(
+                SpyAsyncInner()
+            )
+            async with httpx.AsyncClient(transport=async_tr) as aclient:
+                with self.assertRaises(_Done):
+                    await aclient.get("https://api.example/v1")
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][2], socket.AF_INET)
+            self.assertEqual(
+                sync_captured, [{"tcp_host": "93.184.216.34", "port": 443, "sni": "api.example"}]
+            )
+            self.assertEqual(
+                async_captured, [{"tcp_host": "93.184.216.34", "port": 443, "sni": "api.example"}]
+            )
+
+            failing_sync = transport_http.safe_httpx_sync_transport()
+            failing_sync._pool._network_backend = transport_http._build_safe_sync_backend(
+                SpySyncInner(fail=True)
+            )
+            with httpx.Client(transport=failing_sync) as bad_connect:
+                with self.assertRaises(httpx.ConnectError):
+                    bad_connect.get("https://api.example/v1")
+            self.assertIsNone(transport_http._DNS_CACHE.get(("api.example", 443, False)))
+
+            failing_async = transport_http.safe_httpx_async_transport()
+            failing_async._pool._network_backend = transport_http._build_safe_async_backend(
+                SpyAsyncInner(fail=True)
+            )
+            async with httpx.AsyncClient(transport=failing_async) as bad_aconnect:
+                with self.assertRaises(httpx.ConnectError):
+                    await bad_aconnect.get("https://api.example/v1")
+            self.assertEqual(len(calls), 2)
+            self.assertIsNone(transport_http._DNS_CACHE.get(("api.example", 443, False)))
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+            patch.object(
+                transport_http.socket,
+                "getaddrinfo",
+                return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))],
+            ),
+        ):
+            with httpx.Client(transport=transport_http.safe_httpx_sync_transport()) as priv_client:
+                with self.assertRaises(ValueError):
+                    priv_client.get("https://rebind.example/v1")
+            async with httpx.AsyncClient(
+                transport=transport_http.safe_httpx_async_transport()
+            ) as priv_aclient:
+                with self.assertRaises(ValueError):
+                    await priv_aclient.get("https://rebind.example/v1")
+
+    def test_chatgpt_browser_session_import_cookies_pins_dns_and_invalidates_on_timeout(self):
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        import webaiprovider.transport.http as transport_http
+
+        transport_http._DNS_CACHE.clear()
+        instances = []
+
+        def build_session_cls(raise_timeout):
+            class FakeSession:
+                def __init__(self, **_kwargs):
+                    self.curl_options = {}
+                    self.cookies = SimpleNamespace(jar=[])
+                    instances.append(self)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def get(self, *_args, **_kwargs):
+                    if raise_timeout:
+                        raise CurlTimeout("timed out")
+                    return SimpleNamespace(status_code=200, json=lambda: {"accessToken": "tok-1"})
+
+            return FakeSession
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+            patch.object(
+                transport_http.socket,
+                "getaddrinfo",
+                return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+            ),
+        ):
+            root = Path(directory)
+            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            with patch("curl_cffi.requests.Session", build_session_cls(False)):
+                session.import_cookies({"oai-did": "did-1"})
+            ok_client = instances[-1]
+            self.assertEqual(ok_client.curl_options.get(CurlOpt.IPRESOLVE), 1)
+            self.assertEqual(
+                ok_client.curl_options.get(CurlOpt.RESOLVE),
+                ["chatgpt.com:443:93.184.216.34"],
+            )
+            self.assertIsNotNone(transport_http._DNS_CACHE.get(("chatgpt.com", 443, False)))
+
+            with (
+                patch("curl_cffi.requests.Session", build_session_cls(True)),
+                self.assertRaises(CurlTimeout),
+            ):
+                session.import_cookies({"oai-did": "did-1"})
+            timeout_client = instances[-1]
+            self.assertEqual(timeout_client.curl_options.get(CurlOpt.RESOLVE), [])
+            self.assertIsNone(transport_http._DNS_CACHE.get(("chatgpt.com", 443, False)))

@@ -16,7 +16,9 @@ from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import SentinelCompatibilityError
 from webaiprovider.resources.common import Choice
 from webaiprovider.resources.message.protocol import (
+    ConversationBound,
     ProviderRequest,
+    ResponseComplete,
     TextDelta,
     TextReplacement,
 )
@@ -603,3 +605,32 @@ class ChatGPTProviderOptimizationTests(ChatGPTProviderTests):
             self.assertFalse(self.provider._staged_project_reads)
         finally:
             await self.provider.close()
+
+    async def test_stream_request_emits_mid_stream_bound_once_and_skips_trailing_duplicate(self):
+        self.client.ensure_authenticated = Mock_auth = lambda *_a, **_kw: None
+        del Mock_auth
+        seen_callbacks = []
+
+        def fake_send_prompt(_cid, _prompt, *, on_event=None, **_kwargs):
+            seen_callbacks.append(on_event)
+            self.assertTrue(getattr(on_event, "_accepts_bound", False))
+            on_event({"type": "bound", "conversation_id": "c_mid"})
+            on_event({"type": "delta", "text": "hello", "channel": "final"})
+            on_event({"type": "bound", "conversation_id": "c_mid"})
+            on_event({"type": "response_complete"})
+            return (
+                "c_mid",
+                {"id": "a1", "role": "assistant", "text": "hello", "created_at": 1.0},
+                None,
+            )
+
+        self.client.send_prompt = fake_send_prompt
+        self.provider.prepare = AsyncMock()
+        events = [event async for event in self.provider._stream_request(ProviderRequest("Hi"))]
+        self.assertEqual(len(seen_callbacks), 1)
+        self.assertEqual(
+            [e for e in events if isinstance(e, ConversationBound)], [ConversationBound("c_mid")]
+        )
+        self.assertIsInstance(events[0], ConversationBound)
+        self.assertEqual(events[1], TextDelta("hello", "final"))
+        self.assertIn(ResponseComplete(), events)

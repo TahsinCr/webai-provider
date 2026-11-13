@@ -8,13 +8,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from ..transport.http import _has_ipv6_connectivity
+
 
 def validate_network_address(address_str: str, allow_private: bool = False) -> str:
     try:
         addresses = [ipaddress.ip_address(address_str)]
     except ValueError:
+        family = socket.AF_UNSPEC if _has_ipv6_connectivity() else socket.AF_INET
         try:
-            records = socket.getaddrinfo(address_str, None, type=socket.SOCK_STREAM)
+            records = socket.getaddrinfo(address_str, None, family=family, type=socket.SOCK_STREAM)
         except socket.gaierror:
             raise ValueError("Download host could not be resolved") from None
         addresses = list(
@@ -111,6 +114,8 @@ class NativeDownloadClient:
 
             port = target.port or (443 if target.scheme == "https" else 80)
             address = f"[{pinned_address}]" if ":" in pinned_address else pinned_address
+            if not _has_ipv6_connectivity():
+                self.client.curl_options[CurlOpt.IPRESOLVE] = 1
             self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{address}"]
         try:
             with self.client.stream(

@@ -75,9 +75,21 @@ class BrowserSession:
         if cookies.get("oai-did"):
             headers["oai-device-id"] = cookies["oai-did"]
         with Session(impersonate="chrome", cookies=cookies, timeout=30) as client:
-            response = client.get(
-                "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
+            from ...transport.http import (
+                _invalidate_host_dns,
+                _is_curl_timeout,
+                _prepare_curl_session_sync,
             )
+
+            _prepare_curl_session_sync(client, "chatgpt.com", 443)
+            try:
+                response = client.get(
+                    "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
+                )
+            except Exception as exc:
+                if _is_curl_timeout(exc):
+                    _invalidate_host_dns("chatgpt.com", 443, client)
+                raise
             if response.status_code != 200:
                 raise ChatGPTError(
                     f"ChatGPT profile verification returned HTTP {response.status_code}"

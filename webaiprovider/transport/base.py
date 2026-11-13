@@ -179,7 +179,7 @@ class _TransportPolicy:
         options.setdefault("timeout", self.config.timeout)
         remaining = self._rate_limited_until - time.monotonic()
         if remaining > 0:
-            raise RateLimited(remaining)
+            raise RateLimited(remaining, message_submitted=False)
         return options
 
     @staticmethod
@@ -193,7 +193,8 @@ class _TransportPolicy:
             raise RemoteNotFound("Remote record was not found")
         if code == 429:
             raise RateLimited(
-                parse_retry_after(response.headers.get("retry-after", ""), now=time.time())
+                parse_retry_after(response.headers.get("retry-after", ""), now=time.time()),
+                message_submitted=False,
             )
         if not 200 <= code < 300:
             raise ProviderError(f"Provider request failed (HTTP {code})")

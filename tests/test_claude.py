@@ -972,3 +972,73 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await provider.close()
+
+    async def test_events_yields_bound_before_move_chat_and_completion(self):
+        order = []
+
+        class Response:
+            status_code = 200
+            headers: ClassVar[dict[str, str]] = {}
+
+            async def aiter_content(self):
+                order.append("completion_stream")
+                yield b'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ok"}}\n\n'
+                yield b'data: {"type": "message_stop"}\n\n'
+
+        class Stream:
+            async def __aenter__(self):
+                return Response()
+
+            async def __aexit__(self, *_):
+                return False
+
+        class Client:
+            def stream(self, _method, _url, **_kwargs):
+                order.append("completion_post")
+                return Stream()
+
+        created_ids = []
+
+        async def fake_request(method, path=None, **kwargs):
+            order.append((method, path))
+            if path and path.endswith("/chat_conversations/move_many"):
+                order.append(("move_chat", created_ids[-1], PROJECT))
+                return {}
+            if method == "POST":
+                cid = (kwargs.get("json") or {}).get("uuid", CHAT)
+                created_ids.append(cid)
+                return {"uuid": cid}
+            cid = created_ids[-1] if created_ids else CHAT
+            return {"uuid": cid, "project_uuid": PROJECT, "is_temporary": False}
+
+        session = SimpleNamespace(
+            path="/",
+            request=AsyncMock(side_effect=fake_request),
+            connect=lambda: Client(),
+            url=lambda path: path,
+            check=lambda _response: None,
+        )
+        client = ClaudeClient(Path("unused"), session=bind_stream(session))
+        client.organization = PROJECT
+        client.catalog = claude_model_catalog("claude-test")
+
+        seen = []
+        async for event in client.events(
+            "send",
+            prompt="Hello",
+            model="claude-test",
+            conversation_id=None,
+            temporary=False,
+            action=None,
+            project_id=PROJECT,
+            effort=None,
+        ):
+            order.append(("yield", event["type"]))
+            seen.append(event)
+
+        bound_idx = order.index(("yield", "bound"))
+        move_idx = order.index(("move_chat", created_ids[0], PROJECT))
+        post_idx = order.index("completion_post")
+        self.assertLess(bound_idx, move_idx)
+        self.assertLess(move_idx, post_idx)
+        self.assertEqual(seen[0], {"type": "bound", "id": created_ids[0]})

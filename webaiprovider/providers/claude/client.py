@@ -315,8 +315,6 @@ class ClaudeClient:
                     )
             parent = created.get("current_leaf_message_uuid") if isinstance(created, dict) else None
             is_temp = bool(isinstance(created, dict) and created.get("is_temporary") is True)
-            if pid:
-                await self.request("move_chat", conversation_id=cid, project_id=pid)
             return parent, v, is_temp
 
         if not v.get("action"):
@@ -445,10 +443,13 @@ class ClaudeClient:
         ):
             raise ValueError("Select a model/thinking option from this account")
         pid = remote_id(v["project_id"]) if v.get("project_id") else None
-        cid = remote_id(v["conversation_id"]) if v.get("conversation_id") else str(uuid.uuid4())
+        creating = not v.get("conversation_id")
+        cid = remote_id(v["conversation_id"]) if not creating else str(uuid.uuid4())
         path = base + "/chat_conversations/" + cid
         parent, v, is_temporary = await self._prepare_stream_conversation(cid, pid, path, v, timing)
         yield {"type": "bound", "id": cid}
+        if creating and pid:
+            await self.request("move_chat", conversation_id=cid, project_id=pid)
         body = self._build_completion_body(model, choice, parent, v)
 
         completed, completion_notified, blocks = False, False, {}

@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Extend cached DNS resolution (300s TTL) and IPv4 preference when IPv6 is unreachable to synchronous `httpx.Client`, `curl_cffi` cookie bootstrap, and download validation, and avoid duplicate fallback GETs in `ChatGPTClient.get_conversation` after the primary endpoint is verified.
 - Reduce HTTP and stream overhead across the transport, persistence, and resource layers: cache curl DNS resolve headers across unchanged requests with invalidation support, offload uncached IPv6 probes off the event loop, debounce auxiliary non-auth session cookie disk writes until close or interval expiry while persisting rotated session cookies immediately, drain up to 32 buffered stream events per `MessageOperation.stream()` hop, stage project snapshots across single-argument `projects.update()` calls to avoid duplicate pre-write reads, and share a bounded `gather_bounded` concurrency helper.
 - Optimize ChatGPT, Claude, Gemini, and Grok provider request paths and locks: fetch Claude project detail/docs/files concurrently, reuse `ResourceData` metadata when removing Claude/ChatGPT project sources and staged `ProjectData` snapshots when updating Claude/ChatGPT/Gemini projects, cache Claude follow-up continuation metadata and Gemini notebook context reads with invalidation on edits/deletes/errors/close, bound parallel attachment uploads to two workers in Claude, Gemini, and Grok while preserving order, run ChatGPT `list_project_chats` outside `_gate` with a loop-safe read semaphore, release provider `_gate` locks before delete readback polling, optimize ChatGPT Sentinel PoW prefix hashing and trigger prewarm after temporary turns, defer Gemini/Claude stream source and file normalization to final message metadata, and use a single-pass regex for Gemini session bootstrap parsing while debouncing auxiliary `batch()` cookie writes.
 - Propagate HTTP `429 Retry-After` cooldowns across ChatGPT and Gemini requests onto the shared transport, skip ChatGPT Sentinel prewarm scheduling after close, flush rotated chunked session, Grok (`sso`/`sso-rw`), Cloudflare (`__cf_bm`/`cf_clearance`), and Gemini PSIDCC/SIDCC cookies immediately without debouncing, and require `resource_id` identity matches before reusing project-source removal metadata in Claude and ChatGPT.
@@ -90,6 +91,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Emit ChatGPT `ConversationBound` mid-stream and yield Claude `bound` before `move_chat` and completion, defer live ChatGPT `pending_branch` renames until the first branched message binds a remote ID (excluding synthetic preview IDs), map ChatGPT HTTP 429 and transport cooldown errors to `RateLimited(..., message_submitted=False)`, and clear pre-send cleanup journal `attempted` state when a pre-submission rate limit occurs without a bound ID.
 - Verify temporary-object identity before cleanup and exhaust remote listing pages before treating an uncertain deletion as complete; retain the cleanup journal when an object remains on a later page.
 - Reject oversized project-source events before JSON decoding even when the entire line arrives in one chunk, and use shared `Retry-After` parsing for upload rate limits.
 - Resolve exact model and effort IDs before display names or partial matches, including IDs that prefix another catalog entry.
@@ -104,6 +106,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Security
 
+- Wrap `httpx` sync and async transports with DNS-pinning network backends (`safe_httpx_sync_transport`, `safe_httpx_async_transport`) that reject private/link-local literals and resolved addresses before TCP connect while preserving TLS SNI and invalidating cached entries on connection failures.
 - Restrict downloads to provider-supplied `DownloadSource` values, reject non-public resolved addresses, pin the selected address for the request, and disable redirects.
 
 ## [1.3-beta] - 2026-11-06

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from webaiprovider.errors import RemoteNotFound
+from webaiprovider.errors import RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
@@ -311,3 +311,57 @@ class SendOptionsTests(unittest.TestCase):
         with self.assertRaises(ChatGPTError):
             self.client.send_prompt(None, "Q", temporary=True, project_id="g-p-work")
         self.assertEqual(self.requests, [])
+
+    def test_get_conversation_stops_after_first_404_once_endpoint_verified(self):
+        calls = []
+
+        def handle(request):
+            calls.append(request.url.path)
+            if request.url.path.endswith("/c-ok"):
+                return httpx.Response(200, json={"id": "c-ok", "mapping": {}, "current_node": None})
+            return httpx.Response(404, json={"detail": "Not found"})
+
+        self.client.http.close()
+        self.client.http = httpx.Client(transport=httpx.MockTransport(handle))
+        self.client._conversation_endpoint_verified = False
+
+        with self.assertRaises(RemoteNotFound):
+            self.client.get_conversation("missing-1")
+        self.assertEqual(len(calls), 2)
+
+        calls.clear()
+        self.client.get_conversation("c-ok")
+        self.assertTrue(self.client._conversation_endpoint_verified)
+
+        calls.clear()
+        with self.assertRaises(RemoteNotFound):
+            self.client.get_conversation("missing-2")
+        self.assertEqual(len(calls), 1)
+
+    def test_send_prompt_direct_gates_bound_event_on_callback_flag(self):
+        plain = []
+        self.client.send_prompt_direct(None, "Hi", [], on_event=plain.append)
+        self.assertEqual([item["type"] for item in plain], ["delta", "delta", "response_complete"])
+
+        opted = []
+
+        def on_opt_in(item):
+            opted.append(item)
+
+        on_opt_in._accepts_bound = True
+        self.client.send_prompt_direct(None, "Hi", [], on_event=on_opt_in)
+        self.assertEqual(opted[0], {"type": "bound", "conversation_id": "remote"})
+        self.assertEqual(
+            [item["type"] for item in opted], ["bound", "delta", "delta", "response_complete"]
+        )
+
+    def test_consume_chat_stream_maps_http_429_to_pre_send_rate_limited(self):
+        def handle(_request):
+            return httpx.Response(429, headers={"retry-after": "3"})
+
+        self.client.http.close()
+        self.client.http = httpx.Client(transport=httpx.MockTransport(handle))
+        with self.assertRaises(RateLimited) as ctx:
+            self.client.send_prompt_direct(None, "Hi", [])
+        self.assertEqual(ctx.exception.retry_after, 3.0)
+        self.assertIs(ctx.exception.message_submitted, False)
