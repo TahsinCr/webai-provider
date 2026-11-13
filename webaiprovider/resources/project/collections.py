@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
 
+_MAX_PROJECT_PAGES = 100
+
 
 class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
     def __init__(self, session: AsyncProvider) -> None:
@@ -36,13 +38,31 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
         return project
 
     async def refresh(self) -> list[AsyncProject]:
-        page = await self.session._require_provider().list_projects()
-        if not isinstance(page, Page) or any(
-            not isinstance(item, ProviderProject) for item in page.items
-        ):
-            raise ProviderError("Provider returned an invalid project page")
+        provider = self.session._require_provider()
+        values = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _ in range(_MAX_PROJECT_PAGES):
+            page = await provider.list_projects(cursor=cursor)
+            if not isinstance(page, Page) or any(
+                not isinstance(item, ProviderProject) for item in page.items
+            ):
+                raise ProviderError("Provider returned an invalid project page")
+            values.extend(page.items)
+            next_cursor = page.next_cursor
+            if next_cursor is None:
+                break
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                raise ProviderError(
+                    "Provider project pagination returned an invalid or repeating cursor"
+                )
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        else:
+            raise ProviderError(f"Provider project pagination exceeded {_MAX_PROJECT_PAGES} pages")
+
         projects = []
-        for item in page.items:
+        for item in values:
             project = self.session._project_type(
                 title=item.name,
                 remote_id=item.origin.remote_id,

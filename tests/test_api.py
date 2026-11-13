@@ -653,6 +653,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 self.active_fetches = 0
                 self.max_active_fetches = 0
                 self.page_calls: list[tuple[str, str | None]] = []
+                self.project_page_calls: list[str | None] = []
 
             async def prepare(self) -> None:
                 return None
@@ -661,11 +662,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 return None
 
             async def list_projects(self, *, cursor: str | None = None):
+                self.project_page_calls.append(cursor)
                 projects = tuple(
                     NativeProject(Origin("chatgpt", self.account_id, f"p-{idx}"), f"Project {idx}")
                     for idx in range(1, 7)
                 )
-                return Page(projects, None)
+                return (
+                    Page(projects[:3], "projects-page-2") if cursor is None else Page(projects[3:])
+                )
 
             async def list_chats(self, *, cursor: str | None = None):
                 return Page(
@@ -756,6 +760,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             chats = await provider.chats.refresh(include_projects=True)
 
         self.assertLessEqual(provider.max_active_fetches, 4)
+        self.assertEqual(provider.project_page_calls, [None, "projects-page-2"])
         self.assertIn(("p-1", None), provider.page_calls)
         self.assertIn(("p-1", "p1-page-2"), provider.page_calls)
         self.assertIn(("p-2", None), provider.page_calls)
@@ -797,26 +802,52 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 )
 
             async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+                if project_id == "p-1":
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        raise
                 if project_id == "p-2":
-                    return Page(
-                        (
-                            Conversation(
-                                Origin("chatgpt", self.account_id, "c-p2"),
-                                "Loop Chat",
-                                project=NativeProject(
-                                    Origin("chatgpt", self.account_id, "p-2"), "Beta"
-                                ),
-                            ),
-                        ),
-                        "repeat-cursor",
-                    )
+                    return Page((), "repeat-cursor")
                 return Page((), None)
 
+        cancelled = asyncio.Event()
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         async with RepeatingCursorProvider(account) as provider:
             with self.assertRaisesRegex(ProviderError, "cursor"):
                 await provider.chats.refresh(include_projects=True)
             self.assertFalse(provider.chats._projects_loaded)
+            self.assertTrue(cancelled.is_set())
+
+    async def test_project_refresh_rejects_repeated_cursor_without_replacing_cache(self) -> None:
+        from webaiprovider.collections import Page
+
+        class RepeatingProjectProvider(AsyncChatGPTProvider):
+            def __init__(self, account, **options) -> None:
+                super().__init__(account, **options)
+                self.project_cursors: list[str | None] = []
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def list_projects(self, *, cursor: str | None = None):
+                self.project_cursors.append(cursor)
+                return Page((), "same-page")
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        async with RepeatingProjectProvider(account) as provider:
+            existing = provider._project_type(
+                title="Existing", remote_id="existing", session=provider
+            )
+            provider.projects._items.append(existing)
+            with self.assertRaisesRegex(ProviderError, "cursor"):
+                await provider.projects.refresh()
+            self.assertEqual(provider.project_cursors, [None, "same-page"])
+            self.assertEqual(provider.projects._items, [existing])
 
 
 class TestSyncApi(unittest.TestCase):

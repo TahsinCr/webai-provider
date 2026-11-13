@@ -122,7 +122,7 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
                         chats.append(chat)
                     next_cursor = page.next_cursor
                     if next_cursor is None:
-                        return _merge_chat_lists(chats, ())
+                        return chats
                     if (
                         not isinstance(next_cursor, str)
                         or not next_cursor
@@ -137,7 +137,14 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
                 f"Provider project chat pagination exceeded {_MAX_PROJECT_CHAT_PAGES} pages"
             )
 
-        batches = await asyncio.gather(*(fetch_one(project) for project in project_map.values()))
+        tasks = [asyncio.create_task(fetch_one(project)) for project in project_map.values()]
+        try:
+            batches = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return project_map, [chat for batch in batches for chat in batch]
 
     async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
