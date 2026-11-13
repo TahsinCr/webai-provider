@@ -39,6 +39,12 @@ def _chat_from_conversation(
     )
 
 
+def _require_conversation_page(page: Any, *, label: str = "conversation") -> Page[Conversation]:
+    if not isinstance(page, Page) or any(not isinstance(item, Conversation) for item in page.items):
+        raise ProviderError(f"Provider returned an invalid {label} page")
+    return page
+
+
 def _merge_chat_lists(
     normal_chats: list[AsyncChat],
     project_chats: list[AsyncChat],
@@ -98,11 +104,10 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
             assert project.remote_id is not None
             async with semaphore:
-                page = await provider.list_project_chats(project.remote_id)
-            if not isinstance(page, Page) or any(
-                not isinstance(item, Conversation) for item in page.items
-            ):
-                raise ProviderError("Provider returned an invalid project conversation page")
+                page = _require_conversation_page(
+                    await provider.list_project_chats(project.remote_id),
+                    label="project conversation",
+                )
             chats = []
             for item in page.items:
                 chat = _chat_from_conversation(item, self.session, project_map)
@@ -117,14 +122,11 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
     async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
         provider = self.session._require_provider()
         if include_projects and Capability.PROJECTS in self.session.capabilities:
-            page, projects = await asyncio.gather(
+            raw_page, projects = await asyncio.gather(
                 provider.list_chats(),
                 self.session.projects.refresh(),
             )
-            if not isinstance(page, Page) or any(
-                not isinstance(item, Conversation) for item in page.items
-            ):
-                raise ProviderError("Provider returned an invalid conversation page")
+            page = _require_conversation_page(raw_page)
             project_map, project_chats = await self._fetch_project_chats(projects)
             normal_chats = [
                 _chat_from_conversation(item, self.session, project_map) for item in page.items
@@ -133,11 +135,7 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
             self._projects_loaded = True
             return list(self._items)
 
-        page = await provider.list_chats()
-        if not isinstance(page, Page) or any(
-            not isinstance(item, Conversation) for item in page.items
-        ):
-            raise ProviderError("Provider returned an invalid conversation page")
+        page = _require_conversation_page(await provider.list_chats())
         project_map = {p.remote_id: p for p in self.session.projects._items if p.remote_id}
         self._items = [
             _chat_from_conversation(item, self.session, project_map) for item in page.items

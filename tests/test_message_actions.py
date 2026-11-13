@@ -119,7 +119,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {}
         client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
-        client.create_sentinel_headers = lambda: {}
+        client.create_sentinel_headers = dict
         with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
             result = client.send_prompt_direct(
                 conversation,

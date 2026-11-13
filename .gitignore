@@ -9,6 +9,7 @@ dist/
 .ruff_cache/
 .serena/
 /.config/credentials.json
-/.config/live-cleanup.json
-/.config/live-cleanup.*.tmp
-/.config/live-run.lock
+/.config/.credentials.lock
+/.config/live-cleanup*.json
+/.config/live-cleanup*.tmp
+/.config/live-run*.lock

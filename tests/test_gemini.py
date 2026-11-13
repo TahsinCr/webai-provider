@@ -533,7 +533,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             language="en",
             token="test",
             session_id="test",
-            params=lambda: {},
+            params=dict,
             persist=AsyncMock(),
         )
 
