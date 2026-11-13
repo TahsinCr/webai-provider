@@ -58,18 +58,22 @@ if TYPE_CHECKING:
     from .resources.project.project import AsyncProject
 
 
+def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
+    if cls is base_cls:
+        if not args and "account" not in options:
+            raise TypeError("A provider account is required")
+        account = args[0] if args else options["account"]
+        requested = options.get("type")
+        selected = ProviderType.parse(account.provider if requested is None else requested)
+        return object.__new__(_provider_class(selected, asynchronous=asynchronous))
+    return object.__new__(cls)
+
+
 class Provider(BaseProvider):
     """Synchronous provider API backed by one persistent async runtime."""
 
     def __new__(cls, *args, **options):
-        if cls is Provider:
-            if not args and "account" not in options:
-                raise TypeError("A provider account is required")
-            account = args[0] if args else options["account"]
-            requested = options.get("type")
-            selected = ProviderType.parse(account.provider if requested is None else requested)
-            return object.__new__(_provider_class(selected, asynchronous=False))
-        return object.__new__(cls)
+        return _construct_provider(cls, Provider, args, options, asynchronous=False)
 
     async_provider_type: type[AsyncProvider] | None = None
     chat_wrapper_type = None

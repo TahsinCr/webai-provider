@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+import contextlib
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability
@@ -9,7 +11,7 @@ from .collections import Page
 from .core.scope import ProviderResourceScope
 from .core.telemetry import ProviderTelemetry
 from .errors import FeatureUnavailable, ProviderError, RemoteNotFound, UnsupportedOperationError
-from .provider import ProviderType, _provider_class
+from .provider import ProviderType, _construct_provider
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
@@ -128,14 +130,7 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
 
 class AsyncProvider(BaseProvider):
     def __new__(cls, *args, **options):
-        if cls is AsyncProvider:
-            if not args and "account" not in options:
-                raise TypeError("A provider account is required")
-            account = args[0] if args else options["account"]
-            requested = options.get("type")
-            selected = ProviderType.parse(account.provider if requested is None else requested)
-            return object.__new__(_provider_class(selected, asynchronous=True))
-        return object.__new__(cls)
+        return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
 
     _chat_type = AsyncChat
     _project_type = AsyncProject
@@ -195,10 +190,8 @@ class AsyncProvider(BaseProvider):
         try:
             await self.prepare()
         except BaseException:
-            try:
+            with contextlib.suppress(Exception):
                 await self._close_provider()
-            except Exception:
-                pass
             await scope.aclose()
             raise
         scope.defer(self._close_provider)

@@ -11,8 +11,10 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 from http.cookies import SimpleCookie
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -46,9 +48,6 @@ _CONTINUATION_CACHE_MAX_TEXT_CHARS = 1_000_000
 
 def system_timezone():
     """Use an actual IANA identifier, omitting the optional field if unknown."""
-    from pathlib import Path
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
     candidates = [os.environ.get("TZ", "").removeprefix(":")]
     try:
         target = str(Path("/etc/localtime").resolve())
@@ -199,7 +198,7 @@ class ChatGPTClient:
     def forget_conversation(self, conversation_id: str) -> None:
         self._forget_conversation(conversation_id)
 
-    def __enter__(self) -> "ChatGPTClient":
+    def __enter__(self) -> ChatGPTClient:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -412,39 +411,6 @@ class ChatGPTClient:
             },
         ).json()
 
-    def list_conversations(self, maximum: int | None) -> list[dict[str, Any]]:
-        offset = 0
-        conversations: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        while True:
-            response = self.request(
-                "GET",
-                urljoin(CHATGPT_ORIGIN, "/backend-api/conversations"),
-                params={
-                    "offset": offset,
-                    "limit": DEFAULT_PAGE_SIZE,
-                    "order": "updated",
-                    "is_archived": "false",
-                    "is_starred": "false",
-                },
-            ).json()
-            items = response.get("items", [])
-            if not isinstance(items, list):
-                raise ChatGPTError("conversation list did not contain an items array")
-            fresh = [
-                item for item in items if isinstance(item, dict) and item.get("id") not in seen
-            ]
-            conversations.extend(dict(item, project_id=extract_project_id(item)) for item in fresh)
-            seen.update(item["id"] for item in fresh if item.get("id"))
-            offset += len(items)
-            if maximum is not None and len(conversations) >= maximum:
-                return conversations[:maximum]
-            # The private endpoint's `total` is a rolling window marker rather
-            # than a stable collection size. A short page (or no new IDs) is
-            # the reliable end condition.
-            if len(items) < DEFAULT_PAGE_SIZE or not fresh:
-                return conversations
-
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         from ...errors import RemoteNotFound
 
@@ -513,26 +479,13 @@ class ChatGPTClient:
             )
         return conversation
 
-    def send_prompt(
+    def _resolve_send_previous(
         self,
         conversation_id: str | None,
-        prompt: str,
-        attachments: list[dict[str, Any]] | None = None,
-        on_event: Any = None,
-        model: str | None = None,
-        effort: str | None = None,
-        project_id: str | None = None,
-        temporary: bool = False,
-        action=None,
-        message_id: str | None = None,
-    ) -> tuple[str, dict[str, Any], set[str]]:
-        if type(temporary) is not bool or (
-            project_id is not None
-            and (not isinstance(project_id, str) or not project_id.startswith("g-p-"))
-        ):
-            raise ChatGPTError("invalid conversation options")
-        if temporary and project_id:
-            raise ChatGPTError("temporary conversations cannot belong to a project")
+        project_id: str | None,
+        temporary: bool,
+        action: Any,
+    ) -> tuple[dict[str, Any] | None, set[str], bool]:
         previous_ids: set[str] = set()
         previous: dict[str, Any] | None = None
         is_pending_branch = False
@@ -588,6 +541,79 @@ class ChatGPTClient:
             previous = dict(previous or {}, project_id=project_id)
             if action is not None and conversation_id:
                 self._forget_conversation(conversation_id)
+        return previous, previous_ids, is_pending_branch
+
+    def _store_temporary_conversation(
+        self,
+        resolved_id: str,
+        model: str,
+        prompt: str,
+        previous: dict[str, Any] | None,
+        submitted_message_id: str,
+        submitted_message: dict[str, Any] | None,
+        streamed_messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        submitted_messages = (
+            [submitted_message]
+            if isinstance(submitted_message, dict)
+            else [
+                {
+                    "id": submitted_message_id,
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": [prompt]},
+                }
+            ]
+        )
+        conversation = {
+            "id": resolved_id,
+            "conversation_id": resolved_id,
+            "title": "Geçici sohbet",
+            "default_model_slug": model,
+            "current_node": streamed_messages[-1].get("id") if streamed_messages else None,
+            "messages": list((previous or {}).get("messages", []))
+            + submitted_messages
+            + streamed_messages,
+            "temporary": True,
+        }
+        if not conversation["current_node"]:
+            raise ChatGPTError("temporary response has no continuation cursor")
+        size = sum(
+            len(text_from_parts(message_parts(item.get("content"))))
+            for item in conversation["messages"]
+        )
+        if size > 2_000_000:
+            raise ChatGPTError(
+                "temporary conversation reached the local memory limit; start a new one"
+            )
+        self.temporary_conversations[resolved_id] = conversation
+        self.temporary_conversations.move_to_end(resolved_id)
+        while len(self.temporary_conversations) > 32:
+            self.temporary_conversations.popitem(last=False)
+        return conversation
+
+    def send_prompt(
+        self,
+        conversation_id: str | None,
+        prompt: str,
+        attachments: list[dict[str, Any]] | None = None,
+        on_event: Any = None,
+        model: str | None = None,
+        effort: str | None = None,
+        project_id: str | None = None,
+        temporary: bool = False,
+        action=None,
+        message_id: str | None = None,
+    ) -> tuple[str, dict[str, Any], set[str]]:
+        if type(temporary) is not bool or (
+            project_id is not None
+            and (not isinstance(project_id, str) or not project_id.startswith("g-p-"))
+        ):
+            raise ChatGPTError("invalid conversation options")
+        if temporary and project_id:
+            raise ChatGPTError("temporary conversations cannot belong to a project")
+        previous, previous_ids, is_pending_branch = self._resolve_send_previous(
+            conversation_id, project_id, temporary, action
+        )
         timing = current_send_timing()
         started = time.perf_counter_ns() if timing is not None else None
         catalog = self.model_catalog()
@@ -624,42 +650,15 @@ class ChatGPTClient:
         if is_pending_branch and conversation_id:
             self._forget_conversation(conversation_id)
         if temporary:
-            submitted_messages = (
-                [submitted_message]
-                if isinstance(submitted_message, dict)
-                else [
-                    {
-                        "id": submitted_message_id,
-                        "author": {"role": "user"},
-                        "content": {"content_type": "text", "parts": [prompt]},
-                    }
-                ]
+            conversation = self._store_temporary_conversation(
+                resolved_id,
+                model,
+                prompt,
+                previous,
+                submitted_message_id,
+                submitted_message,
+                streamed_messages,
             )
-            conversation = {
-                "id": resolved_id,
-                "conversation_id": resolved_id,
-                "title": "Geçici sohbet",
-                "default_model_slug": model,
-                "current_node": streamed_messages[-1].get("id") if streamed_messages else None,
-                "messages": list((previous or {}).get("messages", []))
-                + submitted_messages
-                + streamed_messages,
-                "temporary": True,
-            }
-            if not conversation["current_node"]:
-                raise ChatGPTError("temporary response has no continuation cursor")
-            size = sum(
-                len(text_from_parts(message_parts(item.get("content"))))
-                for item in conversation["messages"]
-            )
-            if size > 2_000_000:
-                raise ChatGPTError(
-                    "temporary conversation reached the local memory limit; start a new one"
-                )
-            self.temporary_conversations[resolved_id] = conversation
-            self.temporary_conversations.move_to_end(resolved_id)
-            while len(self.temporary_conversations) > 32:
-                self.temporary_conversations.popitem(last=False)
         else:
             previous_messages = (previous or {}).get("messages")
             last_message = streamed_messages[-1] if streamed_messages else None
@@ -778,124 +777,80 @@ class ChatGPTClient:
                     return parent
         raise ChatGPTError("The original message parent is unavailable")
 
-    def send_prompt_direct(
+    def _apply_message_action(
         self,
+        body: dict[str, Any],
         conversation: dict[str, Any] | None,
+        conversation_id: str | None,
+        action: Any,
+        message_id: str | None,
         prompt: str,
-        attachments: list[dict[str, Any]],
-        on_event: Any = None,
-        model: str | None = None,
-        effort: str | None = None,
-        temporary: bool = False,
-        action=None,
-        message_id: str | None = None,
-    ) -> tuple[str, str, dict[str, Any] | None, list[dict[str, Any]]]:
-        conversation_id = None
-        if conversation:
-            candidate = conversation.get("conversation_id") or conversation.get("id")
-            if isinstance(candidate, str):
-                conversation_id = candidate
-        method = "POST"
-        url = urljoin(CHATGPT_ORIGIN, "/backend-api/f/conversation")
-        headers = self.headers.copy()
-        body = self.create_conversation_body(conversation, prompt, attachments)
-        pending_branch = (
-            conversation.get("pending_branch") if isinstance(conversation, dict) else None
-        )
-        if isinstance(pending_branch, dict):
-            branch_chat_id = pending_branch.get("conversation_id")
-            branch_msg_id = pending_branch.get("message_id")
-            if not isinstance(branch_chat_id, str) or not isinstance(branch_msg_id, str):
-                raise ChatGPTError("invalid pending branch continuation context")
-            body.pop("conversation_id", None)
-            conversation_id = None
-            body.update(
-                branching_from_conversation_id=branch_chat_id,
-                branching_from_message_id=branch_msg_id,
-                parent_message_id=branch_msg_id,
-            )
-        submitted_message_id = body["messages"][0]["id"]
-        if action:
-            from ...resources.message.types import MessageAction
+    ) -> str:
+        from ...resources.message.types import MessageAction
 
-            items = (conversation or {}).get("messages", [])
-            target_index = next(
-                (i for i, item in enumerate(items) if item.get("id") == message_id), None
-            )
-            if target_index is None or (conversation or {}).get("is_read_only"):
-                raise ChatGPTError("The selected message is no longer editable")
-            target = items[target_index]
-            expected_role = "user" if action == MessageAction.EDIT else "assistant"
-            if target.get("channel") == "analysis" or target.get("recipient") not in (None, "all"):
-                raise ChatGPTError("Only visible messages can be changed")
-            if (target.get("author") or {}).get("role") != expected_role:
-                raise ChatGPTError("The message role does not match the requested action")
-            if action == MessageAction.RETRY:
-                user = next(
-                    (
-                        item
-                        for item in reversed(items[:target_index])
-                        if (item.get("author") or {}).get("role") == "user"
-                    ),
-                    None,
-                )
-                if user is None:
-                    raise ChatGPTError("The original prompt is unavailable")
-                body.update(action="variant", messages=[], parent_message_id=user["id"])
-                submitted_message_id = user["id"]
-            elif action == MessageAction.EDIT:
-                body["parent_message_id"] = self._edit_parent_id(
-                    conversation,
-                    conversation_id,
-                    items,
-                    target_index,
-                    target,
-                    message_id,
-                )
-                original = target.get("content") or {}
-                resource_parts = [
-                    part for part in original.get("parts", []) if not isinstance(part, str)
-                ]
-                body["messages"][0]["content"] = {
-                    "content_type": original.get("content_type") or "text",
-                    "parts": resource_parts + [prompt],
-                }
-                body["messages"][0]["metadata"]["attachments"] = (target.get("metadata") or {}).get(
-                    "attachments", []
-                )
-            else:
-                raise ChatGPTError("Unsupported message action")
-        # Apply the provider-owned choices to this request; never retain an
-        # effort preference captured from a different model.
-        if model:
-            body["model"] = model
-            # A captured recipe can carry the old model's effort preference.
-            body.pop("thinking_effort", None)
-        if effort:
-            body["thinking_effort"] = effort
-
-        if conversation and extract_project_id(conversation):
-            body["gizmo_id"] = extract_project_id(conversation)
-        body["history_and_training_disabled"] = temporary
-        headers.pop("x-openai-web-sse-compression", None)
-        headers["x-openai-target-path"] = "/backend-api/f/conversation"
-        headers["x-openai-target-route"] = "/backend-api/f/conversation"
-        body["supported_encodings"] = []
-        body["supports_buffering"] = False
-        if not isinstance(submitted_message_id, str) or not submitted_message_id:
-            raise ChatGPTError("conversation request has no user message ID")
-        submitted_message = (
-            body["messages"][0]
-            if body.get("messages") and isinstance(body["messages"][0], dict)
-            else None
+        items = (conversation or {}).get("messages", [])
+        target_index = next(
+            (i for i, item in enumerate(items) if item.get("id") == message_id), None
         )
-        headers.update(self.create_sentinel_headers())
+        if target_index is None or (conversation or {}).get("is_read_only"):
+            raise ChatGPTError("The selected message is no longer editable")
+        target = items[target_index]
+        expected_role = "user" if action == MessageAction.EDIT else "assistant"
+        if target.get("channel") == "analysis" or target.get("recipient") not in (None, "all"):
+            raise ChatGPTError("Only visible messages can be changed")
+        if (target.get("author") or {}).get("role") != expected_role:
+            raise ChatGPTError("The message role does not match the requested action")
+        if action == MessageAction.RETRY:
+            user = next(
+                (
+                    item
+                    for item in reversed(items[:target_index])
+                    if (item.get("author") or {}).get("role") == "user"
+                ),
+                None,
+            )
+            if user is None:
+                raise ChatGPTError("The original prompt is unavailable")
+            body.update(action="variant", messages=[], parent_message_id=user["id"])
+            return user["id"]
+        if action == MessageAction.EDIT:
+            body["parent_message_id"] = self._edit_parent_id(
+                conversation,
+                conversation_id,
+                items,
+                target_index,
+                target,
+                message_id,
+            )
+            original = target.get("content") or {}
+            resource_parts = [
+                part for part in original.get("parts", []) if not isinstance(part, str)
+            ]
+            body["messages"][0]["content"] = {
+                "content_type": original.get("content_type") or "text",
+                "parts": resource_parts + [prompt],
+            }
+            body["messages"][0]["metadata"]["attachments"] = (target.get("metadata") or {}).get(
+                "attachments", []
+            )
+            return body["messages"][0]["id"]
+        raise ChatGPTError("Unsupported message action")
+
+    def _consume_chat_stream(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        conversation_id: str | None,
+        on_event: Any,
+    ) -> tuple[str, list[dict[str, Any]]]:
         resolved_id: str | None = conversation_id
-        rendered_by_channel = {}
+        rendered_by_channel: dict[str, str] = {}
         terminal_seen = False
         completion_notified = False
         final_seen = False
-        streamed_messages = OrderedDict()
+        streamed_messages: OrderedDict[str, dict[str, Any]] = OrderedDict()
         timing = current_send_timing()
         sse_connect_started = time.perf_counter_ns() if timing is not None else None
         first_sse_event = False
@@ -1014,11 +969,82 @@ class ChatGPTClient:
             )
         if not isinstance(resolved_id, str) or not resolved_id:
             raise ChatGPTError("ChatGPT did not return a conversation ID")
+        return resolved_id, list(streamed_messages.values())
+
+    def send_prompt_direct(
+        self,
+        conversation: dict[str, Any] | None,
+        prompt: str,
+        attachments: list[dict[str, Any]],
+        on_event: Any = None,
+        model: str | None = None,
+        effort: str | None = None,
+        temporary: bool = False,
+        action=None,
+        message_id: str | None = None,
+    ) -> tuple[str, str, dict[str, Any] | None, list[dict[str, Any]]]:
+        conversation_id = None
+        if conversation:
+            candidate = conversation.get("conversation_id") or conversation.get("id")
+            if isinstance(candidate, str):
+                conversation_id = candidate
+        method = "POST"
+        url = urljoin(CHATGPT_ORIGIN, "/backend-api/f/conversation")
+        headers = self.headers.copy()
+        body = self.create_conversation_body(conversation, prompt, attachments)
+        pending_branch = (
+            conversation.get("pending_branch") if isinstance(conversation, dict) else None
+        )
+        if isinstance(pending_branch, dict):
+            branch_chat_id = pending_branch.get("conversation_id")
+            branch_msg_id = pending_branch.get("message_id")
+            if not isinstance(branch_chat_id, str) or not isinstance(branch_msg_id, str):
+                raise ChatGPTError("invalid pending branch continuation context")
+            body.pop("conversation_id", None)
+            conversation_id = None
+            body.update(
+                branching_from_conversation_id=branch_chat_id,
+                branching_from_message_id=branch_msg_id,
+                parent_message_id=branch_msg_id,
+            )
+        submitted_message_id = body["messages"][0]["id"]
+        if action:
+            submitted_message_id = self._apply_message_action(
+                body, conversation, conversation_id, action, message_id, prompt
+            )
+        # Apply the provider-owned choices to this request; never retain an
+        # effort preference captured from a different model.
+        if model:
+            body["model"] = model
+            # A captured recipe can carry the old model's effort preference.
+            body.pop("thinking_effort", None)
+        if effort:
+            body["thinking_effort"] = effort
+
+        if conversation and extract_project_id(conversation):
+            body["gizmo_id"] = extract_project_id(conversation)
+        body["history_and_training_disabled"] = temporary
+        headers.pop("x-openai-web-sse-compression", None)
+        headers["x-openai-target-path"] = "/backend-api/f/conversation"
+        headers["x-openai-target-route"] = "/backend-api/f/conversation"
+        body["supported_encodings"] = []
+        body["supports_buffering"] = False
+        if not isinstance(submitted_message_id, str) or not submitted_message_id:
+            raise ChatGPTError("conversation request has no user message ID")
+        submitted_message = (
+            body["messages"][0]
+            if body.get("messages") and isinstance(body["messages"][0], dict)
+            else None
+        )
+        headers.update(self.create_sentinel_headers())
+        resolved_id, streamed_messages = self._consume_chat_stream(
+            method, url, headers, body, conversation_id, on_event
+        )
         return (
             resolved_id,
             submitted_message_id,
             submitted_message,
-            list(streamed_messages.values()),
+            streamed_messages,
         )
 
     def _get_or_create_sentinel_runtime(self, user_agent: str) -> SentinelRuntime:
@@ -1272,13 +1298,84 @@ class ChatGPTClient:
         transport = HTTPTransport(f"https://{target.netloc}", client_getter=lambda: self.http)
         return transport.send("PUT", path, check_status=False, **options)
 
+    @staticmethod
+    def _consume_project_upload_event(line: bytes | bytearray) -> bool:
+        if len(line) > 1024 * 1024:
+            raise ChatGPTError("ChatGPT returned an oversized project source event")
+        if not line.strip():
+            return False
+        try:
+            event = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ChatGPTError("ChatGPT returned an invalid project source event") from None
+        if not isinstance(event, dict):
+            raise ChatGPTError("ChatGPT returned an invalid project source event")
+        event_type = event.get("type") or event.get("event")
+        if event_type in ("file.processing.error", "file.processing.failed"):
+            raise ChatGPTError("ChatGPT could not process the project source")
+        return event_type == "file.processing.completed"
+
+    def _process_project_upload_stream(
+        self,
+        file_id: str,
+        file_name: str,
+        mime_type: str,
+        project_id: str,
+        ensure_active,
+    ) -> None:
+        payload = {
+            "entry_surface": "project_sources",
+            "file_id": file_id,
+            "file_name": file_name,
+            "gizmo_id": project_id,
+            "index_for_retrieval": True,
+            "mime_type": mime_type,
+            "use_case": "gizmo",
+        }
+        with self.transport.stream(
+            "POST",
+            "/backend-api/files/process_upload_stream",
+            check_status=False,
+            json=payload,
+            timeout=httpx.Timeout(300.0),
+        ) as processing:
+            if processing.status_code == 429:
+                raise RateLimited(parse_retry_after(processing.headers.get("retry-after")))
+            if processing.status_code in (401, 403):
+                raise ChatGPTAuthenticationError(
+                    "ChatGPT session expired or was rejected; verify the account"
+                )
+            if processing.status_code >= 400:
+                raise ChatGPTError(
+                    f"ChatGPT project source processing returned HTTP {processing.status_code}"
+                )
+            if "text/event-stream" not in processing.headers.get("content-type", ""):
+                raise ChatGPTError("ChatGPT returned an invalid project source processing stream")
+
+            pending = bytearray()
+            completed = False
+            for chunk in processing.iter_bytes():
+                ensure_active()
+                pending.extend(chunk)
+                offset = 0
+                while (end := pending.find(b"\n", offset)) >= 0:
+                    completed = self._consume_project_upload_event(pending[offset:end])
+                    offset = end + 1
+                    if completed:
+                        break
+                if completed:
+                    break
+                del pending[:offset]
+                if len(pending) > 1024 * 1024:
+                    raise ChatGPTError("ChatGPT returned an oversized project source event")
+            if not completed:
+                completed = self._consume_project_upload_event(pending)
+            if not completed:
+                raise ChatGPTError("ChatGPT ended project source processing without completion")
+
     def upload_file(
         self, file_name: str, mime_type: str, data, *, project_id=None, cancel_event=None
     ) -> dict[str, Any]:
-        import os
-        import time
-        from pathlib import Path
-
         path = data if isinstance(data, Path) else None
         stream = path.open("rb") if path is not None else None
         try:
@@ -1345,7 +1442,6 @@ class ChatGPTClient:
                 content = chunks()
             else:
                 content = data
-            import httpx
 
             timeout = httpx.Timeout(connect=30, read=15, write=15, pool=30)
             response = self._upload_request(
@@ -1355,91 +1451,24 @@ class ChatGPTClient:
             ensure_active()
             if stream is not None:
                 after = os.fstat(stream.fileno())
-
-                def signature(value):
-                    return (
-                        value.st_dev,
-                        value.st_ino,
-                        value.st_size,
-                        value.st_mtime_ns,
-                        value.st_ctime_ns,
-                    )
-
-                if signature(before) != signature(after):
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
                     raise ChatGPTError("file changed while it was being uploaded")
             if project_id:
-                payload = {
-                    "entry_surface": "project_sources",
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "gizmo_id": project_id,
-                    "index_for_retrieval": True,
-                    "mime_type": mime_type,
-                    "use_case": "gizmo",
-                }
-                with self.transport.stream(
-                    "POST",
-                    "/backend-api/files/process_upload_stream",
-                    check_status=False,
-                    json=payload,
-                    timeout=httpx.Timeout(300.0),
-                ) as processing:
-                    if processing.status_code == 429:
-                        raise RateLimited(parse_retry_after(processing.headers.get("retry-after")))
-                    if processing.status_code in (401, 403):
-                        raise ChatGPTAuthenticationError(
-                            "ChatGPT session expired or was rejected; verify the account"
-                        )
-                    if processing.status_code >= 400:
-                        raise ChatGPTError(
-                            f"ChatGPT project source processing returned HTTP {processing.status_code}"
-                        )
-                    if "text/event-stream" not in processing.headers.get("content-type", ""):
-                        raise ChatGPTError(
-                            "ChatGPT returned an invalid project source processing stream"
-                        )
-
-                    pending = bytearray()
-                    completed = False
-
-                    def consume_event(line):
-                        if len(line) > 1024 * 1024:
-                            raise ChatGPTError("ChatGPT returned an oversized project source event")
-                        if not line.strip():
-                            return False
-                        try:
-                            event = json.loads(line)
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            raise ChatGPTError(
-                                "ChatGPT returned an invalid project source event"
-                            ) from None
-                        if not isinstance(event, dict):
-                            raise ChatGPTError("ChatGPT returned an invalid project source event")
-                        event_type = event.get("type") or event.get("event")
-                        if event_type in ("file.processing.error", "file.processing.failed"):
-                            raise ChatGPTError("ChatGPT could not process the project source")
-                        return event_type == "file.processing.completed"
-
-                    for chunk in processing.iter_bytes():
-                        ensure_active()
-                        pending.extend(chunk)
-                        offset = 0
-                        while (end := pending.find(b"\n", offset)) >= 0:
-                            completed = consume_event(pending[offset:end])
-                            offset = end + 1
-                            if completed:
-                                break
-                        if completed:
-                            break
-                        del pending[:offset]
-                        if len(pending) > 1024 * 1024:
-                            raise ChatGPTError("ChatGPT returned an oversized project source event")
-                    if not completed:
-                        completed = consume_event(pending)
-                    if not completed:
-                        raise ChatGPTError(
-                            "ChatGPT ended project source processing without completion"
-                        )
+                self._process_project_upload_stream(
+                    file_id, file_name, mime_type, project_id, ensure_active
+                )
             else:
                 result = self.request(
                     "POST",

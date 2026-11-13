@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from ..errors import SentinelCompatibilityError
@@ -385,7 +386,7 @@ def _build_virtual_window(
             else target
         ),
         "keys": lambda obj, *_a: (
-            [str(k) for k in obj.keys() if not str(k).startswith("__")]
+            [str(k) for k in obj if not str(k).startswith("__")]
             if isinstance(obj, dict)
             else [str(i) for i in range(len(obj))]
             if isinstance(obj, (list, tuple, str))
@@ -404,9 +405,7 @@ def _build_virtual_window(
             else []
         ),
         "getOwnPropertyNames": lambda obj, *_a: (
-            [str(k) for k in obj.keys() if not str(k).startswith("__")]
-            if isinstance(obj, dict)
-            else []
+            [str(k) for k in obj if not str(k).startswith("__")] if isinstance(obj, dict) else []
         ),
         "getPrototypeOf": lambda obj, *_a: obj if isinstance(obj, dict) else {},
     }
@@ -772,10 +771,8 @@ class SentinelVM:
             current = reg.get(dst)
             rhs = reg.get(src)
             if isinstance(current, list):
-                try:
+                with suppress(ValueError):
                     current.remove(rhs)
-                except ValueError:
-                    pass
             else:
                 reg[dst] = _js_to_number(current) - _js_to_number(rhs)
 

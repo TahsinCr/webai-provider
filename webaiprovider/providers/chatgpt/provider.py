@@ -8,9 +8,10 @@ import math
 import threading
 import time
 from collections import OrderedDict
-from contextlib import contextmanager
+from collections.abc import Callable
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
@@ -64,10 +65,100 @@ from .client import ChatGPTClient
 from .collections import AsyncChatGPTProjectsCollection
 from .discovery import project_id
 from .errors import ChatGPTError
-from .formats import message_files, message_parts
+from .formats import message_files, message_parts, text_from_parts
 from .projects import ChatGPTProjectEditor
 from .resources import AsyncChatGPTChat
 from .session import BrowserSession, SessionPaths
+
+
+def _prepare_chatgpt_attachments(
+    client: ChatGPTClient, request: ProviderRequest, stopped: threading.Event
+) -> list | None:
+    if stopped.is_set():
+        return None
+    attachments = []
+    for item in request.attachments:
+        if stopped.is_set():
+            return None
+        if isinstance(item, dict) and ("bytes" in item or "path" in item):
+            attachments.append(
+                client.upload_file(
+                    item.get("name")
+                    or (Path(item["path"]).name if item.get("path") else "attachment"),
+                    item.get("mime_type") or "application/octet-stream",
+                    item["bytes"] if item.get("bytes") is not None else Path(item["path"]),
+                    project_id=request.project_id or None,
+                    cancel_event=stopped,
+                )
+            )
+        else:
+            attachments.append(item)
+    return attachments
+
+
+def _emit_chatgpt_post_send_events(
+    remote_id: str,
+    completed: dict,
+    previous: object,
+    request: ProviderRequest,
+    publish: Callable[[tuple[str, object]], None],
+) -> None:
+    response_messages = completed.get("messages", [])
+    previous_ids = set(previous or ())
+    summaries = []
+    for item in response_messages:
+        if item.get("id") in previous_ids or item.get("recipient") not in (None, "all"):
+            continue
+        if (item.get("metadata") or {}).get("is_visually_hidden_from_conversation"):
+            continue
+        if (item.get("author") or {}).get("role") != "assistant":
+            continue
+        content = item.get("content") or {}
+        if item.get("channel") == "analysis" or content.get("content_type") in (
+            "thoughts",
+            "reasoning_recap",
+            "reasoning_summary",
+        ):
+            text = text_from_parts(message_parts(content))
+            if text:
+                summaries.append(text)
+    if summaries:
+        publish(("event", TextReplacement("\n\n".join(summaries), "analysis")))
+
+    final = None
+    last_user_index = None
+    for index in range(len(response_messages) - 1, -1, -1):
+        item = response_messages[index]
+        role = (item.get("author") or {}).get("role")
+        if (
+            final is None
+            and role == "assistant"
+            and item.get("channel") != "analysis"
+            and item.get("recipient") in (None, "all")
+        ):
+            final = item
+        if last_user_index is None and role == "user":
+            last_user_index = index
+        if final is not None and last_user_index is not None:
+            break
+    if final:
+        turn_start = (last_user_index + 1) if last_user_index is not None else 0
+        user = response_messages[last_user_index] if last_user_index is not None else {}
+        metadata = final.get("metadata") or {}
+        publish(
+            (
+                "event",
+                MessageMetadata(
+                    final.get("id"),
+                    user.get("id"),
+                    metadata.get("model_slug") or request.model,
+                    metadata.get("reasoning_effort") or request.effort,
+                    sources_from(final),
+                    files=message_files(*response_messages[turn_start:]),
+                ),
+            )
+        )
+    publish(("event", ConversationBound(remote_id)))
 
 
 class _Stopped(Exception):
@@ -214,10 +305,8 @@ class AsyncChatGPTProvider(AsyncProvider):
             # interrupts an in-flight PUT; chunk checks stop the worker if it is
             # between writes. Wait for the worker so cancellation cannot leak it.
             if holder:
-                try:
+                with suppress(Exception):
                     holder[0].close()
-                except Exception:
-                    pass
             try:
                 cleanup = asyncio.shield(worker)
                 cleanup.add_done_callback(consume_failure)
@@ -228,13 +317,12 @@ class AsyncChatGPTProvider(AsyncProvider):
 
     async def _close_provider(self):
         try:
-            async with self._gate:
-                async with self._rename_gate:
-                    try:
-                        await self.editor.close()
-                    finally:
-                        self._temporary_conversations.clear()
-                        await self._discard_http_client()
+            async with self._gate, self._rename_gate:
+                try:
+                    await self.editor.close()
+                finally:
+                    self._temporary_conversations.clear()
+                    await self._discard_http_client()
         finally:
             if self._provided_transport is not None:
                 await self._provided_transport.close()
@@ -458,39 +546,44 @@ class AsyncChatGPTProvider(AsyncProvider):
             else (),
         )
 
+    @staticmethod
+    def _active_messages(raw: dict) -> list[dict]:
+        raw_messages = raw.get("messages")
+        if isinstance(raw_messages, list):
+            return raw_messages
+        mapping = raw.get("mapping")
+        if not isinstance(mapping, dict) or not mapping:
+            return []
+        node_id = raw.get("current_node")
+        if not isinstance(node_id, str) or node_id not in mapping:
+            raise ValueError("ChatGPT conversation has no active message path")
+        reversed_messages: list[dict] = []
+        visited: set[str] = set()
+        while node_id is not None:
+            if node_id in visited:
+                raise ValueError("ChatGPT conversation message path contains a cycle")
+            visited.add(node_id)
+            node = mapping.get(node_id)
+            if not isinstance(node, dict):
+                raise ValueError("ChatGPT conversation message path is incomplete")
+            message = node.get("message")
+            if isinstance(message, dict):
+                reversed_messages.append(message)
+            parent_id = node.get("parent")
+            if parent_id is None:
+                break
+            if not isinstance(parent_id, str) or parent_id not in mapping:
+                raise ValueError("ChatGPT conversation message path is incomplete")
+            node_id = parent_id
+        reversed_messages.reverse()
+        return reversed_messages
+
     def _conversation(self, raw: dict) -> Conversation:
         remote_id = raw.get("conversation_id") or raw.get("id")
         if not isinstance(remote_id, str) or not remote_id:
             raise ValueError("provider conversation has no remote ID")
         messages, turn = [], []
-        raw_messages = raw.get("messages")
-        if not isinstance(raw_messages, list):
-            mapping = raw.get("mapping")
-            raw_messages = []
-            if isinstance(mapping, dict) and mapping:
-                node_id = raw.get("current_node")
-                if not isinstance(node_id, str) or node_id not in mapping:
-                    raise ValueError("ChatGPT conversation has no active message path")
-                reversed_messages = []
-                visited = set()
-                while node_id is not None:
-                    if node_id in visited:
-                        raise ValueError("ChatGPT conversation message path contains a cycle")
-                    visited.add(node_id)
-                    node = mapping.get(node_id)
-                    if not isinstance(node, dict):
-                        raise ValueError("ChatGPT conversation message path is incomplete")
-                    message = node.get("message")
-                    if isinstance(message, dict):
-                        reversed_messages.append(message)
-                    parent_id = node.get("parent")
-                    if parent_id is None:
-                        break
-                    if not isinstance(parent_id, str) or parent_id not in mapping:
-                        raise ValueError("ChatGPT conversation message path is incomplete")
-                    node_id = parent_id
-                raw_messages = list(reversed(reversed_messages))
-        for item in raw_messages:
+        for item in self._active_messages(raw):
             if not isinstance(item, dict):
                 continue
             if (item.get("author") or {}).get("role") == "user":
@@ -806,7 +899,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                 except concurrent.futures.TimeoutError:
                     if stopped.is_set():
                         future.cancel()
-                        raise _Stopped()
+                        raise _Stopped() from None
 
         def event(value):
             kind = value.get("type")
@@ -828,32 +921,8 @@ class AsyncChatGPTProvider(AsyncProvider):
                         )
                     client.temporary_conversations = self._temporary_conversations
                     holder.append(client)
-                    if stopped.is_set():
-                        return
-                    attachments = []
-                    for item in request.attachments:
-                        if stopped.is_set():
-                            return
-                        if isinstance(item, dict) and ("bytes" in item or "path" in item):
-                            attachments.append(
-                                client.upload_file(
-                                    item.get("name")
-                                    or (
-                                        Path(item["path"]).name
-                                        if item.get("path")
-                                        else "attachment"
-                                    ),
-                                    item.get("mime_type") or "application/octet-stream",
-                                    item["bytes"]
-                                    if item.get("bytes") is not None
-                                    else Path(item["path"]),
-                                    project_id=request.project_id or None,
-                                    cancel_event=stopped,
-                                )
-                            )
-                        else:
-                            attachments.append(item)
-                    if stopped.is_set():
+                    attachments = _prepare_chatgpt_attachments(client, request, stopped)
+                    if attachments is None or stopped.is_set():
                         return
                     remote_id, completed, previous = client.send_prompt(
                         request.conversation_id,
@@ -872,73 +941,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                     )
                     # Native summaries can arrive only in the completion snapshot.
                     # The common API must not drop these provider-visible blocks.
-                    from .formats import message_parts, text_from_parts
-
-                    summaries = []
-                    previous = set(previous or ())
-                    for item in completed.get("messages", []):
-                        if item.get("id") in previous or item.get("recipient") not in (None, "all"):
-                            continue
-                        if (item.get("metadata") or {}).get("is_visually_hidden_from_conversation"):
-                            continue
-                        if (item.get("author") or {}).get("role") != "assistant":
-                            continue
-                        content = item.get("content") or {}
-                        if item.get("channel") == "analysis" or content.get("content_type") in (
-                            "thoughts",
-                            "reasoning_recap",
-                            "reasoning_summary",
-                        ):
-                            text = text_from_parts(message_parts(content))
-                            if text:
-                                summaries.append(text)
-                    if summaries:
-                        publish(("event", TextReplacement("\n\n".join(summaries), "analysis")))
-                    final = next(
-                        (
-                            item
-                            for item in reversed(completed.get("messages", []))
-                            if (item.get("author") or {}).get("role") == "assistant"
-                            and item.get("channel") != "analysis"
-                            and item.get("recipient") in (None, "all")
-                        ),
-                        None,
-                    )
-                    if final:
-                        response_messages = completed.get("messages", [])
-                        turn_start = next(
-                            (
-                                index + 1
-                                for index in range(len(response_messages) - 1, -1, -1)
-                                if (response_messages[index].get("author") or {}).get("role")
-                                == "user"
-                            ),
-                            0,
-                        )
-                        user = next(
-                            (
-                                item
-                                for item in reversed(completed.get("messages", []))
-                                if (item.get("author") or {}).get("role") == "user"
-                            ),
-                            {},
-                        )
-                        publish(
-                            (
-                                "event",
-                                MessageMetadata(
-                                    final.get("id"),
-                                    user.get("id"),
-                                    (final.get("metadata") or {}).get("model_slug")
-                                    or request.model,
-                                    (final.get("metadata") or {}).get("reasoning_effort")
-                                    or request.effort,
-                                    sources_from(final),
-                                    files=message_files(*response_messages[turn_start:]),
-                                ),
-                            )
-                        )
-                    publish(("event", ConversationBound(remote_id)))
+                    _emit_chatgpt_post_send_events(remote_id, completed, previous, request, publish)
             except _Stopped:
                 return
             except ProviderError as error:
