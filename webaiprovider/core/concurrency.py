@@ -1,11 +1,40 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
 from eventflow import KeyedConcurrencyLimiter, SingleFlight
 
 T = TypeVar("T")
+R = TypeVar("R")
+
+
+async def gather_bounded(
+    items: Sequence[T],
+    worker: Callable[[T], Awaitable[R]],
+    *,
+    limit: int = 2,
+) -> list[R]:
+    if not items:
+        return []
+    if len(items) == 1:
+        return [await worker(items[0])]
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def run_one(item: T) -> R:
+        async with semaphore:
+            return await worker(item)
+
+    tasks = [asyncio.create_task(run_one(item)) for item in items]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 class ConcurrencyCoordinator:

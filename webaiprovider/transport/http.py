@@ -25,6 +25,7 @@ _IDEMPOTENT_METHODS = frozenset(("GET", "HEAD"))
 _DNS_CACHE: MultiDimensionBoundedCache[tuple[str, int, bool], tuple[str, ...]] = (
     MultiDimensionBoundedCache(max_entries=64, max_bytes=32768, default_ttl=60.0)
 )
+_IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
 
 
@@ -32,7 +33,7 @@ def _has_ipv6_connectivity() -> bool:
     global _ipv6_connectivity_cache
     now = time.monotonic()
     cached = _ipv6_connectivity_cache
-    if cached is not None and now - cached[0] < 30.0:
+    if cached is not None and now - cached[0] < _IPV6_CACHE_TTL:
         return cached[1]
     reachable = False
     sock = None
@@ -47,6 +48,18 @@ def _has_ipv6_connectivity() -> bool:
             sock.close()
     _ipv6_connectivity_cache = (now, reachable)
     return reachable
+
+
+_DEFAULT_IPV6_CHECK = _has_ipv6_connectivity
+
+
+async def _check_ipv6_connectivity() -> bool:
+    if _has_ipv6_connectivity is not _DEFAULT_IPV6_CHECK:
+        return bool(_has_ipv6_connectivity())
+    cached = _ipv6_connectivity_cache
+    if cached is not None and time.monotonic() - cached[0] < _IPV6_CACHE_TTL:
+        return cached[1]
+    return await asyncio.to_thread(_has_ipv6_connectivity)
 
 
 def _is_curl_async_session(client) -> bool:
@@ -171,6 +184,14 @@ class AsyncHTTPTransport(AsyncTransport):
         self.client = None
         self._owned_refs: dict[int, int] = {}
         self._retired_clients: dict[int, object] = {}
+        parsed_origin = urlsplit(self.origin)
+        hostname = parsed_origin.hostname or ""
+        port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+        self._origin_host = hostname
+        self._origin_port = port
+        self._origin_prefix = f"{hostname}:{port}:" if hostname else ""
+        self._origin_is_ip = bool(hostname and _is_ip_literal(hostname))
+        self._resolve_cache: tuple[tuple[str, ...], str] | None = None
 
     def _connect(self):
         if self._client_getter is not None:
@@ -216,45 +237,64 @@ class AsyncHTTPTransport(AsyncTransport):
         if self._after_response is not None:
             await self._after_response()
 
+    def _resolve_entry(self, ips: tuple[str, ...]) -> str:
+        cached = self._resolve_cache
+        if cached is not None and cached[0] == ips:
+            return cached[1]
+        formatted = [f"[{ip}]" if ":" in ip else ip for ip in ips]
+        entry = f"{self._origin_prefix}{','.join(formatted)}"
+        self._resolve_cache = (ips, entry)
+        return entry
+
     async def _prepare_curl(self, options, *, client=None):
         client = client if client is not None else self._connect()
         if not _is_curl_async_session(client):
             return
         from curl_cffi import CurlOpt
 
-        ipv6 = _has_ipv6_connectivity()
-        if not ipv6:
+        ipv6 = await _check_ipv6_connectivity()
+        if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
             client.curl_options[CurlOpt.IPRESOLVE] = 1
-        target = urlsplit(self.origin)
-        hostname = target.hostname
-        if not hostname or _is_ip_literal(hostname) or _has_proxy_configured(client, options):
+        hostname = self._origin_host
+        if not hostname or self._origin_is_ip or _has_proxy_configured(client, options):
             return
-        port = target.port or (443 if target.scheme == "https" else 80)
         ips = await _resolve_host_ips(
             hostname,
-            port,
+            self._origin_port,
             use_ipv6=ipv6,
             timeout=_connect_timeout(options.get("timeout", self.config.timeout)),
         )
-        formatted = [f"[{ip}]" if ":" in ip else ip for ip in ips]
-        prefix = f"{hostname}:{port}:"
-        existing = [
-            entry
-            for entry in (client.curl_options.get(CurlOpt.RESOLVE) or ())
-            if not str(entry).startswith(prefix)
-        ]
-        existing.append(f"{prefix}{','.join(formatted)}")
+        entry = self._resolve_entry(ips)
+        existing_resolve = client.curl_options.get(CurlOpt.RESOLVE)
+        prefix = self._origin_prefix
+        if existing_resolve:
+            if len(existing_resolve) == 1 and existing_resolve[0] == entry:
+                return
+            has_exact = False
+            has_stale = False
+            for item in existing_resolve:
+                if item == entry:
+                    has_exact = True
+                elif str(item).startswith(prefix):
+                    has_stale = True
+                    break
+            if has_exact and not has_stale:
+                return
+            existing = [item for item in existing_resolve if not str(item).startswith(prefix)]
+        else:
+            existing = []
+        existing.append(entry)
         client.curl_options[CurlOpt.RESOLVE] = existing
 
     def _invalidate_curl_dns(self, failed_client=None):
-        target = urlsplit(self.origin)
-        hostname = target.hostname
+        hostname = self._origin_host
         if not hostname:
             return
-        port = target.port or (443 if target.scheme == "https" else 80)
+        port = self._origin_port
         folded = hostname.casefold()
         _DNS_CACHE.remove((folded, port, True))
         _DNS_CACHE.remove((folded, port, False))
+        self._resolve_cache = None
         client = (
             failed_client
             if failed_client is not None
@@ -263,7 +303,7 @@ class AsyncHTTPTransport(AsyncTransport):
         if _is_curl_async_session(client):
             from curl_cffi import CurlOpt
 
-            prefix = f"{hostname}:{port}:"
+            prefix = self._origin_prefix
             existing = client.curl_options.get(CurlOpt.RESOLVE)
             if existing:
                 client.curl_options[CurlOpt.RESOLVE] = [

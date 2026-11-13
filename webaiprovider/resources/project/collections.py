@@ -86,6 +86,9 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
             current = await provider.get_project(target.remote_id)
             if not isinstance(current, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
+            stage = getattr(type(provider), "_stage_project_read", None)
+            if callable(stage):
+                stage(provider, current)
             updated = await provider.update_project(
                 replace(
                     current,

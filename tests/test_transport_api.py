@@ -554,3 +554,81 @@ class BlockingTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ProviderError, "size limit"):
                 transport.send("POST", "/fixture")
             self.assertEqual(len(requests), 1)
+
+
+class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_curl_resolve_cache_reuses_entry_and_refreshes_after_invalidation(self):
+        import socket
+
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests import AsyncSession
+
+        import webaiprovider.transport.http as transport_http
+
+        session = AsyncSession()
+        session.request = AsyncMock(return_value=httpx.Response(200, json={"ok": True}))
+        resolved_ips = iter(["93.184.216.34", "93.184.216.35"])
+
+        async def fake_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            ip = next(resolved_ips)
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))]
+
+        transport_http._DNS_CACHE.clear()
+        try:
+            transport = AsyncHTTPTransport("https://claude.ai", client_getter=lambda: session)
+            with patch.object(
+                asyncio.get_running_loop(), "getaddrinfo", side_effect=fake_getaddrinfo
+            ) as getaddr:
+                await transport.send("GET", "/one")
+                await transport.send("GET", "/two")
+                resolve_one = session.curl_options[CurlOpt.RESOLVE]
+                self.assertEqual(resolve_one, ["claude.ai:443:93.184.216.34"])
+
+                with patch.object(
+                    transport, "_resolve_entry", wraps=transport._resolve_entry
+                ) as build_entry:
+                    await transport.send("GET", "/two-again")
+                    self.assertIs(session.curl_options[CurlOpt.RESOLVE], resolve_one)
+                    self.assertEqual(build_entry.call_count, 1)
+
+                transport._invalidate_curl_dns()
+                await transport.send("GET", "/three")
+                resolve_three = session.curl_options[CurlOpt.RESOLVE]
+                self.assertEqual(resolve_three, ["claude.ai:443:93.184.216.35"])
+                self.assertIsNot(resolve_three, resolve_one)
+                self.assertEqual(getaddr.await_count, 2)
+        finally:
+            transport_http._DNS_CACHE.clear()
+            await session.close()
+
+    async def test_check_ipv6_connectivity_offloads_uncached_probe_to_worker_thread(self):
+        import time
+
+        import webaiprovider.transport.http as transport_http
+
+        previous_cache = transport_http._ipv6_connectivity_cache
+        caller_thread = threading.get_ident()
+        probe_threads = []
+
+        def fake_socket(*_args, **_kwargs):
+            probe_threads.append(threading.get_ident())
+            raise OSError("no ipv6")
+
+        transport_http._ipv6_connectivity_cache = None
+        try:
+            with patch("webaiprovider.transport.http.socket.socket", side_effect=fake_socket):
+                self.assertFalse(await transport_http._check_ipv6_connectivity())
+            self.assertEqual(len(probe_threads), 1)
+            self.assertNotEqual(probe_threads[0], caller_thread)
+
+            transport_http._ipv6_connectivity_cache = (time.monotonic(), True)
+            with patch(
+                "webaiprovider.transport.http.socket.socket",
+                side_effect=AssertionError("unexpected"),
+            ):
+                self.assertTrue(await transport_http._check_ipv6_connectivity())
+
+            with patch.object(transport_http, "_has_ipv6_connectivity", return_value=False):
+                self.assertFalse(await transport_http._check_ipv6_connectivity())
+        finally:
+            transport_http._ipv6_connectivity_cache = previous_cache

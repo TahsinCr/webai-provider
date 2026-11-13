@@ -220,24 +220,37 @@ class AsyncMessageOperation:
         except asyncio.TimeoutError:
             return None
 
-    async def stream(self) -> AsyncIterator[StreamEvent]:
+    async def _next_stream_batch(
+        self, index: int, limit: int = 32
+    ) -> tuple[list[StreamEvent], int, bool]:
         task = self._ensure_started()
-        index = 0
         while True:
             async with self._condition:
                 await self._condition.wait_for(
                     lambda current=index: current < len(self._events) or self._completed
                 )
                 if index >= len(self._events):
-                    break
-                event = self._events[index]
-                index += 1
+                    await task
+                    return [], index, True
+                end = min(len(self._events), index + limit)
+                chunk = [
+                    event
+                    for event in self._events[index:end]
+                    if not isinstance(event, TerminalStatus)
+                ]
+                index = end
+            if chunk:
+                return chunk, index, False
 
-            if isinstance(event, TerminalStatus):
-                continue
-            yield event
-
-        await task
+    async def stream(self) -> AsyncIterator[StreamEvent]:
+        index = 0
+        while True:
+            chunk, index, done = await self._next_stream_batch(index)
+            if chunk:
+                for event in chunk:
+                    yield event
+            if done:
+                return
 
     async def _run_internal(self) -> Response:
         started_at = time.perf_counter()
@@ -393,7 +406,19 @@ class MessageOperation:
         return self._owner._call(self._operation.wait_for(stage_name, timeout=timeout))
 
     def stream(self) -> Iterator[StreamEvent]:
-        events = self._operation.stream()
+        operation = self._operation
+        if (
+            isinstance(operation, AsyncMessageOperation)
+            and type(operation).stream is AsyncMessageOperation.stream
+        ):
+            index = 0
+            while True:
+                chunk, index, done = self._owner._call(operation._next_stream_batch(index))
+                if chunk:
+                    yield from chunk
+                if done:
+                    return
+        events = operation.stream()
         while True:
             try:
                 yield self._owner._call(events.__anext__())

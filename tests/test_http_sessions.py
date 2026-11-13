@@ -606,3 +606,89 @@ class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
                 "remove_source", "11111111-1111-1111-1111-111111111111", resource_id="foreign"
             )
         transport.http.request.assert_not_awaited()
+
+
+class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_secondary_cookies_debounce_until_close_while_required_cookie_persists_immediately(
+        self,
+    ):
+        from webaiprovider.transport import session as session_module
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session.json"
+            save_session(path, {"sessionKey": "token-1", "cf_bm": "v1"})
+            jar = httpx.Cookies()
+            jar.set("sessionKey", "token-1", domain="claude.ai", path="/")
+            jar.set("cf_bm", "v1", domain="claude.ai", path="/")
+            steps = iter(
+                [
+                    ("cf_bm", "v2"),
+                    ("cf_bm", "v3"),
+                    ("sessionKey", "token-2"),
+                    ("cf_bm", "v4"),
+                    ("cf_bm", "v5"),
+                    ("cf_bm", "v6"),
+                ]
+            )
+
+            async def fake_request(*_args, **_kwargs):
+                name, value = next(steps)
+                jar.set(name, value, domain="claude.ai", path="/")
+                return httpx.Response(200, json={"ok": True})
+
+            fake_client = SimpleNamespace(
+                cookies=jar,
+                request=AsyncMock(side_effect=fake_request),
+                close=AsyncMock(),
+            )
+            save_calls = []
+            original_save = session_module.save_session_async
+
+            async def counting_save(target_path, cookies):
+                save_calls.append(dict(cookies))
+                await original_save(target_path, cookies)
+
+            http_session = HttpSession(
+                "https://claude.ai",
+                path,
+                "sessionKey",
+                client_factory=lambda **_: fake_client,
+            )
+            try:
+                with patch.object(session_module, "save_session_async", side_effect=counting_save):
+                    await http_session.send("GET", "/first")
+                    self.assertEqual(len(save_calls), 0)
+                    self.assertTrue(http_session._dirty)
+                    self.assertEqual(read_session(path)["cf_bm"], "v1")
+
+                    await http_session.send("GET", "/second")
+                    self.assertEqual(len(save_calls), 0)
+                    self.assertTrue(http_session._dirty)
+
+                    await http_session.send("GET", "/third")
+                    self.assertEqual(len(save_calls), 1)
+                    self.assertFalse(http_session._dirty)
+                    self.assertEqual(read_session(path), {"sessionKey": "token-2", "cf_bm": "v3"})
+
+                    await http_session.send("GET", "/fourth")
+                    self.assertEqual(len(save_calls), 1)
+                    self.assertTrue(http_session._dirty)
+
+                    http_session._last_persisted_at -= (
+                        session_module._SECONDARY_PERSIST_INTERVAL + 1
+                    )
+                    await http_session.send("GET", "/fifth")
+                    self.assertEqual(len(save_calls), 2)
+                    self.assertFalse(http_session._dirty)
+                    self.assertEqual(read_session(path)["cf_bm"], "v5")
+
+                    await http_session.send("GET", "/sixth")
+                    self.assertEqual(len(save_calls), 2)
+                    self.assertTrue(http_session._dirty)
+
+                    await http_session.close()
+                    self.assertEqual(len(save_calls), 3)
+                    self.assertFalse(http_session._dirty)
+                    self.assertEqual(read_session(path), {"sessionKey": "token-2", "cf_bm": "v6"})
+            finally:
+                await http_session.close()

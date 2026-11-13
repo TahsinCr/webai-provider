@@ -990,5 +990,129 @@ class TestSyncApi(unittest.TestCase):
                 )
 
 
+class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
+    def test_sync_stream_batches_buffered_events_and_propagates_errors(self) -> None:
+        from webaiprovider.resources.message.operation import MessageOperation
+        from webaiprovider.resources.message.protocol import ConversationBound, ResponseComplete
+
+        deltas = [TextDelta(f"t{i}") for i in range(12)]
+
+        class BufferedStreamProvider(StreamTestProvider):
+            def __init__(self, account: Account, **_kwargs) -> None:
+                super(StreamTestProvider, self).__init__(account)
+                self._events = (ConversationBound("chat-1"), *deltas, ResponseComplete())
+                self.requests = []
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        with patch.object(ChatGPTProvider, "async_provider_type", BufferedStreamProvider):
+            with ChatGPTProvider(account) as provider:
+                chat = provider.chats.create()
+                with patch.object(provider, "_call", wraps=provider._call) as portal_calls:
+                    operation = chat.messages.create("hello")
+                    events = list(operation.stream())
+                call_count = portal_calls.call_count
+
+        received_deltas = [event.delta for event in events if isinstance(event, OutputDelta)]
+        self.assertEqual(received_deltas, [f"t{i}" for i in range(12)])
+        self.assertIsInstance(events[-1], OutputEnd)
+        self.assertLessEqual(call_count, 5)
+
+        class FailingBufferedProvider(BufferedStreamProvider):
+            async def _stream_request(self, request):
+                yield TextDelta("d0")
+                yield TextDelta("d1")
+                yield TextDelta("d2")
+                raise ProviderError("stream aborted")
+
+        with patch.object(ChatGPTProvider, "async_provider_type", FailingBufferedProvider):
+            with ChatGPTProvider(account) as provider:
+                chat = provider.chats.create()
+                collected = []
+                with self.assertRaisesRegex(ProviderError, "stream aborted"):
+                    for event in chat.messages.create("hello").stream():
+                        collected.append(event)
+                self.assertEqual(
+                    [event.delta for event in collected if isinstance(event, OutputDelta)],
+                    ["d0", "d1", "d2"],
+                )
+
+                class CustomAsyncOp(AsyncMessageOperation):
+                    async def stream(self):
+                        yield OutputBegin()
+                        yield OutputDelta("custom")
+                        yield OutputEnd()
+
+                sync_base = chat.messages.create("hello")
+
+                async def make_custom():
+                    return CustomAsyncOp(
+                        sync_base._operation.chat,
+                        sync_base._operation.message,
+                        executor=sync_base._operation._executor,
+                    )
+
+                custom_async_op = provider._portal.call(make_custom())
+                custom_sync_op = MessageOperation(provider, custom_async_op)
+                self.assertEqual(
+                    [type(e) for e in custom_sync_op.stream()],
+                    [OutputBegin, OutputDelta, OutputEnd],
+                )
+
+    async def test_projects_update_stages_snapshot_for_single_arg_update_project(self) -> None:
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class StagingProvider(AsyncProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
+                self.staged_during_update: list[NativeProject | None] = []
+                self.submitted: list[NativeProject] = []
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def list_projects(self, *, cursor: str | None = None):
+                return Page((await self.get_project("proj-1"),), None)
+
+            async def get_project(self, project_id: str):
+                return NativeProject(
+                    Origin("claude", self.account_id, project_id),
+                    "Original",
+                    "Original instructions",
+                    metadata={"native": {"uuid": project_id}},
+                )
+
+            async def update_project(self, project):
+                entry = self._staged_project_reads.pop(project.origin.remote_id, None)
+                self.staged_during_update.append(entry[1] if entry is not None else None)
+                self.submitted.append(project)
+                return project
+
+        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
+        async with StagingProvider(account) as provider:
+            await provider.projects.refresh()
+            updated = await provider.projects.update(
+                "proj-1",
+                title="Renamed",
+                instruction="New instructions",
+            )
+            self.assertEqual(len(provider.staged_during_update), 1)
+            self.assertIsNotNone(provider.staged_during_update[0])
+            self.assertEqual(provider.staged_during_update[0].name, "Original")
+            self.assertEqual(provider.submitted[0].name, "Renamed")
+            self.assertEqual(updated.title, "Renamed")
+            self.assertFalse(provider._staged_project_reads)
+
+
 if __name__ == "__main__":
     unittest.main()
