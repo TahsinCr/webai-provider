@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tests.live.support.actions import DEFAULT_COMBINED_RUN_LIMIT, DEFAULT_SINGLE_API_LIMIT
@@ -230,20 +230,7 @@ def _run_provider(
         cleanup_pending = _provider_cleanup_pending(provider)
         outcome = _read_phase_report(provider, api, report_file, returncode)
         if cleanup_pending:
-            outcome = _PhaseOutcome(
-                provider=outcome.provider,
-                api=outcome.api,
-                returncode=outcome.returncode,
-                total=outcome.total,
-                passed=outcome.passed,
-                skipped_unsupported=outcome.skipped_unsupported,
-                skipped_rate_limited=outcome.skipped_rate_limited,
-                skipped_setup_failed=outcome.skipped_setup_failed,
-                failed=outcome.failed,
-                feature_skips=outcome.feature_skips,
-                report_missing=outcome.report_missing,
-                cleanup_pending=True,
-            )
+            outcome = replace(outcome, cleanup_pending=True)
         outcomes.append(outcome)
         if cleanup_pending:
             with output_lock:

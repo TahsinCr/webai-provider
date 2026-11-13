@@ -273,7 +273,7 @@ class LiveCredentialTests(unittest.TestCase):
             write_private_json(self.path, {"resources": [{"credentials": {"token": "secret"}}]})
 
     def test_cleanup_journal_accepts_live_marker_formats(self) -> None:
-        from tests.live.support.journal import read_cleanup_state
+        from tests.live.support.journal import read_cleanup_journal
 
         run_id = "webai-live-" + "0" * 32
         state = {
@@ -303,7 +303,7 @@ class LiveCredentialTests(unittest.TestCase):
                 patch("tests.live.support.journal.CLEANUP_FILE", journal),
                 patch("tests.live.support.journal.read_private_json", return_value=state),
             ):
-                self.assertEqual(read_cleanup_state(), state)
+                self.assertEqual(read_cleanup_journal()[0], state)
 
 
 class ActionGateTests(unittest.TestCase):
@@ -528,6 +528,18 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.provider.delete_project.assert_not_awaited()
         self.provider.get_project.assert_not_awaited()
         self.assertEqual(self.provider.list_projects.await_count, 2)
+
+    async def test_invalid_cursor_stops_recovery_without_deleting(self) -> None:
+        entry, _ = self.track()
+        entry["remote_id"] = None
+        self.provider.list_projects = AsyncMock(return_value=Page((), ""))
+        self.provider.get_project = AsyncMock()
+        self.provider.delete_project = AsyncMock()
+        with self.assertRaisesRegex(CleanupError, "invalid.*cursor"):
+            await self.context.cleanup_entry_async(entry)
+        self.provider.get_project.assert_not_awaited()
+        self.provider.delete_project.assert_not_awaited()
+        self.assertEqual(self.provider.list_projects.await_count, 1)
 
     async def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
         entry, remote = self.track("chat")

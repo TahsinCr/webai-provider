@@ -180,11 +180,6 @@ def read_cleanup_journal(provider: str | None = None) -> tuple[dict[str, Any] | 
     return None, None
 
 
-def read_cleanup_state(provider: str | None = None) -> dict[str, Any] | None:
-    state, _ = read_cleanup_journal(provider)
-    return state
-
-
 class RunLock:
     def __init__(self, provider: str | None = None) -> None:
         self._identity: tuple[int, int] | None = None

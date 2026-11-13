@@ -286,8 +286,13 @@ class LiveContext:
             next_cursor = page.next_cursor
             if next_cursor is None:
                 return records
-            if next_cursor == cursor or next_cursor in seen:
-                raise CleanupError("Remote listing returned a repeated cursor")
+            if (
+                not isinstance(next_cursor, str)
+                or not next_cursor
+                or next_cursor == cursor
+                or next_cursor in seen
+            ):
+                raise CleanupError("Remote listing returned an invalid or repeated cursor")
             seen.add(next_cursor)
             cursor = next_cursor
         raise CleanupError("Remote listing exceeded the safe recovery page limit")
