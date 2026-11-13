@@ -333,7 +333,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(oversized=oversized):
                 released = asyncio.Event()
 
-                async def chunks():
+                async def chunks(oversized=oversized):
                     yield b"first"
                     if oversized:
                         yield b"too large"
@@ -341,7 +341,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.Event().wait()
 
                 @asynccontextmanager
-                async def stream(*args, **options):
+                async def stream(*args, released=released, **options):
                     try:
                         yield SimpleNamespace(status_code=200, headers={}, aiter_content=chunks)
                     finally:
@@ -354,7 +354,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 )
                 entered = asyncio.Event()
 
-                async def consume():
+                async def consume(transport=transport, entered=entered):
                     async with transport.stream("POST", "/stream") as response:
                         async for chunk in response.aiter_bytes():
                             self.assertEqual(chunk, b"first")

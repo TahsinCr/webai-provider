@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -143,10 +144,8 @@ class LiveContext:
                 "At least one temporary remote object could not be verified as deleted"
             )
         self.state["resources"].clear()
-        try:
+        with suppress(FileNotFoundError):
             self._cleanup_path().unlink()
-        except FileNotFoundError:
-            pass
 
     async def cleanup_entry_async(self, entry: dict[str, Any]) -> None:
         self._cleanup_attempted.add(id(entry))
@@ -203,14 +202,12 @@ class LiveContext:
         ):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
-        try:
+        with suppress(ProviderError):
             await self.call_async(
                 f"cleanup.delete_{kind}",
                 lambda: delete_remote(str(remote_id)),
                 expected_errors=(ProviderError,),
             )
-        except ProviderError:
-            pass
         try:
             remaining = await self.call_async(
                 f"cleanup.verify_{kind}_deleted",
@@ -245,7 +242,9 @@ class LiveContext:
         seen: set[str] = set()
         records = []
         for _ in range(100):
-            page = await self.call_async(f"cleanup.locate_{kind}", lambda: list_remote(cursor))
+            page = await self.call_async(
+                f"cleanup.locate_{kind}", lambda cursor=cursor: list_remote(cursor)
+            )
             records.extend(page.items)
             next_cursor = page.next_cursor
             if next_cursor is None:
@@ -291,10 +290,8 @@ class LiveContext:
         if self.state["resources"]:
             self.save()
         else:
-            try:
+            with suppress(FileNotFoundError):
                 self._cleanup_path().unlink()
-            except FileNotFoundError:
-                pass
 
     def close(self) -> None:
         try:

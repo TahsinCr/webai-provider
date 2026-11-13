@@ -221,12 +221,14 @@ class LiveCredentialTests(unittest.TestCase):
         browser_account = Account.from_cookies(
             "chatgpt", {"non_auth_cookie": "must-not-be-saved"}, id="default-browser"
         )
-        with patch(
-            "webaiprovider.accounts.account.Account.from_browser",
-            return_value=browser_account,
+        with (
+            patch(
+                "webaiprovider.accounts.account.Account.from_browser",
+                return_value=browser_account,
+            ),
+            self.assertRaises(SafetyError) as caught,
         ):
-            with self.assertRaises(SafetyError) as caught:
-                load_or_import_account("chatgpt", path=self.path, require_ignored=False)
+            load_or_import_account("chatgpt", path=self.path, require_ignored=False)
         self.assertNotIn("must-not-be-saved", str(caught.exception))
         self.assertFalse(self.path.exists())
 

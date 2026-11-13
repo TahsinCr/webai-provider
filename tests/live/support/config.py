@@ -223,9 +223,8 @@ def load_or_import_account(
                 if not refresh:
                     return select_account(accounts, provider, alias)
                 replacing = True
-            if matching:
-                if not selected:
-                    raise SafetyError("The selected provider account alias is not configured")
+            if matching and not selected:
+                raise SafetyError("The selected provider account alias is not configured")
         elif matching:
             if len(matching) == 1:
                 return matching[0]

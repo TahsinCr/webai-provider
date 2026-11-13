@@ -22,10 +22,9 @@ class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         coordinator = ConcurrencyCoordinator(max_concurrency_per_key=2)
         key = ("chatgpt", "acc_1")
 
-        async with coordinator.acquire(key):
-            async with coordinator.acquire(key):
-                stats = coordinator.stats()
-                self.assertIn("concurrency", stats)
+        async with coordinator.acquire(key), coordinator.acquire(key):
+            stats = coordinator.stats()
+            self.assertIn("concurrency", stats)
 
         await coordinator.aclose()
 

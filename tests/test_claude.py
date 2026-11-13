@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
 from tests.fakes import bind_stream
@@ -353,7 +354,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
 
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             async def aiter_content(self):
                 for frame in frames:
@@ -501,7 +502,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
 
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             async def aiter_content(self):
                 for frame in (

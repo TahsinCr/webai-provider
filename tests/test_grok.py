@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fakes import bind_stream
@@ -138,7 +139,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_stream_lines_are_bounded_and_preserve_split_sse(self):
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             def __init__(self, chunks):
                 self.chunks = iter(chunks)
@@ -353,7 +354,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(details=details):
                 provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
                 provider.client.request = AsyncMock(
-                    side_effect=lambda _, path, **kw: (
+                    side_effect=lambda _, path, details=details, description=description, **kw: (
                         {"models": details}
                         if path == "/rest/models"
                         else {
@@ -589,7 +590,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 transport = GrokClientFixture()
                 provider.client = transport
 
-                async def events(_path, body):
+                async def events(_path, body, transport=transport, code=code):
                     transport.bodies.append(body)
                     yield {"result": {"conversationId": "chat", "response": {"token": "Partial"}}}
                     if code:
@@ -1094,7 +1095,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_stream_ignores_sse_comments_and_merges_multiline_data(self):
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             def __init__(self, chunks):
                 self.chunks = iter(chunks)

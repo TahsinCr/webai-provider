@@ -4,6 +4,7 @@ import json
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -513,7 +514,7 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
 
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             async def __aenter__(self):
                 return self

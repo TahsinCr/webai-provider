@@ -66,16 +66,16 @@ class TestRunnerTests(unittest.TestCase):
     def test_live_runner_runs_offline_suite_before_parallel_provider_matrix(self) -> None:
         result = CompletedProcess([], 0)
         popen_cls = _fake_popen_factory([0] * len(PROVIDERS))
-        with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
-                patch("run_live_tests.subprocess.run", return_value=result) as run,
-                patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-                patch("run_live_tests.time.sleep"),
-                contextlib.redirect_stdout(io.StringIO()),
-            ):
-                self.assertEqual(run_live_tests.main(), 0)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {}, clear=True),
+            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("run_live_tests.subprocess.run", return_value=result) as run,
+            patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+            patch("run_live_tests.time.sleep"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(run_live_tests.main(), 0)
 
         self.assertEqual(run.call_count, 1)
         self.assertTrue(run.call_args.args[0][1].endswith("run_tests.py"))
@@ -96,17 +96,17 @@ class TestRunnerTests(unittest.TestCase):
     def test_live_runner_continues_api_matrix_after_failures(self) -> None:
         result = CompletedProcess([], 0)
         popen_cls = _fake_popen_factory([1, 0, 0, 0])
-        with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch.dict(os.environ, {}, clear=True),
-                patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
-                patch("run_live_tests.subprocess.run", return_value=result),
-                patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-                patch("run_live_tests.time.sleep"),
-                contextlib.redirect_stdout(io.StringIO()),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
-                self.assertEqual(run_live_tests.main(), 1)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {}, clear=True),
+            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("run_live_tests.subprocess.run", return_value=result),
+            patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+            patch("run_live_tests.time.sleep"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(run_live_tests.main(), 1)
 
         self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
         self.assertNotIn("-f", popen_cls.calls[0]["args"][0])

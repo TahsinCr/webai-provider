@@ -54,9 +54,11 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         )
         factory = Mock(return_value=http)
         session = GeminiSession(Path("unused"), http_factory=factory)
-        with patch("webaiprovider.providers.gemini.session.read_session", return_value=saved):
-            with self.assertRaises(AccountPaused):
-                await session.open()
+        with (
+            patch("webaiprovider.providers.gemini.session.read_session", return_value=saved),
+            self.assertRaises(AccountPaused),
+        ):
+            await session.open()
 
         http.get.assert_awaited_once()
         http.close.assert_awaited_once()

@@ -1,5 +1,7 @@
 """Live checks for streamed messages, edits, retries, branching, attachments, and incognito mode."""
 
+from contextlib import suppress
+
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.resources.attachment import Attachment
@@ -81,10 +83,8 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 )
         finally:
             if chat.remote_id:
-                try:
+                with suppress(RemoteNotFound):
                     await chat.delete()
-                except RemoteNotFound:
-                    pass
 
     async def test_temporary_message_stream_history_and_cleanup(self) -> None:
         capabilities = self.context.session.capabilities

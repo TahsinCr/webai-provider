@@ -54,7 +54,7 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                 response = SimpleNamespace(
                     status_code=200,
                     headers={"content-type": "text/event-stream"},
-                    iter_bytes=lambda: iter(chunks),
+                    iter_bytes=lambda chunks=chunks: iter(chunks),
                 )
                 client.transport = SimpleNamespace(stream=Mock(return_value=nullcontext(response)))
                 with self.assertRaisesRegex(ChatGPTError, error) if error else nullcontext():

@@ -112,9 +112,11 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
         provider.client.authenticated = False
 
-        with patch("webaiprovider.providers.claude.provider.session_exists", return_value=False):
-            with self.assertRaises(AccountPaused):
-                _ = [event async for event in provider.execute_stream(operation)]
+        with (
+            patch("webaiprovider.providers.claude.provider.session_exists", return_value=False),
+            self.assertRaises(AccountPaused),
+        ):
+            _ = [event async for event in provider.execute_stream(operation)]
 
 
 class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
@@ -279,8 +281,7 @@ class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         mock_client.send_prompt = fake_send_prompt
 
         class DummyBrowserSession:
-            def client_session(self):
-                return mock_client
+            pass
 
         provider = AsyncChatGPTProvider(
             provider_account("chatgpt", "cred_file", "acc-test"),

@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import unittest
+from typing import ClassVar
 from unittest.mock import patch
 
 from tests.provider_fakes import provider_account
@@ -13,7 +14,7 @@ from webaiprovider.resources.message.protocol import (
 
 
 class PersistentClient:
-    instances = []
+    instances: ClassVar[list["PersistentClient"]] = []
 
     def __init__(self, session):
         self.session = session

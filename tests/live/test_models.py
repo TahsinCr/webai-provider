@@ -1,5 +1,7 @@
 """Live checks for the authenticated account's available model catalog."""
 
+from contextlib import suppress
+
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 
@@ -82,7 +84,5 @@ class AsyncModelApiTests(LiveAsyncTestCase):
                 if entry is not None:
                     await self.context.cleanup_entry_async(entry)
                 elif chat.remote_id:
-                    try:
+                    with suppress(RemoteNotFound):
                         await chat.delete()
-                    except RemoteNotFound:
-                        pass

@@ -5,6 +5,7 @@ import os
 import re
 import stat
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -77,10 +78,8 @@ def write_private_json(path: Path, data: dict[str, Any]) -> None:
         if os.name == "posix":
             os.chmod(path, 0o600)
     finally:
-        try:
+        with suppress(FileNotFoundError):
             temporary.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def write_cleanup_state(state: dict[str, Any], *, provider: str | None = None) -> None:

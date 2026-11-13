@@ -118,13 +118,15 @@ class SendOptionsTests(unittest.TestCase):
         )
 
     def test_missing_conversation_is_reported_after_both_endpoint_forms(self):
-        with patch.object(
-            self.client,
-            "request",
-            side_effect=[RemoteNotFound("plural"), RemoteNotFound("singular")],
-        ) as request:
-            with self.assertRaisesRegex(RemoteNotFound, "singular"):
-                self.client.get_conversation("remote")
+        with (
+            patch.object(
+                self.client,
+                "request",
+                side_effect=[RemoteNotFound("plural"), RemoteNotFound("singular")],
+            ) as request,
+            self.assertRaisesRegex(RemoteNotFound, "singular"),
+        ):
+            self.client.get_conversation("remote")
 
         self.assertEqual(request.call_count, 2)
 
@@ -276,11 +278,13 @@ class SendOptionsTests(unittest.TestCase):
 
     def test_uncertain_send_invalidates_the_reusable_snapshot(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
-        with patch.object(
-            self.client, "send_prompt_direct", side_effect=RuntimeError("transport failed")
+        with (
+            patch.object(
+                self.client, "send_prompt_direct", side_effect=RuntimeError("transport failed")
+            ),
+            self.assertRaisesRegex(RuntimeError, "transport failed"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "transport failed"):
-                self.client.send_prompt("remote", "Continue", model="account-thinking")
+            self.client.send_prompt("remote", "Continue", model="account-thinking")
 
         self.assertIsNone(self.client._cached_conversation("remote"))
 

@@ -87,21 +87,20 @@ class BrowserProfileTests(unittest.TestCase):
     def test_firefox_cookie_rows_exclude_containers_and_other_hosts(self):
         with tempfile.TemporaryDirectory() as directory:
             cookie_file = Path(directory) / "cookies.sqlite"
-            with closing(sqlite3.connect(cookie_file)) as database:
-                with database:
-                    database.execute(
-                        "CREATE TABLE moz_cookies "
-                        "(host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, "
-                        "name TEXT, value TEXT, isHttpOnly INTEGER, originAttributes TEXT)"
-                    )
-                    database.executemany(
-                        "INSERT INTO moz_cookies VALUES (?, '/', 1, 0, 'sessionKey', ?, 1, ?)",
-                        [
-                            (".claude.ai", "account", ""),
-                            (".claude.ai", "container", "^userContextId=1"),
-                            (".example.com", "other", ""),
-                        ],
-                    )
+            with closing(sqlite3.connect(cookie_file)) as database, database:
+                database.execute(
+                    "CREATE TABLE moz_cookies "
+                    "(host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, "
+                    "name TEXT, value TEXT, isHttpOnly INTEGER, originAttributes TEXT)"
+                )
+                database.executemany(
+                    "INSERT INTO moz_cookies VALUES (?, '/', 1, 0, 'sessionKey', ?, 1, ?)",
+                    [
+                        (".claude.ai", "account", ""),
+                        (".claude.ai", "container", "^userContextId=1"),
+                        (".example.com", "other", ""),
+                    ],
+                )
 
             rows = profiles._firefox_rows(cookie_file, "claude")
 
@@ -174,24 +173,30 @@ class CookieImportBoundaryTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["timeout"], 25)
 
     def test_import_rejects_missing_session_and_invalid_output(self):
-        with patch(
-            "webaiprovider.accounts.cookies.subprocess.run",
-            return_value=SimpleNamespace(returncode=2, stdout=""),
+        with (
+            patch(
+                "webaiprovider.accounts.cookies.subprocess.run",
+                return_value=SimpleNamespace(returncode=2, stdout=""),
+            ),
+            self.assertRaises(ProfileSessionNotFoundError),
         ):
-            with self.assertRaises(ProfileSessionNotFoundError):
-                import_cookies("claude", profile=self.profile)
+            import_cookies("claude", profile=self.profile)
 
-        with patch(
-            "webaiprovider.accounts.cookies.subprocess.run",
-            return_value=SimpleNamespace(returncode=0, stdout="[]"),
+        with (
+            patch(
+                "webaiprovider.accounts.cookies.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="[]"),
+            ),
+            self.assertRaises(ProfileInvalidResultError),
         ):
-            with self.assertRaises(ProfileInvalidResultError):
-                import_cookies("claude", profile=self.profile)
+            import_cookies("claude", profile=self.profile)
 
     def test_import_translates_reader_timeout(self):
-        with patch(
-            "webaiprovider.accounts.cookies.subprocess.run",
-            side_effect=TimeoutExpired("reader", 25),
+        with (
+            patch(
+                "webaiprovider.accounts.cookies.subprocess.run",
+                side_effect=TimeoutExpired("reader", 25),
+            ),
+            self.assertRaises(ProfileTimeoutError),
         ):
-            with self.assertRaises(ProfileTimeoutError):
-                import_cookies("claude", profile=self.profile)
+            import_cookies("claude", profile=self.profile)

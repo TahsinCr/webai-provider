@@ -4,6 +4,7 @@ import socket
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import patch
 
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
@@ -35,7 +36,7 @@ class DownloadAddressTests(unittest.TestCase):
     def test_stream_pins_the_validated_dns_address(self):
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             def iter_content(self, chunk_size):
                 return iter((b"file",))
@@ -52,12 +53,14 @@ class DownloadAddressTests(unittest.TestCase):
         download = NativeDownloadClient.__new__(NativeDownloadClient)
         download.allow_private = False
         download.client = Session()
-        with patch(
-            "webaiprovider.utils.files.validate_network_address",
-            return_value="93.184.216.34",
+        with (
+            patch(
+                "webaiprovider.utils.files.validate_network_address",
+                return_value="93.184.216.34",
+            ),
+            download.stream("GET", "https://cdn.example/file", headers={}) as response,
         ):
-            with download.stream("GET", "https://cdn.example/file", headers={}) as response:
-                self.assertEqual(list(response.iter_bytes()), [b"file"])
+            self.assertEqual(list(response.iter_bytes()), [b"file"])
 
         from curl_cffi import CurlOpt
 

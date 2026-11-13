@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
@@ -115,9 +116,11 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(
             429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
         )
-        with patch("webaiprovider.transport.base.time.time", return_value=now.timestamp()):
-            with self.assertRaises(RateLimited) as error:
-                HttpSession.check(response)
+        with (
+            patch("webaiprovider.transport.base.time.time", return_value=now.timestamp()),
+            self.assertRaises(RateLimited) as error,
+        ):
+            HttpSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
 
         response = httpx.Response(429, headers={"retry-after": "not-a-date"})
@@ -511,7 +514,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
         class Response:
             status_code = 200
-            headers = {}
+            headers: ClassVar[dict[str, str]] = {}
 
             async def aiter_content(self):
                 for e in events:
@@ -535,11 +538,11 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         transport.organization = cid
         transport.catalog = claude_model_catalog()
         timing = SendTiming("claude")
-        with patch("asyncio.create_subprocess_exec", side_effect=AssertionError("browser")):
-            with use_send_timing(timing):
-                result = [
-                    e async for e in transport.events("send", prompt="Question", model="model")
-                ]
+        with (
+            patch("asyncio.create_subprocess_exec", side_effect=AssertionError("browser")),
+            use_send_timing(timing),
+        ):
+            result = [e async for e in transport.events("send", prompt="Question", model="model")]
         self.assertTrue(any(e.get("channel") == "analysis" for e in result))
         final = [e for e in result if "text" in e and e.get("channel") != "analysis"]
         self.assertEqual("".join(e["text"] for e in final), "Answer")
