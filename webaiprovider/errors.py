@@ -11,11 +11,6 @@ class ProviderError(RuntimeError):
     message_submitted: bool | None = None
 
 
-class NetworkError(ProviderError):
-    code = "network_error"
-    message_submitted = False
-
-
 class RequestNotSentError(ProviderError):
     code = "request_not_sent"
     message_submitted = False

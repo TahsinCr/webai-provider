@@ -5,13 +5,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit
 
 from ...accounts import CredentialStore, read_session, save_session
@@ -32,37 +28,6 @@ class SessionPaths:
 def _private(path: Path, mode: int) -> None:
     if os.name != "nt":
         os.chmod(path, mode)
-
-
-def _detach() -> dict[str, int | bool]:
-    return {"creationflags": 0x208} if os.name == "nt" else {"start_new_session": True}
-
-
-def find_chrome_executable() -> str | None:
-    if os.name == "nt":
-        roots = (
-            Path(os.environ.get("PROGRAMFILES", "C:/Program Files")),
-            Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")),
-            Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")),
-        )
-        candidates = [root / "Google" / "Chrome" / "Application" / "chrome.exe" for root in roots]
-        candidates.extend(root / "Chromium" / "Application" / "chrome.exe" for root in roots)
-        return next(
-            (str(path) for path in candidates if path.is_file()), shutil.which("chrome.exe")
-        )
-    if sys.platform == "darwin":
-        candidates = (
-            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-        )
-        return next(
-            (str(path) for path in candidates if path.is_file()), shutil.which("google-chrome")
-        )
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
-        executable = shutil.which(name)
-        if executable:
-            return executable
-    return None
 
 
 class BrowserSession:
@@ -184,47 +149,3 @@ class BrowserSession:
 
     def is_ready(self) -> bool:
         return is_devtools_available(self.cdp_url)
-
-    def launch(self, url: str = "https://chatgpt.com/") -> dict[str, Any]:
-        if url not in ("https://chatgpt.com/", "https://gemini.google.com/", "https://claude.ai/"):
-            raise ValueError("unsupported login origin")
-        if self.is_ready():
-            return {"browser": "already_running", "cdp_url": self.cdp_url}
-        parsed = urlsplit(self.cdp_url)
-        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
-            raise ChatGPTError("automatic browser launch requires a local HTTP CDP URL")
-        port = parsed.port or 9222
-        browser = find_chrome_executable()
-        if not browser:
-            raise ChatGPTError("Chrome or Chromium was not found")
-        profile = self.paths.profile
-        profile.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _private(profile, 0o700)
-        subprocess.Popen(
-            [
-                browser,
-                f"--user-data-dir={profile}",
-                "--remote-debugging-address=127.0.0.1",
-                f"--remote-debugging-port={port}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--new-window",
-                url,
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            **_detach(),
-        )
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            if self.is_ready():
-                return {
-                    "browser": "started",
-                    "cdp_url": self.cdp_url,
-                    "profile": str(profile),
-                    "login_required": True,
-                }
-            time.sleep(0.1)
-        raise ChatGPTError("Chrome started but its debugger did not become ready")

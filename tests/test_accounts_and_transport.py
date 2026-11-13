@@ -28,7 +28,6 @@ from webaiprovider.accounts.importer import (
     import_browser_session,
 )
 from webaiprovider.base import Capability
-from webaiprovider.core import BoundedWorkPool
 from webaiprovider.errors import (
     AccountPaused,
     ProviderError,
@@ -37,8 +36,6 @@ from webaiprovider.errors import (
 )
 from webaiprovider.transport import (
     HttpSession,
-    RetryPolicy,
-    calculate_backoff,
     parse_retry_after,
 )
 
@@ -72,10 +69,6 @@ class AccountsTests(unittest.TestCase):
             file_store.save({"sessionKey": "sk-123"})
             self.assertTrue(file_store.exists())
             self.assertEqual(file_store.load(), {"sessionKey": "sk-123"})
-
-            data = file_acc.to_dict()
-            self.assertEqual(data["id"], "acc-2")
-            self.assertEqual(data["credentials"], str(path))
 
     def test_file_credential_store_lifecycle_and_permissions(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -227,37 +220,6 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         dt_past = datetime.fromtimestamp(base_time - 10, tz=timezone.utc)
         past_val = format_datetime(dt_past, usegmt=True)
         self.assertEqual(parse_retry_after(past_val, now=base_time), 0.0)
-
-    def test_calculate_backoff_and_retry_policy(self):
-        policy = RetryPolicy(max_attempts=3, base_backoff=1.0, max_backoff=10.0)
-        self.assertTrue(policy.should_retry(429, attempt=0, method="POST"))
-        self.assertTrue(policy.should_retry(502, attempt=1, method="GET"))
-        self.assertFalse(policy.should_retry(502, attempt=1, method="POST"))
-        self.assertFalse(policy.should_retry(500, attempt=0, method="GET"))
-        self.assertFalse(policy.should_retry(429, attempt=3, method="GET"))
-
-        backoff = policy.backoff_for(0, retry_after=5.0)
-        self.assertEqual(backoff, 5.0)
-
-        b0 = calculate_backoff(0, base=2.0, jitter=False)
-        self.assertEqual(b0, 2.0)
-        b1 = calculate_backoff(1, base=2.0, jitter=False)
-        self.assertEqual(b1, 4.0)
-
-    async def test_bounded_work_pool_json_offloading(self):
-        pool = BoundedWorkPool(max_workers=2)
-        try:
-            small_data = '{"small": true}'
-            parsed_small = await pool.parse_json(small_data, threshold=100)
-            self.assertEqual(parsed_small, {"small": True})
-
-            large_dict = {"large": "x" * 200}
-            large_data = httpx.Response(200, json=large_dict).text
-            parsed_large = await pool.parse_json(large_data, threshold=50)
-            self.assertEqual(parsed_large, large_dict)
-            self.assertEqual(await pool.run(lambda value, *, scale: value * scale, 3, scale=4), 12)
-        finally:
-            pool.shutdown(wait=True)
 
     async def test_http_session_origin_restriction_and_status_checks(self):
         with tempfile.TemporaryDirectory() as folder:

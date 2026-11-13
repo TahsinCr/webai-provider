@@ -31,15 +31,6 @@ async def delayed_response(_request):
 
 
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_forget_conversation_releases_only_its_cached_context(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        provider._chat_metadata.put("c1", ["c1", "request-1", "response-1"])
-        provider._chat_metadata.put("c2", ["c2", "request-2", "response-2"])
-        await provider.forget_conversation("c1")
-
-        self.assertIsNone(provider._chat_metadata.get("c1"))
-        self.assertEqual(provider._chat_metadata.get("c2"), ["c2", "request-2", "response-2"])
-
     async def test_saved_parameters_do_not_bypass_remote_session_validation(self):
         saved = {
             "__Secure-1PSID": "cookie",
@@ -808,21 +799,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIsNone(provider._take_chat_metadata("conversation"))
         self.assertIsNone(provider._chat_metadata.get("conversation"))
-
-    def test_prepare_next_turn_reorders_lru(self):
-        from webaiprovider.core.cache import MultiDimensionBoundedCache
-
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
-        provider._chat_metadata = MultiDimensionBoundedCache(
-            max_entries=2, max_bytes=1000, default_ttl=None
-        )
-        provider._chat_metadata.put("c1", ["c1", "r1", "rc1"])
-        provider._chat_metadata.put("c2", ["c2", "r2", "rc2"])
-        provider.prepare_next_turn("c1")
-        provider._chat_metadata.put("c3", ["c3", "r3", "rc3"])
-        self.assertIsNotNone(provider._chat_metadata.get("c1"))
-        self.assertIsNone(provider._chat_metadata.get("c2"))
-        self.assertIsNotNone(provider._chat_metadata.get("c3"))
 
     async def test_flash_variants_distinguish_default_fast_and_specialized_models(self):
         fast_row = [None] * 18

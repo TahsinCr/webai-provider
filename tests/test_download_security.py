@@ -13,7 +13,6 @@ from webaiprovider.utils.files import (
     NativeDownloadClient,
     cookie_header,
     download_source,
-    redact_sensitive_url,
     validate_network_address,
 )
 
@@ -106,19 +105,12 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ProviderError, "unsupported download transport"):
             await download_source(source)
 
-    def test_sensitive_cookie_and_url_values_are_redacted(self):
+    def test_sensitive_cookie_values_are_validated(self):
         self.assertEqual(
             cookie_header({"sessionKey": "cookie"}, ("sessionKey",)), "sessionKey=cookie"
         )
         with self.assertRaises(ValueError):
             cookie_header({"sessionKey": "bad\r\nvalue"}, ("sessionKey",))
-
-        redacted = redact_sensitive_url(
-            "https://user:password@files.example/a?token=secret&name=file#part"
-        )
-        self.assertNotIn("password", redacted)
-        self.assertNotIn("secret", redacted)
-        self.assertIn("[REDACTED]", redacted)
 
 
 if __name__ == "__main__":

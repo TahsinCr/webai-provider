@@ -112,7 +112,7 @@ class AsyncGeminiProvider(AsyncProvider):
         from .rpc import NotebookEditor, NotebookRPC
 
         self.rpc: NotebookRPC = NotebookRPC(self._connect)
-        self.notebooks: Notebooks = notebooks or Notebooks(None, self.account_id)
+        self.notebooks: Notebooks = notebooks or Notebooks(self.account_id)
         self.notebooks.reader = self.rpc.read
         self.editor: NotebookEditor = NotebookEditor(self.rpc, self.notebooks)
         self.capabilities = self.capabilities | {
@@ -244,10 +244,6 @@ class AsyncGeminiProvider(AsyncProvider):
 
     def _take_chat_metadata(self, conversation_id):
         return self._chat_metadata.get(conversation_id)
-
-    def prepare_next_turn(self, conversation_id, last_message_id=None):
-        if conversation_id:
-            self._chat_metadata.move_to_end(conversation_id)
 
     def _remember_chat_metadata(self, conversation_id, metadata):
         self._chat_metadata.put(conversation_id, list(metadata))
@@ -644,13 +640,6 @@ class AsyncGeminiProvider(AsyncProvider):
             )
             headers["Cookie"] = cookie_header(values, ("__Secure-1PSID", "__Secure-1PSIDTS"))
         return DownloadSource(target["url"], target["name"], True, headers, NativeDownloadClient)
-
-    async def forget_temporary(self, remote_id):
-        self._temporary.pop(remote_id, None)
-
-    async def forget_conversation(self, conversation_id):
-        async with self._gate:
-            self._chat_metadata.pop(conversation_id, None)
 
 
 class GeminiChat(BranchableChat, Chat):

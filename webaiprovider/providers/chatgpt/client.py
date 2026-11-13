@@ -87,7 +87,6 @@ class ChatGPTClient:
             max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
             default_ttl=_CONTINUATION_CACHE_TTL_SECONDS,
         )
-        self._continuation_cache_text_chars = 0
         self._sentinel_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._refresh_lock = threading.Lock()
@@ -131,7 +130,6 @@ class ChatGPTClient:
                 self._sentinel_runtime = None
                 self._sentinel_runtime_key = None
             self._continuation_cache.clear()
-            self._continuation_cache_text_chars = 0
             self.temporary_conversations.clear()
             pending = getattr(self, "pending_branches", None)
             if isinstance(pending, dict):
@@ -207,13 +205,9 @@ class ChatGPTClient:
             self._forget_conversation(conversation_id)
             return
         with self._state_guard:
-            previous = self._continuation_cache.pop(conversation_id, None)
-            if previous is not None and isinstance(previous, tuple):
-                self._continuation_cache_text_chars = self._continuation_cache.current_bytes
             self._continuation_cache.put(
                 conversation_id, (time.monotonic(), conversation, text_size)
             )
-            self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         with self._state_guard:
@@ -231,12 +225,7 @@ class ChatGPTClient:
             pending = getattr(self, "pending_branches", None)
             if isinstance(pending, dict):
                 pending.pop(conversation_id, None)
-            cached = self._continuation_cache.pop(conversation_id, None)
-            if cached is not None:
-                self._continuation_cache_text_chars = self._continuation_cache.current_bytes
-
-    def forget_conversation(self, conversation_id: str) -> None:
-        self._forget_conversation(conversation_id)
+            self._continuation_cache.pop(conversation_id, None)
 
     def __enter__(self) -> ChatGPTClient:
         return self
@@ -244,14 +233,7 @@ class ChatGPTClient:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def refresh_auth(self, prefer_browser=False):
-        if prefer_browser:
-            list_url, headers = self.session.capture_auth()
-            with self._state_guard:
-                self.list_url, self.headers = list_url, headers
-                snapshot = dict(headers)
-            self.session.save(list_url, snapshot)
-            return
+    def refresh_auth(self):
         try:
             list_url, headers = self.session.load()
             with self._state_guard:

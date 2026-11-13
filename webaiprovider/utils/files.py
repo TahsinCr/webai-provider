@@ -6,43 +6,7 @@ import socket
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-_SENSITIVE_PARAM_SUBSTRINGS = (
-    "token",
-    "key",
-    "auth",
-    "secret",
-    "sig",
-    "credential",
-    "session",
-)
-
-
-def redact_sensitive_url(url: str) -> str:
-    try:
-        parts = urlsplit(url)
-        if not parts.scheme:
-            return url
-        netloc = parts.netloc
-        if "@" in netloc:
-            _, _, host_port = netloc.rpartition("@")
-            netloc = f"***:***@{host_port}"
-        if parts.query:
-            pairs = parse_qsl(parts.query, keep_blank_values=True)
-            redacted_pairs = []
-            for k, v in pairs:
-                k_lower = k.lower()
-                if any(s in k_lower for s in _SENSITIVE_PARAM_SUBSTRINGS):
-                    redacted_pairs.append((k, "[REDACTED]"))
-                else:
-                    redacted_pairs.append((k, v))
-            query = urlencode(redacted_pairs, safe="[]")
-        else:
-            query = parts.query
-        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
-    except Exception:
-        return "[REDACTED_URL]"
+from urllib.parse import urlsplit
 
 
 def validate_network_address(address_str: str, allow_private: bool = False) -> str:
@@ -98,7 +62,6 @@ class NativeDownloadClient:
         self,
         *,
         timeout=None,
-        follow_redirects=False,
         trust_env=False,
         allow_private=False,
     ):

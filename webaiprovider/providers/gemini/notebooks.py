@@ -76,9 +76,8 @@ def project_from_native(row, account_id):
 
 
 class Notebooks:
-    def __init__(self, cdp_url, account_id, *, ensure_ready=None):
-        self.cdp_url, self.account_id = cdp_url, account_id
-        self.ensure_ready = ensure_ready
+    def __init__(self, account_id):
+        self.account_id = account_id
         self.reader: Callable[..., Awaitable[list[Any]]] | None = None
 
     async def read(self, remote=None, mode=None, cursor=None):

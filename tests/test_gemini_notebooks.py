@@ -11,7 +11,7 @@ from .fixtures import notebook
 
 class NotebookTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_notebook_details_and_resources_are_normalized(self):
-        service = Notebooks("http://127.0.0.1:9231", "account")
+        service = Notebooks("account")
         service.read = AsyncMock(return_value=[[None, None, [notebook()]]])
         page = await service.list()
         project = page.items[0]
@@ -30,7 +30,7 @@ class NotebookTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_native_contract_fails_without_inventing_data(self):
         with self.assertRaises(ProviderError):
             project_from_native(["wrong-id", []], "account")
-        service = Notebooks("http://127.0.0.1:9231", "account")
+        service = Notebooks("account")
         service.read = AsyncMock(return_value=[[]])
         with self.assertRaises(ProviderError):
             await service.get("notebooks/missing")

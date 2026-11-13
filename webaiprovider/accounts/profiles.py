@@ -36,8 +36,6 @@ __all__ = [
     "default_profile",
     "list_profiles",
     "snapshot_sqlite_file",
-    "import_cookies",
-    "select_cookies",
     "ProfileError",
     "ProfileNotFoundError",
     "ProfilePermissionError",
@@ -88,18 +86,6 @@ NAMES = {
 AUTH_COOKIE = re.compile(r"__Secure-(?:next-auth|authjs)\.session-token(?:\.\d+)?\Z")
 _GROK_AUTH_COOKIE = re.compile(r"(?:^|[_-])(?:auth|session|sso|token)(?:[_-]|$)", re.IGNORECASE)
 _GROK_NON_AUTH_COOKIES = {"grok_device_id", "__cf_bm", "cf_clearance"}
-
-
-def select_cookies(jar, provider):
-    from .cookies import select_cookies as _select
-
-    return _select(jar, provider)
-
-
-def import_cookies(provider):
-    from .cookies import import_cookies as _import
-
-    return _import(provider)
 
 
 def _failure_code(error):

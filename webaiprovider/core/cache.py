@@ -75,9 +75,6 @@ class MultiDimensionBoundedCache(Generic[K, V]):
         val = self._cache.remove(key)
         return val if val is not None else default
 
-    def move_to_end(self, key: K) -> None:
-        self._cache.get(key)
-
     def clear(self) -> None:
         self._cache.clear()
 

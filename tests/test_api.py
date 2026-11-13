@@ -881,13 +881,15 @@ class TestSyncApi(unittest.TestCase):
                 self.thread_ids.append(threading.get_ident())
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider):
-            with ChatGPTProvider(account) as provider:
-                project = provider.projects.create("Notes", memory_share=False)
-                chat = provider.chats.create("Draft", project=project)
-                operation = chat.messages.create("hello")
-                events = list(operation.stream())
-                response = operation.wait()
+        with (
+            patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider),
+            ChatGPTProvider(account) as provider,
+        ):
+            project = provider.projects.create("Notes", memory_share=False)
+            chat = provider.chats.create("Draft", project=project)
+            operation = chat.messages.create("hello")
+            events = list(operation.stream())
+            response = operation.wait()
 
         self.assertEqual(response.text, "done")
         self.assertEqual(
@@ -951,43 +953,45 @@ class TestSyncApi(unittest.TestCase):
                 self.moved.append((conversation_id, project_id))
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider):
-            with ChatGPTProvider(account) as provider:
-                self.assertEqual(provider.chats.search("Proj Chat"), [])
-                found = provider.chats.search("Proj Chat", include_projects=True)
-                self.assertEqual(len(found), 1)
-                self.assertIsNotNone(found[0].project)
-                assert found[0].project is not None
-                self.assertEqual(found[0].project.remote_id, "p-1")
-                self.assertEqual(found[0].project.title, "Alpha")
+        with (
+            patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider),
+            ChatGPTProvider(account) as provider,
+        ):
+            self.assertEqual(provider.chats.search("Proj Chat"), [])
+            found = provider.chats.search("Proj Chat", include_projects=True)
+            self.assertEqual(len(found), 1)
+            self.assertIsNotNone(found[0].project)
+            assert found[0].project is not None
+            self.assertEqual(found[0].project.remote_id, "p-1")
+            self.assertEqual(found[0].project.title, "Alpha")
 
-                loose = provider.chats.get("c-loose")
-                self.assertIsNone(loose.project)
-                p1 = provider.projects.get("p-1")
-                p2 = provider.projects.get("p-2")
+            loose = provider.chats.get("c-loose")
+            self.assertIsNone(loose.project)
+            p1 = provider.projects.get("p-1")
+            p2 = provider.projects.get("p-2")
 
-                with self.assertRaises(UnsupportedOperationError):
-                    provider.move_project_chat(loose, p1)
+            with self.assertRaises(UnsupportedOperationError):
+                provider.move_project_chat(loose, p1)
 
-                loose.move_to(p1)
-                self.assertIsNotNone(loose.project)
-                assert loose.project is not None
-                self.assertEqual(loose.project.remote_id, "p-1")
+            loose.move_to(p1)
+            self.assertIsNotNone(loose.project)
+            assert loose.project is not None
+            self.assertEqual(loose.project.remote_id, "p-1")
 
-                with self.assertRaises(UnsupportedOperationError):
-                    loose.move_to(p2)
+            with self.assertRaises(UnsupportedOperationError):
+                loose.move_to(p2)
 
-                moved = provider.move_project_chat(loose, p2)
-                self.assertIsNotNone(moved.project)
-                assert moved.project is not None
-                self.assertEqual(moved.project.remote_id, "p-2")
+            moved = provider.move_project_chat(loose, p2)
+            self.assertIsNotNone(moved.project)
+            assert moved.project is not None
+            self.assertEqual(moved.project.remote_id, "p-2")
 
-                detached = provider.move_project_chat(moved, None)
-                self.assertIsNone(detached.project)
-                self.assertEqual(
-                    provider._provider.moved,
-                    [("c-loose", "p-1"), ("c-loose", "p-2"), ("c-loose", None)],
-                )
+            detached = provider.move_project_chat(moved, None)
+            self.assertIsNone(detached.project)
+            self.assertEqual(
+                provider._provider.moved,
+                [("c-loose", "p-1"), ("c-loose", "p-2"), ("c-loose", None)],
+            )
 
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
@@ -1010,13 +1014,15 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 return None
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with patch.object(ChatGPTProvider, "async_provider_type", BufferedStreamProvider):
-            with ChatGPTProvider(account) as provider:
-                chat = provider.chats.create()
-                with patch.object(provider, "_call", wraps=provider._call) as portal_calls:
-                    operation = chat.messages.create("hello")
-                    events = list(operation.stream())
-                call_count = portal_calls.call_count
+        with (
+            patch.object(ChatGPTProvider, "async_provider_type", BufferedStreamProvider),
+            ChatGPTProvider(account) as provider,
+        ):
+            chat = provider.chats.create()
+            with patch.object(provider, "_call", wraps=provider._call) as portal_calls:
+                operation = chat.messages.create("hello")
+                events = list(operation.stream())
+            call_count = portal_calls.call_count
 
         received_deltas = [event.delta for event in events if isinstance(event, OutputDelta)]
         self.assertEqual(received_deltas, [f"t{i}" for i in range(12)])
@@ -1030,39 +1036,41 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 yield TextDelta("d2")
                 raise ProviderError("stream aborted")
 
-        with patch.object(ChatGPTProvider, "async_provider_type", FailingBufferedProvider):
-            with ChatGPTProvider(account) as provider:
-                chat = provider.chats.create()
-                collected = []
-                with self.assertRaisesRegex(ProviderError, "stream aborted"):
-                    for event in chat.messages.create("hello").stream():
-                        collected.append(event)
-                self.assertEqual(
-                    [event.delta for event in collected if isinstance(event, OutputDelta)],
-                    ["d0", "d1", "d2"],
+        with (
+            patch.object(ChatGPTProvider, "async_provider_type", FailingBufferedProvider),
+            ChatGPTProvider(account) as provider,
+        ):
+            chat = provider.chats.create()
+            collected = []
+            with self.assertRaisesRegex(ProviderError, "stream aborted"):
+                for event in chat.messages.create("hello").stream():
+                    collected.append(event)
+            self.assertEqual(
+                [event.delta for event in collected if isinstance(event, OutputDelta)],
+                ["d0", "d1", "d2"],
+            )
+
+            class CustomAsyncOp(AsyncMessageOperation):
+                async def stream(self):
+                    yield OutputBegin()
+                    yield OutputDelta("custom")
+                    yield OutputEnd()
+
+            sync_base = chat.messages.create("hello")
+
+            async def make_custom():
+                return CustomAsyncOp(
+                    sync_base._operation.chat,
+                    sync_base._operation.message,
+                    executor=sync_base._operation._executor,
                 )
 
-                class CustomAsyncOp(AsyncMessageOperation):
-                    async def stream(self):
-                        yield OutputBegin()
-                        yield OutputDelta("custom")
-                        yield OutputEnd()
-
-                sync_base = chat.messages.create("hello")
-
-                async def make_custom():
-                    return CustomAsyncOp(
-                        sync_base._operation.chat,
-                        sync_base._operation.message,
-                        executor=sync_base._operation._executor,
-                    )
-
-                custom_async_op = provider._portal.call(make_custom())
-                custom_sync_op = MessageOperation(provider, custom_async_op)
-                self.assertEqual(
-                    [type(e) for e in custom_sync_op.stream()],
-                    [OutputBegin, OutputDelta, OutputEnd],
-                )
+            custom_async_op = provider._portal.call(make_custom())
+            custom_sync_op = MessageOperation(provider, custom_async_op)
+            self.assertEqual(
+                [type(e) for e in custom_sync_op.stream()],
+                [OutputBegin, OutputDelta, OutputEnd],
+            )
 
     async def test_projects_update_stages_snapshot_for_single_arg_update_project(self) -> None:
         from webaiprovider.collections import Page

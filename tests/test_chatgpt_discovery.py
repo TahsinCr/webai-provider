@@ -7,7 +7,6 @@ import tempfile
 import unittest
 import weakref
 from collections import OrderedDict
-from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -23,7 +22,6 @@ from webaiprovider.providers.chatgpt import (
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.discovery import project_id
 from webaiprovider.providers.chatgpt.errors import ChatGPTError
-from webaiprovider.resources.model.model import ModelCatalog
 
 from .fixtures import CATALOG
 
@@ -142,9 +140,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(catalog.models), 3)
         self.assertEqual([m.id for m in catalog.chat_models], ["gpt-future-thinking"])
         self.assertEqual(catalog.chat_models[0].chat_title, "GPT-42 Thinking")
-        restored = ModelCatalog.from_dict(asdict(catalog))
-        self.assertEqual(restored.chat_models, catalog.chat_models)
-        self.assertEqual(restored.models[1].metadata["title"], "Future work model")
 
     def test_work_variants_stay_hidden_if_an_older_response_has_no_categories(self):
         catalog = parse_model_catalog({"models": [{"slug": "normal"}, {"slug": "private-wm"}]})

@@ -63,16 +63,3 @@ class Account:
         provider_type = ProviderType.parse(provider)
         _, cookies = import_cookies(provider_type.value, browser=browser)
         return cls.from_cookies(provider, cookies, id=id, name=name)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = {
-            "id": self.id,
-            "provider": self.provider,
-            "capabilities": [c.value if hasattr(c, "value") else str(c) for c in self.capabilities],
-            "metadata": dict(self.metadata),
-            "name": self.name,
-            "is_active": self.is_active,
-        }
-        if isinstance(self.credentials, (str, Path)):
-            data["credentials"] = str(self.credentials)
-        return data

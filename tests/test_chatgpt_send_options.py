@@ -187,7 +187,7 @@ class SendOptionsTests(unittest.TestCase):
 
         self.assertEqual(get_request.call_count, 1)
         self.assertEqual(self.requests[1]["parent_message_id"], "a-1")
-        self.assertGreater(self.client._continuation_cache_text_chars, 0)
+        self.assertGreater(self.client._continuation_cache.current_bytes, 0)
         self.assertEqual(self.client._continuation_cache.stats().entries, 1)
 
     def test_continuation_cache_ttl_is_measured_from_verification(self):

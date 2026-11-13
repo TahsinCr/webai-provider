@@ -199,26 +199,6 @@ class ModelCatalog:
             next(iter(self.chat_models), None),
         )
 
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> ModelCatalog:
-        return cls(
-            ModelCatalogState(value["state"]),
-            tuple(
-                Model(
-                    item["id"],
-                    item["title"],
-                    tuple(Choice(**effort) for effort in item.get("efforts", [])),
-                    item.get("default_effort"),
-                    item.get("metadata", {}),
-                    item.get("chat_selectable", True),
-                    item.get("chat_title"),
-                )
-                for item in value.get("models", [])
-            ),
-            value.get("default_model"),
-            value.get("reason"),
-        )
-
     def effort(self, model_id: str, preferred: str = "medium") -> str | None:
         model = next((m for m in self.models if m.id == model_id), None)
         if model is None:

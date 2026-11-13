@@ -71,7 +71,3 @@ class OperationStateMachine:
     def can_transition(self, target: OperationState | str) -> bool:
         target_val = target.value if isinstance(target, OperationState) else str(target)
         return self._machine.can_transition(target_val)
-
-    @property
-    def is_terminal(self) -> bool:
-        return self._machine.state in _TERMINAL_STATES

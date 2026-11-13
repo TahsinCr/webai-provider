@@ -727,44 +727,58 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
             ),
         ]
         for origin, required_cookie, initial, mutated_name, mutated_value in cases:
-            with self.subTest(origin=origin, mutated_name=mutated_name):
-                with tempfile.TemporaryDirectory() as folder:
-                    path = Path(folder) / "session.json"
-                    save_session(path, initial)
-                    domain = origin.removeprefix("https://")
-                    jar = httpx.Cookies()
-                    for k, v in initial.items():
-                        jar.set(k, v, domain=domain, path="/")
+            with (
+                self.subTest(origin=origin, mutated_name=mutated_name),
+                tempfile.TemporaryDirectory() as folder,
+            ):
+                path = Path(folder) / "session.json"
+                save_session(path, initial)
+                domain = origin.removeprefix("https://")
+                jar = httpx.Cookies()
+                for k, v in initial.items():
+                    jar.set(k, v, domain=domain, path="/")
 
-                    async def fake_request(*_args, jar=jar, domain=domain, **_kwargs):
-                        jar.set(mutated_name, mutated_value, domain=domain, path="/")
-                        return httpx.Response(200, json={"ok": True})
+                async def fake_request(
+                    *_args,
+                    jar=jar,
+                    domain=domain,
+                    mutated_name=mutated_name,
+                    mutated_value=mutated_value,
+                    **_kwargs,
+                ):
+                    jar.set(mutated_name, mutated_value, domain=domain, path="/")
+                    return httpx.Response(200, json={"ok": True})
 
-                    fake_client = SimpleNamespace(
-                        cookies=jar,
-                        request=AsyncMock(side_effect=fake_request),
-                        close=AsyncMock(),
-                    )
-                    save_calls = []
-                    original_save = session_module.save_session_async
+                fake_client = SimpleNamespace(
+                    cookies=jar,
+                    request=AsyncMock(side_effect=fake_request),
+                    close=AsyncMock(),
+                )
+                save_calls = []
+                original_save = session_module.save_session_async
 
-                    async def counting_save(target_path, cookies, save_calls=save_calls):
-                        save_calls.append(dict(cookies))
-                        await original_save(target_path, cookies)
+                async def counting_save(
+                    target_path,
+                    cookies,
+                    save_calls=save_calls,
+                    original_save=original_save,
+                ):
+                    save_calls.append(dict(cookies))
+                    await original_save(target_path, cookies)
 
-                    http_session = HttpSession(
-                        origin,
-                        path,
-                        required_cookie,
-                        client_factory=lambda **_: fake_client,
-                    )
-                    try:
-                        with patch.object(
-                            session_module, "save_session_async", side_effect=counting_save
-                        ):
-                            await http_session.send("GET", "/probe")
-                            self.assertEqual(len(save_calls), 1)
-                            self.assertFalse(http_session._dirty)
-                            self.assertEqual(read_session(path)[mutated_name], mutated_value)
-                    finally:
-                        await http_session.close()
+                http_session = HttpSession(
+                    origin,
+                    path,
+                    required_cookie,
+                    client_factory=lambda *_args, client=fake_client, **_kwargs: client,
+                )
+                try:
+                    with patch.object(
+                        session_module, "save_session_async", side_effect=counting_save
+                    ):
+                        await http_session.send("GET", "/probe")
+                        self.assertEqual(len(save_calls), 1)
+                        self.assertFalse(http_session._dirty)
+                        self.assertEqual(read_session(path)[mutated_name], mutated_value)
+                finally:
+                    await http_session.close()

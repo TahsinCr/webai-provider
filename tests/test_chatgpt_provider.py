@@ -154,10 +154,7 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             return result
 
         self.client.get_project = get_project
-        with (
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser,
-            patch.object(self.provider.session, "launch"),
-        ):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser:
             await self.provider.delete_project("g-p-created")
             browser.assert_not_awaited()
             self.assertEqual(
@@ -220,12 +217,9 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
             patch.object(ChatGPTClient, "get_conversation", return_value=raw),
             patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
-            patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as sentinel_prewarm,
         ):
             provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
             await provider.prepare()
-            await provider.prepare_for_send()
-            sentinel_prewarm.assert_called_once_with()
             await provider._load_model_catalog()
             await provider._load_model_catalog(force=True)
             await provider.list_chats(limit=1)
@@ -236,9 +230,6 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(
                 provider._http_client.temporary_conversations, provider._temporary_conversations
             )
-            provider._temporary_conversations.update({"temporary": {}, "other": {}})
-            await provider.forget_temporary("temporary")
-            self.assertEqual(list(provider._http_client.temporary_conversations), ["other"])
             model_catalog.assert_called_with(refresh=True)
             await provider.close()
             self.assertIsNone(provider._http_client)

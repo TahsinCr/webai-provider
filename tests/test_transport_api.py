@@ -529,9 +529,11 @@ class BlockingTransportTests(unittest.TestCase):
             with provider.transport.stream("GET", "/stream") as response:
                 self.assertEqual(list(response.iter_bytes()), [b"stream"])
                 response.close()
-            with self.assertRaises(ValueError):
-                with provider.transport.stream("GET", "/stream"):
-                    raise ValueError("caller failure")
+            with (
+                self.assertRaises(ValueError),
+                provider.transport.stream("GET", "/stream"),
+            ):
+                raise ValueError("caller failure")
         self.assertEqual(len(threads), 1)
         self.assertNotIn(threading.get_ident(), threads)
         self.assertTrue(closed.is_set())

@@ -801,11 +801,11 @@ class LiveSessionCookieRefreshTests(unittest.TestCase):
             live.close_sync()
 
     def test_sync_network_failure_does_not_refresh_cookies(self) -> None:
-        from webaiprovider.errors import NetworkError
+        from webaiprovider.errors import RequestNotSentError
 
         account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "saved"}})
         provider = Mock()
-        provider.open.side_effect = NetworkError("unavailable")
+        provider.open.side_effect = RequestNotSentError("unavailable")
         context = LiveContext(provider, account, "sync", gate=ActionGate(interval=0))
         live = LiveSession("sync")
         live.context, live.session = context, provider

@@ -72,6 +72,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
+- Remove unused v1 compatibility shims, helpers, and dead modules: `webaiprovider.core.resilience` (`ProviderResilienceRegistry`), `webaiprovider.core.workers` (`BoundedWorkPool`), `RetryPolicy` and `calculate_backoff` from `webaiprovider.transport.retry`, `NetworkError`, `redact_sensitive_url` and the unused `follow_redirects` parameter on `NativeDownloadClient`, `Account.to_dict`, `ModelCatalog.from_dict`, lazy `select_cookies`/`import_cookies` aliases in `webaiprovider.accounts.profiles`, unused cache/concurrency/scope/state helpers (`MultiDimensionBoundedCache.move_to_end`, `ConcurrencyCoordinator.run_keyed`, `ProviderResourceScope.spawn`/`cancel`, `OperationStateMachine.is_terminal`), and dead v1 provider/client/session/notebook methods (`login`, `forget_temporary`, `forget_conversation`, `prepare_for_send`, `prepare_next_turn`, `BrowserSession.launch`, `find_chrome_executable`, unused `Notebooks` setup flags, and the `prefer_browser` parameter on `refresh_auth`) along with obsolete test helpers and coverage.
 - Remove the standalone package smoke script; run isolated wheel and source-distribution checks in CI and keep behavior coverage in `unittest`.
 
 - Remove the duplicate `Feature`/`ProviderDescription` wrapper and `describe()` API; providers expose their declared capabilities directly through `provider.capabilities`.

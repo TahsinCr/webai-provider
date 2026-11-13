@@ -528,9 +528,7 @@ def _build_virtual_window(
 
 
 class _VMRejection(Exception):
-    def __init__(self, encoded: str) -> None:
-        super().__init__(encoded)
-        self.encoded = encoded
+    pass
 
 
 class SentinelVM:

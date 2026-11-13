@@ -45,7 +45,6 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
             name="Fixture", origin=SimpleNamespace(remote_id="notebooks/abcdef")
         )
         notebooks = SimpleNamespace(
-            cdp_url="http://127.0.0.1:9231",
             get=AsyncMock(return_value=project),
             list=AsyncMock(
                 side_effect=[SimpleNamespace(items=[project]), SimpleNamespace(items=[])]

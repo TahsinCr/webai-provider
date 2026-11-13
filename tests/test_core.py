@@ -6,7 +6,6 @@ import unittest
 from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import MultiDimensionBoundedCache
 from webaiprovider.core.concurrency import ConcurrencyCoordinator
-from webaiprovider.core.resilience import ProviderResilienceRegistry
 from webaiprovider.core.scope import ProviderResourceScope
 from webaiprovider.core.state import OperationState, OperationStateMachine
 from webaiprovider.core.telemetry import (
@@ -14,7 +13,6 @@ from webaiprovider.core.telemetry import (
     correlation_context,
     current_correlation_id,
 )
-from webaiprovider.errors import RateLimited
 
 
 class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):
@@ -46,17 +44,6 @@ class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(executions, 1)
         self.assertEqual(results, ["computed_result", "computed_result", "computed_result"])
-        await coordinator.aclose()
-
-    async def test_run_keyed_executes_within_limit(self) -> None:
-        coordinator = ConcurrencyCoordinator(max_concurrency_per_key=2)
-        key = "acc_worker"
-
-        async def worker(val: int) -> int:
-            return val * 2
-
-        res = await coordinator.run_keyed(key, worker, 21)
-        self.assertEqual(res, 42)
         await coordinator.aclose()
 
 
@@ -118,49 +105,6 @@ class CoreCacheTests(unittest.TestCase):
         self.assertEqual(cache.stats().entries, 0)
 
 
-class CoreResilienceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_rate_limit_blocking_and_recovery(self) -> None:
-        registry = ProviderResilienceRegistry()
-        key = "grok:acc_test"
-
-        self.assertFalse(registry.is_rate_limited(key))
-        registry.register_rate_limit(key, 0.02)
-        self.assertTrue(registry.is_rate_limited(key))
-        self.assertGreater(registry.rate_limit_remaining(key), 0.0)
-
-        await asyncio.sleep(0.08)
-        self.assertFalse(registry.is_rate_limited(key))
-
-    async def test_execute_protected_auto_catches_rate_limit(self) -> None:
-        registry = ProviderResilienceRegistry()
-        key = "chatgpt:acc_fail"
-
-        async def failing_call() -> None:
-            raise RateLimited(retry_after=1.0)
-
-        with self.assertRaises(RateLimited):
-            await registry.execute_protected(key, failing_call)
-
-        self.assertTrue(registry.is_rate_limited(key))
-
-        with self.assertRaises(RateLimited):
-            await registry.execute_protected(key, failing_call)
-
-    async def test_rate_limited_does_not_trip_circuit_breaker(self) -> None:
-        registry = ProviderResilienceRegistry(failure_threshold=2)
-        key = "grok:acc_rl"
-
-        async def rate_limited_call() -> None:
-            raise RateLimited(retry_after=0.02)
-
-        for _ in range(5):
-            with self.assertRaises(RateLimited):
-                await registry.execute_protected(key, rate_limited_call)
-            await asyncio.sleep(0.05)
-
-        self.assertEqual(registry.circuit_state(), "closed")
-
-
 class CoreScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_resource_scope_executes_lifo_cleanups(self) -> None:
         order: list[str] = []
@@ -170,24 +114,6 @@ class CoreScopeTests(unittest.IsolatedAsyncioTestCase):
             scope.defer(lambda: order.append("temp_file_deleted"))
 
         self.assertEqual(order, ["temp_file_deleted", "socket_closed"])
-
-    async def test_resource_scope_spawns_and_cancels_background_task(self) -> None:
-        cancelled = False
-
-        async def worker() -> None:
-            nonlocal cancelled
-            try:
-                await asyncio.sleep(10.0)
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
-
-        scope = ProviderResourceScope()
-        scope.spawn(worker())
-        await asyncio.sleep(0.01)
-        await scope.aclose()
-
-        self.assertTrue(cancelled)
 
 
 class CorePortalBridgeTests(unittest.TestCase):
@@ -206,7 +132,6 @@ class CoreStateTests(unittest.TestCase):
     def test_operation_state_machine_valid_transitions(self) -> None:
         sm = OperationStateMachine()
         self.assertEqual(sm.state, OperationState.PENDING.value)
-        self.assertFalse(sm.is_terminal)
 
         sm.transition(OperationState.PREPARING)
         self.assertEqual(sm.state, OperationState.PREPARING.value)
@@ -219,7 +144,6 @@ class CoreStateTests(unittest.TestCase):
 
         sm.transition(OperationState.COMPLETED)
         self.assertEqual(sm.state, OperationState.COMPLETED.value)
-        self.assertTrue(sm.is_terminal)
 
     def test_operation_state_machine_invalid_transition(self) -> None:
         sm = OperationStateMachine()

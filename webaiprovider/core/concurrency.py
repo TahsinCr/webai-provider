@@ -47,16 +47,6 @@ class ConcurrencyCoordinator:
     def acquire(self, key: Any) -> Any:
         return self._limiter.acquire(key)
 
-    async def run_keyed(
-        self,
-        key: Any,
-        operation: Callable[..., Awaitable[T]],
-        *args: Any,
-        **kwargs: Any,
-    ) -> T:
-        async with self._limiter.acquire(key):
-            return await operation(*args, **kwargs)
-
     async def deduplicate(self, key: Any, factory: Callable[[], Awaitable[T]]) -> T:
         return await self._single_flight.run(key, factory)
 

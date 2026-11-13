@@ -1,5 +1,4 @@
 import math
-import random
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -36,42 +35,3 @@ def parse_retry_after(value: Any, *, now: float | None = None) -> float | None:
         return 0.0 if math.isfinite(delay) else None
     except (TypeError, ValueError, OverflowError, OSError):
         return None
-
-
-def calculate_backoff(
-    attempt: int,
-    base: float = 1.0,
-    max_backoff: float = 60.0,
-    jitter: bool = True,
-) -> float:
-    attempt = max(0, attempt)
-    delay = min(max_backoff, base * (2**attempt))
-    if jitter:
-        delay = delay * (0.5 + random.random() * 0.5)
-    return max(0.0, delay)
-
-
-class RetryPolicy:
-    def __init__(
-        self,
-        max_attempts: int = 3,
-        base_backoff: float = 1.0,
-        max_backoff: float = 60.0,
-        retryable_statuses: tuple[int, ...] = (429, 502, 503, 504),
-    ):
-        self.max_attempts = max_attempts
-        self.base_backoff = base_backoff
-        self.max_backoff = max_backoff
-        self.retryable_statuses = retryable_statuses
-
-    def should_retry(self, status_code: int, attempt: int, method: str = "GET") -> bool:
-        if attempt >= self.max_attempts:
-            return False
-        if method.upper() not in ("GET", "HEAD", "OPTIONS") and status_code != 429:
-            return False
-        return status_code in self.retryable_statuses
-
-    def backoff_for(self, attempt: int, retry_after: float | None = None) -> float:
-        if retry_after is not None and retry_after > 0:
-            return min(self.max_backoff, retry_after)
-        return calculate_backoff(attempt, self.base_backoff, self.max_backoff)

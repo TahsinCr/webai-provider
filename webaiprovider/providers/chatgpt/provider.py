@@ -363,15 +363,6 @@ class AsyncChatGPTProvider(AsyncProvider):
             "snapshot_not_verified" if saved else "no_saved_session",
         )
 
-    async def login(self) -> SessionStatus:
-        async with self._gate:
-            await asyncio.to_thread(self.session.launch)
-        return SessionStatus(
-            SessionState.UNKNOWN,
-            session_exists(self.session.paths.session_file),
-            "complete_login_in_browser_then_authenticate",
-        )
-
     async def authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
         def verify():
             if capture_browser and self.session.is_ready():
@@ -395,16 +386,6 @@ class AsyncChatGPTProvider(AsyncProvider):
             self._pending_branches.clear()
         return SessionStatus(SessionState.LOGIN_REQUIRED, False, "browser_session_retained")
 
-    async def forget_temporary(self, remote_id: str) -> None:
-        self._temporary_conversations.pop(remote_id, None)
-
-    async def forget_conversation(self, conversation_id: str) -> None:
-        async with self._gate:
-            self._pending_branches.pop(conversation_id, None)
-            with self._http_lock:
-                if self._http_client is not None:
-                    self._http_client.forget_conversation(conversation_id)
-
     async def prepare(self) -> None:
         """Bootstrap cookie credentials, then warm and retain the authenticated client."""
         if self._factory is ChatGPTClient:
@@ -422,16 +403,6 @@ class AsyncChatGPTProvider(AsyncProvider):
                 cookies = ProviderCookieFilter.filter_cookies("https://chatgpt.com", cookies)
                 await asyncio.to_thread(self.session.import_cookies, cookies)
         await self._load_model_catalog()
-
-    async def prepare_for_send(self) -> None:
-        """Start the existing Sentinel prewarm for the selected account."""
-
-        def prewarm():
-            with self._client_scope() as client:
-                client.trigger_sentinel_prewarm()
-
-        async with self._gate:
-            await asyncio.to_thread(prewarm)
 
     async def _load_model_catalog(self, *, force: bool = False) -> ModelCatalog:
         def read():
