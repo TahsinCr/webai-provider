@@ -3,9 +3,9 @@
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 _SENSITIVE_PARAM_SUBSTRINGS = (
@@ -188,11 +188,13 @@ async def download_source(source: DownloadSource | None) -> bytes:
         )
         if not isinstance(client, NativeDownloadClient):
             raise ProviderError("Provider returned an unsupported download transport")
-        with client:
-            with client.stream("GET", source.url, headers=dict(source.headers)) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ProviderError(f"File transfer failed with HTTP {response.status_code}")
-                return b"".join(response.iter_bytes())
+        with (
+            client,
+            client.stream("GET", source.url, headers=dict(source.headers)) as response,
+        ):
+            if not 200 <= response.status_code < 300:
+                raise ProviderError(f"File transfer failed with HTTP {response.status_code}")
+            return b"".join(response.iter_bytes())
 
     try:
         return await asyncio.to_thread(read_source)

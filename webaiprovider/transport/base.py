@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, AsyncContextManager, ContextManager, Mapping, Protocol
+from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit
 
 from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from .retry import parse_retry_after
+
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class _ResponseHead(Protocol):
@@ -123,7 +127,7 @@ class _TransportPolicy:
             or target.query
             or target.fragment
             or "\\" in origin
-            or any(ord(char) < 32 or ord(char) == 127 for char in origin)
+            or _CTRL_CHAR_RE.search(origin) is not None
         ):
             raise ValueError("Transport origin must be an HTTP origin without credentials or path")
         self._origin = origin.rstrip("/")
@@ -150,7 +154,7 @@ class _TransportPolicy:
             or ".." in decoded
             or "\\" in decoded
             or parsed.fragment
-            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+            or _CTRL_CHAR_RE.search(path) is not None
         ):
             raise ValueError("Transport request must remain on its origin")
         return self.origin + path
@@ -217,7 +221,7 @@ class AsyncTransport(_TransportPolicy, ABC):
     @abstractmethod
     def stream(
         self, method: str, path: str, **options
-    ) -> AsyncContextManager[AsyncStreamResponse]: ...
+    ) -> AbstractAsyncContextManager[AsyncStreamResponse]: ...
 
     async def request(self, method: str, path: str, **options):
         response = await self.send(method, path, **options)
@@ -241,7 +245,9 @@ class Transport(_TransportPolicy, ABC):
     def send(self, method: str, path: str, **options) -> TransportResponse: ...
 
     @abstractmethod
-    def stream(self, method: str, path: str, **options) -> ContextManager[StreamResponse]: ...
+    def stream(
+        self, method: str, path: str, **options
+    ) -> AbstractContextManager[StreamResponse]: ...
 
     def request(self, method: str, path: str, **options):
         response = self.send(method, path, **options)

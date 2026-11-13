@@ -11,6 +11,7 @@ from ...resources.message.types import MessageAction
 from ...utils.attachments import GEMINI_ATTACHMENTS
 from ...utils.timing import current_send_timing
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
+from .history import candidate_metadata, published_activity, published_thoughts
 from .media import candidate_files
 from .rpc import nested
 from .session import BASE, HEADERS
@@ -165,8 +166,6 @@ async def generate(
 ):
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
-
-    from .history import candidate_metadata, published_activity, published_thoughts
 
     if files is None:
         files = await upload_files(session, request.attachments)

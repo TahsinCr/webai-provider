@@ -6,7 +6,7 @@ import os
 import socket
 import sys
 import time
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from urllib.parse import urlsplit
 
 from ..core import MultiDimensionBoundedCache
@@ -209,10 +209,8 @@ class AsyncHTTPTransport(AsyncTransport):
         self._owned_refs.pop(cid, None)
         retired = self._retired_clients.pop(cid, None)
         if retired is not None:
-            try:
+            with suppress(Exception):
                 await getattr(retired, self._close_method)()
-            except Exception:
-                pass
 
     async def _after(self):
         if self._after_response is not None:
@@ -280,10 +278,8 @@ class AsyncHTTPTransport(AsyncTransport):
         if self._owned_refs.get(cid, 0) > 0:
             self._retired_clients[cid] = client
             return
-        try:
+        with suppress(Exception):
             await getattr(client, self._close_method)()
-        except Exception:
-            pass
 
     async def _send(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Mapping
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
 from ..attachment import Attachment

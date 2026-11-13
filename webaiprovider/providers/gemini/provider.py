@@ -7,8 +7,9 @@ import time
 from collections.abc import AsyncGenerator
 from dataclasses import replace
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
-from ...accounts import delete_session, session_exists
+from ...accounts import delete_session, read_session, session_exists
 from ...accounts.account import Account
 from ...accounts.status import (
     SessionState,
@@ -30,7 +31,7 @@ from ...resources.message.protocol import (
     ResponseComplete,
     TextReplacement,
 )
-from ...resources.message.types import MessageAction
+from ...resources.message.types import MessageAction, target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import (
     Model,
@@ -39,8 +40,13 @@ from ...resources.model.model import (
 from ...resources.project.types import ProjectOptions
 from ...transport import AsyncTransport
 from ...utils.timing import current_send_timing
+from . import generation
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
+from .history import history
+from .media import PLACEHOLDER, resolve_image_links, valid_media_url
+from .notebooks import field, notebook_id
 from .resources import AsyncGeminiChat
+from .rpc import nested
 
 if TYPE_CHECKING:
     from .notebooks import Notebooks
@@ -155,9 +161,8 @@ class AsyncGeminiProvider(AsyncProvider):
         return client
 
     async def _close_provider(self):
-        async with self._gate:
-            async with self._connect_gate:
-                await self._close_unlocked()
+        async with self._gate, self._connect_gate:
+            await self._close_unlocked()
 
     async def _close_unlocked(self):
         editor_error = None
@@ -202,13 +207,12 @@ class AsyncGeminiProvider(AsyncProvider):
         await self._load_model_catalog()
 
     async def forget_session(self):
-        async with self._gate:
-            async with self._connect_gate:
-                await self._close_unlocked()
-                delete_session(self.cookie_file)
-                self._temporary.clear()
-                self._cached_models = None
-                self._catalog_at = None
+        async with self._gate, self._connect_gate:
+            await self._close_unlocked()
+            delete_session(self.cookie_file)
+            self._temporary.clear()
+            self._cached_models = None
+            self._catalog_at = None
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def _load_model_catalog(self, *, force: bool = False) -> ModelCatalog:
@@ -393,10 +397,101 @@ class AsyncGeminiProvider(AsyncProvider):
             timeout.cancel()
             await iterator.aclose()
 
-    async def _prepare_send_context(self, request: ProviderRequest):
-        from .notebooks import field, notebook_id
+    async def _resolve_project_context(self, project_id, timing):
+        project = notebook_id(project_id) if project_id else None
+        if not project:
+            return None
+        project_started = time.perf_counter_ns() if timing is not None else None
+        notebook = await self.notebooks.get(project)
+        if project_started is not None:
+            timing.record("pre_send_project_context_ms", time.perf_counter_ns() - project_started)
+        value = field(field(notebook.metadata.get("native"), 1), 12)
+        if not isinstance(value, list) or not value or value[0] not in (1, 2):
+            raise ProviderError("Gemini notebook context could not be read")
+        return project, value
 
-        project = notebook_id(request.project_id) if request.project_id else None
+    async def _load_chat_continuation(self, request: ProviderRequest, timing):
+        metadata = self._temporary.get(request.conversation_id) if request.temporary else None
+        if request.temporary and request.conversation_id and metadata is None:
+            raise ProviderError("Temporary Gemini context is no longer in memory")
+        if metadata is not None:
+            return request, metadata, None
+
+        cached = (
+            self._take_chat_metadata(request.conversation_id)
+            if request.conversation_id and not request.action
+            else None
+        )
+        if self._usable_chat_metadata(cached, request.conversation_id):
+            if timing is not None:
+                timing.increment("pre_send_conversation_cache_hit")
+            return request, list(cached), None
+
+        if timing is not None and request.conversation_id:
+            timing.increment("pre_send_conversation_cache_miss")
+        metadata = [request.conversation_id or "", "", "", None, None, None, None, None, None, ""]
+        if not request.conversation_id:
+            return request, metadata, None
+
+        history_started = time.perf_counter_ns() if timing is not None else None
+        try:
+            parts = await self.rpc.call(
+                "hNvQHb",
+                [
+                    request.conversation_id,
+                    1000 if request.action else 1,
+                    None,
+                    1,
+                    [1],
+                    [4],
+                    None,
+                    1,
+                ],
+                "/app",
+            )
+        finally:
+            if history_started is not None:
+                timing.record(
+                    "pre_send_get_conversation_ms", time.perf_counter_ns() - history_started
+                )
+
+        turns = nested(parts[0], 0, default=[])
+        turn = turns[0] if turns else None
+        action_files = None
+        if request.action:
+            if request.message_id is None:
+                raise ValueError("message action requires a message ID")
+            current = history(parts[0], self._origin, request.conversation_id)
+            role = "user" if request.action == MessageAction.EDIT else "assistant"
+            _, target = target_message(current.messages, request.message_id, role)
+            if request.action.value not in target.actions:
+                raise ProviderError("This Gemini message action is not available")
+            selected_index = next(
+                i
+                for i, item in enumerate(turns)
+                if nested(item, 0, 1) == target.metadata["turn_id"]
+            )
+            original = turns[selected_index]
+            action_files = nested(original, 2, 0, 3) or []
+            if not isinstance(action_files, list):
+                raise ProviderError("Gemini message attachments cannot be preserved")
+            if request.action == MessageAction.RETRY:
+                request = replace(
+                    request,
+                    prompt=nested(original, 2, 0, 0) or "",
+                    action=MessageAction.EDIT if selected_index > 0 else MessageAction.RETRY,
+                )
+            turn = turns[selected_index + 1] if selected_index + 1 < len(turns) else None
+        rid = nested(turn, 0, 1)
+        rcid = nested(turn, 3, 0, 0, 0)
+        if turn is not None and (not rid or not rcid):
+            raise GeminiCompatibilityError(
+                "Could not retrieve Gemini conversation continuation IDs."
+            )
+        metadata[1:3] = [rid or "", rcid or ""]
+        return request, metadata, action_files
+
+    async def _prepare_send_context(self, request: ProviderRequest):
         timing = current_send_timing()
         gate_started = time.perf_counter_ns() if timing is not None else None
         async with self._gate:
@@ -411,116 +506,8 @@ class AsyncGeminiProvider(AsyncProvider):
                 await self._load_model_catalog()
             if catalog_started is not None:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - catalog_started)
-            context = None
-            action_files = None
-            if project:
-                project_started = time.perf_counter_ns() if timing is not None else None
-                notebook = await self.notebooks.get(project)
-                if project_started is not None:
-                    timing.record(
-                        "pre_send_project_context_ms", time.perf_counter_ns() - project_started
-                    )
-                value = field(field(notebook.metadata.get("native"), 1), 12)
-                if not isinstance(value, list) or not value or value[0] not in (1, 2):
-                    raise ProviderError("Gemini notebook context could not be read")
-                context = (project, value)
-            metadata = self._temporary.get(request.conversation_id) if request.temporary else None
-            if request.temporary and request.conversation_id and metadata is None:
-                raise ProviderError("Temporary Gemini context is no longer in memory")
-            if metadata is None:
-                cached = (
-                    self._take_chat_metadata(request.conversation_id)
-                    if request.conversation_id and not request.action
-                    else None
-                )
-                if self._usable_chat_metadata(cached, request.conversation_id):
-                    metadata = list(cached)
-                    if timing is not None:
-                        timing.increment("pre_send_conversation_cache_hit")
-                else:
-                    if timing is not None and request.conversation_id:
-                        timing.increment("pre_send_conversation_cache_miss")
-                    metadata = [
-                        request.conversation_id or "",
-                        "",
-                        "",
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        "",
-                    ]
-                    if request.conversation_id:
-                        history_started = time.perf_counter_ns() if timing is not None else None
-                        try:
-                            parts = await self.rpc.call(
-                                "hNvQHb",
-                                [
-                                    request.conversation_id,
-                                    1000 if request.action else 1,
-                                    None,
-                                    1,
-                                    [1],
-                                    [4],
-                                    None,
-                                    1,
-                                ],
-                                "/app",
-                            )
-                        finally:
-                            if history_started is not None:
-                                timing.record(
-                                    "pre_send_get_conversation_ms",
-                                    time.perf_counter_ns() - history_started,
-                                )
-                        from .rpc import nested
-
-                        turns = nested(parts[0], 0, default=[])
-                        turn = turns[0] if turns else None
-                        if request.action:
-                            from ...resources.message.types import target_message
-                            from .history import history
-
-                            if request.message_id is None:
-                                raise ValueError("message action requires a message ID")
-                            current = history(parts[0], self._origin, request.conversation_id)
-                            role = "user" if request.action == MessageAction.EDIT else "assistant"
-                            _, target = target_message(current.messages, request.message_id, role)
-                            if request.action.value not in target.actions:
-                                raise ProviderError("This Gemini message action is not available")
-                            selected_index = next(
-                                i
-                                for i, item in enumerate(turns)
-                                if nested(item, 0, 1) == target.metadata["turn_id"]
-                            )
-                            original = turns[selected_index]
-                            action_files = nested(original, 2, 0, 3) or []
-                            if not isinstance(action_files, list):
-                                raise ProviderError(
-                                    "Gemini message attachments cannot be preserved"
-                                )
-                            if request.action == MessageAction.RETRY:
-                                request = replace(
-                                    request,
-                                    prompt=nested(original, 2, 0, 0) or "",
-                                    action=MessageAction.EDIT
-                                    if selected_index > 0
-                                    else MessageAction.RETRY,
-                                )
-                            turn = (
-                                turns[selected_index + 1]
-                                if selected_index + 1 < len(turns)
-                                else None
-                            )
-                        rid = nested(turn, 0, 1)
-                        rcid = nested(turn, 3, 0, 0, 0)
-                        if turn is not None and (not rid or not rcid):
-                            raise GeminiCompatibilityError(
-                                "Could not retrieve Gemini conversation continuation IDs."
-                            )
-                        metadata[1:3] = [rid or "", rcid or ""]
+            context = await self._resolve_project_context(request.project_id, timing)
+            request, metadata, action_files = await self._load_chat_continuation(request, timing)
             activity_started = time.perf_counter_ns() if timing is not None else None
             await client.sync_activity()
             if activity_started is not None:
@@ -530,14 +517,11 @@ class AsyncGeminiProvider(AsyncProvider):
         return client, request, metadata, context, action_files
 
     async def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
-        from .generation import generate
-        from .media import resolve_image_links
-
         client, request, metadata, context, action_files = await self._prepare_send_context(request)
         bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
         final_metadata = None
         output_files, published_sources = (), ()
-        async for chunk in generate(
+        async for chunk in generation.generate(
             client,
             request,
             metadata,
@@ -553,23 +537,26 @@ class AsyncGeminiProvider(AsyncProvider):
             if chunk.get("context_only"):
                 continue
             images = chunk["files"]
-            output_files = files_from(
-                {"files": output_files},
-                {
-                    "files": [
-                        {
-                            "id": image["alias"],
-                            "name": image["name"],
-                            "remote_url": image["url"],
-                            "media_type": image.get("media_type"),
-                        }
-                        for image in images
-                    ]
-                },
-            )
-            published_sources = sources_from(
-                {"sources": published_sources}, {"sources": chunk.get("sources", ())}
-            )
+            if images:
+                output_files = files_from(
+                    {"files": output_files},
+                    {
+                        "files": [
+                            {
+                                "id": image["alias"],
+                                "name": image["name"],
+                                "remote_url": image["url"],
+                                "media_type": image.get("media_type"),
+                            }
+                            for image in images
+                        ]
+                    },
+                )
+            chunk_sources = chunk.get("sources")
+            if chunk_sources:
+                published_sources = sources_from(
+                    {"sources": published_sources}, {"sources": chunk_sources}
+                )
             visible = visible or bool(chunk["text"] or images)
             if chunk["thoughts"]:
                 yield TextReplacement(chunk["thoughts"], "analysis")
@@ -605,7 +592,6 @@ class AsyncGeminiProvider(AsyncProvider):
 
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
-        from .media import PLACEHOLDER, valid_media_url
 
         stable_reference = bool(PLACEHOLDER.fullmatch(url) or url.startswith("gemini-media:"))
         if not stable_reference and not valid_media_url(url):
@@ -623,15 +609,12 @@ class AsyncGeminiProvider(AsyncProvider):
             target = {"url": url, "name": "image"}
         if not target or not valid_media_url(target["url"]):
             raise ValueError("The provider did not return the file URL; sync the conversation")
-        from urllib.parse import urlsplit
 
         headers = {"Referer": "https://gemini.google.com/"}
         # Generated media can require the owning account, through the owning HTTP session.
         # Never attach Google cookies to arbitrary user-controlled CDN subdomains.
         host = urlsplit(target["url"]).hostname
         if host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}:
-            from ...accounts import read_session
-
             client = self._client
             values = (
                 client.http.cookies.get_dict()

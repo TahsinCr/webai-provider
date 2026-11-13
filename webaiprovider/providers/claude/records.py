@@ -56,23 +56,38 @@ def conversation_attachment_count(value):
     return _attachment_count(value["chat_messages"])
 
 
+def _linearize_turns(turns: list[dict], leaf: str | None) -> list[dict]:
+    by_id = {x.get("uuid"): x for x in turns}
+    if leaf not in by_id or not any("parent_message_uuid" in x for x in turns):
+        return turns
+    branch, seen = [], set()
+    while leaf in by_id and leaf not in seen:
+        seen.add(leaf)
+        item = by_id[leaf]
+        branch.append(item)
+        leaf = item.get("parent_message_uuid")
+    return list(reversed(branch))
+
+
+def _project_data(value: dict, account_id: str) -> ProjectData | None:
+    raw_project = value.get("project") if isinstance(value.get("project"), dict) else {}
+    pid = value.get("project_uuid") or raw_project.get("uuid")
+    if not pid:
+        return None
+    pname = raw_project.get("name") or value.get("project_name") or ""
+    return ProjectData(Origin("claude", account_id, pid), str(pname))
+
+
 def conversation(value, account_id):
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude conversation response contract changed")
     messages = []
-    turns = value.get("chat_messages")
-    if not isinstance(turns, list):
-        turns = []
-    leaf = value.get("current_leaf_message_uuid")
-    by_id = {x.get("uuid"): x for x in turns}
-    if leaf in by_id and any("parent_message_uuid" in x for x in turns):
-        branch, seen = [], set()
-        while leaf in by_id and leaf not in seen:
-            seen.add(leaf)
-            item = by_id[leaf]
-            branch.append(item)
-            leaf = item.get("parent_message_uuid")
-        turns = list(reversed(branch))
+    raw_turns = value.get("chat_messages")
+    turns = (
+        _linearize_turns(raw_turns, value.get("current_leaf_message_uuid"))
+        if isinstance(raw_turns, list)
+        else []
+    )
     pending_files = ()
     pending_sources = ()
     pending_id = ""
@@ -98,7 +113,10 @@ def conversation(value, account_id):
         content = item.get("content") or (
             [{"type": "text", "text": item["text"]}] if item.get("text") else []
         )
-        text_indices = [i for i, block in enumerate(content) if block.get("type") == "text"]
+        last_text_index = next(
+            (i for i in range(len(content) - 1, -1, -1) if content[i].get("type") == "text"),
+            None,
+        )
         if role == "assistant":
             search_results = [
                 result
@@ -121,6 +139,7 @@ def conversation(value, account_id):
             )
             if pending_files:
                 pending_id = str(item["uuid"])
+        native_message = {k: v for k, v in item.items() if k != "content"}
         for index, block in enumerate(content):
             kind = block.get("type")
             if kind in ("text", "thinking"):
@@ -130,6 +149,7 @@ def conversation(value, account_id):
                     else block.get("thinking") or block.get("text")
                 )
                 if text:
+                    is_last_text = kind == "text" and index == last_text_index
                     messages.append(
                         MessageData(
                             str(item["uuid"]) + ":" + str(index),
@@ -138,24 +158,17 @@ def conversation(value, account_id):
                             "analysis" if kind == "thinking" else "final",
                             {
                                 "native": block,
-                                "native_message": {k: v for k, v in item.items() if k != "content"},
+                                "native_message": native_message,
                                 "sources": (
                                     pending_sources
-                                    if role == "assistant"
-                                    and text_indices
-                                    and index == text_indices[-1]
-                                    and kind == "text"
+                                    if role == "assistant" and is_last_text
                                     else sources_from(block)
                                 ),
-                                "files": pending_files
-                                if role == "assistant"
-                                and text_indices
-                                and index == text_indices[-1]
-                                else (),
+                                "files": (
+                                    pending_files if role == "assistant" and is_last_text else ()
+                                ),
                             },
-                            actions=actions_for(role)
-                            if text_indices and index == text_indices[-1] and kind == "text"
-                            else (),
+                            actions=actions_for(role) if is_last_text else (),
                         )
                     )
             else:
@@ -187,18 +200,15 @@ def conversation(value, account_id):
                     ),
                 )
             )
-        if text_indices and role == "assistant":
+        if last_text_index is not None and role == "assistant":
             pending_files = ()
             pending_sources = ()
     flush_files()
-    raw_project = value.get("project") if isinstance(value.get("project"), dict) else {}
-    pid = value.get("project_uuid") or raw_project.get("uuid")
-    pname = raw_project.get("name") or value.get("project_name") or ""
     return Conversation(
         Origin("claude", account_id, value["uuid"]),
         value.get("name") or "Claude sohbeti",
         tuple(messages),
-        ProjectData(Origin("claude", account_id, pid), str(pname)) if pid else None,
+        _project_data(value, account_id),
         {"native": {k: v for k, v in value.items() if k != "chat_messages"}},
     )
 

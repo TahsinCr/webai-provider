@@ -186,7 +186,9 @@ def parse_model_catalog(data) -> ModelCatalog:
         thinking = entry.get("thinking") or {}
         efforts = [x for x in thinking.get("effort_options", []) if not x.get("disabled")]
         modes = [x for x in thinking.get("mode_options", []) if not x.get("disabled")]
-        selections, choices = {}, []
+        selections: dict[str, dict[str, str]] = {}
+        choices: list[Choice] = []
+        default_choice: str | None = None
         selected = states.get(entry["id"], {})
         effort_ids = {x["id"] for x in efforts}
         mode_ids = {x["id"] for x in modes}
@@ -214,22 +216,19 @@ def parse_model_catalog(data) -> ModelCatalog:
                 if mid:
                     payload["thinking_mode"] = mid
                 selections[identity] = payload
-                choices.append(
-                    {
-                        "id": identity,
-                        "title": title,
-                        "selected": (eid == default_effort or not effort)
-                        and (mid == default_mode or not mode),
-                    }
-                )
+                choices.append(Choice(identity, title))
+                if (
+                    default_choice is None
+                    and (eid == default_effort or not effort)
+                    and (mid == default_mode or not mode)
+                ):
+                    default_choice = identity
         models.append(
             Model(
                 entry["id"],
                 entry.get("name") or entry["id"],
-                tuple(Choice(choice["id"], choice["title"]) for choice in choices),
-                default_effort=next(
-                    (choice["id"] for choice in choices if choice["selected"]), None
-                ),
+                tuple(choices),
+                default_effort=default_choice,
                 metadata={"native": entry, "selections": selections},
             )
         )

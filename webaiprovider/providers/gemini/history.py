@@ -45,7 +45,7 @@ def candidate_metadata(candidate, activity=None):
         match = _CITATION_MARKER.search(marker)
         if match is None:
             continue
-        for number, entry in zip(_CITATION_NUMBER.findall(match.group(1)), entries):
+        for number, entry in zip(_CITATION_NUMBER.findall(match.group(1)), entries, strict=False):
             citation_id = int(number)
             if citation_id in citations:
                 continue
@@ -134,7 +134,7 @@ def history(data, origin, cid):
     if not isinstance(turns, list):
         raise GeminiError("Gemini history is temporarily unavailable; saved history was preserved")
     messages = []
-    for turn_index, turn in enumerate(reversed(turns)):
+    for turn in reversed(turns):
         rid = nested(turn, 0, 1)
         if not isinstance(rid, str):
             raise GeminiCompatibilityError("Gemini history is missing a response ID")

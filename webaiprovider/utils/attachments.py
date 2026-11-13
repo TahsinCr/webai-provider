@@ -119,6 +119,7 @@ def fit_attachments(attachments, policy):
     if hasattr(policy, "as_dict"):
         policy = policy.as_dict()
 
+    allowed = {str(value).lower() for value in policy.get("allowed_extensions") or ()}
     accepted, rejected = [], []
     for item in attachments:
         name = str(item.get("name") or Path(str(item.get("path") or "")).name)
@@ -128,7 +129,6 @@ def fit_attachments(attachments, policy):
             rejected.append(item)
             continue
         extension = Path(name).suffix.lower()
-        allowed = {str(value).lower() for value in policy.get("allowed_extensions") or ()}
         if allowed and extension not in allowed:
             rejected.append(item)
             continue
@@ -155,8 +155,10 @@ def fit_attachments(attachments, policy):
 
     max_total = policy.get("max_total_bytes")
     if max_total:
-        while accepted and sum(int(item.get("size_bytes") or 0) for item in accepted) > int(
-            max_total
-        ):
-            rejected.append(accepted.pop())
+        max_total_bytes = int(max_total)
+        total_bytes = sum(int(item.get("size_bytes") or 0) for item in accepted)
+        while accepted and total_bytes > max_total_bytes:
+            popped = accepted.pop()
+            total_bytes -= int(popped.get("size_bytes") or 0)
+            rejected.append(popped)
     return accepted, rejected

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Mapping, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from ..common import Choice
 
@@ -200,7 +200,7 @@ class ModelCatalog:
         )
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "ModelCatalog":
+    def from_dict(cls, value: dict[str, Any]) -> ModelCatalog:
         return cls(
             ModelCatalogState(value["state"]),
             tuple(

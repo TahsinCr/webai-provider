@@ -3,15 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncIterator,
-    Callable,
-    Coroutine,
-)
+from typing import TYPE_CHECKING, Any
 
 from ...core.state import OperationState, OperationStateMachine
 from ...errors import OperationCancelledError, ProviderError
@@ -231,7 +225,9 @@ class AsyncMessageOperation:
         index = 0
         while True:
             async with self._condition:
-                await self._condition.wait_for(lambda: index < len(self._events) or self._completed)
+                await self._condition.wait_for(
+                    lambda current=index: current < len(self._events) or self._completed
+                )
                 if index >= len(self._events):
                     break
                 event = self._events[index]
