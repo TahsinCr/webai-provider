@@ -216,11 +216,15 @@ class AsyncChatGPTProvider(AsyncProvider):
         self._persistent_client = client_factory is ChatGPTClient
         self._http_client = None
         self._http_lock = threading.RLock()
+        self._client_refs: dict[int, int] = {}
+        self._retired_clients: dict[int, object] = {}
         self._temporary_conversations = OrderedDict()
         self._pending_branches = OrderedDict()
         self._gate = asyncio.Lock()
         self._rename_gate = asyncio.Lock()
         self._history_list_gate = asyncio.Lock()
+        self._read_loop: asyncio.AbstractEventLoop | None = None
+        self._read_semaphore: asyncio.Semaphore | None = None
         self._history_list_next_request = 0.0
         self.editor = ChatGPTProjectEditor(
             self.session, self._factory, client_scope=self._client_scope
@@ -240,7 +244,22 @@ class AsyncChatGPTProvider(AsyncProvider):
                     self._http_client = self._factory(self.session, **options)
                     self._http_client.temporary_conversations = self._temporary_conversations
                     self._http_client.pending_branches = self._pending_branches
-                yield self._http_client
+                client = self._http_client
+                cid = id(client)
+                self._client_refs[cid] = self._client_refs.get(cid, 0) + 1
+            try:
+                yield client
+            finally:
+                to_close = None
+                with self._http_lock:
+                    remaining = self._client_refs.get(cid, 0) - 1
+                    if remaining > 0:
+                        self._client_refs[cid] = remaining
+                    else:
+                        self._client_refs.pop(cid, None)
+                        to_close = self._retired_clients.pop(cid, None)
+                if to_close is not None:
+                    to_close.close()
             return
         with self._factory(self.session) as client:
             yield client
@@ -258,10 +277,17 @@ class AsyncChatGPTProvider(AsyncProvider):
 
     async def _discard_http_client(self):
         def discard():
+            to_close = None
             with self._http_lock:
                 client, self._http_client = self._http_client, None
                 if client is not None:
-                    client.close()
+                    cid = id(client)
+                    if self._client_refs.get(cid, 0) > 0:
+                        self._retired_clients[cid] = client
+                    else:
+                        to_close = client
+            if to_close is not None:
+                to_close.close()
 
         await asyncio.to_thread(discard)
 
@@ -319,6 +345,8 @@ class AsyncChatGPTProvider(AsyncProvider):
         try:
             async with self._gate, self._rename_gate:
                 try:
+                    self._read_loop = None
+                    self._read_semaphore = None
                     await self.editor.close()
                 finally:
                     self._temporary_conversations.clear()
@@ -439,14 +467,14 @@ class AsyncChatGPTProvider(AsyncProvider):
 
             await asyncio.to_thread(remove)
 
-            async def readback():
-                def read():
-                    with self._client_scope() as client:
-                        return client.get_conversation(conversation_id)
+        async def readback():
+            def read():
+                with self._client_scope() as client:
+                    return client.get_conversation(conversation_id)
 
-                return await asyncio.to_thread(read)
+            return await asyncio.to_thread(read)
 
-            await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
+        await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
     async def delete_project(self, project_id):
         from urllib.parse import quote
@@ -463,12 +491,19 @@ class AsyncChatGPTProvider(AsyncProvider):
             await asyncio.to_thread(remove)
         await confirm_deleted(lambda: self.get_project(project_id))
 
+    def _project_read_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._read_loop is not loop or self._read_semaphore is None:
+            self._read_loop = loop
+            self._read_semaphore = asyncio.Semaphore(2)
+        return self._read_semaphore
+
     async def list_projects(self, cursor: str | None = None) -> Page[ProjectData]:
         def read():
             with self._client_scope() as client:
                 return client.list_projects(cursor)
 
-        async with self._gate:
+        async with self._project_read_semaphore():
             raw = await asyncio.to_thread(read)
         return Page(tuple(self._project(item) for item in raw["items"]), raw.get("cursor"))
 
@@ -504,7 +539,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             with self._client_scope() as client:
                 return client.list_project_chats(project_id, cursor)
 
-        async with self._gate:
+        async with self._project_read_semaphore():
             raw = await asyncio.to_thread(read)
         return Page(tuple(self._conversation(item) for item in raw["items"]), raw.get("cursor"))
 

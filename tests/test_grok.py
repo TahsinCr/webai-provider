@@ -1420,3 +1420,47 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chat.messages[0].content), 2)
         self.assertEqual(chat.messages[0].actions, ())
         self.assertEqual(chat.messages[1].actions, ())
+
+    async def test_prepare_attachments_bounds_concurrency_to_two_and_preserves_order(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        delays = {"f0.txt": 0.04, "f1.txt": 0.0, "f2.txt": 0.03, "f3.txt": 0.01}
+        active = 0
+        max_active = 0
+
+        async def fake_upload(_path=None, *, content=None, name=None, mime_type=None):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(delays[name])
+                return {
+                    "id": f"id-{name}",
+                    "size_bytes": len(content),
+                    "mime_type": mime_type,
+                    "grok_file": {
+                        "assetId": f"id-{name}",
+                        "fileMetadataId": f"id-{name}",
+                        "name": name,
+                        "mimeType": mime_type,
+                    },
+                }
+            finally:
+                active -= 1
+
+        provider.client.upload_file = fake_upload
+        pending = [
+            (i, {"bytes": b"data", "name": f"f{i}.txt", "mime_type": "text/plain"})
+            for i in range(4)
+        ]
+        try:
+            file_attachments, image_attachments = await provider._prepare_attachments(
+                [None] * 4, pending
+            )
+            self.assertEqual(max_active, 2)
+            self.assertEqual(image_attachments, [])
+            self.assertEqual(
+                [item["fileMetadataId"] for item in file_attachments],
+                ["id-f0.txt", "id-f1.txt", "id-f2.txt", "id-f3.txt"],
+            )
+        finally:
+            await provider.close()

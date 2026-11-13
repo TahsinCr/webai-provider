@@ -89,6 +89,8 @@ class ChatGPTClient:
         )
         self._continuation_cache_text_chars = 0
         self._sentinel_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
         self._sentinel_runtime: SentinelRuntime | None = None
         self._sentinel_runtime_key: str | None = None
         self._prewarmed_sentinel: tuple[float, str, dict[str, str]] | None = None
@@ -153,6 +155,22 @@ class ChatGPTClient:
                             return total
         return total
 
+    @property
+    def _state_guard(self) -> threading.RLock:
+        lock = getattr(self, "_state_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._state_lock = lock
+        return lock
+
+    @property
+    def _refresh_guard(self) -> threading.Lock:
+        lock = getattr(self, "_refresh_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._refresh_lock = lock
+        return lock
+
     def _remember_conversation(self, conversation: dict[str, Any]) -> None:
         conversation_id = conversation.get("conversation_id") or conversation.get("id")
         messages = conversation.get("messages")
@@ -171,29 +189,34 @@ class ChatGPTClient:
         if text_size > _CONTINUATION_CACHE_MAX_TEXT_CHARS:
             self._forget_conversation(conversation_id)
             return
-        previous = self._continuation_cache.pop(conversation_id, None)
-        if previous is not None and isinstance(previous, tuple):
+        with self._state_guard:
+            previous = self._continuation_cache.pop(conversation_id, None)
+            if previous is not None and isinstance(previous, tuple):
+                self._continuation_cache_text_chars = self._continuation_cache.current_bytes
+            self._continuation_cache.put(
+                conversation_id, (time.monotonic(), conversation, text_size)
+            )
             self._continuation_cache_text_chars = self._continuation_cache.current_bytes
-        self._continuation_cache.put(conversation_id, (time.monotonic(), conversation, text_size))
-        self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
-        cached = self._continuation_cache.get(conversation_id)
-        if cached is None:
-            return None
-        checked_at, conversation, _text_size = cached
-        if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
-            self._forget_conversation(conversation_id)
-            return None
-        return conversation
+        with self._state_guard:
+            cached = self._continuation_cache.get(conversation_id)
+            if cached is None:
+                return None
+            checked_at, conversation, _text_size = cached
+            if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
+                self._forget_conversation(conversation_id)
+                return None
+            return conversation
 
     def _forget_conversation(self, conversation_id: str) -> None:
-        pending = getattr(self, "pending_branches", None)
-        if isinstance(pending, dict):
-            pending.pop(conversation_id, None)
-        cached = self._continuation_cache.pop(conversation_id, None)
-        if cached is not None:
-            self._continuation_cache_text_chars = self._continuation_cache.current_bytes
+        with self._state_guard:
+            pending = getattr(self, "pending_branches", None)
+            if isinstance(pending, dict):
+                pending.pop(conversation_id, None)
+            cached = self._continuation_cache.pop(conversation_id, None)
+            if cached is not None:
+                self._continuation_cache_text_chars = self._continuation_cache.current_bytes
 
     def forget_conversation(self, conversation_id: str) -> None:
         self._forget_conversation(conversation_id)
@@ -206,18 +229,24 @@ class ChatGPTClient:
 
     def refresh_auth(self, prefer_browser=False):
         if prefer_browser:
-            self.list_url, self.headers = self.session.capture_auth()
-            self.session.save(self.list_url, self.headers)
+            list_url, headers = self.session.capture_auth()
+            with self._state_guard:
+                self.list_url, self.headers = list_url, headers
+                snapshot = dict(headers)
+            self.session.save(list_url, snapshot)
             return
         try:
-            self.list_url, self.headers = self.session.load()
+            list_url, headers = self.session.load()
+            with self._state_guard:
+                self.list_url, self.headers = list_url, headers
         except ChatGPTError:
             raise ChatGPTError(
                 "No saved session; verify the account in the Accounts section"
             ) from None
 
     def _transport_headers(self, method, path):
-        headers = dict(self.headers)
+        with self._state_guard:
+            headers = dict(self.headers)
         headers["accept-encoding"] = "gzip, deflate"
         target = urlsplit(path).path
         headers["x-openai-target-path"] = target
@@ -225,7 +254,8 @@ class ChatGPTClient:
         return headers
 
     def refresh_session(self) -> None:
-        headers = self.headers.copy()
+        with self._state_guard:
+            headers = self.headers.copy()
         headers.pop("authorization", None)
         headers["accept-encoding"] = "gzip, deflate"
         response = self.transport.send(
@@ -245,16 +275,19 @@ class ChatGPTClient:
             raise ChatGPTError("ChatGPT session refresh returned invalid data") from error
         if not isinstance(token, str) or not token:
             raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
-        self.headers["authorization"] = f"Bearer {token}"
-        cookie_header = self.headers.get("cookie", "")
-        cookies = SimpleCookie()
-        cookies.load(cookie_header)
-        for cookie in response.cookies.jar:
-            cookies[cookie.name] = cookie.value
-        self.headers["cookie"] = "; ".join(
-            f"{name}={morsel.value}" for name, morsel in cookies.items()
-        )
-        self.session.save(self.list_url, self.headers)
+        with self._state_guard:
+            self.headers["authorization"] = f"Bearer {token}"
+            cookie_header = self.headers.get("cookie", "")
+            cookies = SimpleCookie()
+            cookies.load(cookie_header)
+            for cookie in response.cookies.jar:
+                cookies[cookie.name] = cookie.value
+            self.headers["cookie"] = "; ".join(
+                f"{name}={morsel.value}" for name, morsel in cookies.items()
+            )
+            list_url = self.list_url
+            snapshot = dict(self.headers)
+        self.session.save(list_url, snapshot)
 
     def request(
         self, method: str, url: str, *, expect_json: bool = True, **kwargs: Any
@@ -274,12 +307,17 @@ class ChatGPTClient:
                 or method.upper() not in ("GET", "HEAD")
             ):
                 break
-            try:
-                self.refresh_session()
-            except ChatGPTError:
-                raise ChatGPTAuthenticationError(
-                    "The session could not be refreshed; verify it again in the Accounts section."
-                ) from None
+            failed_auth = request_headers.get("authorization")
+            with self._refresh_guard:
+                with self._state_guard:
+                    current_auth = self.headers.get("authorization")
+                if not current_auth or current_auth == failed_auth:
+                    try:
+                        self.refresh_session()
+                    except ChatGPTError:
+                        raise ChatGPTAuthenticationError(
+                            "The session could not be refreshed; verify it again in the Accounts section."
+                        ) from None
         if response.status_code == 429:
             try:
                 delay = float(response.headers.get("retry-after", ""))
@@ -325,9 +363,10 @@ class ChatGPTClient:
         ).json()
 
     def model_catalog(self, *, refresh: bool = False):
-        cached = getattr(self, "_model_catalog", None)
-        if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
-            return cached[1]
+        with self._state_guard:
+            cached = getattr(self, "_model_catalog", None)
+            if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+                return cached[1]
         raw = self.request(
             "GET",
             urljoin(CHATGPT_ORIGIN, "/backend-api/models"),
@@ -338,7 +377,8 @@ class ChatGPTClient:
             },
         ).json()
         catalog = parse_model_catalog(raw)
-        self._model_catalog = (time.monotonic(), catalog)
+        with self._state_guard:
+            self._model_catalog = (time.monotonic(), catalog)
         return catalog
 
     def list_projects(self, cursor: str | None = None) -> dict[str, Any]:
@@ -414,7 +454,8 @@ class ChatGPTClient:
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         from ...errors import RemoteNotFound
 
-        endpoint = self._conversation_endpoint
+        with self._state_guard:
+            endpoint = self._conversation_endpoint
         alternate = "conversation" if endpoint == "conversations" else "conversations"
         # ChatGPT accounts currently expose either route; learn the working
         # form after the first 404 so later history reads need only one request.
@@ -430,7 +471,8 @@ class ChatGPTClient:
                 if index == 0:
                     continue
                 raise
-            self._conversation_endpoint = candidate
+            with self._state_guard:
+                self._conversation_endpoint = candidate
             result = response.json()
             break
         if not isinstance(result, dict):
@@ -726,7 +768,7 @@ class ChatGPTClient:
                     previous_ids.add(item["id"])
         if not temporary:
             self._remember_conversation(conversation)
-            self.trigger_sentinel_prewarm()
+        self.trigger_sentinel_prewarm()
         return resolved_id, conversation, previous_ids
 
     def _edit_parent_id(

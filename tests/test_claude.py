@@ -567,3 +567,396 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event["type"] == "done" for event in events))
         self.assertEqual(recorded_bodies[0]["attachments"], [doc_response])
         self.assertEqual(recorded_bodies[0]["files"], [])
+
+
+class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_project_fetches_detail_docs_and_files_concurrently(self):
+        import asyncio
+
+        started = []
+        release = asyncio.Event()
+
+        async def fake_request(method, path, **_kwargs):
+            self.assertEqual(method, "GET")
+            started.append(path)
+            if len(started) == 3:
+                release.set()
+            await asyncio.wait_for(release.wait(), 1.0)
+            if path.endswith("/docs"):
+                return [{"uuid": "doc-1"}]
+            if path.endswith("/files"):
+                return [{"uuid": "file-1", "file_uuid": "fu-1"}]
+            return {"uuid": PROJECT, "name": "Demo"}
+
+        session = SimpleNamespace(
+            path="/",
+            request=fake_request,
+            url=lambda path: path,
+            check=lambda _response: None,
+        )
+        client = ClaudeClient(Path("unused"), session=session)
+        client.organization = PROJECT
+
+        detail = await client.request("project", project_id=PROJECT)
+        self.assertEqual(len(started), 3)
+        self.assertEqual(detail["name"], "Demo")
+        self.assertEqual(detail["docs"], [{"uuid": "doc-1"}])
+        self.assertEqual(detail["files"], [{"uuid": "file-1", "file_uuid": "fu-1"}])
+
+    async def test_project_editor_remove_source_with_resource_skips_project_get(self):
+        from webaiprovider.providers.claude.client import ClaudeProjectEditor
+        from webaiprovider.resources.common import ResourceData
+
+        transport = SimpleNamespace(
+            base=AsyncMock(return_value="/api/organizations/org"),
+            request=AsyncMock(),
+            http=SimpleNamespace(request=AsyncMock(return_value={})),
+        )
+        editor = ClaudeProjectEditor(transport)
+
+        await editor.write(
+            "remove_source",
+            PROJECT,
+            resource_id="f-1",
+            resource=ResourceData(
+                "f-1", "file.txt", metadata={"native": {"uuid": "f-1", "file_uuid": "fu-1"}}
+            ),
+        )
+        transport.http.request.assert_awaited_once_with(
+            "POST",
+            f"/api/organizations/org/projects/{PROJECT}/files/delete_many",
+            json={"file_uuids": ["fu-1"]},
+        )
+        transport.request.assert_not_awaited()
+
+        transport.http.request.reset_mock()
+        await editor.write(
+            "remove_source",
+            PROJECT,
+            resource_id="d-1",
+            resource=ResourceData("d-1", "doc.txt", metadata={"native": {"uuid": "d-1"}}),
+        )
+        transport.http.request.assert_awaited_once_with(
+            "DELETE", f"/api/organizations/org/projects/{PROJECT}/docs/d-1"
+        )
+        transport.request.assert_not_awaited()
+
+    async def test_projects_update_reuses_staged_snapshot_without_duplicate_get(self):
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        origin = Origin("claude", provider.account_id, PROJECT)
+        initial = NativeProject(origin, "Old Name", "Keep brief", metadata={"native": {}})
+        updated = NativeProject(origin, "New Name", "Keep brief", metadata={"native": {}})
+        provider.prepare = AsyncMock()
+        provider.list_projects = AsyncMock(return_value=Page((initial,), None))
+        provider.get_project = AsyncMock(side_effect=[initial, updated])
+        provider.editor.write = AsyncMock()
+        await provider.open()
+        try:
+            loaded = await provider.projects.refresh()
+            result = await provider.projects.update(loaded[0], title="New Name")
+            self.assertEqual(result.title, "New Name")
+            self.assertEqual(provider.get_project.await_count, 2)
+            provider.editor.write.assert_awaited_once_with(
+                "update", PROJECT, current=initial, name="New Name"
+            )
+            self.assertFalse(provider._staged_project_reads)
+        finally:
+            await provider.close()
+
+    async def test_continuation_cache_normalizes_sources_files_and_handles_invalidations(self):
+        from webaiprovider.async_provider import MessageAction
+        from webaiprovider.providers.claude.errors import (
+            ClaudeRequestNotSent,
+            ClaudeStreamError,
+        )
+
+        get_paths = []
+        post_bodies = []
+        stream_batches = iter(
+            [
+                [
+                    {"type": "message_start", "message": {"uuid": "a1", "model": "claude-test"}},
+                    {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "citations_delta",
+                            "citation": {"title": "Doc", "url": "https://example.com/a"},
+                        },
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Answer one"},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {
+                        "type": "content_block_start",
+                        "index": 1,
+                        "content_block": {"type": "tool_use", "name": "present_files"},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 1,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": '{"filepaths":["/mnt/user-data/outputs/out.txt"]}',
+                        },
+                    },
+                    {"type": "content_block_stop", "index": 1},
+                    {"type": "message_stop"},
+                ],
+                [
+                    {"type": "message_start", "message": {"uuid": "a2", "model": "claude-test"}},
+                    {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Follow up"},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "message_stop"},
+                ],
+                [
+                    {"type": "message_start", "message": {"uuid": "a3", "model": "claude-test"}},
+                    {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Edited"},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "message_stop"},
+                ],
+                [
+                    {"type": "message_start", "message": {"uuid": "a4", "model": "claude-test"}},
+                    {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Truncated"},
+                    },
+                ],
+            ]
+        )
+        history_payloads = iter(
+            [
+                {
+                    "uuid": CHAT,
+                    "is_temporary": False,
+                    "current_leaf_message_uuid": "root-msg",
+                },
+                {
+                    "uuid": CHAT,
+                    "is_temporary": False,
+                    "current_leaf_message_uuid": "a2",
+                    "chat_messages": [
+                        {
+                            "uuid": "u1",
+                            "sender": "human",
+                            "parent_message_uuid": "root-msg",
+                            "text": "Old",
+                        },
+                        {
+                            "uuid": "a2",
+                            "sender": "assistant",
+                            "parent_message_uuid": "u1",
+                            "text": "Follow up",
+                        },
+                    ],
+                },
+                {
+                    "uuid": CHAT,
+                    "is_temporary": False,
+                    "current_leaf_message_uuid": "a3",
+                },
+            ]
+        )
+
+        async def fake_http_request(method, path, **_kwargs):
+            self.assertEqual(method, "GET")
+            get_paths.append(path)
+            return next(history_payloads)
+
+        class Response:
+            status_code = 200
+            headers: ClassVar[dict[str, str]] = {}
+
+            def __init__(self, frames):
+                self._frames = frames
+
+            async def aiter_content(self):
+                for frame in self._frames:
+                    yield ("data: " + json.dumps(frame) + "\n\n").encode()
+
+        class Stream:
+            def __init__(self, payload):
+                post_bodies.append(payload)
+                self._frames = next(stream_batches)
+
+            async def __aenter__(self):
+                return Response(self._frames)
+
+            async def __aexit__(self, *_):
+                return False
+
+        class Client:
+            def stream(self, _method, _url, **kwargs):
+                return Stream(kwargs.get("json"))
+
+        session = SimpleNamespace(
+            path="/",
+            request=fake_http_request,
+            connect=lambda: Client(),
+            url=lambda path: path,
+            check=lambda _response: None,
+            close=AsyncMock(),
+        )
+        client = ClaudeClient(Path("unused"), session=bind_stream(session))
+        client.organization = PROJECT
+        client.catalog = claude_model_catalog("claude-test")
+
+        events1 = [
+            e
+            async for e in client.events(
+                "send",
+                prompt="Q1",
+                model="claude-test",
+                conversation_id=CHAT,
+                temporary=False,
+                action=None,
+                project_id=None,
+                effort=None,
+            )
+        ]
+        meta1 = next(e for e in events1 if e["type"] == "metadata")
+        self.assertEqual(meta1["sources"], ({"title": "Doc", "url": "https://example.com/a"},))
+        self.assertEqual(len(meta1["files"]), 1)
+        self.assertEqual(meta1["files"][0]["name"], "out.txt")
+        self.assertEqual(len(get_paths), 1)
+        self.assertEqual(client._continuations.get(CHAT), ("a1", False))
+
+        _ = [
+            e
+            async for e in client.events(
+                "send",
+                prompt="Q2",
+                model="claude-test",
+                conversation_id=CHAT,
+                temporary=False,
+                action=None,
+                project_id=None,
+                effort=None,
+            )
+        ]
+        self.assertEqual(len(get_paths), 1)
+        self.assertEqual(post_bodies[1]["parent_message_uuid"], "a1")
+
+        _ = [
+            e
+            async for e in client.events(
+                "send",
+                prompt="Edit Q1",
+                model="claude-test",
+                conversation_id=CHAT,
+                temporary=False,
+                action=MessageAction.EDIT,
+                message_id="u1:0",
+                project_id=None,
+                effort=None,
+            )
+        ]
+        self.assertEqual(len(get_paths), 2)
+        self.assertEqual(client._continuations.get(CHAT), ("a3", False))
+
+        with self.assertRaises(ClaudeRequestNotSent):
+            _ = [
+                e
+                async for e in client.events(
+                    "send",
+                    prompt="Temp check",
+                    model="claude-test",
+                    conversation_id=CHAT,
+                    temporary=True,
+                    action=None,
+                    project_id=None,
+                    effort=None,
+                )
+            ]
+        self.assertEqual(len(get_paths), 3)
+        self.assertIsNone(client._continuations.get(CHAT))
+
+        client._continuations.put(CHAT, ("a3", False))
+        with self.assertRaises(ClaudeStreamError):
+            _ = [
+                e
+                async for e in client.events(
+                    "send",
+                    prompt="Truncated",
+                    model="claude-test",
+                    conversation_id=CHAT,
+                    temporary=False,
+                    action=None,
+                    project_id=None,
+                    effort=None,
+                )
+            ]
+        self.assertIsNone(client._continuations.get(CHAT))
+
+        client._continuations.put(CHAT, ("a3", False))
+        await client.close()
+        self.assertIsNone(client._continuations.get(CHAT))
+
+    async def test_stream_request_uploads_multiple_attachments_bounded_to_two_in_order(self):
+        import asyncio
+
+        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        delays = {"f0.txt": 0.04, "f1.txt": 0.0, "f2.txt": 0.03, "f3.txt": 0.01}
+        active = 0
+        max_active = 0
+        captured_attachments = []
+
+        async def fake_upload(_path=None, *, content=None, name=None, mime_type=None):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(delays[name])
+                return {"kind": "attachment", "data": {"file_name": name, "id": f"id-{name}"}}
+            finally:
+                active -= 1
+
+        async def fake_events(_mode, **kwargs):
+            captured_attachments.extend(kwargs["attachments"])
+            yield {"type": "done"}
+
+        provider.client.authenticated = True
+        provider.client.catalog = claude_model_catalog("claude-test")
+        provider.client.upload_file = fake_upload
+        provider.client.events = fake_events
+        try:
+            events = [
+                e
+                async for e in provider._stream_request(
+                    ProviderRequest(
+                        "Upload all",
+                        attachments=tuple(
+                            {"bytes": b"data", "name": f"f{i}.txt", "mime_type": "text/plain"}
+                            for i in range(4)
+                        ),
+                    )
+                )
+            ]
+            self.assertEqual(events, [])
+            self.assertEqual(max_active, 2)
+            self.assertEqual(
+                [item["data"]["file_name"] for item in captured_attachments],
+                ["f0.txt", "f1.txt", "f2.txt", "f3.txt"],
+            )
+        finally:
+            await provider.close()

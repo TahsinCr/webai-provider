@@ -20,6 +20,8 @@ from .proof import (
 from .spec import _KNOWN_REQUIREMENT_FIELDS, DEFAULT_SENTINEL_SPEC, SentinelSpec
 from .vm import SentinelVM, _build_virtual_window, _js_str
 
+_DATA_BUILD_RE = re.compile(r"c/[^/]*/_")
+
 
 class SentinelRuntime:
     """Thread-safe pure-Python runtime for ChatGPT Sentinel proofs and challenges."""
@@ -53,6 +55,7 @@ class SentinelRuntime:
             started_ns=self._started_ns,
         )
         self._vm = SentinelVM(self._window, spec=self.spec)
+        self._data_build_value = self._data_build()
         self._last_initial_proof: str | None = None
 
     @staticmethod
@@ -82,9 +85,8 @@ class SentinelRuntime:
         return f"{key}\u2212{_js_str(value)}"
 
     def _data_build(self) -> str | None:
-        pattern = re.compile(r"c/[^/]*/_")
         for url in self.spec.scripts:
-            match = pattern.search(url)
+            match = _DATA_BUILD_RE.search(url)
             if match:
                 return match.group(0)
         return None
@@ -102,7 +104,7 @@ class SentinelRuntime:
             random.random(),
             self.user_agent,
             chosen_script,
-            self._data_build(),
+            self._data_build_value,
             self.spec.language,
             ",".join(self.spec.languages),
             random.random(),
@@ -152,7 +154,7 @@ class SentinelRuntime:
                 )
 
     def create_enforcement_tokens(
-        self, requirements: dict[str, Any]
+        self, requirements: dict[str, Any], *, initial_proof: str | None = None
     ) -> tuple[str, str, str | None]:
         """Produce ``(initial_proof, enforcement_proof, turnstile_token)`` in pure Python."""
         if not isinstance(requirements, dict):
@@ -166,7 +168,7 @@ class SentinelRuntime:
                 isinstance(so_config, dict) and so_config.get("required") in (True, False)
             ):
                 raise SentinelCompatibilityError("Sentinel session observer field was invalid")
-            initial = self._last_initial_proof
+            initial = initial_proof or self._last_initial_proof
             if initial is None:
                 initial = self._create_initial_proof_locked()
 
@@ -196,13 +198,17 @@ class SentinelRuntime:
 
             return initial, proof, turnstile
 
-    def create_session_observer_token(self, so_requirements: dict[str, Any]) -> str | None:
+    def create_session_observer_token(
+        self, so_requirements: dict[str, Any], *, initial_proof: str | None = None
+    ) -> str | None:
         """Execute a Sentinel ``so`` (`snapshot_dx` / `collector_dx`) challenge if required."""
         if not isinstance(so_requirements, dict) or so_requirements.get("required") is not True:
             return None
         with self._lock:
             self._require_open()
-            initial = self._last_initial_proof or self._create_initial_proof_locked()
+            initial = (
+                initial_proof or self._last_initial_proof or self._create_initial_proof_locked()
+            )
             collector_dx = so_requirements.get("collector_dx")
             snapshot_dx = so_requirements.get("snapshot_dx")
             if isinstance(collector_dx, str) and collector_dx.strip():

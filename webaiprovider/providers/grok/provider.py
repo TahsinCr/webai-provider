@@ -16,7 +16,7 @@ from ...accounts.status import (
 from ...async_provider import AsyncProvider
 from ...base import Capability
 from ...collections import Page
-from ...core import MultiDimensionBoundedCache
+from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...normalizers import sources_from
 from ...provider import Provider, ProviderType
@@ -504,13 +504,19 @@ class AsyncGrokProvider(AsyncProvider):
     async def _prepare_attachments(
         self, prepared: list[dict], pending_uploads: list[tuple[int, dict]]
     ) -> tuple[list, list]:
-        for index, attachment in pending_uploads:
-            prepared[index] = await self.client.upload_file(
-                attachment.get("path"),
-                content=attachment.get("bytes"),
-                name=attachment.get("name"),
-                mime_type=attachment.get("mime_type"),
+        if pending_uploads:
+            uploaded = await gather_bounded(
+                pending_uploads,
+                lambda entry: self.client.upload_file(
+                    entry[1].get("path"),
+                    content=entry[1].get("bytes"),
+                    name=entry[1].get("name"),
+                    mime_type=entry[1].get("mime_type"),
+                ),
+                limit=2,
             )
+            for (index, _), metadata in zip(pending_uploads, uploaded, strict=True):
+                prepared[index] = metadata
         file_attachments = []
         image_attachments = []
         for attachment in prepared:

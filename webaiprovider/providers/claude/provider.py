@@ -14,6 +14,7 @@ from ...accounts.status import (
 from ...async_provider import AsyncProvider
 from ...base import Capability
 from ...collections import Page
+from ...core import gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import Chat, MovableChat
@@ -263,19 +264,26 @@ class AsyncClaudeProvider(AsyncProvider):
         async with self._gate:
             if gate_started is not None:
                 timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
-            attachments = tuple(
-                [
-                    await self.client.upload_file(
-                        item.get("path"),
-                        content=item.get("bytes"),
-                        name=item.get("name"),
-                        mime_type=item.get("mime_type"),
-                    )
-                    if isinstance(item, dict) and ("bytes" in item or "path" in item)
-                    else item
-                    for item in request.attachments
-                ]
-            )
+            uploaded = list(request.attachments)
+            pending = [
+                (index, item)
+                for index, item in enumerate(uploaded)
+                if isinstance(item, dict) and ("bytes" in item or "path" in item)
+            ]
+            if pending:
+                results = await gather_bounded(
+                    pending,
+                    lambda entry: self.client.upload_file(
+                        entry[1].get("path"),
+                        content=entry[1].get("bytes"),
+                        name=entry[1].get("name"),
+                        mime_type=entry[1].get("mime_type"),
+                    ),
+                    limit=2,
+                )
+                for (index, _), attachment in zip(pending, results, strict=True):
+                    uploaded[index] = attachment
+            attachments = tuple(uploaded)
             completed = False
             async for event in self.client.events(
                 "send",

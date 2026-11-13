@@ -68,8 +68,20 @@ class ChatGPTProjectEditor:
             with scope as client:
                 path = "https://chatgpt.com/backend-api/projects/" + quote(project_id, safe="")
                 if operation == "update":
-                    current = client.get_project(project_id)
-                    native = current["metadata"]
+                    provided = values.get("current")
+                    if (
+                        provided is not None
+                        and isinstance(getattr(provided, "metadata", None), dict)
+                        and provided.metadata
+                    ):
+                        native = dict(provided.metadata)
+                        current_name = provided.name
+                        current_instructions = provided.instructions
+                    else:
+                        fetched = client.get_project(project_id)
+                        native = fetched["metadata"]
+                        current_name = fetched["name"]
+                        current_instructions = fetched["instructions"]
                     for _ in range(3):
                         if not isinstance(native.get("gizmo"), dict):
                             break
@@ -80,8 +92,8 @@ class ChatGPTProjectEditor:
                         path,
                         expect_json=False,
                         json={
-                            "name": values.get("name", current["name"]),
-                            "instructions": values.get("instructions", current["instructions"]),
+                            "name": values.get("name", current_name),
+                            "instructions": values.get("instructions", current_instructions),
                             "emoji": display.get("emoji"),
                             "theme": display.get("theme"),
                             "memory_scope": native.get("memory_scope"),
@@ -121,12 +133,13 @@ class ChatGPTProjectEditor:
                         },
                     )
                 elif operation == "remove_source":
-                    current = client.get_project(project_id)
                     rid = values["resource_id"]
-                    if not any(
-                        (x.get("file_id") or x.get("id")) == rid for x in current["resources"]
-                    ):
-                        raise ValueError("Resource does not belong to this project")
+                    if values.get("resource") is None:
+                        current = client.get_project(project_id)
+                        if not any(
+                            (x.get("file_id") or x.get("id")) == rid for x in current["resources"]
+                        ):
+                            raise ValueError("Resource does not belong to this project")
                     client.request(
                         "DELETE", path + "/files/" + quote(rid, safe=""), expect_json=False
                     )

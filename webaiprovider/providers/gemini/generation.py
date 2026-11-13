@@ -6,6 +6,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ...core import gather_bounded
 from ...frames import JSPBFrameDecoder
 from ...resources.message.types import MessageAction
 from ...utils.attachments import GEMINI_ATTACHMENTS
@@ -54,8 +55,8 @@ async def upload_files(session, items):
         raise ValueError("Too many Gemini attachments")
     specs = [_gemini_upload_spec(value) for value in items]
 
-    files = []
-    for filename, content_type, _size, content, local_path in specs:
+    async def upload_one(spec):
+        filename, content_type, _size, content, local_path = spec
         mime = CurlMime()
         try:
             mime.addpart(
@@ -76,10 +77,11 @@ async def upload_files(session, items):
                 multipart=mime,
                 allow_redirects=False,
             )
-            files.append([[response.text], filename])
+            return [[response.text], filename]
         finally:
             mime.close()
-    return files
+
+    return await gather_bounded(specs, upload_one, limit=2)
 
 
 def generation_request(session, request, metadata, files, notebook=None):

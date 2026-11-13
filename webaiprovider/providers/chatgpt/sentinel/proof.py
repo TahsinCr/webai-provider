@@ -241,37 +241,51 @@ def _solve_pow(
     prefix_bytes = ("[" + ",".join(_json_value(item) for item in context[:nonce_idx]) + ",").encode(
         "utf-8"
     )
+    middle_items = context[nonce_idx + 1 : elapsed_idx]
+    tail_items = context[elapsed_idx + 1 :]
     middle_bytes = (
-        "," + ",".join(_json_value(item) for item in context[nonce_idx + 1 : elapsed_idx]) + ","
+        ("," + ",".join(_json_value(item) for item in middle_items) + ",") if middle_items else ","
     ).encode("utf-8")
     suffix_bytes = (
-        "," + ",".join(_json_value(item) for item in context[elapsed_idx + 1 :]) + "]"
+        ("," + ",".join(_json_value(item) for item in tail_items) + "]") if tail_items else "]"
     ).encode("utf-8")
 
-    seed_hash = _fnv1a_step_utf16(2166136261, seed)
-    target = difficulty.lower()
-    target_len = len(target)
-    origin_ns = time.perf_counter_ns() if started_ns is None else started_ns
+    aligned = (len(prefix_bytes) // 3) * 3
+    head_b64 = base64.b64encode(prefix_bytes[:aligned]) if aligned else b""
+    tail_prefix = prefix_bytes[aligned:]
 
-    elapsed_ms = max(0, round((time.perf_counter_ns() - origin_ns) / 1_000_000))
-    elapsed_bytes = str(elapsed_ms).encode("ascii")
+    prefix_hash = _fnv1a_step_utf16(2166136261, seed)
+    for byte in head_b64:
+        prefix_hash ^= byte
+        prefix_hash = (prefix_hash * 16777619) & 0xFFFFFFFF
+
+    target_int = int(difficulty, 16)
+    shift = (8 - len(difficulty)) * 4
+    perf_ns = time.perf_counter_ns
+    origin_ns = perf_ns() if started_ns is None else started_ns
+    b64encode = base64.b64encode
+
+    elapsed_ms = max(0, round((perf_ns() - origin_ns) / 1_000_000))
+    after_nonce = middle_bytes + str(elapsed_ms).encode("ascii") + suffix_bytes
 
     for nonce in range(spec.max_attempts):
-        if (nonce & 0x7F) == 0:
-            elapsed_ms = max(0, round((time.perf_counter_ns() - origin_ns) / 1_000_000))
-            elapsed_bytes = str(elapsed_ms).encode("ascii")
-        raw_json = (
-            prefix_bytes + str(nonce).encode("ascii") + middle_bytes + elapsed_bytes + suffix_bytes
-        )
-        encoded_bytes = base64.b64encode(raw_json)
-        h = seed_hash
-        for byte in encoded_bytes:
+        if nonce and (nonce & 0x7F) == 0:
+            elapsed_ms = max(0, round((perf_ns() - origin_ns) / 1_000_000))
+            after_nonce = middle_bytes + str(elapsed_ms).encode("ascii") + suffix_bytes
+        tail_b64 = b64encode(tail_prefix + str(nonce).encode("ascii") + after_nonce)
+        h = prefix_hash
+        for byte in tail_b64:
             h ^= byte
             h = (h * 16777619) & 0xFFFFFFFF
-        if _fnv1a_finalize(h)[:target_len] <= target:
+        h ^= h >> 16
+        h = (h * 2246822507) & 0xFFFFFFFF
+        h ^= h >> 13
+        h = (h * 3266489909) & 0xFFFFFFFF
+        h ^= h >> 16
+        if (h >> shift) <= target_int:
             context[nonce_idx] = nonce
             context[elapsed_idx] = elapsed_ms
-            return encoded_bytes.decode("ascii")
+            return (head_b64 + tail_b64).decode("ascii")
 
     raise SentinelCompatibilityError("Sentinel proof-of-work exceeded the attempt limit")
 

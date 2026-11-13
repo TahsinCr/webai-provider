@@ -1001,3 +1001,305 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             session.request.await_args_list[2].kwargs["headers"]["X-Framework-XSRF-Token"],
             "fresh-token",
         )
+
+
+class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_open_parses_reordered_and_partial_bootstrap_fields(self):
+        html = (
+            '<script>window.WIZ_global_data={"eptZe":"/_/BardChatUi/","FdrFJe":"sid-1",'
+            '"SNlM0e":"tok-1","TuX5cc":"tr","cfb2h":"bld-1"};</script>'
+        )
+        http = SimpleNamespace(
+            get=AsyncMock(
+                return_value=SimpleNamespace(
+                    status_code=200, headers={}, content=html.encode(), text=html
+                )
+            ),
+            cookies=SimpleNamespace(get_dict=lambda: {"__Secure-1PSID": "cookie-1"}),
+            close=AsyncMock(),
+        )
+        session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
+        with (
+            patch(
+                "webaiprovider.providers.gemini.session.read_session",
+                return_value={"__Secure-1PSID": "cookie-1"},
+            ),
+            patch("webaiprovider.providers.gemini.session.save_session_async", AsyncMock()),
+        ):
+            await session.open()
+            try:
+                self.assertEqual(session.token, "tok-1")
+                self.assertEqual(session.build, "bld-1")
+                self.assertEqual(session.sid, "sid-1")
+                self.assertEqual(session.language, "tr")
+                self.assertEqual(session.push_id, "")
+                self.assertEqual(session.rpc_path_prefix, "/_/BardChatUi/")
+            finally:
+                await session.close()
+
+    async def test_session_batch_debounces_auxiliary_cookie_persistence_and_close_flushes(self):
+        from webaiprovider.accounts.credentials import save_session
+        from webaiprovider.providers.gemini import session as gemini_session_mod
+        from webaiprovider.providers.gemini.rpc import RPCPayload
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "gemini.json"
+            save_session(path, {"__Secure-1PSID": "p1", "NID": "n1"})
+            cookie_state = {"__Secure-1PSID": "p1", "NID": "n1"}
+            http = SimpleNamespace(
+                cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
+                post=AsyncMock(
+                    return_value=SimpleNamespace(status_code=200, headers={}, content=b"", text="")
+                ),
+                close=AsyncMock(),
+            )
+            save_calls = []
+            original_save = gemini_session_mod.save_session_async
+
+            async def counting_save(target_path, record):
+                save_calls.append(dict(record))
+                await original_save(target_path, record)
+
+            session = GeminiSession(path)
+            session.http = http
+            session.verified = True
+            session.token = "tok-1"
+            session.sid = "sid-1"
+            try:
+                with patch.object(
+                    gemini_session_mod, "save_session_async", side_effect=counting_save
+                ):
+                    await session.persist(force=True)
+                    self.assertEqual(len(save_calls), 1)
+                    self.assertFalse(session._dirty)
+
+                    cookie_state["NID"] = "n2"
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                    self.assertEqual(len(save_calls), 1)
+                    self.assertTrue(session._dirty)
+
+                    cookie_state["__Secure-1PSID"] = "p2"
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                    self.assertEqual(len(save_calls), 2)
+                    self.assertFalse(session._dirty)
+
+                    cookie_state["NID"] = "n3"
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                    self.assertEqual(len(save_calls), 2)
+                    self.assertTrue(session._dirty)
+
+                    await session.close()
+                    self.assertEqual(len(save_calls), 3)
+                    self.assertFalse(session._dirty)
+                    self.assertEqual(save_calls[-1]["NID"], "n3")
+            finally:
+                await session.close()
+
+    async def test_project_context_cache_reuses_and_invalidates_on_mutations_delete_and_close(
+        self,
+    ):
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        detail = [None] * 13
+        detail[12] = [1, None, None, None, 0]
+        provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
+        provider.notebooks.get = AsyncMock(
+            return_value=SimpleNamespace(metadata={"native": ["notebooks/abcdef", detail]})
+        )
+        provider.rpc.call = AsyncMock(return_value=[])
+        provider.get_project = AsyncMock(return_value="confirmed")
+        try:
+            first = await provider._resolve_project_context("notebooks/abcdef", None)
+            second = await provider._resolve_project_context("notebooks/abcdef", None)
+            self.assertEqual(first, ("notebooks/abcdef", [1, None, None, None, 0]))
+            self.assertEqual(second, ("notebooks/abcdef", [1, None, None, None, 0]))
+            self.assertEqual(provider.notebooks.get.await_count, 1)
+
+            await provider._project_after_write("notebooks/abcdef", lambda _p: True)
+            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+
+            await provider._resolve_project_context("notebooks/abcdef", None)
+            self.assertEqual(provider.notebooks.get.await_count, 2)
+
+            with patch("webaiprovider.providers.gemini.provider.confirm_deleted", AsyncMock()):
+                await provider.delete_project("notebooks/abcdef")
+            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+
+            await provider._resolve_project_context("notebooks/abcdef", None)
+            self.assertEqual(provider.notebooks.get.await_count, 3)
+
+            await provider.close()
+            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+        finally:
+            await provider.close()
+
+    async def test_delete_chat_releases_gate_before_confirm_and_preserves_metadata_until_confirmed(
+        self,
+    ):
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
+        provider.rpc.call = AsyncMock(return_value=None)
+        provider._chat_metadata.put("cid-1", ["cid-1", "r1", "rc1"])
+
+        confirm_started = asyncio.Event()
+        release_confirm = asyncio.Event()
+
+        async def blocked_confirm(*_args, **_kwargs):
+            confirm_started.set()
+            await asyncio.wait_for(release_confirm.wait(), 1.0)
+
+        try:
+            with patch(
+                "webaiprovider.providers.gemini.provider.confirm_deleted",
+                side_effect=blocked_confirm,
+            ):
+                task = asyncio.create_task(provider.delete_chat("cid-1"))
+                await asyncio.wait_for(confirm_started.wait(), 1.0)
+                self.assertFalse(provider._gate.locked())
+                async with provider._gate:
+                    self.assertEqual(provider._chat_metadata.get("cid-1"), ["cid-1", "r1", "rc1"])
+                release_confirm.set()
+                await task
+            self.assertIsNone(provider._chat_metadata.get("cid-1"))
+
+            provider._chat_metadata.put("cid-2", ["cid-2", "r2", "rc2"])
+            with (
+                patch(
+                    "webaiprovider.providers.gemini.provider.confirm_deleted",
+                    side_effect=ProviderError("delete not yet confirmed"),
+                ),
+                self.assertRaises(ProviderError),
+            ):
+                await provider.delete_chat("cid-2")
+            self.assertEqual(provider._chat_metadata.get("cid-2"), ["cid-2", "r2", "rc2"])
+        finally:
+            await provider.close()
+
+    async def test_upload_files_bounds_concurrency_to_two_and_preserves_order(self):
+        delays = {"f0.txt": 0.04, "f1.txt": 0.0, "f2.txt": 0.03, "f3.txt": 0.01}
+        active = 0
+        max_active = 0
+
+        class FakeMime:
+            def __init__(self):
+                self.filename = ""
+
+            def addpart(self, *, filename, **_kwargs):
+                self.filename = filename
+
+            def close(self):
+                return None
+
+        async def fake_send(_method, _path, *, multipart, **_kwargs):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(delays[multipart.filename])
+                return SimpleNamespace(text=f"uri-{multipart.filename}")
+            finally:
+                active -= 1
+
+        session = SimpleNamespace(
+            push_id="push-1",
+            upload_transport=SimpleNamespace(send=fake_send),
+        )
+        items = [
+            {"bytes": b"data", "name": f"f{i}.txt", "mime_type": "text/plain"} for i in range(4)
+        ]
+        with patch("curl_cffi.CurlMime", FakeMime):
+            uploaded = await upload_files(session, items)
+
+        self.assertEqual(max_active, 2)
+        self.assertEqual(
+            uploaded,
+            [
+                [["uri-f0.txt"], "f0.txt"],
+                [["uri-f1.txt"], "f1.txt"],
+                [["uri-f2.txt"], "f2.txt"],
+                [["uri-f3.txt"], "f3.txt"],
+            ],
+        )
+
+    async def test_notebook_editor_update_reuses_current_snapshot_and_skips_get(self):
+        from webaiprovider.providers.gemini.rpc import NotebookEditor
+
+        detail = [None] * 13
+        detail[12] = [2, None, None, None, 1]
+        current = SimpleNamespace(
+            name="Old Name",
+            instructions="Old inst",
+            metadata={"native": ["notebooks/abcdef", detail], "description": ""},
+        )
+        rpc = SimpleNamespace(call=AsyncMock(return_value=True))
+        notebooks = SimpleNamespace(get=AsyncMock())
+        await NotebookEditor(rpc, notebooks).write(
+            "update", "notebooks/abcdef", name="New Name", current=current
+        )
+        notebooks.get.assert_not_awaited()
+        rpc.call.assert_awaited_once()
+
+    async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
+        from webaiprovider.providers.gemini import provider as gemini_provider_mod
+        from webaiprovider.resources.message.protocol import MessageMetadata
+
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        client = SimpleNamespace()
+        request = ProviderRequest("Q", conversation_id="cid-1")
+        provider._prepare_send_context = AsyncMock(
+            return_value=(client, request, ["cid-1", "r0", "rc0"], None, [])
+        )
+        img1 = {
+            "alias": "img-1",
+            "name": "one.png",
+            "url": "https://example.com/1.png",
+            "media_type": "image",
+        }
+        img2 = {
+            "alias": "img-2",
+            "name": "two.png",
+            "url": "https://example.com/2.png",
+            "media_type": "image",
+        }
+        src1 = {"title": "First", "url": "https://example.com/s1"}
+        chunks = [
+            {
+                "cid": "cid-1",
+                "metadata": ["cid-1", "r1", "rc1"],
+                "text": "part 1",
+                "thoughts": "",
+                "files": [img1],
+                "sources": [src1],
+            },
+            {
+                "cid": "cid-1",
+                "metadata": ["cid-1", "r1", "rc1"],
+                "text": "part 2",
+                "thoughts": "",
+                "files": [img1, img2],
+                "sources": [src1],
+                "response_complete": True,
+            },
+        ]
+
+        async def fake_generate(*_args, **_kwargs):
+            for chunk in chunks:
+                yield chunk
+
+        try:
+            with (
+                patch.object(gemini_provider_mod.generation, "generate", side_effect=fake_generate),
+                patch.object(
+                    gemini_provider_mod, "sources_from", wraps=gemini_provider_mod.sources_from
+                ) as norm_sources,
+                patch.object(
+                    gemini_provider_mod, "files_from", wraps=gemini_provider_mod.files_from
+                ) as norm_files,
+            ):
+                events = [e async for e in provider._stream(request)]
+            meta = next(e for e in events if isinstance(e, MessageMetadata))
+            self.assertEqual(norm_sources.call_count, 1)
+            self.assertEqual(norm_files.call_count, 1)
+            self.assertEqual(len(meta.sources), 1)
+            self.assertEqual([f["name"] for f in meta.files], ["one.png", "two.png"])
+        finally:
+            await provider.close()

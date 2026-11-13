@@ -105,6 +105,9 @@ class AsyncGeminiProvider(AsyncProvider):
         self._chat_metadata = MultiDimensionBoundedCache(
             max_entries=128, default_ttl=_CHAT_METADATA_TTL_SECONDS, clock=lambda: time.monotonic()
         )
+        self._project_contexts: MultiDimensionBoundedCache[str, list] = MultiDimensionBoundedCache(
+            max_entries=32, max_bytes=32768, default_ttl=120.0, clock=lambda: time.monotonic()
+        )
         from .notebooks import Notebooks
         from .rpc import NotebookEditor, NotebookRPC
 
@@ -185,6 +188,7 @@ class AsyncGeminiProvider(AsyncProvider):
                     self._transport = None
             if self._client is None:
                 self._chat_metadata.clear()
+                self._project_contexts.clear()
         if editor_error is not None:
             raise editor_error
 
@@ -309,16 +313,16 @@ class AsyncGeminiProvider(AsyncProvider):
         async with self._gate:
             await self._connect()
             await self.rpc.call("GzXR5e", [conversation_id], "/app", allow_empty=True)
-            await confirm_deleted(
-                lambda: self.rpc.call(
-                    "hNvQHb",
-                    [conversation_id, 1, None, 1, [1], [4], None, 1],
-                    "/app",
-                    allow_empty=True,
-                ),
-                lambda parts: not parts,
-            )
-            self._chat_metadata.pop(conversation_id, None)
+        await confirm_deleted(
+            lambda: self.rpc.call(
+                "hNvQHb",
+                [conversation_id, 1, None, 1, [1], [4], None, 1],
+                "/app",
+                allow_empty=True,
+            ),
+            lambda parts: not parts,
+        )
+        self._chat_metadata.pop(conversation_id, None)
 
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
@@ -333,6 +337,7 @@ class AsyncGeminiProvider(AsyncProvider):
         remote = notebook_id(project_id)
         async with self._gate:
             await self.editor.write("delete", remote)
+        self._project_contexts.remove(remote)
         for attempt in range(5):
             if not any(x.origin.remote_id == remote for x in (await self.notebooks.list()).items):
                 return
@@ -397,10 +402,19 @@ class AsyncGeminiProvider(AsyncProvider):
             timeout.cancel()
             await iterator.aclose()
 
+    async def _project_after_write(self, project_id, confirmed):
+        self._project_contexts.remove(notebook_id(project_id))
+        return await super()._project_after_write(project_id, confirmed)
+
     async def _resolve_project_context(self, project_id, timing):
         project = notebook_id(project_id) if project_id else None
         if not project:
             return None
+        cached = self._project_contexts.get(project)
+        if cached is not None:
+            if timing is not None:
+                timing.record("pre_send_project_context_ms", 0)
+            return project, list(cached)
         project_started = time.perf_counter_ns() if timing is not None else None
         notebook = await self.notebooks.get(project)
         if project_started is not None:
@@ -408,6 +422,7 @@ class AsyncGeminiProvider(AsyncProvider):
         value = field(field(notebook.metadata.get("native"), 1), 12)
         if not isinstance(value, list) or not value or value[0] not in (1, 2):
             raise ProviderError("Gemini notebook context could not be read")
+        self._project_contexts.put(project, list(value))
         return project, value
 
     async def _load_chat_continuation(self, request: ProviderRequest, timing):
@@ -519,8 +534,11 @@ class AsyncGeminiProvider(AsyncProvider):
     async def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
         client, request, metadata, context, action_files = await self._prepare_send_context(request)
         bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
-        final_metadata = None
-        output_files, published_sources = (), ()
+        final_rid = None
+        raw_files: list[dict] = []
+        seen_file_keys: set[tuple[str, str]] = set()
+        raw_sources: list[dict] = []
+        seen_source_keys: set[str] = set()
         async for chunk in generation.generate(
             client,
             request,
@@ -537,51 +555,54 @@ class AsyncGeminiProvider(AsyncProvider):
             if chunk.get("context_only"):
                 continue
             images = chunk["files"]
-            if images:
-                output_files = files_from(
-                    {"files": output_files},
-                    {
-                        "files": [
-                            {
-                                "id": image["alias"],
-                                "name": image["name"],
-                                "remote_url": image["url"],
-                                "media_type": image.get("media_type"),
-                            }
-                            for image in images
-                        ]
-                    },
-                )
-            chunk_sources = chunk.get("sources")
-            if chunk_sources:
-                published_sources = sources_from(
-                    {"sources": published_sources}, {"sources": chunk_sources}
-                )
-            visible = visible or bool(chunk["text"] or images)
-            if chunk["thoughts"]:
-                yield TextReplacement(chunk["thoughts"], "analysis")
             for image in images:
+                key = (str(image["alias"]), str(image["url"]))
+                if key not in seen_file_keys:
+                    seen_file_keys.add(key)
+                    raw_files.append(
+                        {
+                            "id": image["alias"],
+                            "name": image["name"],
+                            "remote_url": image["url"],
+                            "media_type": image.get("media_type"),
+                        }
+                    )
                 self._media[cid, image["alias"]] = image
                 self._media[cid, image["url"]] = image
             while len(self._media) > 256:
                 self._media.pop(next(iter(self._media)))
+            chunk_sources = chunk.get("sources")
+            if chunk_sources:
+                for item in chunk_sources:
+                    if not isinstance(item, dict):
+                        continue
+                    source_key = item.get("url") or item.get("title")
+                    if source_key:
+                        if source_key not in seen_source_keys:
+                            seen_source_keys.add(source_key)
+                            raw_sources.append(item)
+                    elif item not in raw_sources:
+                        raw_sources.append(item)
+            visible = visible or bool(chunk["text"] or images)
+            if chunk["thoughts"]:
+                yield TextReplacement(chunk["thoughts"], "analysis")
             yield TextReplacement(resolve_image_links(chunk["text"], images), "final")
             if chunk.get("response_complete"):
                 yield ResponseComplete()
             rid = metadata[1] if len(metadata) > 1 else None
             if rid:
-                final_metadata = MessageMetadata(
-                    message_id=rid + ":model",
-                    user_message_id=rid + ":user",
-                    model=request.model,
-                    effort=request.effort,
-                    sources=published_sources,
-                    files=output_files,
-                )
+                final_rid = rid
         if not visible or not cid:
             raise GeminiStreamError("Gemini response did not complete; the request was not retried")
-        if final_metadata:
-            yield final_metadata
+        if final_rid:
+            yield MessageMetadata(
+                message_id=final_rid + ":model",
+                user_message_id=final_rid + ":user",
+                model=request.model,
+                effort=request.effort,
+                sources=sources_from({"sources": raw_sources}) if raw_sources else (),
+                files=files_from({"files": raw_files}) if raw_files else (),
+            )
         if cid and not request.temporary and self._usable_chat_metadata(metadata, cid):
             self._remember_chat_metadata(cid, metadata)
         if request.temporary:

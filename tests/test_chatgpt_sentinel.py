@@ -667,6 +667,69 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.assertFalse(client._continuation_cache)
         self.assertFalse(client.temporary_conversations)
 
+    def test_solve_pow_matches_reference_fnv1a_across_all_base64_alignments(self):
+        from webaiprovider.providers.chatgpt.sentinel.proof import _solve_pow
+
+        seed = "alignment-seed"
+        difficulty = "0fff"
+        seen_remainders = set()
+        for tail in ([], ["extra-tail"]):
+            for pad in ("", "x", "xy"):
+                context = ["slot0-" + pad, 1, 2, None, 4, 5, 6, 7, 8, None, *tail]
+                prefix = ("[" + ",".join(json.dumps(x) for x in context[:3]) + ",").encode("utf-8")
+                seen_remainders.add(len(prefix) % 3)
+
+                solved = _solve_pow(context, seed, difficulty, started_ns=time.perf_counter_ns())
+                digest = _fnv1a_avalanche(seed + solved)
+                self.assertLessEqual(digest[: len(difficulty)], difficulty)
+
+                decoded = json.loads(base64.b64decode(solved).decode("utf-8"))
+                self.assertEqual(decoded, context)
+                self.assertIsInstance(context[DEFAULT_SENTINEL_SPEC.nonce_index], int)
+                self.assertIsInstance(context[DEFAULT_SENTINEL_SPEC.elapsed_index], int)
+
+        self.assertEqual(seen_remainders, {0, 1, 2})
+
+        with self.assertRaises(SentinelCompatibilityError):
+            _solve_pow([1, 2], seed, difficulty)
+        with self.assertRaises(SentinelCompatibilityError):
+            _solve_pow(["a"] * 10, "", difficulty)
+        with self.assertRaises(SentinelCompatibilityError):
+            _solve_pow(["a"] * 10, seed, "xyz")
+
+    def test_temporary_turn_triggers_sentinel_prewarm(self):
+        from webaiprovider.resources.common import Choice
+        from webaiprovider.resources.model import ModelCatalogState
+        from webaiprovider.resources.model.model import Model, ModelCatalog
+
+        client = make_client()
+        self.addCleanup(client.close)
+        client._model_catalog = (
+            time.monotonic(),
+            ModelCatalog(
+                ModelCatalogState.AVAILABLE,
+                (Model("gpt-5", "GPT-5", (Choice("standard", "Standard"),), "standard"),),
+            ),
+        )
+        client.send_prompt_direct = Mock(
+            return_value=(
+                "temp-conv-1",
+                "user-1",
+                {"id": "user-1", "author": {"role": "user"}},
+                [{"id": "asst-1", "parent": "user-1", "author": {"role": "assistant"}}],
+            )
+        )
+        with patch.object(client, "trigger_sentinel_prewarm") as prewarm:
+            resolved_id, conversation, previous_ids = client.send_prompt(
+                None, "Hello temporary", model="gpt-5", temporary=True
+            )
+
+        self.assertEqual(resolved_id, "temp-conv-1")
+        self.assertEqual(previous_ids, set())
+        self.assertIn("temp-conv-1", client.temporary_conversations)
+        self.assertEqual(conversation["id"], "temp-conv-1")
+        prewarm.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

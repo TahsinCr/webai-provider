@@ -1,5 +1,6 @@
 """Account-scoped Claude HTTPS operations and completion streams."""
 
+import asyncio
 import json
 import mimetypes
 import time
@@ -9,7 +10,7 @@ from urllib.parse import quote
 
 from ...accounts import read_session
 from ...async_provider import confirm_deleted
-from ...core import ConcurrencyCoordinator
+from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
 from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
 from ...normalizers import files_from, sources_from
@@ -84,6 +85,9 @@ class ClaudeClient:
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
         self._coordinator = ConcurrencyCoordinator()
+        self._continuations: MultiDimensionBoundedCache[str, tuple[str | None, bool]] = (
+            MultiDimensionBoundedCache(max_entries=128, max_bytes=32768, default_ttl=300.0)
+        )
         self._discovered_at = 0.0
 
     async def _discover(self):
@@ -136,6 +140,7 @@ class ClaudeClient:
 
     async def close(self):
         await self._coordinator.aclose()
+        self._continuations.clear()
         self.organization = None
         self.catalog = None
         self.authenticated = False
@@ -215,13 +220,19 @@ class ClaudeClient:
         if mode == "history":
             if cid is None:
                 raise ValueError("Conversation required")
-            return await call(
+            history = await call(
                 "GET",
                 base
                 + "/chat_conversations/"
                 + cid
                 + "?tree=True&rendering_mode=messages&render_all_tools=true",
             )
+            if isinstance(history, dict) and "current_leaf_message_uuid" in history:
+                self._continuations.put(
+                    cid,
+                    (history.get("current_leaf_message_uuid"), history.get("is_temporary") is True),
+                )
+            return history
         if mode == "projects":
             return await call("GET", base + "/projects")
         if mode == "create_project":
@@ -243,8 +254,11 @@ class ClaudeClient:
                 return await call("GET", path + "/conversations")
             if mode == "delete_project":
                 return await call("DELETE", path)
-            detail = await call("GET", path)
-            docs, files = await call("GET", path + "/docs"), await call("GET", path + "/files")
+            detail, docs, files = await asyncio.gather(
+                call("GET", path),
+                call("GET", path + "/docs"),
+                call("GET", path + "/files"),
+            )
             if not isinstance(docs, list) or not isinstance(files, list):
                 raise ClaudeCompatibilityError("Claude project resource response changed")
             return dict(detail, docs=docs, files=files)
@@ -252,6 +266,7 @@ class ClaudeClient:
             raise ValueError("Conversation required")
         path = base + "/chat_conversations/" + cid
         if mode == "delete_chat":
+            self._continuations.remove(cid)
             await call("DELETE", path)
             return await confirm_deleted(lambda: call("GET", path))
         if mode == "rename_chat":
@@ -299,9 +314,19 @@ class ClaudeClient:
                         "Claude temporary conversation could not be verified"
                     )
             parent = created.get("current_leaf_message_uuid") if isinstance(created, dict) else None
+            is_temp = bool(isinstance(created, dict) and created.get("is_temporary") is True)
             if pid:
                 await self.request("move_chat", conversation_id=cid, project_id=pid)
-            return parent, v
+            return parent, v, is_temp
+
+        if not v.get("action"):
+            cached = self._continuations.get(cid)
+            if cached is not None:
+                cached_parent, cached_temp = cached
+                if not v.get("temporary") or cached_temp:
+                    if timing is not None:
+                        timing.record("pre_send_get_conversation_ms", 0)
+                    return cached_parent, v, cached_temp
 
         history_started = time.perf_counter_ns() if timing is not None else None
         try:
@@ -317,9 +342,12 @@ class ClaudeClient:
                     time.perf_counter_ns() - history_started,
                 )
         if v.get("temporary") and history.get("is_temporary") is not True:
+            self._continuations.remove(cid)
             raise ClaudeRequestNotSent("Claude temporary conversation could not be verified")
+        is_temp = history.get("is_temporary") is True
         parent = history.get("current_leaf_message_uuid")
         if v.get("action"):
+            self._continuations.remove(cid)
             role = "user" if v["action"] == MessageAction.EDIT else "assistant"
             _, target = target_message(conversation(history, "").messages, v["message_id"], role)
             if v["action"].value not in target.actions:
@@ -336,7 +364,7 @@ class ClaudeClient:
             )
             if v["action"] == MessageAction.RETRY:
                 parent = original["uuid"]
-        return parent, v
+        return parent, v, is_temp
 
     @staticmethod
     def _build_completion_body(model, choice, parent, v):
@@ -369,21 +397,38 @@ class ClaudeClient:
         return body
 
     @staticmethod
-    def _merge_presented_files(files, chunks):
+    def _presented_file_entries(chunks):
         if not chunks:
-            return files
+            return []
         try:
             inputs = json.loads("".join(chunks))
         except ValueError:
             inputs = {}
         if not isinstance(inputs, dict):
-            return files
-        return files_from(
-            {
-                "files": files
-                + presented_files({"type": "tool_use", "name": "present_files", "input": inputs})
-            }
-        )
+            return []
+        return presented_files({"type": "tool_use", "name": "present_files", "input": inputs})
+
+    @staticmethod
+    def _normalize_sources(raw_roots):
+        if not raw_roots:
+            return ()
+        if len(raw_roots) <= 64:
+            return sources_from(*raw_roots)
+        sources = ()
+        for index in range(0, len(raw_roots), 64):
+            sources = sources_from({"sources": list(sources)}, *raw_roots[index : index + 64])
+        return sources
+
+    @staticmethod
+    def _normalize_files(raw_roots):
+        if not raw_roots:
+            return ()
+        if len(raw_roots) <= 64:
+            return files_from(*raw_roots)
+        files = ()
+        for index in range(0, len(raw_roots), 64):
+            files = files_from({"files": list(files)}, *raw_roots[index : index + 64])
+        return files
 
     async def events(self, mode, **v):
         if mode != "send":
@@ -402,14 +447,16 @@ class ClaudeClient:
         pid = remote_id(v["project_id"]) if v.get("project_id") else None
         cid = remote_id(v["conversation_id"]) if v.get("conversation_id") else str(uuid.uuid4())
         path = base + "/chat_conversations/" + cid
-        parent, v = await self._prepare_stream_conversation(cid, pid, path, v, timing)
+        parent, v, is_temporary = await self._prepare_stream_conversation(cid, pid, path, v, timing)
         yield {"type": "bound", "id": cid}
         body = self._build_completion_body(model, choice, parent, v)
 
         completed, completion_notified, blocks = False, False, {}
-        response_id, parent_id, final_index, sources, files = None, None, 0, (), ()
+        response_id, parent_id, final_index = None, None, 0
         response_model = None
         presented_chunks: dict[int, tuple[list[str], int]] = {}
+        raw_source_roots: list[dict] = []
+        raw_file_roots: list[dict] = []
         first_event = False
         first_assistant_text = False
         last_event_at = None
@@ -427,111 +474,140 @@ class ClaudeClient:
             timing.record("button_to_first_assistant_text_ms", now - timing.started_ns)
 
         suffix = "/retry_completion" if v.get("action") == MessageAction.RETRY else "/completion"
-        async with self.http.stream(
-            "POST",
-            path + suffix,
-            json=body,
-            headers={"accept": "text/event-stream"},
-            allow_redirects=False,
-            timeout=600,
-        ) as response:
-            response_opened = time.perf_counter_ns() if timing is not None else None
-            if sse_started is not None:
-                timing.record("sse_connect_ms", response_opened - sse_started)
-            decoder = SSEFrameDecoder(max_event_bytes=1_048_576, utf8_errors="strict")
-            async for frame in decoder.decode_async(response.aiter_bytes()):
-                raw = frame.data
-                if raw == "[DONE]":
-                    continue
-                event = json.loads(raw)
-                event_at = time.perf_counter_ns() if timing is not None else None
-                if timing is not None:
-                    last_event_at = event_at
-                    if not first_event:
-                        first_event = True
-                        timing.record("sse_first_event_ms", event_at - response_opened)
-                        timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
-                kind, delta = event.get("type"), event.get("delta", {})
-                if kind == "message_start":
-                    native = event.get("message") or {}
-                    response_id = native.get("uuid") or native.get("id")
-                    parent_id = native.get("parent_uuid")
-                    response_model = native.get("model")
-                if kind == "error" or event.get("error"):
-                    raise ClaudeStreamError("Claude stream failed; the request was not retried")
-                if kind == "content_block_start":
-                    block = event.get("content_block", {})
-                    block_type = block.get("type")
-                    block_index = event.get("index", 0)
-                    files = files_from({"files": files}, block)
-                    if block_type == "tool_use" and block.get("name") == "present_files":
-                        files = files_from({"files": files + presented_files(block)})
-                        presented_chunks[block_index] = ([], 0)
-                    blocks[block_index] = block_type
-                    if block_type == "web_search_tool_result":
-                        results = block.get("content")
-                        sources = sources_from(
-                            {"sources": list(sources)},
-                            {"sources": results if isinstance(results, list) else []},
-                        )
-                    elif block_type == "text":
-                        final_index = block_index
-                        sources = sources_from({"sources": list(sources)}, block)
-                    if block_type == "text" and block.get("text"):
-                        if block["text"].strip():
-                            record_first_assistant_text()
-                        yield {"type": "delta", "text": block["text"]}
-                    elif block_type == "thinking" and block.get("thinking"):
-                        yield {"type": "delta", "channel": "analysis", "text": block["thinking"]}
-                if kind == "content_block_delta":
-                    index = event.get("index", 0)
-                    delta_type = delta.get("type")
-                    if delta_type == "input_json_delta" and index in presented_chunks:
-                        piece = delta.get("partial_json") or ""
-                        chunks_list, total_len = presented_chunks[index]
-                        new_len = total_len + len(piece)
-                        if new_len <= 65536:
-                            chunks_list.append(piece)
-                            presented_chunks[index] = (chunks_list, new_len)
-                        else:
-                            presented_chunks.pop(index)
-                    if delta_type == "citations_delta":
-                        sources = sources_from(
-                            {"sources": list(sources), "citations": [delta.get("citation")]}
-                        )
-                    channel = blocks.get(index)
-                    if delta_type == "thinking_delta" and channel == "thinking":
-                        yield {
-                            "type": "delta",
-                            "channel": "analysis",
-                            "text": delta.get("thinking", ""),
-                        }
-                    elif delta_type == "text_delta" and channel == "text":
-                        text = delta.get("text", "")
+        try:
+            async with self.http.stream(
+                "POST",
+                path + suffix,
+                json=body,
+                headers={"accept": "text/event-stream"},
+                allow_redirects=False,
+                timeout=600,
+            ) as response:
+                response_opened = time.perf_counter_ns() if timing is not None else None
+                if sse_started is not None:
+                    timing.record("sse_connect_ms", response_opened - sse_started)
+                decoder = SSEFrameDecoder(max_event_bytes=1_048_576, utf8_errors="strict")
+                async for frame in decoder.decode_async(response.aiter_bytes()):
+                    raw = frame.data
+                    if raw == "[DONE]":
+                        continue
+                    event = json.loads(raw)
+                    event_at = time.perf_counter_ns() if timing is not None else None
+                    if timing is not None:
+                        last_event_at = event_at
+                        if not first_event:
+                            first_event = True
+                            timing.record("sse_first_event_ms", event_at - response_opened)
+                            timing.record(
+                                "button_to_first_sse_event_ms", event_at - timing.started_ns
+                            )
+                    kind, delta = event.get("type"), event.get("delta", {})
+                    if kind == "message_start":
+                        native = event.get("message") or {}
+                        response_id = native.get("uuid") or native.get("id")
+                        parent_id = native.get("parent_uuid")
+                        response_model = native.get("model")
+                    if kind == "error" or event.get("error"):
+                        raise ClaudeStreamError("Claude stream failed; the request was not retried")
+                    if kind == "content_block_start":
+                        block = event.get("content_block", {})
+                        block_type = block.get("type")
+                        block_index = event.get("index", 0)
+                        if block:
+                            raw_file_roots.append(block)
+                        if block_type == "tool_use" and block.get("name") == "present_files":
+                            presented = presented_files(block)
+                            if presented:
+                                raw_file_roots.append({"files": presented})
+                            presented_chunks[block_index] = ([], 0)
+                        blocks[block_index] = block_type
+                        if block_type == "web_search_tool_result":
+                            results = block.get("content")
+                            if isinstance(results, list) and results:
+                                raw_source_roots.append({"sources": results})
+                        elif block_type == "text":
+                            final_index = block_index
+                            if block:
+                                raw_source_roots.append(block)
+                        if block_type == "text" and block.get("text"):
+                            if block["text"].strip():
+                                record_first_assistant_text()
+                            yield {"type": "delta", "text": block["text"]}
+                        elif block_type == "thinking" and block.get("thinking"):
+                            yield {
+                                "type": "delta",
+                                "channel": "analysis",
+                                "text": block["thinking"],
+                            }
+                    if kind == "content_block_delta":
+                        index = event.get("index", 0)
+                        delta_type = delta.get("type")
+                        if delta_type == "input_json_delta" and index in presented_chunks:
+                            piece = delta.get("partial_json") or ""
+                            chunks_list, total_len = presented_chunks[index]
+                            new_len = total_len + len(piece)
+                            if new_len <= 65536:
+                                chunks_list.append(piece)
+                                presented_chunks[index] = (chunks_list, new_len)
+                            else:
+                                presented_chunks.pop(index)
+                        if delta_type == "citations_delta":
+                            citation = delta.get("citation")
+                            if citation is not None:
+                                if (
+                                    raw_source_roots
+                                    and len(raw_source_roots[-1]) == 1
+                                    and "citations" in raw_source_roots[-1]
+                                    and len(raw_source_roots[-1]["citations"]) < 128
+                                ):
+                                    raw_source_roots[-1]["citations"].append(citation)
+                                else:
+                                    raw_source_roots.append({"citations": [citation]})
+                        channel = blocks.get(index)
+                        if delta_type == "thinking_delta" and channel == "thinking":
+                            yield {
+                                "type": "delta",
+                                "channel": "analysis",
+                                "text": delta.get("thinking", ""),
+                            }
+                        elif delta_type == "text_delta" and channel == "text":
+                            text = delta.get("text", "")
+                            if text.strip():
+                                record_first_assistant_text()
+                            yield {"type": "delta", "text": text}
+                    if kind == "content_block_stop":
+                        entry = presented_chunks.pop(event.get("index", 0), None)
+                        if entry is not None:
+                            presented = self._presented_file_entries(entry[0])
+                            if presented:
+                                raw_file_roots.append({"files": presented})
+                    elif "completion" in event:
+                        text = event.get("completion") or ""
                         if text.strip():
                             record_first_assistant_text()
                         yield {"type": "delta", "text": text}
-                if kind == "content_block_stop":
-                    entry = presented_chunks.pop(event.get("index", 0), None)
-                    if entry is not None:
-                        files = self._merge_presented_files(files, entry[0])
-                elif "completion" in event:
-                    text = event.get("completion") or ""
-                    if text.strip():
-                        record_first_assistant_text()
-                    yield {"type": "delta", "text": text}
-                    completed = bool(event.get("stop_reason"))
-                if kind == "message_stop" or (kind == "message_delta" and delta.get("stop_reason")):
-                    completed = True
-                if completed and not completion_notified:
-                    yield {"type": "response_complete"}
-                    completion_notified = True
+                        completed = bool(event.get("stop_reason"))
+                    if kind == "message_stop" or (
+                        kind == "message_delta" and delta.get("stop_reason")
+                    ):
+                        completed = True
+                    if completed and not completion_notified:
+                        yield {"type": "response_complete"}
+                        completion_notified = True
+        except BaseException:
+            if not completed:
+                self._continuations.remove(cid)
+            raise
         if last_event_at is not None and response_opened is not None:
             timing.record("sse_last_event_ms", last_event_at - response_opened)
             timing.record("button_to_last_sse_event_ms", last_event_at - timing.started_ns)
         if not completed:
+            self._continuations.remove(cid)
             raise ClaudeStreamError("Claude response ended before completion; it was not resent")
         if response_id:
+            self._continuations.put(cid, (response_id, is_temporary))
+            sources = self._normalize_sources(raw_source_roots)
+            files = self._normalize_files(raw_file_roots)
             yield {
                 "type": "metadata",
                 "message_id": response_id + ":" + str(final_index),
@@ -591,6 +667,22 @@ class ClaudeProjectEditor:
                 mime.close()
         if operation == "remove_source":
             rid = quote(v["resource_id"], safe="")
+            resource = v.get("resource")
+            native = (
+                resource.metadata.get("native")
+                if resource is not None and isinstance(resource.metadata, dict)
+                else None
+            )
+            if isinstance(native, dict):
+                file_uuid = native.get("file_uuid")
+                if file_uuid:
+                    return await call(
+                        "POST", path + "/files/delete_many", json={"file_uuids": [file_uuid]}
+                    )
+                if (native.get("uuid") or native.get("id")) == v[
+                    "resource_id"
+                ] and "file_uuid" not in native:
+                    return await call("DELETE", path + "/docs/" + rid)
             current = await self.client.request("project", project_id=project_id)
             doc = next(
                 (x for x in current["docs"] if (x.get("uuid") or x.get("id")) == v["resource_id"]),

@@ -465,3 +465,141 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(catalog.effort("c"))
         self.assertEqual(catalog.effort("c", "standard"), "standard")
         self.assertIsNone(catalog.effort("unknown"))
+
+
+class ChatGPTProviderOptimizationTests(ChatGPTProviderTests):
+    async def test_list_project_chats_bounds_concurrency_to_two_and_runs_outside_gate(self):
+        import time
+
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def fake_list_project_chats(project_id, cursor=None):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                return {
+                    "items": [
+                        {
+                            "conversation_id": f"c-{project_id}",
+                            "title": project_id,
+                            "project_id": project_id,
+                        }
+                    ],
+                    "cursor": None,
+                }
+            finally:
+                with lock:
+                    active -= 1
+
+        self.client.list_project_chats = fake_list_project_chats
+        async with self.provider._gate:
+            pages = await asyncio.gather(
+                *(self.provider.list_project_chats(f"p-{i}") for i in range(4))
+            )
+        self.assertEqual(max_active, 2)
+        self.assertEqual(
+            [page.items[0].origin.remote_id for page in pages],
+            ["c-p-0", "c-p-1", "c-p-2", "c-p-3"],
+        )
+
+    async def test_delete_chat_releases_gate_before_confirm_deleted(self):
+        self.client.delete_conversation = lambda _cid: None
+        confirm_started = asyncio.Event()
+        release_confirm = asyncio.Event()
+
+        async def blocked_confirm(*_args, **_kwargs):
+            confirm_started.set()
+            await asyncio.wait_for(release_confirm.wait(), 1.0)
+
+        with patch(
+            "webaiprovider.providers.chatgpt.provider.confirm_deleted",
+            side_effect=blocked_confirm,
+        ):
+            task = asyncio.create_task(self.provider.delete_chat("cid-1"))
+            await asyncio.wait_for(confirm_started.wait(), 1.0)
+            self.assertFalse(self.provider._gate.locked())
+            async with self.provider._gate:
+                self.assertTrue(self.provider._gate.locked())
+            release_confirm.set()
+            await task
+
+    async def test_project_editor_and_update_skip_redundant_get_project(self):
+        from contextlib import nullcontext
+        from unittest.mock import Mock
+
+        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
+        from webaiprovider.resources.common import Origin, ResourceData
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        mock_client = Mock()
+        mock_client.request = Mock(return_value={})
+        mock_client.get_project = Mock(side_effect=AssertionError("unexpected"))
+        editor = ChatGPTProjectEditor(
+            self.session,
+            lambda _session: mock_client,
+            client_scope=lambda: nullcontext(mock_client),
+        )
+        current = NativeProject(
+            Origin("chatgpt", "acc", "p-1"),
+            "Old Name",
+            "Old inst",
+            metadata={
+                "gizmo": {
+                    "display": {"emoji": "sparkles", "theme": "slate"},
+                    "memory_scope": "workspace",
+                }
+            },
+        )
+        await editor.write("update", "p-1", name="New Name", current=current)
+        await editor.write(
+            "remove_source",
+            "p-1",
+            resource_id="file-1",
+            resource=ResourceData("file-1", "doc.txt", "file"),
+        )
+        self.assertEqual(mock_client.get_project.call_count, 0)
+        self.assertEqual(mock_client.request.call_args_list[0].args[0], "PATCH")
+        self.assertEqual(mock_client.request.call_args_list[0].kwargs["json"]["emoji"], "sparkles")
+        self.assertEqual(mock_client.request.call_args_list[1].args[0], "DELETE")
+
+        states = [
+            {
+                "id": "p-1",
+                "name": "Old Name",
+                "instructions": "Keep brief",
+                "metadata": {"display": {"emoji": "sparkles"}, "memory_scope": "workspace"},
+                "resources": [],
+            },
+            {
+                "id": "p-1",
+                "name": "Updated Name",
+                "instructions": "Keep brief",
+                "metadata": {"display": {"emoji": "sparkles"}, "memory_scope": "workspace"},
+                "resources": [],
+            },
+        ]
+        self.client.list_projects = lambda cursor=None: {"items": [states[0]], "cursor": None}
+        get_calls = 0
+
+        def fake_get_project(project_id):
+            nonlocal get_calls
+            get_calls += 1
+            return states[0] if get_calls == 1 else states[1]
+
+        self.client.get_project = fake_get_project
+        self.client.request = Mock(return_value={})
+        self.provider.prepare = AsyncMock()
+        await self.provider.open()
+        try:
+            loaded = await self.provider.projects.refresh()
+            result = await self.provider.projects.update(loaded[0], title="Updated Name")
+            self.assertEqual(result.title, "Updated Name")
+            self.assertEqual(get_calls, 2)
+            self.assertFalse(self.provider._staged_project_reads)
+        finally:
+            await self.provider.close()

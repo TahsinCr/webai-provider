@@ -22,6 +22,18 @@ GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
 RENAME_CONVERSATION_SIGNATURE = "2/AK6lUKXaLqlYDDOn9zA0qKcCFN+eXBsWI9SXBtcRr1o="
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="
 _RENAME_TIMEOUT = (10.0, 60.0)
+_BOOTSTRAP_FIELDS = ("SNlM0e", "cfb2h", "FdrFJe", "TuX5cc", "qKIAYe", "eptZe")
+_BOOTSTRAP_FIELD_RE = re.compile(r'"(' + "|".join(_BOOTSTRAP_FIELDS) + r')"\s*:\s*"([^"\\]*)"')
+_SECONDARY_PERSIST_INTERVAL = 5.0
+_CRITICAL_PERSIST_FIELDS = (
+    "__Secure-1PSID",
+    "__Secure-1PSIDTS",
+    "token",
+    "build",
+    "sid",
+    "push_id",
+    "rpc_path_prefix",
+)
 
 
 class GeminiSession:
@@ -60,6 +72,8 @@ class GeminiSession:
         self.verified = False
         self.persistence_warning = None
         self._save_lock = asyncio.Lock()
+        self._last_persisted_at: float | None = None
+        self._dirty = False
 
     async def open(self):
         from curl_cffi.requests import AsyncSession
@@ -83,14 +97,19 @@ class GeminiSession:
                 "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False
             )
             AsyncTransport.check(response)
-            fields = {}
-            for name in ("SNlM0e", "cfb2h", "FdrFJe", "TuX5cc", "qKIAYe", "eptZe"):
-                match = re.search(r'"' + name + r'"\s*:\s*"([^"\\]*)"', response.text)
-                fields[name] = match.group(1) if match else ""
-            self.token, self.build, self.sid = (fields[k] for k in ("SNlM0e", "cfb2h", "FdrFJe"))
-            self.language = fields["TuX5cc"] or "en"
-            self.push_id = fields["qKIAYe"]
-            self.rpc_path_prefix = fields["eptZe"]
+            fields: dict[str, str] = {}
+            for match in _BOOTSTRAP_FIELD_RE.finditer(response.text):
+                name = match.group(1)
+                if name not in fields:
+                    fields[name] = match.group(2)
+                    if len(fields) == len(_BOOTSTRAP_FIELDS):
+                        break
+            self.token, self.build, self.sid = (
+                fields.get(k, "") for k in ("SNlM0e", "cfb2h", "FdrFJe")
+            )
+            self.language = fields.get("TuX5cc") or "en"
+            self.push_id = fields.get("qKIAYe", "")
+            self.rpc_path_prefix = fields.get("eptZe", "")
             if not self.token:
                 raise AccountPaused("Gemini session is invalid; verify the account")
             self.verified = True
@@ -163,7 +182,7 @@ class GeminiSession:
             allow_redirects=False,
         )
         AsyncTransport.check(response)
-        await self.persist()
+        await self.persist(force=False)
         return response
 
     async def sync_activity(self, *, force=False):
@@ -306,7 +325,7 @@ class GeminiSession:
         status = (viewer.get("rpcs") or {}).get("getUserStatus")
         return parse_model_catalog(status, rpc_response.text)
 
-    async def persist(self):
+    async def persist(self, *, force: bool = True):
         async with self._save_lock:
             if self.http is None or not self.verified:
                 return
@@ -321,14 +340,30 @@ class GeminiSession:
                     push_id=self.push_id,
                     rpc_path_prefix=self.rpc_path_prefix,
                 )
-            if record != self._saved:
-                try:
-                    await save_session_async(self.credential_file, record)
-                except (OSError, ValueError):
-                    self.persistence_warning = "Could not update the Gemini session record."
-                    return
-                self._saved = record
-                self.persistence_warning = None
+            if record == self._saved:
+                self._dirty = False
+                return
+            now = time.monotonic()
+            critical_changed = self._saved is None or any(
+                record.get(key) != self._saved.get(key) for key in _CRITICAL_PERSIST_FIELDS
+            )
+            if (
+                not force
+                and not critical_changed
+                and self._last_persisted_at is not None
+                and now - self._last_persisted_at < _SECONDARY_PERSIST_INTERVAL
+            ):
+                self._dirty = True
+                return
+            try:
+                await save_session_async(self.credential_file, record)
+            except (OSError, ValueError):
+                self.persistence_warning = "Could not update the Gemini session record."
+                return
+            self._saved = record
+            self._last_persisted_at = now
+            self._dirty = False
+            self.persistence_warning = None
 
     async def refresh(self):
         interval = 600

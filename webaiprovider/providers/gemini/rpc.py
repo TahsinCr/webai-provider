@@ -145,7 +145,11 @@ class NotebookEditor:
         if operation == "delete":
             return await self.rpc.call("Nwkn9", [remote], path, allow_empty=True)
         if operation == "update":
-            current = await self.notebooks.get(remote)
+            current = values.get("current")
+            if current is None or not isinstance(
+                (current.metadata or {}).get("native"), (list, tuple)
+            ):
+                current = await self.notebooks.get(remote)
             native = current.metadata["native"][1]
             if len(native) < 13 or not isinstance(native[12], list):
                 raise ProviderError("Gemini notebook settings contract changed")
