@@ -888,3 +888,580 @@ class PerProviderIsolationTests(unittest.TestCase):
         self.assertNotEqual(lock_file("chatgpt"), lock_file("grok"))
         self.assertEqual(cleanup_file("chatgpt").name, "live-cleanup-chatgpt.json")
         self.assertEqual(lock_file("grok").name, "live-run-grok.lock")
+
+
+class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.journal = Path(temporary.name) / "live-cleanup-gemini.json"
+        for module in ("context", "journal"):
+            patcher = patch(f"tests.live.support.{module}.CLEANUP_FILE", self.journal)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.provider = SimpleNamespace()
+        self.context = LiveContext(
+            self.provider,
+            LiveAccount("personal", "gemini", {}),
+            "async",
+            gate=ActionGate(interval=0),
+        )
+
+    async def test_lost_branch_response_recovers_by_marker_without_deleting_parent(self) -> None:
+        parent_origin = Origin("gemini", "personal", "c_parent")
+        branch_origin = Origin("gemini", "personal", "c_branch")
+        marker = f"{self.context.marker}-branch"
+        parent_chat = Conversation(parent_origin, f"{self.context.marker}-src")
+        branch_chat = Conversation(branch_origin, f"{self.context.marker}-src")
+
+        entry = self.context.new_remote("chat", marker, exclude_ids=("c_parent",))
+        entry["markers"].append(f"{self.context.marker}-src")
+        entry["attempted"] = True
+        self.context.save()
+
+        self.provider.list_chats = AsyncMock(return_value=Page((parent_chat, branch_chat), None))
+        self.provider.get_chat = AsyncMock(side_effect=(branch_chat, RemoteNotFound("missing")))
+        self.provider.delete_chat = AsyncMock()
+
+        await self.context.cleanup_entry_async(entry)
+
+        self.provider.delete_chat.assert_awaited_once_with("c_branch")
+        self.assertFalse(self.journal.exists())
+
+    async def test_lost_branch_response_refuses_guessing_when_zero_or_multiple_matches(
+        self,
+    ) -> None:
+        parent_chat = Conversation(
+            Origin("gemini", "personal", "c_parent"), f"{self.context.marker}-src"
+        )
+        b1 = Conversation(Origin("gemini", "personal", "c_b1"), f"{self.context.marker}-src")
+        b2 = Conversation(Origin("gemini", "personal", "c_b2"), f"{self.context.marker}-src")
+
+        for listed in ((parent_chat,), (parent_chat, b1, b2)):
+            with self.subTest(listed_count=len(listed)):
+                self.context.state["resources"].clear()
+                entry = self.context.new_remote(
+                    "chat", f"{self.context.marker}-src", exclude_ids=("c_parent",)
+                )
+                entry["attempted"] = True
+                self.context.save()
+                self.provider.list_chats = AsyncMock(return_value=Page(listed, None))
+                self.provider.get_chat = AsyncMock()
+                self.provider.delete_chat = AsyncMock()
+
+                with self.assertRaisesRegex(CleanupError, "uniquely located"):
+                    await self.context.cleanup_entry_async(entry)
+                self.provider.delete_chat.assert_not_awaited()
+                self.assertEqual(len(self.context.state["resources"]), 1)
+                self.assertTrue(self.journal.exists())
+
+    async def test_branch_entry_never_deletes_excluded_parent_id(self) -> None:
+        parent_chat = Conversation(
+            Origin("gemini", "personal", "c_parent"), f"{self.context.marker}-src"
+        )
+        entry = self.context.new_remote(
+            "chat", f"{self.context.marker}-src", exclude_ids=("c_parent",)
+        )
+        entry["attempted"] = True
+        entry["remote_id"] = "c_parent"
+        self.context.save()
+        self.provider.get_chat = AsyncMock(return_value=parent_chat)
+        self.provider.delete_chat = AsyncMock()
+
+        with self.assertRaisesRegex(CleanupError, "excluded"):
+            await self.context.cleanup_entry_async(entry)
+        self.provider.delete_chat.assert_not_awaited()
+        self.assertTrue(self.journal.exists())
+
+
+class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_rate_limit_without_remote_id_preserves_attempted_and_journal(self) -> None:
+        from webaiprovider.errors import RateLimited
+
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "live-cleanup-chatgpt.json"
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
+                case = LiveAsyncTestCase("runTest")
+                provider = SimpleNamespace()
+                case.context = LiveContext(
+                    provider,
+                    LiveAccount("personal", "chatgpt", {}),
+                    "async",
+                    gate=ActionGate(interval=0),
+                )
+                entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
+                entry["attempted"] = True
+                case.context.save()
+                chat = SimpleNamespace(remote_id=None)
+
+                async def rate_limited_send():
+                    raise RateLimited(5.0)
+
+                with self.assertRaises(unittest.SkipTest):
+                    await case.call_or_skip_rate_limit(
+                        "messages.create.stream", rate_limited_send, entry=entry, chat=chat
+                    )
+
+                self.assertTrue(entry["attempted"])
+                self.assertTrue(journal.exists())
+                saved = json.loads(journal.read_text(encoding="utf-8"))
+                self.assertTrue(saved["resources"][0]["attempted"])
+
+    def test_sync_rate_limit_without_remote_id_preserves_attempted_and_journal(self) -> None:
+        from webaiprovider.errors import RateLimited
+
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "live-cleanup-chatgpt.json"
+            with (
+                patch("tests.live.support.context.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+            ):
+                case = LiveSyncTestCase("runTest")
+                provider = SimpleNamespace()
+                case.context = LiveContext(
+                    provider,
+                    LiveAccount("personal", "chatgpt", {}),
+                    "sync",
+                    gate=ActionGate(interval=0),
+                )
+                entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
+                entry["attempted"] = True
+                case.context.save()
+                chat = SimpleNamespace(remote_id="chat-late-id")
+
+                def rate_limited_send():
+                    raise RateLimited(5.0)
+
+                with self.assertRaises(unittest.SkipTest):
+                    case.call_or_skip_rate_limit(
+                        "messages.create.stream", rate_limited_send, entry=entry, chat=chat
+                    )
+
+                self.assertTrue(entry["attempted"])
+                self.assertEqual(entry["remote_id"], "chat-late-id")
+                saved = json.loads(journal.read_text(encoding="utf-8"))
+                self.assertTrue(saved["resources"][0]["attempted"])
+                self.assertEqual(saved["resources"][0]["remote_id"], "chat-late-id")
+
+    async def test_timeout_or_cancel_without_remote_id_keeps_attempted_and_triggers_recovery(
+        self,
+    ) -> None:
+        from tests.live.support.errors import LiveApiError
+
+        for failure, expected in (
+            (TimeoutError("timed out"), LiveApiError),
+            (asyncio.CancelledError(), asyncio.CancelledError),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                journal = Path(directory) / "live-cleanup-gemini.json"
+                with (
+                    patch("tests.live.support.context.CLEANUP_FILE", journal),
+                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                ):
+                    provider = SimpleNamespace()
+                    context = LiveContext(
+                        provider,
+                        LiveAccount("personal", "gemini", {}),
+                        "async",
+                        gate=ActionGate(interval=0),
+                    )
+                    entry = context.new_remote("chat", f"{context.marker}-chat")
+                    entry["attempted"] = True
+                    context.save()
+
+                    async def failing_send(exc=failure):
+                        raise exc
+
+                    with self.assertRaises(expected):
+                        await context.call_async("messages.send", failing_send)
+
+                    self.assertTrue(entry["attempted"])
+                    self.assertTrue(journal.exists())
+                    remote = Conversation(
+                        Origin("gemini", "personal", "c_orphan"), f"{context.marker}-chat"
+                    )
+                    provider.list_chats = AsyncMock(return_value=Page((remote,), None))
+                    provider.get_chat = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
+                    provider.delete_chat = AsyncMock()
+                    await context.cleanup_pending_async()
+                    provider.delete_chat.assert_awaited_once_with("c_orphan")
+                    self.assertFalse(journal.exists())
+
+
+class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_journal_routes_to_owning_provider_without_touching_others(self) -> None:
+        from tests.live.support.journal import pending_cleanup_files, read_cleanup_journal
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = Path(directory) / ".config"
+            cfg.mkdir(mode=0o700)
+            legacy = cfg / "live-cleanup.json"
+            claude_journal = cfg / "live-cleanup-claude.json"
+            gemini_run = "webai-live-" + "a" * 32
+            claude_run = "webai-live-" + "b" * 32
+            gemini_state = {
+                "version": 1,
+                "provider": "gemini",
+                "account": "personal",
+                "run_id": gemini_run,
+                "resources": [
+                    {
+                        "kind": "chat",
+                        "markers": [f"{gemini_run}-chat"],
+                        "remote_id": "c_gem",
+                        "attempted": True,
+                    }
+                ],
+            }
+            claude_state = {
+                "version": 1,
+                "provider": "claude",
+                "account": "personal",
+                "run_id": claude_run,
+                "resources": [
+                    {
+                        "kind": "chat",
+                        "markers": [f"{claude_run}-chat"],
+                        "remote_id": "c_cl",
+                        "attempted": True,
+                    }
+                ],
+            }
+            write_private_json(legacy, gemini_state)
+            write_private_json(claude_journal, claude_state)
+
+            with (
+                patch("tests.live.support.journal.CONFIG_DIR", cfg),
+                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
+                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
+                patch("tests.live.support.config._require_ignored"),
+                patch("tests.live.support.context.CLEANUP_FILE", legacy),
+                patch("tests.live.support.context._DEFAULT_CLEANUP_FILE", legacy),
+            ):
+                self.assertEqual(set(pending_cleanup_files()), {legacy, claude_journal})
+                self.assertEqual(read_cleanup_journal("chatgpt"), (None, None))
+                loaded_state, loaded_path = read_cleanup_journal("gemini")
+                self.assertEqual(loaded_path, legacy)
+                self.assertEqual(loaded_state, gemini_state)
+
+                provider = SimpleNamespace(
+                    get_chat=AsyncMock(
+                        side_effect=(
+                            Conversation(
+                                Origin("gemini", "personal", "c_gem"),
+                                f"{gemini_run}-chat",
+                            ),
+                            RemoteNotFound("missing"),
+                        )
+                    ),
+                    delete_chat=AsyncMock(),
+                )
+                context = LiveContext(
+                    provider,
+                    LiveAccount("personal", "gemini", {}),
+                    "async",
+                    state=loaded_state,
+                    journal_path=loaded_path,
+                    gate=ActionGate(interval=0),
+                )
+                await context.cleanup_pending_async()
+                self.assertFalse(legacy.exists())
+                self.assertTrue(claude_journal.exists())
+
+    def test_legacy_journal_mismatch_or_corruption_refuses_silent_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = Path(directory) / ".config"
+            cfg.mkdir(mode=0o700)
+            legacy = cfg / "live-cleanup.json"
+            state = {
+                "version": 1,
+                "provider": "gemini",
+                "account": "work",
+                "run_id": "webai-live-" + "c" * 32,
+                "resources": [],
+            }
+            write_private_json(legacy, state)
+
+            live = LiveSession("async")
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "WEBAI_LIVE_PROVIDER": "gemini",
+                        "WEBAI_LIVE_ACCOUNT": "personal",
+                        "WEBAI_LIVE_RECOVER": "1",
+                    },
+                ),
+                patch("tests.live.support.journal.CONFIG_DIR", cfg),
+                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
+                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
+                patch("tests.live.support.config._require_ignored"),
+                patch(
+                    "tests.live.support.case.load_or_import_account",
+                    return_value=LiveAccount("personal", "gemini", {"cookies": {"sid": "x"}}),
+                ),
+                patch("tests.live.support.case.RunLock", return_value=MagicMock()),
+                self.assertRaisesRegex(SafetyError, "different account"),
+            ):
+                live._prepare()
+            self.assertTrue(legacy.exists())
+
+            legacy.write_text("{corrupt", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": "gemini"}),
+                patch("tests.live.support.journal.CONFIG_DIR", cfg),
+                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
+                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
+                patch("tests.live.support.config._require_ignored"),
+            ):
+                from tests.live.support.journal import read_cleanup_journal
+
+                with self.assertRaises(SafetyError):
+                    read_cleanup_journal("gemini")
+            self.assertTrue(legacy.exists())
+
+
+class CredentialLockAndConcurrencyTests(unittest.TestCase):
+    def test_concurrent_account_imports_preserve_all_providers(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
+
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = Path(directory) / ".config"
+            cfg.mkdir(mode=0o700)
+            creds = cfg / "credentials.json"
+
+            def fake_from_browser(provider, *, browser=None, id="", name=""):
+                origin_url = {
+                    "chatgpt": "https://chatgpt.com",
+                    "claude": "https://claude.ai",
+                    "gemini": "https://gemini.google.com",
+                    "grok": "https://grok.com",
+                }[provider]
+                cookie_name = REQUIRED_PROVIDER_COOKIES[origin_url]
+                return Account.from_cookies(
+                    provider, {cookie_name: f"secret-{provider}"}, id=id, name=name
+                )
+
+            with patch(
+                "webaiprovider.accounts.account.Account.from_browser",
+                side_effect=fake_from_browser,
+            ):
+                providers = ("chatgpt", "claude", "gemini", "grok")
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(
+                        pool.map(
+                            lambda p: load_or_import_account(
+                                p, "default-browser", path=creds, require_ignored=False
+                            ),
+                            providers,
+                        )
+                    )
+                self.assertEqual(len(results), 4)
+                loaded = load_accounts(creds, require_ignored=False)
+                self.assertEqual({item.provider for item in loaded}, set(providers))
+
+    def test_windows_msvcrt_lock_and_lockless_fallback(self) -> None:
+        import sys
+
+        from tests.live.support.config import _credentials_lock, supports_process_credentials_lock
+
+        calls: list[tuple[int, int]] = []
+        attempts = {"count": 0}
+
+        class FakeMsvcrt:
+            LK_NBLCK = 2
+            LK_UNLCK = 0
+
+            @staticmethod
+            def locking(fd: int, mode: int, nbytes: int) -> None:
+                if mode == 2 and attempts["count"] == 0:
+                    attempts["count"] += 1
+                    raise OSError("locked")
+                calls.append((mode, nbytes))
+
+        with tempfile.TemporaryDirectory() as directory:
+            creds = Path(directory) / ".config" / "credentials.json"
+            with (
+                patch("tests.live.support.config.os.name", "nt"),
+                patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}),
+                patch("tests.live.support.config.time.sleep"),
+            ):
+                self.assertTrue(supports_process_credentials_lock())
+                with _credentials_lock(creds):
+                    self.assertTrue((creds.parent / ".credentials.lock").exists())
+                self.assertEqual(calls, [(FakeMsvcrt.LK_NBLCK, 1), (FakeMsvcrt.LK_UNLCK, 1)])
+
+            with (
+                patch("tests.live.support.config.os.name", "java"),
+                patch("tests.live.support.config.time.sleep"),
+            ):
+                self.assertFalse(supports_process_credentials_lock())
+                lock_path = creds.parent / ".credentials.lock"
+                lock_path.unlink(missing_ok=True)
+                with _credentials_lock(creds):
+                    self.assertTrue(lock_path.exists())
+                self.assertFalse(lock_path.exists())
+
+
+class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_gate_state_enforces_spacing_and_combined_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            gate_file = Path(directory) / "gate-chatgpt.json"
+            gate_one = ActionGate(interval=1.0, limit=3, state_file=gate_file)
+            gate_two = ActionGate(interval=1.0, limit=3, state_file=gate_file)
+            now = {"mono": 100.0, "epoch": 1000.0}
+            slept: list[float] = []
+
+            def fake_sleep(delay: float) -> None:
+                slept.append(delay)
+                now["mono"] += delay
+                now["epoch"] += delay
+
+            async def fake_async_sleep(delay: float) -> None:
+                slept.append(delay)
+                now["mono"] += delay
+                now["epoch"] += delay
+
+            with (
+                patch("tests.live.support.actions.time.monotonic", side_effect=lambda: now["mono"]),
+                patch("tests.live.support.actions.time.time", side_effect=lambda: now["epoch"]),
+                patch("tests.live.support.actions.time.sleep", side_effect=fake_sleep),
+                patch("tests.live.support.actions.asyncio.sleep", side_effect=fake_async_sleep),
+            ):
+                self.assertEqual(gate_one.call_sync(lambda: "one"), "one")
+                now["mono"] += 0.2
+                now["epoch"] += 0.2
+                self.assertEqual(gate_two.call_sync(lambda: "two"), "two")
+                self.assertEqual(len(slept), 1)
+                self.assertAlmostEqual(slept[0], 0.8, places=2)
+
+                await gate_two.call_async(AsyncMock(return_value="three"))
+                with self.assertRaisesRegex(SafetyError, "API-action limit"):
+                    gate_one.call_sync(lambda: "four")
+
+    async def test_temporary_chat_cleanup_routes_delete_through_action_gate(self) -> None:
+        from tests.live.test_messages import AsyncMessageApiTests
+        from webaiprovider.base import Capability
+
+        gate = ActionGate(interval=0, limit=10)
+        deleted = AsyncMock()
+        chat = SimpleNamespace(
+            temporary=True,
+            remote_id="tmp-1",
+            messages=SimpleNamespace(
+                create=lambda *_a, **_kw: SimpleNamespace(
+                    start=AsyncMock(
+                        return_value=SimpleNamespace(message=SimpleNamespace(content="OK"))
+                    )
+                )
+            ),
+            delete=deleted,
+        )
+        session = SimpleNamespace(
+            capabilities={Capability.CHAT, Capability.TEMPORARY},
+            chats=SimpleNamespace(
+                create=AsyncMock(return_value=chat),
+                refresh=AsyncMock(return_value=[]),
+            ),
+        )
+        test = AsyncMessageApiTests("test_incognito_temporary_chat")
+        test.context = LiveContext(
+            session, LiveAccount("personal", "chatgpt", {}), "async", gate=gate
+        )
+        await test.test_incognito_temporary_chat()
+        deleted.assert_awaited_once()
+        self.assertEqual(gate.calls, 3)
+
+    def test_live_case_records_passed_skipped_rate_limited_and_setup_failed_outcomes(
+        self,
+    ) -> None:
+        import tests.live.support.case as case_module
+        from webaiprovider.errors import RateLimited
+
+        class SampleAsyncCase(LiveAsyncTestCase):
+            async def test_pass(self) -> None:
+                self.context.skip("optional: unsupported")
+
+            async def test_unsupported(self) -> None:
+                self.skipTest("unsupported")
+
+            async def test_rate_limited(self) -> None:
+                async def boom():
+                    raise RateLimited(1.0)
+
+                await self.call_or_skip_rate_limit("sample.op", boom)
+
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+
+            def fake_live_session(_api: str):
+                ctx = LiveContext(
+                    SimpleNamespace(),
+                    LiveAccount("personal", "grok", {}),
+                    "async",
+                    gate=ActionGate(interval=0),
+                )
+                return SimpleNamespace(
+                    open_async=AsyncMock(return_value=ctx),
+                    close_async=AsyncMock(),
+                )
+
+            def failing_live_session(_api: str):
+                return SimpleNamespace(
+                    open_async=AsyncMock(side_effect=RuntimeError("session open boom")),
+                    close_async=AsyncMock(),
+                )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "WEBAI_LIVE_TESTS": "1",
+                        "WEBAI_LIVE_PROVIDER": "grok",
+                        "WEBAI_LIVE_API": "async",
+                        "WEBAI_LIVE_REPORT_FILE": str(report_path),
+                    },
+                    clear=True,
+                ),
+                patch.object(case_module, "_FAILED_SESSION_OPENS", set()),
+            ):
+                result = unittest.TestResult()
+                suite = unittest.TestSuite(
+                    [
+                        SampleAsyncCase("test_pass"),
+                        SampleAsyncCase("test_unsupported"),
+                        SampleAsyncCase("test_rate_limited"),
+                    ]
+                )
+                with patch("tests.live.support.case.LiveSession", side_effect=fake_live_session):
+                    suite.run(result)
+
+                setup_suite = unittest.TestSuite(
+                    [
+                        SampleAsyncCase("test_pass"),
+                        SampleAsyncCase("test_unsupported"),
+                    ]
+                )
+                with patch("tests.live.support.case.LiveSession", side_effect=failing_live_session):
+                    setup_suite.run(result)
+
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [(item["status"], item["feature_skips"]) for item in report["tests"]],
+                [
+                    ("passed", ["optional: unsupported"]),
+                    ("skipped_unsupported", []),
+                    ("skipped_rate_limited", ["sample.op: rate_limited"]),
+                    ("failed", []),
+                    ("skipped_setup_failed", []),
+                ],
+            )

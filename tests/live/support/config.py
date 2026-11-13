@@ -6,7 +6,9 @@ import re
 import stat
 import subprocess
 import tempfile
-from contextlib import contextmanager
+import threading
+import time
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,7 +127,8 @@ def _write_private_json(path: Path, value: Any, *, require_ignored: bool) -> Non
 def load_accounts(
     path: Path = CREDENTIALS_FILE, *, require_ignored: bool = True
 ) -> tuple[LiveAccount, ...]:
-    return parse_accounts(read_private_json(path, require_ignored=require_ignored))
+    with _credentials_lock(path):
+        return parse_accounts(read_private_json(path, require_ignored=require_ignored))
 
 
 def parse_accounts(data: Any) -> tuple[LiveAccount, ...]:
@@ -167,16 +170,43 @@ def select_account(accounts: tuple[LiveAccount, ...], provider: str, alias: str)
     return matches[0]
 
 
+_CREDENTIALS_LOCKS_GUARD = threading.Lock()
+_CREDENTIALS_LOCKS: dict[str, threading.RLock] = {}
+_LOCK_WAIT_SECONDS = 60.0
+_LOCK_RETRY_SECONDS = 0.05
+
+
+def _thread_lock_for(path: Path) -> threading.RLock:
+    key = os.fspath(path.resolve(strict=False))
+    with _CREDENTIALS_LOCKS_GUARD:
+        lock = _CREDENTIALS_LOCKS.get(key)
+        if lock is None:
+            lock = _CREDENTIALS_LOCKS[key] = threading.RLock()
+        return lock
+
+
+def supports_process_credentials_lock() -> bool:
+    """Return True when the platform exposes OS file locking for credentials."""
+    if os.name == "posix":
+        try:
+            import fcntl  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    if os.name == "nt":
+        try:
+            import msvcrt  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    return False
+
+
 @contextmanager
-def _credentials_lock(path: Path):
-    _ensure_private_directory(path.parent)
-    if os.name != "posix":
-        yield
-        return
+def _posix_lock(lock_path: Path):
     import fcntl
 
-    lock_path = path.with_name(".credentials.lock")
-    flags = os.O_RDWR | os.O_CREAT | (getattr(os, "O_NOFOLLOW", 0))
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(lock_path, flags, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -186,6 +216,85 @@ def _credentials_lock(path: Path):
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+@contextmanager
+def _windows_lock(lock_path: Path):
+    import msvcrt
+
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        while True:
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise SafetyError("Timed out waiting for credentials lock") from None
+                time.sleep(_LOCK_RETRY_SECONDS)
+        try:
+            yield
+        finally:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fd = os.open(lock_path, flags, 0o600)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise SafetyError("Timed out waiting for credentials lock") from None
+            time.sleep(_LOCK_RETRY_SECONDS)
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        os.close(fd)
+        fd = -1
+        yield
+    finally:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+        with suppress(FileNotFoundError):
+            lock_path.unlink()
+
+
+@contextmanager
+def lock_file_guard(lock_path: Path):
+    """Acquire an in-process and cross-process advisory lock at ``lock_path``."""
+    _ensure_private_directory(lock_path.parent)
+    if lock_path.is_symlink():
+        raise SafetyError("Lock file must not be a symlink")
+    with _thread_lock_for(lock_path):
+        if os.name == "posix":
+            with _posix_lock(lock_path):
+                yield
+            return
+        if os.name == "nt":
+            with _windows_lock(lock_path):
+                yield
+            return
+        with _exclusive_file_lock(lock_path):
+            yield
+
+
+@contextmanager
+def _credentials_lock(path: Path):
+    with lock_file_guard(path.with_name(".credentials.lock")):
+        yield
 
 
 def load_or_import_account(

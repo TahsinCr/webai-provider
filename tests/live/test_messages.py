@@ -28,10 +28,13 @@ class MessageApiTests(LiveSyncTestCase):
 
             def consume_stream() -> int:
                 events = 0
-                for _event in operation.stream():
-                    events += 1
+                try:
+                    for _event in operation.stream():
+                        events += 1
+                        self.context.record_chat_id(entry, chat)
+                    return events
+                finally:
                     self.context.record_chat_id(entry, chat)
-                return events
 
             event_count = self.call_or_skip_rate_limit(
                 "messages.create.stream", consume_stream, entry=entry, chat=chat
@@ -84,7 +87,11 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
         finally:
             if chat.remote_id:
                 with suppress(RemoteNotFound):
-                    await chat.delete()
+                    await self.call_api(
+                        "chats.delete_temporary",
+                        chat.delete,
+                        expected_errors=(RemoteNotFound,),
+                    )
 
     async def test_temporary_message_stream_history_and_cleanup(self) -> None:
         capabilities = self.context.session.capabilities
@@ -239,7 +246,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     )
                     self.assertTrue(getattr(edited_first.message, "content", ""))
 
-            if Capability.CHAT_BRANCH in capabilities:
+            if Capability.CHAT_BRANCH in capabilities and Capability.RENAME in capabilities:
                 messages = await self.call_api(
                     "messages.refresh_before_branch", chat.messages.refresh
                 )
@@ -247,18 +254,35 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     m for m in messages if getattr(m.role, "value", m.role) == "assistant"
                 ]
                 if assistant_messages:
-                    branched = await self.call_api(
+                    src_title = f"{marker}-src"
+                    entry["markers"].append(src_title)
+                    self.context.save()
+                    await self.call_api(
+                        "chats.rename_before_branch", lambda: chat.rename(src_title)
+                    )
+
+                    branch_marker = f"{marker}-branch"
+                    branch_entry = self.context.new_remote(
+                        "chat",
+                        branch_marker,
+                        exclude_ids=[chat.remote_id] if chat.remote_id else (),
+                    )
+                    branch_entry["markers"].extend([src_title, marker])
+                    branch_entry["attempted"] = True
+                    self.context.save()
+
+                    branched = await self.call_or_skip_rate_limit(
                         "chats.branch",
                         lambda: chat.branch(assistant_messages[-1].id),
+                        entry=branch_entry,
                     )
                     if branched.remote_id and branched.remote_id != chat.remote_id:
-                        branch_entry = self.context.new_remote("chat", f"{marker}-branch")
-                        branch_entry["markers"].append(marker)
-                        branch_entry["attempted"] = True
-                        branch_entry["remote_id"] = branched.remote_id
-                        self.context.save()
+                        self.context.record_chat_id(branch_entry, branched)
+                        await self.call_api(
+                            "chats.rename_branched", lambda: branched.rename(branch_marker)
+                        )
                         branch_op = branched.messages.create(
-                            f"{marker}-branch Branch check: reply with BRANCH.",
+                            f"{branch_marker} Branch check: reply with BRANCH.",
                             model=Models.LOW,
                         )
                         branch_res = await self.call_or_skip_rate_limit(
@@ -269,6 +293,8 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         )
                         self.context.record_chat_id(branch_entry, branched)
                         self.assertTrue(getattr(branch_res.message, "content", ""))
+            elif Capability.CHAT_BRANCH in capabilities:
+                self.context.skip("chats.branch: unrecoverable_without_rename")
             else:
                 self.context.skip("chats.branch: unsupported")
 

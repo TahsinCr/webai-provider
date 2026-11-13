@@ -1,19 +1,90 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import unittest
+from pathlib import Path
 from typing import Any
 
-from .actions import ActionGate
-from .config import LiveAccount, load_or_import_account
+from .actions import (
+    DEFAULT_ACTION_INTERVAL,
+    DEFAULT_COMBINED_RUN_LIMIT,
+    DEFAULT_SINGLE_API_LIMIT,
+    ActionGate,
+)
+from .config import LiveAccount, load_or_import_account, lock_file_guard
 from .context import LiveContext
 from .errors import LiveApiError, SafetyError
-from .journal import RunLock, read_cleanup_state
+from .journal import RunLock, read_cleanup_journal
 
-_ACTION_GATE = ActionGate(limit=64)
+_DEFAULT_ACTION_GATE = ActionGate(interval=DEFAULT_ACTION_INTERVAL, limit=DEFAULT_SINGLE_API_LIMIT)
+_ACTION_GATE = _DEFAULT_ACTION_GATE
+_SHARED_ACTION_GATE: tuple[tuple[str, int], ActionGate] | None = None
 _FAILED_SESSION_OPENS: set[tuple[str, str]] = set()
+
+
+def _resolve_action_gate() -> ActionGate:
+    global _SHARED_ACTION_GATE
+    if _ACTION_GATE is not _DEFAULT_ACTION_GATE:
+        return _ACTION_GATE
+    state_raw = os.environ.get("WEBAI_LIVE_GATE_FILE", "").strip()
+    limit_raw = os.environ.get("WEBAI_LIVE_GATE_LIMIT", "").strip()
+    if not state_raw and not limit_raw:
+        return _ACTION_GATE
+    limit = DEFAULT_SINGLE_API_LIMIT
+    if limit_raw:
+        try:
+            limit = max(1, min(int(limit_raw), DEFAULT_COMBINED_RUN_LIMIT))
+        except ValueError:
+            raise SafetyError("WEBAI_LIVE_GATE_LIMIT must be a positive integer") from None
+    key = (state_raw, limit)
+    if _SHARED_ACTION_GATE is None or _SHARED_ACTION_GATE[0] != key:
+        state_file = Path(state_raw) if state_raw else None
+        _SHARED_ACTION_GATE = (
+            key,
+            ActionGate(interval=DEFAULT_ACTION_INTERVAL, limit=limit, state_file=state_file),
+        )
+    return _SHARED_ACTION_GATE[1]
+
+
+def _append_report_entry(api: str, test_id: str, status: str, feature_skips: list[str]) -> None:
+    report_raw = os.environ.get("WEBAI_LIVE_REPORT_FILE", "").strip()
+    if not report_raw:
+        return
+    report_path = Path(report_raw)
+    if report_path.is_symlink():
+        raise SafetyError("Live report path must not be a symlink")
+    lock_path = report_path.with_name(f".{report_path.name}.lock")
+    with lock_file_guard(lock_path):
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            data = {
+                "provider": os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold(),
+                "api": api,
+                "tests": [],
+            }
+        if not isinstance(data, dict) or not isinstance(data.get("tests"), list):
+            data = {
+                "provider": os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold(),
+                "api": api,
+                "tests": [],
+            }
+        data["tests"].append(
+            {
+                "id": test_id,
+                "status": status,
+                "feature_skips": list(feature_skips),
+            }
+        )
+        tmp = report_path.with_suffix(".tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(tmp, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, report_path)
 
 
 def _session_key(api: str) -> tuple[str, str]:
@@ -63,7 +134,7 @@ class LiveSession:
                 alias,
                 browser=os.environ.get("WEBAI_LIVE_BROWSER"),
             )
-            state = read_cleanup_state(provider)
+            state, journal_path = read_cleanup_journal(provider)
             recover = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
             if state and (state["provider"] != provider or state["account"] != account.alias):
                 raise SafetyError("Pending cleanup belongs to a different account")
@@ -74,19 +145,22 @@ class LiveSession:
 
             for logger_name in ("httpx", "httpcore", "curl_cffi", "websockets", "urllib3"):
                 logging.getLogger(logger_name).setLevel(logging.WARNING)
-            return self._new_context(account, state)
+            return self._new_context(account, state, journal_path=journal_path)
         except BaseException:
             self._release_lock()
             raise
 
-    def _new_context(self, account: LiveAccount, state=None) -> LiveContext:
+    def _new_context(
+        self, account: LiveAccount, state=None, *, journal_path: Path | None = None
+    ) -> LiveContext:
         self.session = self._create_provider_session(account)
         self.context = LiveContext(
             self.session,
             account,
             self.api,
             state=state,
-            gate=_ACTION_GATE,
+            gate=_resolve_action_gate(),
+            journal_path=journal_path,
         )
         return self.context
 
@@ -152,7 +226,7 @@ class LiveSession:
                     browser=os.environ.get("WEBAI_LIVE_BROWSER"),
                     refresh=True,
                 )
-                context = self._new_context(refreshed, state)
+                context = self._new_context(refreshed, state, journal_path=context._journal_path)
                 try:
                     context.call(
                         "session.open.after_cookie_refresh",
@@ -204,7 +278,7 @@ class LiveSession:
                     browser=os.environ.get("WEBAI_LIVE_BROWSER"),
                     refresh=True,
                 )
-                context = self._new_context(refreshed, state)
+                context = self._new_context(refreshed, state, journal_path=context._journal_path)
                 try:
                     await context.call_async(
                         "session.open.after_cookie_refresh",
@@ -291,9 +365,57 @@ class LiveSession:
             lock.__exit__(None, None, None)
 
 
-class LiveSyncTestCase(unittest.TestCase):
+class _LiveReportingMixin(unittest.TestCase):
+    """Capture non-secret per-scenario outcomes for the live runner summary."""
+
+    _live_api: str = ""
+    recovery_only = False
+
+    def run(self, result: unittest.TestResult | None = None):
+        if result is None or not os.environ.get("WEBAI_LIVE_REPORT_FILE"):
+            return super().run(result)
+        self._live_ignore_skip = False
+        self._live_skip_kind: str | None = None
+        ctx_before = getattr(self, "context", None)
+        before_feature_skips = (
+            len(getattr(ctx_before, "skipped", ())) if ctx_before is not None else 0
+        )
+        before_bad = len(result.failures) + len(result.errors)
+        before_skipped = len(result.skipped)
+        returned = super().run(result)
+        active_api = os.environ.get("WEBAI_LIVE_API", "async").casefold()
+        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
+        enabled = os.environ.get("WEBAI_LIVE_TESTS") == "1"
+        if (
+            self._live_ignore_skip
+            or not enabled
+            or active_api != self._live_api
+            or recovering != self.recovery_only
+        ):
+            return returned
+        after_bad = len(result.failures) + len(result.errors)
+        after_skipped = len(result.skipped)
+        if after_bad > before_bad:
+            status = "failed"
+        elif after_skipped > before_skipped:
+            status = self._live_skip_kind or "skipped_unsupported"
+        else:
+            status = "passed"
+        ctx = getattr(self, "context", None)
+        if ctx is None:
+            feature_skips: list[str] = []
+        elif ctx is ctx_before:
+            feature_skips = list(getattr(ctx, "skipped", ())[before_feature_skips:])
+        else:
+            feature_skips = list(getattr(ctx, "skipped", ()))
+        _append_report_entry(self._live_api, self.id(), status, feature_skips)
+        return returned
+
+
+class LiveSyncTestCase(_LiveReportingMixin):
     """Base for one synchronous live feature scenario."""
 
+    _live_api = "sync"
     recovery_only = False
 
     @classmethod
@@ -306,12 +428,19 @@ class LiveSyncTestCase(unittest.TestCase):
         recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
         if recovering != cls.recovery_only:
             raise unittest.SkipTest("Recovery mode runs only cleanup recovery tests")
-        _skip_after_session_open_failure("sync")
+        try:
+            _skip_after_session_open_failure("sync")
+        except unittest.SkipTest:
+            _append_report_entry(
+                "sync", f"{cls.__module__}.{cls.__qualname__}", "skipped_setup_failed", []
+            )
+            raise
         cls.live = LiveSession("sync")
         try:
             cls.context = cls.live.open_sync()
         except Exception:
             _record_session_open_failure("sync")
+            _append_report_entry("sync", f"{cls.__module__}.{cls.__qualname__}", "failed", [])
             raise
 
     @classmethod
@@ -338,27 +467,35 @@ class LiveSyncTestCase(unittest.TestCase):
         try:
             return self.call_api(label, action, expected_errors=(RateLimited,))
         except RateLimited:
-            if entry is not None and (chat is None or not getattr(chat, "remote_id", None)):
-                entry["attempted"] = False
-                self.context.save()
+            if entry is not None and chat is not None:
+                self.context.record_chat_id(entry, chat)
             self.context.skip(f"{label}: rate_limited")
+            self._live_skip_kind = "skipped_rate_limited"
             self.skipTest("Provider rate limit reached")
 
 
-class LiveAsyncTestCase(unittest.IsolatedAsyncioTestCase):
+class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     """Base for one asynchronous live feature scenario."""
 
+    _live_api = "async"
     recovery_only = False
 
     async def asyncSetUp(self) -> None:
         if os.environ.get("WEBAI_LIVE_TESTS") != "1":
+            self._live_ignore_skip = True
             self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
         if os.environ.get("WEBAI_LIVE_API", "async").casefold() != "async":
+            self._live_ignore_skip = True
             self.skipTest("This run selected the synchronous API")
         recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
         if recovering != self.recovery_only:
+            self._live_ignore_skip = True
             self.skipTest("Recovery mode runs only cleanup recovery tests")
-        _skip_after_session_open_failure("async")
+        try:
+            _skip_after_session_open_failure("async")
+        except unittest.SkipTest:
+            self._live_skip_kind = "skipped_setup_failed"
+            raise
         self.live = LiveSession("async")
         try:
             self.context = await self.live.open_async()
@@ -388,10 +525,10 @@ class LiveAsyncTestCase(unittest.IsolatedAsyncioTestCase):
         try:
             return await self.call_api(label, action, expected_errors=(RateLimited,))
         except RateLimited:
-            if entry is not None and (chat is None or not getattr(chat, "remote_id", None)):
-                entry["attempted"] = False
-                self.context.save()
+            if entry is not None and chat is not None:
+                self.context.record_chat_id(entry, chat)
             self.context.skip(f"{label}: rate_limited")
+            self._live_skip_kind = "skipped_rate_limited"
             self.skipTest("Provider rate limit reached")
 
 

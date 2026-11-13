@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -37,12 +38,22 @@ def _safe_error_label(exc: Exception) -> str:
 
 
 class LiveContext:
-    def __init__(self, session: Any, account: LiveAccount, api: str, *, state=None, gate=None):
+    def __init__(
+        self,
+        session: Any,
+        account: LiveAccount,
+        api: str,
+        *,
+        state=None,
+        gate=None,
+        journal_path: Path | None = None,
+    ):
         self.session = session
         self.account = account
         self.api = api
         self.asynchronous = api == "async"
         self.gate = gate or ActionGate()
+        self._journal_path = journal_path
         self.marker = state["run_id"] if state else f"webai-live-{secrets.token_hex(16)}"
         self.state = state or {
             "version": 1,
@@ -96,7 +107,9 @@ class LiveContext:
     def skip(self, label: str) -> None:
         self.skipped.append(label)
 
-    def _cleanup_path(self):
+    def _cleanup_path(self) -> Path:
+        if self._journal_path is not None:
+            return self._journal_path
         return (
             cleanup_file(self.account.provider)
             if CLEANUP_FILE == _DEFAULT_CLEANUP_FILE
@@ -104,20 +117,32 @@ class LiveContext:
         )
 
     def save(self) -> None:
-        if CLEANUP_FILE == _DEFAULT_CLEANUP_FILE:
-            write_cleanup_state(self.state, provider=self.account.provider)
-        else:
-            write_cleanup_state(self.state)
+        write_cleanup_state(self.state, path=self._cleanup_path())
 
-    def new_remote(self, kind: str, marker: str) -> dict[str, Any]:
-        entry = {"kind": kind, "markers": [marker], "remote_id": None, "attempted": False}
+    def new_remote(
+        self,
+        kind: str,
+        marker: str,
+        *,
+        exclude_ids: tuple[str, ...] | list[str] = (),
+    ) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "kind": kind,
+            "markers": [marker],
+            "remote_id": None,
+            "attempted": False,
+        }
+        excluded = [str(item) for item in exclude_ids if item]
+        if excluded:
+            entry["exclude_ids"] = excluded
         self.state["resources"].append(entry)
         self.save()
         return entry
 
     def record_chat_id(self, entry: dict[str, Any], chat: Any) -> None:
         remote_id = str(chat.remote_id) if chat.remote_id else None
-        if remote_id and entry.get("remote_id") != remote_id:
+        excluded = {str(item) for item in entry.get("exclude_ids", ()) if item}
+        if remote_id and remote_id not in excluded and entry.get("remote_id") != remote_id:
             entry["remote_id"] = remote_id
             self.save()
 
@@ -165,12 +190,22 @@ class LiveContext:
         get_remote = getattr(provider, f"get_{kind}")
         delete_remote = getattr(provider, f"delete_{kind}")
         remote_id = entry.get("remote_id")
+        exclude_ids = {str(item) for item in entry.get("exclude_ids", ()) if item}
+        if remote_id and str(remote_id) in exclude_ids:
+            raise CleanupError("The remote object is excluded from cleanup deletion")
         if not remote_id:
             values = await self._all_records(kind)
             markers = tuple(entry.get("markers", ()))
-            matches = [value for value in values if self._matches_marker(value, kind, markers)]
+            matches = [
+                value
+                for value in values
+                if str(self._remote_id(value) or "") not in exclude_ids
+                and self._matches_marker(value, kind, markers)
+            ]
             if len(matches) != 1 or not (remote_id := self._remote_id(matches[0])):
                 raise CleanupError("A possibly-created object could not be uniquely located")
+            if str(remote_id) in exclude_ids:
+                raise CleanupError("The remote object is excluded from cleanup deletion")
             remote_id = entry["remote_id"] = str(remote_id)
             self.save()
 
@@ -197,6 +232,8 @@ class LiveContext:
         if remote is None:
             self._remove_entry(entry)
             return
+        if str(remote_id) in exclude_ids:
+            raise CleanupError("The remote object is excluded from cleanup deletion")
         if str(self._remote_id(remote)) != str(remote_id) or not self._matches_marker(
             remote, kind, tuple(entry["markers"])
         ):

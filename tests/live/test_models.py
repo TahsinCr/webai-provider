@@ -85,4 +85,8 @@ class AsyncModelApiTests(LiveAsyncTestCase):
                     await self.context.cleanup_entry_async(entry)
                 elif chat.remote_id:
                     with suppress(RemoteNotFound):
-                        await chat.delete()
+                        await self.call_api(
+                            "models.delete_temporary",
+                            chat.delete,
+                            expected_errors=(RemoteNotFound,),
+                        )
