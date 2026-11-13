@@ -154,6 +154,7 @@ class LiveContext:
 
     async def cleanup_pending_async(self) -> None:
         failures = 0
+        last_error: Exception | None = None
         for entry in list(reversed(self.state["resources"])):
             if id(entry) in self._cleanup_attempted:
                 failures += 1
@@ -161,13 +162,14 @@ class LiveContext:
             self._cleanup_attempted.add(id(entry))
             try:
                 await self._cleanup_one_async(entry)
-            except Exception:
+            except Exception as exc:
                 failures += 1
+                last_error = exc
         if failures:
             self.save()
             raise CleanupError(
                 "At least one temporary remote object could not be verified as deleted"
-            )
+            ) from last_error
         self.state["resources"].clear()
         with suppress(FileNotFoundError):
             self._cleanup_path().unlink()

@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import mimetypes
+import os
+import stat
 from pathlib import Path
 from urllib.parse import quote
 
@@ -30,9 +32,19 @@ def remote_id(value):
     return quote(value, safe="")
 
 
-def _read_limited(path):
+def _read_limited(path, *, error="Grok file is empty or exceeds the 3 MiB limit"):
     with path.open("rb") as stream:
-        return stream.read(_MAX_WORKSPACE_FILE_BYTES + 1)
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _MAX_WORKSPACE_FILE_BYTES:
+            raise ValueError(error)
+        data = stream.read(_MAX_WORKSPACE_FILE_BYTES + 1)
+    if not 0 < len(data) <= _MAX_WORKSPACE_FILE_BYTES:
+        raise ValueError(error)
+    return data
+
+
+def _b64_ascii(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 async def _iter_bounded_lines(response):
@@ -130,19 +142,24 @@ class GrokClient:
             raise
 
     async def upload_file(self, path=None, *, content=None, name=None, mime_type=None):
-        filename, resolved_mime, _, file = validate_upload_candidate(
-            path, content=content, name=name, mime_type=mime_type
-        )
-        if content is None:
-            content = await asyncio.to_thread(_read_limited, file)
-            if not content or len(content) > GROK_ATTACHMENTS.max_bytes:
-                raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
+        def _prepare():
+            filename, resolved_mime, _, file = validate_upload_candidate(
+                path, content=content, name=name, mime_type=mime_type
+            )
+            payload = (
+                content
+                if content is not None
+                else _read_limited(file, error="Grok chat file is empty or exceeds the 3 MiB limit")
+            )
+            return filename, resolved_mime, len(payload), _b64_ascii(payload)
+
+        filename, resolved_mime, payload_size, encoded = await asyncio.to_thread(_prepare)
         result = await self.request(
             "POST",
             "/rest/app-chat/upload-file-v2/complete",
             json={
                 "directUpload": {
-                    "fileData": base64.b64encode(content).decode("ascii"),
+                    "fileData": encoded,
                     "fileName": filename,
                     "fileMimeType": resolved_mime,
                     "fileSource": "SELF_UPLOAD_FILE_SOURCE",
@@ -167,7 +184,7 @@ class GrokClient:
             "id": asset_id,
             "name": metadata.get("name") or metadata.get("fileName") or filename,
             "mime_type": metadata.get("mimeType") or metadata.get("fileMimeType") or resolved_mime,
-            "size_bytes": len(content),
+            "size_bytes": payload_size,
             "grok_file": metadata,
         }
 
@@ -256,22 +273,27 @@ class GrokProjectEditor:
                 if not isinstance(name, str) or not isinstance(content, str) or not content:
                     raise ValueError("Resource name and text content are required")
                 mime_type = "text/plain"
-                content = content.encode("utf-8")
-            else:
-                file = source_file(
-                    values["path"], error="Grok workspace files must not exceed 3 MiB"
-                )
-                if file.stat().st_size > _MAX_WORKSPACE_FILE_BYTES:
+                raw = content.encode("utf-8")
+                if not 0 < len(raw) <= _MAX_WORKSPACE_FILE_BYTES:
                     raise ValueError("Grok workspace files must not exceed 3 MiB")
-                content = await asyncio.to_thread(_read_limited, file)
-                name = file.name
-                mime_type = (
-                    "text/markdown"
-                    if file.suffix.casefold() in {".md", ".markdown"}
-                    else mimetypes.guess_type(file.name)[0] or "text/plain"
-                )
-            if not 0 < len(content) <= _MAX_WORKSPACE_FILE_BYTES:
-                raise ValueError("Grok workspace files must not exceed 3 MiB")
+                encoded = await asyncio.to_thread(_b64_ascii, raw)
+            else:
+
+                def _prepare_workspace_file():
+                    file = source_file(
+                        values["path"], error="Grok workspace files must not exceed 3 MiB"
+                    )
+                    raw_bytes = _read_limited(
+                        file, error="Grok workspace files must not exceed 3 MiB"
+                    )
+                    resolved_mime = (
+                        "text/markdown"
+                        if file.suffix.casefold() in {".md", ".markdown"}
+                        else mimetypes.guess_type(file.name)[0] or "text/plain"
+                    )
+                    return file.name, resolved_mime, _b64_ascii(raw_bytes)
+
+                name, mime_type, encoded = await asyncio.to_thread(_prepare_workspace_file)
             name = name.strip()
             if not name or len(name) > 255 or any(char in name for char in "/\\\r\n\x00"):
                 raise ValueError("Grok resource name is invalid")
@@ -286,7 +308,7 @@ class GrokProjectEditor:
                 json={
                     "fileName": name,
                     "mimeType": mime_type,
-                    "content": base64.b64encode(content).decode("ascii"),
+                    "content": encoded,
                 },
             )
         if operation == "remove_source":

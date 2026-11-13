@@ -235,7 +235,7 @@ def _solve_pow(
 
     nonce_idx = spec.nonce_index
     elapsed_idx = spec.elapsed_index
-    if nonce_idx < 0 or nonce_idx >= elapsed_idx or elapsed_idx >= len(context):
+    if nonce_idx <= 0 or nonce_idx >= elapsed_idx or elapsed_idx >= len(context):
         raise SentinelCompatibilityError("Sentinel context does not match spec slot indices")
 
     prefix_bytes = ("[" + ",".join(_json_value(item) for item in context[:nonce_idx]) + ",").encode(

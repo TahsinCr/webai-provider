@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
-from http.cookies import SimpleCookie
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
@@ -47,9 +48,9 @@ _CONTINUATION_CACHE_MAX_MESSAGES = 2_000
 _CONTINUATION_CACHE_MAX_TEXT_CHARS = 1_000_000
 
 
-def system_timezone():
-    """Use an actual IANA identifier, omitting the optional field if unknown."""
-    candidates = [os.environ.get("TZ", "").removeprefix(":")]
+@lru_cache(maxsize=8)
+def _cached_system_timezone(tz_env: str) -> str | None:
+    candidates = [tz_env.removeprefix(":")]
     try:
         target = str(Path("/etc/localtime").resolve())
         if "/zoneinfo/" in target:
@@ -68,6 +69,11 @@ def system_timezone():
     return None
 
 
+def system_timezone():
+    """Use an actual IANA identifier, omitting the optional field if unknown."""
+    return _cached_system_timezone(os.environ.get("TZ", ""))
+
+
 class ChatGPTClient:
     def __init__(
         self,
@@ -84,6 +90,8 @@ class ChatGPTClient:
         self._conversation_endpoint_verified = False
         self.temporary_conversations: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.pending_branches: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._owned_temporary_conversations = self.temporary_conversations
+        self._owned_pending_branches = self.pending_branches
         self._continuation_cache = MultiDimensionBoundedCache(
             max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
             max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
@@ -96,13 +104,18 @@ class ChatGPTClient:
         self._sentinel_runtime_key: str | None = None
         self._prewarmed_sentinel: tuple[float, str, dict[str, str]] | None = None
         self._prewarming = False
+        self._sentinel_inflight: threading.Event | None = None
+        self._upload_http: httpx.Client | None = None
         self._closed = False
         timing = current_send_timing()
         http_started = time.perf_counter_ns() if timing is not None else None
         limits = httpx.Limits(max_keepalive_connections=5, keepalive_expiry=60.0)
-        safe_transport = safe_httpx_sync_transport(limits=limits) if transport is None else None
+        safe_transport = (
+            safe_httpx_sync_transport(limits=limits, trust_env=False) if transport is None else None
+        )
         client_kwargs: dict[str, Any] = {
             "follow_redirects": False,
+            "trust_env": False,
             "timeout": httpx.Timeout(30.0),
             "limits": limits,
         }
@@ -128,20 +141,45 @@ class ChatGPTClient:
                 raise
 
     def close(self) -> None:
+        inflight: threading.Event | None = None
+        runtime_to_close: SentinelRuntime | None = None
         with self._sentinel_lock:
             self._closed = True
             self._prewarmed_sentinel = None
             self._prewarming = False
-            if self._sentinel_runtime is not None:
-                self._sentinel_runtime.close()
-                self._sentinel_runtime = None
-                self._sentinel_runtime_key = None
+            inflight = getattr(self, "_sentinel_inflight", None)
+            if inflight is None or inflight.is_set():
+                runtime_to_close = self._sentinel_runtime
+            self._sentinel_runtime = None
+            self._sentinel_runtime_key = None
+        if inflight is not None:
+            inflight.set()
+        if runtime_to_close is not None:
+            runtime_to_close.close()
+        with self._state_guard:
             self._continuation_cache.clear()
-            self.temporary_conversations.clear()
+            owned_temps = getattr(
+                self, "_owned_temporary_conversations", self.temporary_conversations
+            )
+            if self.temporary_conversations is owned_temps:
+                self.temporary_conversations.clear()
+            else:
+                self.temporary_conversations = OrderedDict()
             pending = getattr(self, "pending_branches", None)
+            owned_pending = getattr(self, "_owned_pending_branches", pending)
             if isinstance(pending, dict):
-                pending.clear()
-            self.http.close()
+                if pending is owned_pending:
+                    pending.clear()
+                else:
+                    self.pending_branches = OrderedDict()
+            upload_http = getattr(self, "_upload_http", None)
+            self._upload_http = None
+        if upload_http is not None:
+            try:
+                upload_http.close()
+            except Exception:
+                pass
+        self.http.close()
 
     @staticmethod
     def _conversation_text_size(conversation: dict[str, Any]) -> int:
@@ -287,14 +325,17 @@ class ChatGPTClient:
             raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
         with self._state_guard:
             self.headers["authorization"] = f"Bearer {token}"
-            cookie_header = self.headers.get("cookie", "")
-            cookies = SimpleCookie()
-            cookies.load(cookie_header)
+            cookie_map: dict[str, str] = {}
+            for pair in self.headers.get("cookie", "").split(";"):
+                name, sep, item = pair.strip().partition("=")
+                name = name.strip()
+                if sep and name:
+                    cookie_map[name] = item.strip()
             for cookie in response.cookies.jar:
-                cookies[cookie.name] = cookie.value
-            self.headers["cookie"] = "; ".join(
-                f"{name}={morsel.value}" for name, morsel in cookies.items()
-            )
+                domain = (cookie.domain or "").lstrip(".")
+                if cookie.name and (not domain or domain == "chatgpt.com"):
+                    cookie_map[cookie.name] = cookie.value or ""
+            self.headers["cookie"] = "; ".join(f"{name}={val}" for name, val in cookie_map.items())
             list_url = self.list_url
             snapshot = dict(self.headers)
         self.session.save(list_url, snapshot)
@@ -493,7 +534,7 @@ class ChatGPTClient:
     def rename_conversation(self, conversation_id: str, title: str) -> None:
         self.request(
             "PATCH",
-            urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{conversation_id}"),
+            urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"),
             json={"title": title},
             expect_json=False,
         )
@@ -543,29 +584,37 @@ class ChatGPTClient:
         is_pending_branch = False
         if conversation_id:
             if temporary:
-                previous = self.temporary_conversations.get(conversation_id)
+                with self._state_guard:
+                    previous = self.temporary_conversations.get(conversation_id)
                 if previous is None:
                     raise ChatGPTError(
                         "temporary conversation expired locally; start a new temporary chat"
                     )
-            elif (
-                isinstance(pending := getattr(self, "pending_branches", None), dict)
-                and conversation_id in pending
-            ):
-                previous = pending[conversation_id]
-                is_pending_branch = isinstance(previous.get("pending_branch"), dict)
             else:
-                timing = current_send_timing()
-                may_reuse_snapshot = action is None
-                cache_lookup_started = (
-                    time.perf_counter_ns() if timing is not None and may_reuse_snapshot else None
-                )
-                cached = self._cached_conversation(conversation_id) if may_reuse_snapshot else None
-                if cache_lookup_started is not None:
-                    timing.record(
-                        "pre_send_conversation_cache_lookup_ms",
-                        time.perf_counter_ns() - cache_lookup_started,
+                with self._state_guard:
+                    pending = getattr(self, "pending_branches", None)
+                    pending_entry = (
+                        pending.get(conversation_id) if isinstance(pending, dict) else None
                     )
+                if pending_entry is not None:
+                    previous = pending_entry
+                    is_pending_branch = isinstance(previous.get("pending_branch"), dict)
+                else:
+                    timing = current_send_timing()
+                    may_reuse_snapshot = action is None
+                    cache_lookup_started = (
+                        time.perf_counter_ns()
+                        if timing is not None and may_reuse_snapshot
+                        else None
+                    )
+                    cached = (
+                        self._cached_conversation(conversation_id) if may_reuse_snapshot else None
+                    )
+                    if cache_lookup_started is not None:
+                        timing.record(
+                            "pre_send_conversation_cache_lookup_ms",
+                            time.perf_counter_ns() - cache_lookup_started,
+                        )
                 if cached is not None:
                     previous = cached
                     if timing is not None:
@@ -637,10 +686,11 @@ class ChatGPTClient:
             raise ChatGPTError(
                 "temporary conversation reached the local memory limit; start a new one"
             )
-        self.temporary_conversations[resolved_id] = conversation
-        self.temporary_conversations.move_to_end(resolved_id)
-        while len(self.temporary_conversations) > 32:
-            self.temporary_conversations.popitem(last=False)
+        with self._state_guard:
+            self.temporary_conversations[resolved_id] = conversation
+            self.temporary_conversations.move_to_end(resolved_id)
+            while len(self.temporary_conversations) > 32:
+                self.temporary_conversations.popitem(last=False)
         return conversation
 
     def send_prompt(
@@ -1188,17 +1238,46 @@ class ChatGPTClient:
     def create_sentinel_headers(self) -> dict[str, str]:
         timing = current_send_timing()
         user_agent = self._sentinel_user_agent()
-        with self._sentinel_lock:
-            prewarmed = getattr(self, "_prewarmed_sentinel", None)
-            if prewarmed is not None:
-                created_at, prewarm_key, headers = prewarmed
-                self._prewarmed_sentinel = None
-                if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
-                    if timing is not None:
-                        timing.record("sentinel_prewarmed_hit_ms", 0)
-                    return headers
-            runtime = self._get_or_create_sentinel_runtime(user_agent)
-            return self._create_sentinel_headers_direct(runtime, timing)
+        while True:
+            wait_event: threading.Event | None = None
+            runtime: SentinelRuntime | None = None
+            inflight: threading.Event | None = None
+            with self._sentinel_lock:
+                if self._is_closed():
+                    raise ChatGPTError("ChatGPT client is closed")
+                prewarmed = getattr(self, "_prewarmed_sentinel", None)
+                if prewarmed is not None:
+                    created_at, prewarm_key, headers = prewarmed
+                    self._prewarmed_sentinel = None
+                    if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
+                        if timing is not None:
+                            timing.record("sentinel_prewarmed_hit_ms", 0)
+                        return headers
+                current = getattr(self, "_sentinel_inflight", None)
+                if current is not None and not current.is_set():
+                    wait_event = current
+                else:
+                    inflight = threading.Event()
+                    self._sentinel_inflight = inflight
+                    runtime = self._get_or_create_sentinel_runtime(user_agent)
+            if wait_event is not None:
+                wait_event.wait()
+                continue
+            try:
+                assert runtime is not None and inflight is not None
+                return self._create_sentinel_headers_direct(runtime, timing)
+            finally:
+                with self._sentinel_lock:
+                    if getattr(self, "_sentinel_inflight", None) is inflight:
+                        self._sentinel_inflight = None
+                    if inflight is not None:
+                        inflight.set()
+                    if (
+                        runtime is not None
+                        and self._is_closed()
+                        and runtime is not getattr(self, "_sentinel_runtime", None)
+                    ):
+                        runtime.close()
 
     def trigger_sentinel_prewarm(self) -> None:
         if (
@@ -1209,26 +1288,34 @@ class ChatGPTClient:
             return
         user_agent = self._sentinel_user_agent()
         with self._sentinel_lock:
-            if self._is_closed() or self._prewarming:
+            current = getattr(self, "_sentinel_inflight", None)
+            if (
+                self._is_closed()
+                or getattr(self, "_prewarming", False)
+                or (current is not None and not current.is_set())
+            ):
                 return
-            if self._prewarmed_sentinel is not None:
-                created_at, prewarm_key, _ = self._prewarmed_sentinel
+            prewarmed = getattr(self, "_prewarmed_sentinel", None)
+            if prewarmed is not None:
+                created_at, prewarm_key, _ = prewarmed
                 if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
                     return
             self._prewarming = True
+            inflight = threading.Event()
+            self._sentinel_inflight = inflight
 
         def _worker() -> None:
+            runtime: SentinelRuntime | None = None
             try:
                 with self._sentinel_lock:
                     if self._is_closed():
                         return
                     ua = self._sentinel_user_agent()
                     runtime = self._get_or_create_sentinel_runtime(ua)
-                    # Serialize the entire proof/prepare/enforcement exchange with a
-                    # foreground send. The runtime retains the last initial proof, so
-                    # overlapping exchanges could pair one request's requirements with
-                    # another request's proof.
-                    headers = self._create_sentinel_headers_direct(runtime, None)
+                # Serialize runtime proof/enforcement outside _sentinel_lock via
+                # _sentinel_inflight so foreground close() never stalls on network I/O.
+                headers = self._create_sentinel_headers_direct(runtime, None)
+                with self._sentinel_lock:
                     if not self._is_closed():
                         self._prewarmed_sentinel = (time.monotonic(), ua, headers)
             except Exception:
@@ -1236,8 +1323,24 @@ class ChatGPTClient:
             finally:
                 with self._sentinel_lock:
                     self._prewarming = False
+                    if getattr(self, "_sentinel_inflight", None) is inflight:
+                        self._sentinel_inflight = None
+                    inflight.set()
+                    if (
+                        runtime is not None
+                        and self._is_closed()
+                        and runtime is not getattr(self, "_sentinel_runtime", None)
+                    ):
+                        runtime.close()
 
-        threading.Thread(target=_worker, daemon=True).start()
+        try:
+            threading.Thread(target=_worker, daemon=True).start()
+        except Exception:
+            with self._sentinel_lock:
+                self._prewarming = False
+                if getattr(self, "_sentinel_inflight", None) is inflight:
+                    self._sentinel_inflight = None
+                inflight.set()
 
     def create_conversation_body(
         self,
@@ -1348,6 +1451,27 @@ class ChatGPTClient:
                 body["conversation_id"] = conversation_id
         return body
 
+    def _get_upload_http(self) -> httpx.Client:
+        with self._state_guard:
+            existing = getattr(self, "_upload_http", None)
+            if existing is not None and not getattr(existing, "is_closed", False):
+                return existing
+            if self._is_closed():
+                raise ChatGPTError("ChatGPT client is closed")
+            limits = httpx.Limits(max_keepalive_connections=4, keepalive_expiry=60.0)
+            client_kwargs: dict[str, Any] = {
+                "follow_redirects": False,
+                "trust_env": False,
+                "timeout": httpx.Timeout(30.0),
+                "limits": limits,
+            }
+            safe_transport = safe_httpx_sync_transport(limits=limits, trust_env=False)
+            if safe_transport is not None:
+                client_kwargs["transport"] = safe_transport
+            client = httpx.Client(**client_kwargs)
+            self._upload_http = client
+            return client
+
     def _upload_request(self, url, **options):
         target = urlsplit(url)
         if (
@@ -1359,8 +1483,17 @@ class ChatGPTClient:
         ):
             raise ChatGPTError("Upload URL must be an HTTPS origin without credentials")
         path = (target.path or "/") + ("?" + target.query if target.query else "")
-        transport = HTTPTransport(f"https://{target.netloc}", client_getter=lambda: self.http)
-        return transport.send("PUT", path, check_status=False, **options)
+        transport = HTTPTransport(f"https://{target.netloc}", client_getter=self._get_upload_http)
+        try:
+            response = transport.send("PUT", path, check_status=False, **options)
+        except ChatGPTError:
+            raise
+        except httpx.HTTPError:
+            # Never propagate raw httpx exceptions carrying signed SAS upload query tokens.
+            raise ChatGPTError("ChatGPT file upload request failed") from None
+        if response.status_code >= 400:
+            raise ChatGPTError(f"ChatGPT upload returned HTTP {response.status_code}")
+        return response
 
     @staticmethod
     def _consume_project_upload_event(line: bytes | bytearray) -> bool:
@@ -1446,6 +1579,8 @@ class ChatGPTClient:
         stream = path.open("rb") if path is not None else None
         try:
             before = os.fstat(stream.fileno()) if stream is not None else None
+            if before is not None and not stat.S_ISREG(before.st_mode):
+                raise ChatGPTError("upload source must be a regular file")
             size = before.st_size if before is not None else len(data)
             max_bytes = 512 * 1024 * 1024
             if mime_type.startswith("image/"):
@@ -1463,20 +1598,54 @@ class ChatGPTClient:
                 if time.monotonic() >= deadline:
                     raise ChatGPTError("file upload timed out")
 
+            def stream_chunks():
+                assert stream is not None
+                while True:
+                    ensure_active()
+                    block = stream.read(256 * 1024)
+                    if not block:
+                        return
+                    yield block
+
+            def verify_unchanged():
+                if stream is None:
+                    return
+                after = os.fstat(stream.fileno())
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
+                    raise ChatGPTError("file changed while it was being uploaded")
+
             ensure_active()
             if mime_type == "image/png" and project_id is None:
+                header = stream.read(24) if stream is not None else data[:24]
                 if stream is not None:
-                    data = stream.read()
+                    stream.seek(0)
                 ensure_active()
-                if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) < 24:
+                if not header.startswith(b"\x89PNG\r\n\x1a\n") or len(header) < 24:
                     raise ChatGPTError("invalid PNG file")
-                return self.upload_image(
+                result = self.upload_image(
                     file_name,
                     mime_type,
-                    data,
-                    int.from_bytes(data[16:20], "big"),
-                    int.from_bytes(data[20:24], "big"),
+                    stream_chunks() if stream is not None else data,
+                    int.from_bytes(header[16:20], "big"),
+                    int.from_bytes(header[20:24], "big"),
+                    size=size,
+                    ensure_active=ensure_active,
                 )
+                ensure_active()
+                verify_unchanged()
+                return result
 
             ensure_active()
             slot = self.request(
@@ -1496,16 +1665,7 @@ class ChatGPTClient:
             headers = {"content-type": mime_type, "x-ms-blob-type": "BlockBlob"}
             if stream is not None:
                 headers["content-length"] = str(size)
-
-                def chunks():
-                    while True:
-                        ensure_active()
-                        block = stream.read(256 * 1024)
-                        if not block:
-                            return
-                        yield block
-
-                content = chunks()
+                content = stream_chunks()
             else:
                 content = data
 
@@ -1515,22 +1675,7 @@ class ChatGPTClient:
             )
             response.raise_for_status()
             ensure_active()
-            if stream is not None:
-                after = os.fstat(stream.fileno())
-                if (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_size,
-                    before.st_mtime_ns,
-                    before.st_ctime_ns,
-                ) != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_size,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                ):
-                    raise ChatGPTError("file changed while it was being uploaded")
+            verify_unchanged()
             if project_id:
                 self._process_project_upload_stream(
                     file_id, file_name, mime_type, project_id, ensure_active
@@ -1554,37 +1699,51 @@ class ChatGPTClient:
         self,
         file_name: str,
         mime_type: str,
-        data: bytes,
+        data,
         width: int,
         height: int,
+        *,
+        size: int | None = None,
+        ensure_active=None,
     ) -> dict[str, Any]:
-        if mime_type != "image/png" or not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise ChatGPTError("only PNG clipboard images are currently supported")
-        if not data or len(data) > 20 * 1024 * 1024:
+        is_bytes = isinstance(data, (bytes, bytearray, memoryview))
+        byte_size = len(data) if is_bytes else size
+        if mime_type != "image/png" or byte_size is None or not 0 < byte_size <= 20 * 1024 * 1024:
+            if mime_type != "image/png":
+                raise ChatGPTError("only PNG clipboard images are currently supported")
             raise ChatGPTError("clipboard image must be smaller than 20 MiB")
+        if is_bytes and bytes(data[:8]) != b"\x89PNG\r\n\x1a\n":
+            raise ChatGPTError("only PNG clipboard images are currently supported")
         slot = self.request(
             "POST",
             urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
             json={
                 "file_name": file_name,
-                "file_size": len(data),
+                "file_size": byte_size,
                 "use_case": "multimodal",
             },
         ).json()
+        if ensure_active is not None:
+            ensure_active()
         file_id = slot.get("file_id")
         upload_url = slot.get("upload_url")
         if not isinstance(file_id, str) or not isinstance(upload_url, str):
             raise ChatGPTError("ChatGPT returned an invalid image upload slot")
+        headers = {"content-type": mime_type, "x-ms-blob-type": "BlockBlob"}
+        if not is_bytes:
+            headers["content-length"] = str(byte_size)
         upload = self._upload_request(
             upload_url,
             content=data,
-            headers={"content-type": mime_type, "x-ms-blob-type": "BlockBlob"},
-            timeout=60,
+            headers=headers,
+            timeout=httpx.Timeout(connect=30, read=15, write=15, pool=30),
         )
         upload.raise_for_status()
+        if ensure_active is not None:
+            ensure_active()
         finalized = self.request(
             "POST",
-            urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{file_id}/uploaded"),
+            urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
             json={},
         ).json()
         if finalized.get("status") != "success":
@@ -1593,7 +1752,7 @@ class ChatGPTClient:
             "id": file_id,
             "name": file_name,
             "mime_type": mime_type,
-            "size_bytes": len(data),
+            "size_bytes": byte_size,
             "width": width,
             "height": height,
         }

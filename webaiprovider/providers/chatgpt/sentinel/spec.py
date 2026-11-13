@@ -224,7 +224,7 @@ class SentinelSpec:
 
         nonce_index = int(slot_match.group(1)) if slot_match else base.nonce_index
         elapsed_index = int(slot_match.group(2)) if slot_match else base.elapsed_index
-        if nonce_index < 0 or elapsed_index <= nonce_index:
+        if nonce_index <= 0 or elapsed_index <= nonce_index:
             raise SentinelCompatibilityError("Sentinel SDK source contained invalid PoW indices")
 
         return replace(

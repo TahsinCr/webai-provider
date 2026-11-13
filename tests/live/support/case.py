@@ -319,7 +319,14 @@ class LiveSession:
         error: Exception | None = None
         try:
             if self.context is not None:
-                if self.context.state["resources"]:
+                resources = self.context.state["resources"]
+                attempted = getattr(self.context, "_cleanup_attempted", None)
+                should_cleanup = (
+                    any(id(entry) not in attempted for entry in resources)
+                    if isinstance(attempted, (set, frozenset))
+                    else bool(resources)
+                )
+                if should_cleanup:
                     try:
                         self.context.cleanup_pending()
                     except Exception as exc:
@@ -341,7 +348,14 @@ class LiveSession:
         error: Exception | None = None
         try:
             if self.context is not None:
-                if self.context.state["resources"]:
+                resources = self.context.state["resources"]
+                attempted = getattr(self.context, "_cleanup_attempted", None)
+                should_cleanup = (
+                    any(id(entry) not in attempted for entry in resources)
+                    if isinstance(attempted, (set, frozenset))
+                    else bool(resources)
+                )
+                if should_cleanup:
                     try:
                         await self.context.cleanup_pending_async()
                     except Exception as exc:

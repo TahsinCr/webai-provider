@@ -9,7 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import cast
 
@@ -353,6 +353,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                     await self.editor.close()
                 finally:
                     self._temporary_conversations.clear()
+                    self._pending_branches.clear()
                     await self._discard_http_client()
         finally:
             if self._provided_transport is not None:
@@ -371,12 +372,16 @@ class AsyncChatGPTProvider(AsyncProvider):
             if capture_browser and self.session.is_ready():
                 url, headers = self.session.capture_auth()
                 self.session.save(url, headers)
-            with self._factory(self.session) as client:
+            with self._client_scope() as client:
                 client.verify()
 
         async with self._gate:
             await self._discard_http_client()
-            await asyncio.to_thread(verify)
+            try:
+                await asyncio.to_thread(verify)
+            except BaseException:
+                await self._discard_http_client()
+                raise
         return SessionStatus(
             SessionState.AUTHENTICATED, session_exists(self.session.paths.session_file)
         )
@@ -392,14 +397,14 @@ class AsyncChatGPTProvider(AsyncProvider):
     async def prepare(self) -> None:
         """Bootstrap cookie credentials, then warm and retain the authenticated client."""
         if self._factory is ChatGPTClient:
-            from ...accounts.credentials import read_session
+            from ...accounts.credentials import read_session_async
             from ...accounts.filters import ProviderCookieFilter
             from .errors import ChatGPTAuthenticationError
 
             try:
                 self.session.load()
             except ChatGPTAuthenticationError:
-                stored = read_session(self.session.paths.session_file)
+                stored = await read_session_async(self.session.paths.session_file)
                 cookies = stored.get("cookies", stored)
                 if not isinstance(cookies, dict):
                     raise
@@ -831,10 +836,12 @@ class AsyncChatGPTProvider(AsyncProvider):
                     },
                 )
                 preview.pop("mapping", None)
-                client.pending_branches[remote] = preview
-                client.pending_branches.move_to_end(remote)
-                while len(client.pending_branches) > 32:
-                    client.pending_branches.popitem(last=False)
+                guard = getattr(client, "_state_guard", None)
+                with guard if guard is not None else nullcontext():
+                    client.pending_branches[remote] = preview
+                    client.pending_branches.move_to_end(remote)
+                    while len(client.pending_branches) > 32:
+                        client.pending_branches.popitem(last=False)
                 client._remember_conversation(preview)
                 return self._conversation(preview)
 
@@ -938,6 +945,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                             "provider_client_ready_ms", time.perf_counter_ns() - scope_started
                         )
                     client.temporary_conversations = self._temporary_conversations
+                    client.pending_branches = self._pending_branches
                     holder.append(client)
                     attachments = _prepare_chatgpt_attachments(client, request, stopped)
                     if attachments is None or stopped.is_set():

@@ -430,3 +430,23 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertIsNot(refreshed, cached)
         request.assert_called_once()
+
+    def test_system_timezone_caches_per_tz_environment(self):
+        from pathlib import Path
+
+        from webaiprovider.providers.chatgpt.client import (
+            _cached_system_timezone,
+            system_timezone,
+        )
+
+        _cached_system_timezone.cache_clear()
+        with (
+            patch.dict("os.environ", {"TZ": "Europe/Istanbul"}, clear=False),
+            patch.object(Path, "resolve", return_value=Path("/usr/share/zoneinfo/UTC")) as resolve,
+        ):
+            self.assertEqual(system_timezone(), "Europe/Istanbul")
+            self.assertEqual(system_timezone(), "Europe/Istanbul")
+            self.assertEqual(resolve.call_count, 1)
+
+        with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}, clear=False):
+            self.assertEqual(system_timezone(), "Asia/Tokyo")

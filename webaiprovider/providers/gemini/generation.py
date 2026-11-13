@@ -1,7 +1,10 @@
 """Bounded Gemini generation protocol and streaming disk uploads."""
 
+import asyncio
 import json
 import mimetypes
+import os
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -28,10 +31,15 @@ def _gemini_upload_spec(value):
         size, local_path = len(content), None
     elif raw_path is not None:
         resolved = Path(raw_path).expanduser().resolve(strict=True)
-        if not resolved.is_file():
+        try:
+            with resolved.open("rb") as handle:
+                info = os.fstat(handle.fileno())
+        except OSError:
+            raise ValueError("File was not found") from None
+        if not stat.S_ISREG(info.st_mode):
             raise ValueError("File was not found")
         filename = item.get("name") or resolved.name
-        size, local_path = resolved.stat().st_size, str(resolved)
+        size, local_path = info.st_size, str(resolved)
     else:
         raise ValueError("Gemini attachment requires a file path or byte content")
 
@@ -53,9 +61,19 @@ async def upload_files(session, items):
 
     if len(items) > GEMINI_ATTACHMENTS.max_files:
         raise ValueError("Too many Gemini attachments")
-    specs = [_gemini_upload_spec(value) for value in items]
 
-    async def upload_one(spec):
+    def _prepare_specs():
+        prepared = []
+        for value in items:
+            spec = _gemini_upload_spec(value)
+            before = os.stat(spec[4]) if spec[4] is not None else None
+            prepared.append((spec, before))
+        return prepared
+
+    specs = await asyncio.to_thread(_prepare_specs)
+
+    async def upload_one(entry):
+        spec, before = entry
         filename, content_type, _size, content, local_path = spec
         mime = CurlMime()
         try:
@@ -77,6 +95,22 @@ async def upload_files(session, items):
                 multipart=mime,
                 allow_redirects=False,
             )
+            if local_path is not None and before is not None:
+                after = await asyncio.to_thread(os.stat, local_path)
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
+                    raise GeminiError("File changed while it was being uploaded")
             return [[response.text], filename]
         finally:
             mime.close()

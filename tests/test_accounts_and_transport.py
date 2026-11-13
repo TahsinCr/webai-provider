@@ -252,3 +252,19 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RateLimited) as ctx:
                 session.check(httpx.Response(429, headers={"retry-after": "15"}))
             self.assertEqual(ctx.exception.retry_after, 15.0)
+
+    def test_session_write_lock_entries_reclaimed_by_gc(self):
+        import gc
+        import tempfile
+
+        from webaiprovider.accounts.credentials import _SESSION_WRITE_LOCKS, _session_write_lock
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "ephemeral.json"
+            lock = _session_write_lock(target)
+            with lock:
+                self.assertGreater(len(_SESSION_WRITE_LOCKS), 0)
+            del lock
+            gc.collect()
+            self.assertNotIn(str(target.resolve()), _SESSION_WRITE_LOCKS)
+            self.assertEqual(len(_SESSION_WRITE_LOCKS), 0)

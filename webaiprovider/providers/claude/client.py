@@ -3,12 +3,14 @@
 import asyncio
 import json
 import mimetypes
+import os
+import stat
 import time
 import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from ...accounts import read_session
+from ...accounts import read_session_async
 from ...async_provider import confirm_deleted
 from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
 from ...errors import AccountPaused, ProviderError
@@ -39,11 +41,16 @@ def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=N
         local_path = None
     elif path is not None:
         resolved = Path(path).expanduser().resolve(strict=True)
-        if not resolved.is_file():
+        try:
+            with resolved.open("rb") as handle:
+                info = os.fstat(handle.fileno())
+        except OSError:
+            raise ValueError("Claude files must not exceed 30 MB") from None
+        if not stat.S_ISREG(info.st_mode):
             raise ValueError("Claude files must not exceed 30 MB")
         filename = name or resolved.name
         suffix = resolved.suffix.lower()
-        size = resolved.stat().st_size
+        size = info.st_size
         local_path = str(resolved)
     else:
         raise ValueError("Claude upload requires a file path or byte content")
@@ -92,7 +99,7 @@ class ClaudeClient:
 
     async def _discover(self):
         data = await self.http.request("GET", "/api/bootstrap")
-        values = read_session(self.path)
+        values = await read_session_async(self.path)
         last_org = values.get("cookies", values).get("lastActiveOrg")
         try:
             organization = organization_from_bootstrap(data, last_org)
@@ -154,9 +161,23 @@ class ClaudeClient:
         """Upload a local file or byte payload through Claude's web document conversion endpoint."""
         from curl_cffi import CurlMime
 
-        filename, mime, size, content, local_path = validate_upload_candidate(
-            path, content=content, name=name, mime_type=mime_type
-        )
+        if content is None and path is not None:
+
+            def _prepare_local():
+                spec = validate_upload_candidate(
+                    path, content=content, name=name, mime_type=mime_type
+                )
+                local = spec[4]
+                return spec, (os.stat(local) if local is not None else None)
+
+            (filename, mime, size, content, local_path), before = await asyncio.to_thread(
+                _prepare_local
+            )
+        else:
+            filename, mime, size, content, local_path = validate_upload_candidate(
+                path, content=content, name=name, mime_type=mime_type
+            )
+            before = None
         body = CurlMime()
         try:
             body.addpart(
@@ -170,6 +191,22 @@ class ClaudeClient:
             )
         finally:
             body.close()
+        if local_path is not None and before is not None:
+            after = await asyncio.to_thread(os.stat, local_path)
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise ProviderError("File changed while it was being uploaded")
         if not isinstance(result, dict):
             raise ClaudeCompatibilityError("Claude file upload response changed")
         file_id = result.get("file_uuid") or result.get("uuid") or result.get("id")
@@ -492,7 +529,14 @@ class ClaudeClient:
                     raw = frame.data
                     if raw == "[DONE]":
                         continue
-                    event = json.loads(raw)
+                    try:
+                        event = json.loads(raw)
+                    except ValueError as error:
+                        raise ClaudeCompatibilityError(
+                            "Claude returned an invalid SSE event"
+                        ) from error
+                    if not isinstance(event, dict):
+                        raise ClaudeCompatibilityError("Claude returned an invalid SSE event")
                     event_at = time.perf_counter_ns() if timing is not None else None
                     if timing is not None:
                         last_event_at = event_at

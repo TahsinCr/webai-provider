@@ -1042,3 +1042,66 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(bound_idx, move_idx)
         self.assertLess(move_idx, post_idx)
         self.assertEqual(seen[0], {"type": "bound", "id": created_ids[0]})
+
+    async def test_malformed_sse_json_raises_claude_compatibility_error(self):
+
+        from webaiprovider.providers.claude.errors import ClaudeCompatibilityError
+
+        class BadResponse:
+            status_code = 200
+            headers = {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aiter_content(self):
+                yield b"data: {not-valid-json}\n\n"
+
+        class Client:
+            def stream(self, _method, _url, **_kw):
+                return BadResponse()
+
+            async def close(self):
+                return None
+
+        session = SimpleNamespace(
+            authenticated=True,
+            path=Path("unused"),
+            request=AsyncMock(),
+            connect=lambda: Client(),
+            url=lambda path: path,
+            check=lambda _response: None,
+        )
+        client = ClaudeClient(Path("unused"), session=bind_stream(session))
+        client.organization = PROJECT
+        client.catalog = claude_model_catalog("claude-test")
+
+        with self.assertRaises(ClaudeCompatibilityError):
+            async for _ in client.events(
+                "send",
+                prompt="Hello",
+                model="claude-test",
+                conversation_id=PROJECT,
+                temporary=False,
+                action=None,
+                project_id=None,
+                effort=None,
+            ):
+                pass
+
+    def test_upload_candidate_rejects_non_regular_files_via_fstat(self):
+        import tempfile
+
+        from webaiprovider.providers.claude.client import validate_upload_candidate
+        from webaiprovider.providers.gemini.generation import _gemini_upload_spec
+
+        with tempfile.TemporaryDirectory() as folder:
+            subdir = Path(folder) / "subdir.txt"
+            subdir.mkdir()
+            with self.assertRaises(ValueError):
+                validate_upload_candidate(subdir)
+            with self.assertRaises(ValueError):
+                _gemini_upload_spec(subdir)

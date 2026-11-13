@@ -9,8 +9,9 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from ...accounts import delete_session, read_session, session_exists
+from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
+from ...accounts.credentials import read_session_async
 from ...accounts.status import (
     SessionState,
     SessionStatus,
@@ -126,7 +127,9 @@ class AsyncGeminiProvider(AsyncProvider):
     async def upload_file(self, path):
         from .generation import _gemini_upload_spec
 
-        filename, mime, size, _content, local_path = _gemini_upload_spec(path)
+        filename, mime, size, _content, local_path = await asyncio.to_thread(
+            _gemini_upload_spec, path
+        )
         return {
             "id": filename,
             "path": local_path,
@@ -636,7 +639,7 @@ class AsyncGeminiProvider(AsyncProvider):
             values = (
                 client.http.cookies.get_dict()
                 if client is not None and client.http is not None
-                else read_session(self.cookie_file)
+                else await read_session_async(self.cookie_file)
             )
             headers["Cookie"] = cookie_header(values, ("__Secure-1PSID", "__Secure-1PSIDTS"))
         return DownloadSource(target["url"], target["name"], True, headers, NativeDownloadClient)

@@ -782,3 +782,42 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(read_session(path)[mutated_name], mutated_value)
                 finally:
                     await http_session.close()
+
+    async def test_http_session_uses_async_read_and_persists_dirty_cookies_on_reset(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        import webaiprovider.transport.session as session_module
+        from webaiprovider.accounts.credentials import save_session
+        from webaiprovider.transport.session import HttpSession
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session.json"
+            save_session(path, {"sessionKey": "initial-cookie"})
+            jar_cookies = {"sessionKey": "mutated-before-reset"}
+            fake_client = SimpleNamespace(
+                cookies=SimpleNamespace(jar=[], get_dict=lambda: dict(jar_cookies)),
+                close=AsyncMock(),
+            )
+            http_session = HttpSession(
+                "https://claude.ai",
+                path,
+                "sessionKey",
+                client_factory=lambda *_a, **_kw: fake_client,
+            )
+            with (
+                patch.object(
+                    session_module,
+                    "read_session_async",
+                    wraps=session_module.read_session_async,
+                ) as read_async,
+                patch.object(http_session, "persist", wraps=http_session.persist) as persist_spy,
+            ):
+                client = await http_session._acquire_client_async()
+                self.assertIs(client, fake_client)
+                read_async.assert_awaited_once()
+                http_session._dirty = True
+                await http_session._reset_owned_client(fake_client)
+                persist_spy.assert_awaited_with(force=True)
+            await http_session.close()

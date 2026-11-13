@@ -98,6 +98,24 @@ class _JSTypeError(Exception):
     """Recoverable JS TypeError inside VM try-opcodes (13, 17, 22)."""
 
 
+_MAX_VM_REGEX_LENGTH = 256
+_MAX_VM_REGEX_TEXT = 65_536
+_ESCAPED_OR_CLASS_RE = re.compile(r"\\.|\[(?:\\.|[^\]])*\]")
+_NESTED_QUANTIFIER_RE = re.compile(r"\([^()]*(?:[+*]|\{\d*,?\d*\})[^()]*\)\s*(?:[+*]|\{\d*,?\d*\})")
+
+
+def _compile_vm_regex(pattern: str) -> re.Pattern[str]:
+    if len(pattern) > _MAX_VM_REGEX_LENGTH:
+        raise SentinelCompatibilityError("Sentinel VM regex exceeded allowed length")
+    simplified = _ESCAPED_OR_CLASS_RE.sub("x", pattern)
+    if _NESTED_QUANTIFIER_RE.search(simplified):
+        raise SentinelCompatibilityError("Sentinel VM regex rejected as unsafe")
+    try:
+        return re.compile(pattern)
+    except re.error as error:
+        raise SentinelCompatibilityError("Sentinel VM received an invalid regex pattern") from error
+
+
 def _js_getprop(target: Any, prop: Any) -> Any:
     if target is None or target is _UNDEFINED:
         raise _JSTypeError(f"TypeError: Cannot read properties of {_js_str(target)}")
@@ -222,7 +240,9 @@ def _js_bind_string_method(text: str, name: str) -> Any:
     if name == "match":
 
         def _match(pattern: Any = "", *_a: Any) -> list[str] | None:
-            found = re.search(_js_str(pattern), text)
+            if len(text) > _MAX_VM_REGEX_TEXT:
+                raise SentinelCompatibilityError("Sentinel VM regex input exceeded allowed size")
+            found = _compile_vm_regex(_js_str(pattern)).search(text)
             if not found:
                 return None
             return [found.group(0), *found.groups()]
@@ -653,12 +673,7 @@ class SentinelVM:
 
         def op_match_script(dst: Any, pattern_slot: Any, *_a: Any) -> None:
             pattern = _js_str(reg.get(pattern_slot, ""))
-            try:
-                regex = re.compile(pattern)
-            except re.error as error:
-                raise SentinelCompatibilityError(
-                    "Sentinel VM script matcher received an invalid pattern"
-                ) from error
+            regex = _compile_vm_regex(pattern)
             scripts = self.window_env.get("document", {}).get("scripts", [])
             matched: str | None = None
             for script in scripts:

@@ -10,10 +10,13 @@ from urllib.parse import urlsplit
 
 from ..transport.http import _has_ipv6_connectivity
 
+_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
-def validate_network_address(address_str: str, allow_private: bool = False) -> str:
+
+def resolve_network_addresses(address_str: str, allow_private: bool = False) -> tuple[str, ...]:
+    normalized = address_str.strip("[]").split("%", 1)[0]
     try:
-        addresses = [ipaddress.ip_address(address_str)]
+        addresses = [ipaddress.ip_address(normalized)]
     except ValueError:
         family = socket.AF_UNSPEC if _has_ipv6_connectivity() else socket.AF_INET
         try:
@@ -31,7 +34,14 @@ def validate_network_address(address_str: str, allow_private: bool = False) -> s
             raise ValueError("Prohibited destination network address")
         if not allow_private and not ip.is_global:
             raise ValueError("Prohibited destination network address")
-    return str(addresses[0])
+    return tuple(str(ip) for ip in addresses)
+
+
+def validate_network_address(address_str: str, allow_private: bool = False) -> str:
+    return resolve_network_addresses(address_str, allow_private=allow_private)[0]
+
+
+_ORIGINAL_VALIDATE_NETWORK_ADDRESS = validate_network_address
 
 
 @dataclass(frozen=True)
@@ -96,27 +106,31 @@ class NativeDownloadClient:
 
         permit_private = self.allow_private if allow_private is None else allow_private
         target = urlsplit(url)
-        if not target.hostname:
-            raise ValueError("Download URL has no valid hostname")
+        if target.scheme != "https" or not target.hostname or target.username or target.password:
+            raise ValueError("Download URL must use HTTPS without credentials")
         dns_address = validate_network_address(target.hostname, allow_private=permit_private)
-        pinned_address = (
+        pinned_addresses = [
             validate_network_address(resolved_address, allow_private=permit_private)
             if resolved_address
             else dns_address
-        )
+        ]
+        if not resolved_address and validate_network_address is _ORIGINAL_VALIDATE_NETWORK_ADDRESS:
+            for ip in resolve_network_addresses(target.hostname, allow_private=permit_private):
+                if ip not in pinned_addresses:
+                    pinned_addresses.append(ip)
         try:
-            ipaddress.ip_address(target.hostname.split("%", 1)[0])
+            ipaddress.ip_address(target.hostname.strip("[]").split("%", 1)[0])
             is_ip_literal = True
         except ValueError:
             is_ip_literal = False
         if not is_ip_literal:
             from curl_cffi import CurlOpt
 
-            port = target.port or (443 if target.scheme == "https" else 80)
-            address = f"[{pinned_address}]" if ":" in pinned_address else pinned_address
+            port = target.port or 443
+            formatted = ",".join(f"[{addr}]" if ":" in addr else addr for addr in pinned_addresses)
             if not _has_ipv6_connectivity():
                 self.client.curl_options[CurlOpt.IPRESOLVE] = 1
-            self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{address}"]
+            self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{formatted}"]
         try:
             with self.client.stream(
                 method, url, headers=headers, allow_redirects=False
@@ -139,7 +153,9 @@ class _NativeDownloadResponse:
         return self.response.iter_content(chunk_size=chunk_size)
 
 
-async def download_source(source: DownloadSource | None) -> bytes:
+async def download_source(
+    source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
+) -> bytes:
     from ..errors import ProviderError, UnsupportedOperationError
 
     if not isinstance(source, DownloadSource):
@@ -162,11 +178,20 @@ async def download_source(source: DownloadSource | None) -> bytes:
         ):
             if not 200 <= response.status_code < 300:
                 raise ProviderError(f"File transfer failed with HTTP {response.status_code}")
-            return b"".join(response.iter_bytes())
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ProviderError("Downloaded file exceeds size limit")
+                chunks.append(chunk)
+            return b"".join(chunks)
 
     try:
         return await asyncio.to_thread(read_source)
     except ProviderError:
         raise
-    except Exception as exc:
-        raise ProviderError("File transfer failed") from exc
+    except Exception:
+        raise ProviderError("File transfer failed") from None

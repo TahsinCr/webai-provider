@@ -5,7 +5,7 @@ import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
 from webaiprovider.utils.files import (
@@ -137,6 +137,110 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             validate_network_address("https://files.example/asset.png")
 
         self.assertEqual(seen_families, [socket.AF_INET, socket.AF_UNSPEC])
+
+    async def test_download_enforces_max_bytes_and_sanitizes_transport_errors(self):
+        from curl_cffi.requests.exceptions import RequestException
+
+        class FakeSession:
+            def __init__(self, *, chunks=None, error=None):
+                self.curl_options = {}
+                self.cookies = {}
+                self._chunks = chunks or []
+                self._error = error
+
+            def close(self):
+                return None
+
+            @contextmanager
+            def stream(self, _method, _url, **_kw):
+                if self._error is not None:
+                    raise self._error
+                yield SimpleNamespace(
+                    status_code=200,
+                    headers={},
+                    iter_content=lambda chunk_size=65536: iter(self._chunks),
+                )
+
+        oversized_session = FakeSession(chunks=[b"123456", b"7890"])
+        with (
+            patch("curl_cffi.requests.Session", return_value=oversized_session),
+            patch(
+                "webaiprovider.utils.files.validate_network_address",
+                return_value="93.184.216.34",
+            ),
+            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+        ):
+            oversized = DownloadSource("https://files.example/huge.bin?sig=secret")
+            with self.assertRaisesRegex(ProviderError, "exceeds size limit") as ctx:
+                await download_source(oversized, max_bytes=8)
+            self.assertNotIn("secret", str(ctx.exception))
+
+        failing_session = FakeSession(
+            error=RequestException("failed with https://files.example/blob?sig=topsecret")
+        )
+        with (
+            patch("curl_cffi.requests.Session", return_value=failing_session),
+            patch(
+                "webaiprovider.utils.files.validate_network_address",
+                return_value="93.184.216.34",
+            ),
+            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+        ):
+            failing = DownloadSource("https://files.example/blob?sig=topsecret")
+            with self.assertRaisesRegex(ProviderError, "File transfer failed") as ctx:
+                await download_source(failing)
+            self.assertNotIn("topsecret", str(ctx.exception))
+
+    def test_no_proxy_bypass_still_triggers_ssrf_and_dns_pinning(self):
+        from webaiprovider.transport.http import _has_proxy_configured
+
+        with patch.dict(
+            "os.environ",
+            {"HTTPS_PROXY": "http://127.0.0.1:8888", "NO_PROXY": "files.example,.internal"},
+            clear=False,
+        ):
+            self.assertFalse(_has_proxy_configured(None, {}, hostname="files.example"))
+            self.assertFalse(_has_proxy_configured(None, {}, hostname="api.internal"))
+            self.assertTrue(_has_proxy_configured(None, {}, hostname="chatgpt.com"))
+
+    def test_native_download_client_pins_all_resolved_ips(self):
+        from curl_cffi import CurlOpt
+
+        @contextmanager
+        def fake_stream(_method, _url, **_kw):
+            yield SimpleNamespace(
+                status_code=200,
+                headers={},
+                iter_content=lambda chunk_size=65536: iter([b"ok"]),
+            )
+
+        client_obj = SimpleNamespace(
+            curl_options={},
+            cookies={},
+            close=Mock(),
+            stream=Mock(side_effect=fake_stream),
+        )
+        with (
+            patch(
+                "socket.getaddrinfo",
+                return_value=[
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 443)),
+                ],
+            ),
+            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("curl_cffi.requests.Session", return_value=client_obj),
+        ):
+            with (
+                NativeDownloadClient() as downloader,
+                downloader.stream("GET", "https://files.example/asset.bin", headers={}) as resp,
+            ):
+                self.assertEqual(list(resp.iter_bytes()), [b"ok"])
+
+        self.assertEqual(
+            client_obj.curl_options[CurlOpt.RESOLVE],
+            ["files.example:443:93.184.216.34,93.184.216.35"],
+        )
 
 
 if __name__ == "__main__":

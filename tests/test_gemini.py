@@ -1348,3 +1348,16 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(post.await_count, 2)
             finally:
                 await session.close()
+
+    def test_rpc_malformed_json_raises_gemini_compatibility_error(self):
+        from webaiprovider.providers.gemini.errors import GeminiCompatibilityError
+        from webaiprovider.providers.gemini.rpc import NotebookRPC, rpc_parts
+
+        with self.assertRaises(GeminiCompatibilityError):
+            list(rpc_parts('[["wrb.fr","ESY5D","{bad-json"]]', "ESY5D"))
+        with self.assertRaises(GeminiCompatibilityError):
+            list(rpc_parts('[["wrb.fr", bad]', "ESY5D"))
+
+        bad_response = SimpleNamespace(text='[["wrb.fr","CNgdBe","{not-json"]]')
+        with self.assertRaises(GeminiCompatibilityError):
+            NotebookRPC._decode(bad_response, "CNgdBe", False)

@@ -87,8 +87,7 @@ class AsyncClaudeProvider(AsyncProvider):
         await self.client.prepare()
 
     async def upload_file(self, path):
-        async with self._gate:
-            return await self.client.upload_file(path)
+        return await self.client.upload_file(path)
 
     async def authenticate(self):
         async with self._gate:
@@ -108,7 +107,7 @@ class AsyncClaudeProvider(AsyncProvider):
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
-        from ...accounts import read_session
+        from ...accounts.credentials import read_session_async
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
         from .client import remote_id
 
@@ -135,7 +134,7 @@ class AsyncClaudeProvider(AsyncProvider):
         files = listing.get("files_metadata", []) if isinstance(listing, dict) else []
         if not any(isinstance(item, dict) and item.get("path") == path for item in files):
             raise ValueError("File was not found in the conversation record or has expired")
-        saved = read_session(self.credential_file)
+        saved = await read_session_async(self.credential_file)
         cookies = saved.get("cookies", saved)
         values = {key: cookies.get(key) for key in ("sessionKey", "lastActiveOrg")}
         if not values["sessionKey"]:

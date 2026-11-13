@@ -8,12 +8,14 @@ import time
 import uuid
 from pathlib import Path
 
-from ...accounts import read_session, save_session_async
+from ...accounts import read_session, read_session_async, save_session_async
 from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
 from ...transport import AsyncRequestTransport, AsyncTransport, TransportConfig
 from ...transport.retry import parse_retry_after
+
+_ORIGINAL_READ_SESSION = read_session
 
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
@@ -83,7 +85,10 @@ class GeminiSession:
     async def open(self):
         from curl_cffi.requests import AsyncSession
 
-        saved = read_session(self.credential_file)
+        if read_session is not _ORIGINAL_READ_SESSION:
+            saved = await asyncio.to_thread(read_session, self.credential_file)
+        else:
+            saved = await read_session_async(self.credential_file)
         raw_cookies = saved.get("cookies")
         if not isinstance(raw_cookies, dict):
             raw_cookies = saved
@@ -94,9 +99,17 @@ class GeminiSession:
         }
         if not cookies.get("__Secure-1PSID"):
             raise AccountPaused("Gemini session cookies are missing")
-        self.http = (self.http_factory or AsyncSession)(
-            cookies=cookies, impersonate="chrome145", timeout=(10.0, 35.0)
-        )
+        if self.http_factory is not None:
+            self.http = self.http_factory(
+                cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
+            )
+        else:
+            self.http = AsyncSession(
+                cookies=cookies,
+                impersonate="chrome",
+                timeout=(10.0, 35.0),
+                trust_env=False,
+            )
         try:
             response = await self.request(
                 "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False

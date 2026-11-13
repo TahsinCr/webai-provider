@@ -99,10 +99,12 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                 uploaded.extend(content)
                 return SimpleNamespace(raise_for_status=Mock(), content=b"", status_code=200)
 
-            client.http = SimpleNamespace(request=Mock(side_effect=put))
+            client.http = SimpleNamespace(is_closed=False)
+            client._upload_http = SimpleNamespace(is_closed=False, request=Mock(side_effect=put))
             with patch.object(Path, "read_bytes", side_effect=AssertionError("full file read")):
                 result = client.upload_file(path.name, "text/plain", path)
             self.assertEqual(b"".join(uploaded), b"a" * (2 * 1024 * 1024 + 7))
+            client._upload_http.request.assert_called_once()
             self.assertEqual(result["size_bytes"], path.stat().st_size)
 
     def test_path_upload_cancel_stops_later_chunks_and_skips_finalization(self):
@@ -127,11 +129,12 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                     next(chunks)
                 return SimpleNamespace(raise_for_status=Mock(), content=b"", status_code=200)
 
-            client.http = SimpleNamespace(request=Mock(side_effect=put))
+            client.http = SimpleNamespace(is_closed=False)
+            client._upload_http = SimpleNamespace(is_closed=False, request=Mock(side_effect=put))
             with self.assertRaisesRegex(ChatGPTError, "cancelled"):
                 client.upload_file(path.name, "text/plain", path, cancel_event=cancel_event)
             self.assertEqual(client.request.call_count, 1)
-            client.http.request.assert_called_once()
+            client._upload_http.request.assert_called_once()
 
     def test_chatgpt_client_rejects_files_above_documented_ceiling_before_network(self):
         client = object.__new__(ChatGPTClient)
@@ -143,3 +146,37 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             with self.assertRaisesRegex(ChatGPTError, "size limit"):
                 client.upload_file(path.name, "text/plain", path)
         client.request.assert_not_called()
+
+    def test_upload_uses_cookie_isolated_client_and_sanitizes_sas_errors(self):
+        import httpx
+
+        client = ChatGPTClient.__new__(ChatGPTClient)
+        client.headers = {"authorization": "Bearer secret-tok", "cookie": "session=supersecret"}
+        client.http = httpx.Client()
+        self.addCleanup(client.http.close)
+
+        seen_calls = []
+
+        def fake_send(request: httpx.Request) -> httpx.Response:
+            seen_calls.append(dict(request.headers))
+            return httpx.Response(403, request=request)
+
+        client._upload_http = httpx.Client(transport=httpx.MockTransport(fake_send))
+        self.addCleanup(client._upload_http.close)
+
+        sas_url = "https://blob.example/container/file?sig=VERYSECRETSIG"
+        with self.assertRaisesRegex(ChatGPTError, "HTTP 403") as ctx:
+            client._upload_request(sas_url, content=b"abc")
+        self.assertNotIn("VERYSECRETSIG", str(ctx.exception))
+        self.assertNotIn("cookie", seen_calls[0])
+        self.assertNotIn("authorization", seen_calls[0])
+
+        def failing_send(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(f"failed reaching {request.url}", request=request)
+
+        failing_http = httpx.Client(transport=httpx.MockTransport(failing_send))
+        self.addCleanup(failing_http.close)
+        client._upload_http = failing_http
+        with self.assertRaisesRegex(ChatGPTError, "upload request failed") as ctx:
+            client._upload_request(sas_url, content=b"abc")
+        self.assertNotIn("VERYSECRETSIG", str(ctx.exception))

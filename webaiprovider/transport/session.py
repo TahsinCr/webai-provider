@@ -2,7 +2,7 @@ import asyncio
 import time
 from collections.abc import Mapping
 
-from ..accounts.credentials import read_session, save_session_async
+from ..accounts.credentials import read_session, read_session_async, save_session_async
 from ..accounts.filters import REQUIRED_PROVIDER_COOKIES, ProviderCookieFilter
 from .http import AsyncHTTPTransport
 
@@ -58,32 +58,62 @@ class HttpSession(AsyncHTTPTransport):
         self._dirty = False
         self.persistence_warning = None
 
+    def _build_client(self, cookies):
+        factory = self.factory
+        is_default_curl = factory is None
+        if is_default_curl:
+            from curl_cffi.requests import AsyncSession
+
+            factory = AsyncSession
+        kwargs = dict(
+            cookies=cookies,
+            impersonate="chrome",
+            timeout=self.config.timeout,
+            headers={
+                "origin": self.origin,
+                "referer": self.origin + "/",
+                "accept": "application/json",
+            },
+        )
+        if is_default_curl:
+            kwargs["trust_env"] = False
+        return factory(**kwargs)
+
+    def _load_initial_cookies(self, values):
+        raw_cookies = values.get("cookies", values)
+        cookies = ProviderCookieFilter.filter_cookies(
+            self.origin, raw_cookies, self.required_cookie
+        )
+        self._saved_cookies = dict(cookies)
+        self._last_persisted_at = time.monotonic()
+        self._dirty = False
+        return cookies
+
     def _connect(self):
         if self.client is None:
-            values = read_session(self.path)
-            raw_cookies = values.get("cookies", values)
-            cookies = ProviderCookieFilter.filter_cookies(
-                self.origin, raw_cookies, self.required_cookie
-            )
-            self._saved_cookies = dict(cookies)
-            self._last_persisted_at = time.monotonic()
-            self._dirty = False
-            factory = self.factory
-            if factory is None:
-                from curl_cffi.requests import AsyncSession
-
-                factory = AsyncSession
-            self.client = factory(
-                cookies=cookies,
-                impersonate="chrome",
-                timeout=self.config.timeout,
-                headers={
-                    "origin": self.origin,
-                    "referer": self.origin + "/",
-                    "accept": "application/json",
-                },
-            )
+            cookies = self._load_initial_cookies(read_session(self.path))
+            self.client = self._build_client(cookies)
         return self.client
+
+    async def _ensure_connected(self):
+        if self.client is None:
+            values = await read_session_async(self.path)
+            if self.client is None:
+                self.client = self._build_client(self._load_initial_cookies(values))
+        return self.client
+
+    async def _acquire_client_async(self):
+        await self._ensure_connected()
+        return self._acquire_client()
+
+    async def _reset_owned_client(self, failed_client):
+        if (
+            self._client_getter is None
+            and self.client is failed_client
+            and (self._dirty or self.client is not None)
+        ):
+            await self.persist(force=True)
+        await super()._reset_owned_client(failed_client)
 
     async def send(self, method, path, **options):
         response = await super().send(method, path, **options)

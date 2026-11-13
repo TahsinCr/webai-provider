@@ -764,6 +764,50 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.assertIsNone(client._prewarmed_sentinel)
         self.assertFalse(client._prewarming)
 
+    def test_close_does_not_wait_for_inflight_prewarm_and_guards_unsafe_vm_regex(self):
+        import threading
+
+        from webaiprovider.providers.chatgpt.sentinel.spec import SentinelSpec
+        from webaiprovider.providers.chatgpt.sentinel.vm import _compile_vm_regex
+
+        with self.assertRaisesRegex(SentinelCompatibilityError, "unsafe"):
+            _compile_vm_regex("(a+)+$")
+        with self.assertRaisesRegex(SentinelCompatibilityError, "length"):
+            _compile_vm_regex("a" * 300)
+        self.assertIsNotNone(_compile_vm_regex("([a-z+]+)"))
+
+        with self.assertRaises(SentinelCompatibilityError):
+            SentinelSpec.from_sdk_source(
+                "_runCheck(e,t,r,n){n[0]=r,n[4]=a}",
+                sdk_url="https://cdn.example/sentinel/x/sdk.js",
+            )
+
+        client = make_client()
+        started = threading.Event()
+        release = threading.Event()
+        closed_runtime = threading.Event()
+        runtime = Mock()
+        runtime.close.side_effect = closed_runtime.set
+
+        def slow_exchange(_rt, _timing):
+            started.set()
+            release.wait(timeout=5.0)
+            return {"openai-sentinel-proof-token": "gAAAAAB"}
+
+        with (
+            patch.object(client, "_get_or_create_sentinel_runtime", return_value=runtime),
+            patch.object(client, "_create_sentinel_headers_direct", side_effect=slow_exchange),
+        ):
+            client.trigger_sentinel_prewarm()
+            self.assertTrue(started.wait(timeout=2.0))
+            t0 = time.monotonic()
+            client.close()
+            elapsed = time.monotonic() - t0
+            self.assertLess(elapsed, 0.5)
+            self.assertFalse(closed_runtime.is_set())
+            release.set()
+            self.assertTrue(closed_runtime.wait(timeout=2.0))
+
 
 if __name__ == "__main__":
     unittest.main()

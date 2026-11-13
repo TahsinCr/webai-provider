@@ -347,6 +347,16 @@ class ChatModelLookupTests(unittest.TestCase):
         self.assertIsNone(catalog.chat_model(None))
         self.assertIsNone(ModelCatalog(ModelCatalogState.UNKNOWN).chat_model("shared"))
 
+    def test_model_and_effort_refs_are_frozen(self) -> None:
+        from dataclasses import FrozenInstanceError
+
+        model = ModelRef("chatgpt", "gpt-5", "GPT-5")
+        effort = EffortRef("chatgpt", "gpt-5", "high", "High")
+        with self.assertRaises(FrozenInstanceError):
+            model.name = "Other"  # type: ignore[misc]
+        with self.assertRaises(FrozenInstanceError):
+            effort.name = "Low"  # type: ignore[misc]
+
 
 if __name__ == "__main__":
     unittest.main()

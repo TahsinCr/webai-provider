@@ -1,11 +1,13 @@
 import asyncio
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from weakref import WeakValueDictionary
 
 from ..errors import AccountPaused
 
@@ -18,14 +20,40 @@ class CredentialStore(Protocol):
     def delete(self) -> None: ...
 
 
-_SESSION_WRITE_LOCKS = {}
+class _WeakLock:
+    """Weakref-capable mutex wrapper for per-path write serialization."""
+
+    __slots__ = ("_lock", "__weakref__")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self) -> "_WeakLock":
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._lock.release()
+
+
+_SESSION_WRITE_LOCKS: WeakValueDictionary[str, _WeakLock] = WeakValueDictionary()
 _SESSION_WRITE_LOCKS_GUARD = threading.Lock()
 
 
-def _session_write_lock(path: Path | str) -> threading.Lock:
+def _session_write_lock(path: Path | str) -> _WeakLock:
     key = os.path.normcase(os.path.abspath(str(path)))
     with _SESSION_WRITE_LOCKS_GUARD:
-        return _SESSION_WRITE_LOCKS.setdefault(key, threading.Lock())
+        lock = _SESSION_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = _WeakLock()
+            _SESSION_WRITE_LOCKS[key] = lock
+        return lock
 
 
 def _replace_with_retry(source: Path | str, destination: Path | str) -> None:
@@ -54,9 +82,14 @@ class FileCredentialStore:
 
     def load(self) -> dict:
         try:
-            if self.path.stat().st_size > 1_048_576:
-                raise ValueError("session size")
-            value = json.loads(self.path.read_text(encoding="utf-8"))
+            with open(self.path, encoding="utf-8") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 1_048_576:
+                    raise ValueError("session size")
+                raw = handle.read(1_048_577)
+                if len(raw) > 1_048_576:
+                    raise ValueError("session size")
+                value = json.loads(raw)
             if not isinstance(value, dict):
                 raise ValueError("session shape")
             return value
@@ -139,6 +172,12 @@ def read_session(path: Any) -> dict:
         except (OSError, ValueError):
             raise AccountPaused("No valid saved session; verify the account") from None
     return FileCredentialStore(path).load()
+
+
+async def read_session_async(path: Any) -> dict:
+    if isinstance(path, MemoryCredentialStore):
+        return path.load()
+    return await asyncio.to_thread(read_session, path)
 
 
 def save_session(

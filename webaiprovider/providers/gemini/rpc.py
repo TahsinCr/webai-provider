@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 
 from ...errors import ProviderError
+from .errors import GeminiCompatibilityError
 from .notebooks import notebook_id
 
 
@@ -20,11 +21,20 @@ def rpc_parts(text, rpc):
     for line in text.splitlines():
         if not line.startswith("[["):
             continue
-        for row in json.loads(line):
+        try:
+            rows = json.loads(line)
+        except (ValueError, TypeError) as error:
+            raise GeminiCompatibilityError("Gemini RPC response format has changed") from error
+        for row in rows:
             if nested(row, 0) == "wrb.fr" and nested(row, 1) == rpc:
                 body = nested(row, 2)
                 if body is not None:
-                    yield json.loads(body)
+                    try:
+                        yield json.loads(body)
+                    except (ValueError, TypeError) as error:
+                        raise GeminiCompatibilityError(
+                            "Gemini RPC response format has changed"
+                        ) from error
 
 
 @dataclass(frozen=True)
@@ -57,13 +67,26 @@ class NotebookRPC:
         for line in response.text.splitlines():
             if not line.startswith('[["wrb.fr"'):
                 continue
-            for row in json.loads(line):
+            try:
+                rows = json.loads(line)
+            except (ValueError, TypeError) as error:
+                raise GeminiCompatibilityError("Gemini notebook RPC response changed") from error
+            if not isinstance(rows, list):
+                raise GeminiCompatibilityError("Gemini notebook RPC response changed")
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 3:
+                    continue
                 if row[0] == "wrb.fr" and row[1] == rpc:
                     if row[2] is None:
                         if allow_empty:
                             return []
                         raise ProviderError("Gemini denied permission or the RPC contract changed.")
-                    parts.append(json.loads(row[2]))
+                    try:
+                        parts.append(json.loads(row[2]))
+                    except (ValueError, TypeError) as error:
+                        raise GeminiCompatibilityError(
+                            "Gemini notebook RPC response changed"
+                        ) from error
         if not parts:
             raise ProviderError("Gemini notebook RPC response changed")
         return parts

@@ -7,6 +7,7 @@ import socket
 import sys
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from typing import Any
 from urllib.parse import urlsplit
 
 from ..core import MultiDimensionBoundedCache
@@ -194,13 +195,33 @@ def _resolve_host_ips_sync(hostname: str, port: int, *, use_ipv6: bool) -> tuple
     return validated
 
 
-def _has_proxy_configured(client, options) -> bool:
+def _no_proxy_bypassed(hostname: str) -> bool:
+    raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+    if not raw:
+        return False
+    host = hostname.strip("[]").casefold()
+    for entry in raw.split(","):
+        token = entry.strip().casefold()
+        if not token:
+            continue
+        if token == "*":
+            return True
+        token = token.lstrip(".")
+        if host == token or host.endswith(f".{token}"):
+            return True
+    return False
+
+
+def _has_proxy_configured(client, options, *, hostname: str | None = None) -> bool:
     if options.get("proxies") or options.get("proxy"):
         return True
     if getattr(client, "proxies", None):
         return True
     if getattr(client, "trust_env", True):
-        return any(os.environ.get(name) for name in _PROXY_ENV_VARS)
+        if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
+            if hostname and _no_proxy_bypassed(hostname):
+                return False
+            return True
     return False
 
 
@@ -258,17 +279,24 @@ def _prepare_curl_session_sync(client, hostname: str, port: int) -> None:
     ipv6 = _has_ipv6_connectivity()
     if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
         client.curl_options[CurlOpt.IPRESOLVE] = 1
-    if not hostname or _is_ip_literal(hostname) or _has_proxy_configured(client, {}):
+    if (
+        not hostname
+        or _is_ip_literal(hostname)
+        or _has_proxy_configured(client, {}, hostname=hostname)
+    ):
         return
     ips = _resolve_host_ips_sync(hostname, port, use_ipv6=ipv6)
     prefix = f"{hostname}:{port}:"
     _apply_curl_resolve(client, prefix, _format_resolve_entry(prefix, ips))
 
 
-def _remaining_connect_timeout(deadline: float | None) -> float | None:
+def _attempt_connect_timeout(deadline: float | None, remaining_ips: int) -> float | None:
     if deadline is None:
         return None
-    return max(deadline - time.monotonic(), 0.05)
+    remaining = max(deadline - time.monotonic(), 0.05)
+    if remaining_ips <= 1:
+        return remaining
+    return max(min(remaining, remaining / remaining_ips), 0.25)
 
 
 def _build_safe_sync_backend(inner):
@@ -301,7 +329,7 @@ def _build_safe_sync_backend(inner):
             for index, ip in enumerate(ips):
                 if index > 0 and deadline is not None and time.monotonic() >= deadline:
                     break
-                attempt_timeout = _remaining_connect_timeout(deadline)
+                attempt_timeout = _attempt_connect_timeout(deadline, len(ips) - index)
                 try:
                     return inner.connect_tcp(
                         ip,
@@ -367,7 +395,7 @@ def _build_safe_async_backend(inner):
             for index, ip in enumerate(ips):
                 if index > 0 and deadline is not None and time.monotonic() >= deadline:
                     break
-                attempt_timeout = _remaining_connect_timeout(deadline)
+                attempt_timeout = _attempt_connect_timeout(deadline, len(ips) - index)
                 try:
                     return await inner.connect_tcp(
                         ip,
@@ -397,11 +425,11 @@ def _build_safe_async_backend(inner):
     return _SafeAsyncNetworkBackend()
 
 
-def safe_httpx_sync_transport(*, limits=None):
+def safe_httpx_sync_transport(*, limits=None, trust_env: bool = True, proxy: Any = None):
     import httpcore
     import httpx
 
-    if _has_proxy_configured(None, {}):
+    if proxy is not None or (trust_env and _has_proxy_configured(None, {})):
         return None
     transport = httpx.HTTPTransport(**({"limits": limits} if limits is not None else {}))
     pool = getattr(transport, "_pool", None)
@@ -410,13 +438,16 @@ def safe_httpx_sync_transport(*, limits=None):
     return transport
 
 
-def safe_httpx_async_transport(*, limits=None):
+def safe_httpx_async_transport(*, limits=None, trust_env: bool = True, proxy: Any = None):
     import httpcore
     import httpx
 
-    if _has_proxy_configured(None, {}):
+    if proxy is not None or (trust_env and _has_proxy_configured(None, {})):
         return None
-    transport = httpx.AsyncHTTPTransport(**({"limits": limits} if limits is not None else {}))
+    transport = httpx.AsyncHTTPTransport(
+        **({"limits": limits} if limits is not None else {}),
+        **({"proxy": proxy} if proxy is not None else {}),
+    )
     pool = getattr(transport, "_pool", None)
     if isinstance(pool, httpcore.AsyncConnectionPool):
         pool._network_backend = _build_safe_async_backend(pool._network_backend)
@@ -459,7 +490,8 @@ class AsyncHTTPTransport(AsyncTransport):
             return self._client_getter()
         if self.client is None:
             factory = self.factory
-            if factory is None:
+            is_default_curl = factory is None
+            if is_default_curl:
                 from curl_cffi.requests import AsyncSession
 
                 factory = AsyncSession
@@ -469,14 +501,17 @@ class AsyncHTTPTransport(AsyncTransport):
 
                 if factory is httpx.AsyncClient:
                     timeout = _coerce_httpx_timeout(timeout)
-                    transport = safe_httpx_async_transport()
+                    transport = safe_httpx_async_transport(trust_env=False)
                     self.client = (
-                        factory(timeout=timeout, transport=transport)
+                        factory(timeout=timeout, trust_env=False, transport=transport)
                         if transport is not None
-                        else factory(timeout=timeout)
+                        else factory(timeout=timeout, trust_env=False)
                     )
                     return self.client
-            self.client = factory(timeout=timeout)
+            if is_default_curl:
+                self.client = factory(timeout=timeout, trust_env=False)
+            else:
+                self.client = factory(timeout=timeout)
         return self.client
 
     def _acquire_client(self):
@@ -523,7 +558,11 @@ class AsyncHTTPTransport(AsyncTransport):
         if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
             client.curl_options[CurlOpt.IPRESOLVE] = 1
         hostname = self._origin_host
-        if not hostname or self._origin_is_ip or _has_proxy_configured(client, options):
+        if (
+            not hostname
+            or self._origin_is_ip
+            or _has_proxy_configured(client, options, hostname=hostname)
+        ):
             return
         ips = await _resolve_host_ips(
             hostname,
@@ -563,6 +602,9 @@ class AsyncHTTPTransport(AsyncTransport):
         await self._prepare_curl(options, client=client)
         return await client.request(method, url, **{self._redirect_option: False}, **options)
 
+    async def _acquire_client_async(self):
+        return self._acquire_client()
+
     async def send(self, method, path, *, check_status=True, **options):
         url = self.url(path)
         options = self._options(options, method, path)
@@ -570,7 +612,7 @@ class AsyncHTTPTransport(AsyncTransport):
         response = None
         client = None
         for attempt in (0, 1):
-            client = self._acquire_client()
+            client = await self._acquire_client_async()
             try:
                 response = await self._send(method, url, options, client=client)
                 break
@@ -612,7 +654,7 @@ class AsyncHTTPTransport(AsyncTransport):
         response = None
         try:
             for attempt in (0, 1):
-                client = self._acquire_client()
+                client = await self._acquire_client_async()
                 try:
                     response = await stack.enter_async_context(
                         self._open_stream(method, url, options, client=client)
