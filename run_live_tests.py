@@ -2,18 +2,64 @@
 
 from __future__ import annotations
 
-import concurrent.futures
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
-from tests.live.support.config import PROVIDERS
-from tests.live.support.journal import CLEANUP_FILE, cleanup_file, pending_cleanup_files
+from tests.live.support.actions import DEFAULT_COMBINED_RUN_LIMIT, DEFAULT_SINGLE_API_LIMIT
+from tests.live.support.config import PROVIDERS, supports_process_credentials_lock
+from tests.live.support.errors import SafetyError
+from tests.live.support.journal import (
+    CLEANUP_FILE,
+    cleanup_file,
+    cleanup_journal_provider,
+    pending_cleanup_files,
+)
 
 _DEFAULT_CLEANUP_FILE = CLEANUP_FILE
+
+
+@dataclass(frozen=True)
+class _PhaseOutcome:
+    provider: str
+    api: str
+    returncode: int
+    total: int = 0
+    passed: int = 0
+    skipped_unsupported: int = 0
+    skipped_rate_limited: int = 0
+    skipped_setup_failed: int = 0
+    failed: int = 0
+    feature_skips: int = 0
+    report_missing: bool = False
+    cleanup_pending: bool = False
+
+    @property
+    def is_failure(self) -> bool:
+        return (
+            self.returncode != 0
+            or self.failed > 0
+            or self.skipped_setup_failed > 0
+            or self.report_missing
+            or self.cleanup_pending
+            or self.total == 0
+        )
+
+    @property
+    def has_skips(self) -> bool:
+        return (
+            self.skipped_unsupported > 0
+            or self.skipped_rate_limited > 0
+            or self.skipped_setup_failed > 0
+            or self.feature_skips > 0
+        )
 
 
 def _pending_cleanup_files() -> list[Path]:
@@ -23,8 +69,25 @@ def _pending_cleanup_files() -> list[Path]:
 
 
 def _provider_cleanup_pending(provider: str) -> bool:
-    path = CLEANUP_FILE if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE else cleanup_file(provider)
-    return path.exists() or path.is_symlink()
+    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
+        if not (CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink()):
+            return False
+        try:
+            owner = cleanup_journal_provider(CLEANUP_FILE)
+        except SafetyError:
+            return True
+        return owner is None or owner == provider
+
+    provider_path = cleanup_file(provider)
+    if provider_path.exists() or provider_path.is_symlink():
+        return True
+    if CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink():
+        try:
+            owner = cleanup_journal_provider(CLEANUP_FILE)
+        except SafetyError:
+            return True
+        return owner == provider
+    return False
 
 
 def _matrix() -> tuple[tuple[str, str], ...] | None:
@@ -49,7 +112,7 @@ def _matrix() -> tuple[tuple[str, str], ...] | None:
         return ((provider, api),)
 
     providers = (provider,) if provider else tuple(sorted(PROVIDERS))
-    apis = (api,) if api else ("async",)
+    apis = (api,) if api else ("sync", "async")
     return tuple(
         (current_provider, current_api) for current_provider in providers for current_api in apis
     )
@@ -73,25 +136,78 @@ def _live_command(recovering: bool) -> list[str]:
     ]
 
 
+def _read_phase_report(
+    provider: str, api: str, report_path: Path, returncode: int
+) -> _PhaseOutcome:
+    if not report_path.exists() or report_path.is_symlink():
+        return _PhaseOutcome(provider, api, returncode, report_missing=True)
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _PhaseOutcome(provider, api, returncode, report_missing=True)
+    tests = data.get("tests") if isinstance(data, dict) else None
+    if not isinstance(tests, list):
+        return _PhaseOutcome(provider, api, returncode, report_missing=True)
+
+    counts = {
+        "passed": 0,
+        "skipped_unsupported": 0,
+        "skipped_rate_limited": 0,
+        "skipped_setup_failed": 0,
+        "failed": 0,
+    }
+    feature_skips = 0
+    for item in tests:
+        if not isinstance(item, dict):
+            return _PhaseOutcome(provider, api, returncode, report_missing=True)
+        status = item.get("status")
+        if status not in counts:
+            return _PhaseOutcome(provider, api, returncode, report_missing=True)
+        counts[status] += 1
+        skips = item.get("feature_skips")
+        if isinstance(skips, list):
+            feature_skips += len(skips)
+    return _PhaseOutcome(
+        provider=provider,
+        api=api,
+        returncode=returncode,
+        total=len(tests),
+        passed=counts["passed"],
+        skipped_unsupported=counts["skipped_unsupported"],
+        skipped_rate_limited=counts["skipped_rate_limited"],
+        skipped_setup_failed=counts["skipped_setup_failed"],
+        failed=counts["failed"],
+        feature_skips=feature_skips,
+        report_missing=False,
+    )
+
+
 def _run_provider(
     provider: str,
     apis: list[str],
     *,
     project_root: Path,
+    runtime_dir: Path,
     recovering: bool,
     output_lock: threading.Lock,
-) -> list[tuple[str, str, int]]:
-    failures: list[tuple[str, str, int]] = []
+) -> list[_PhaseOutcome]:
+    outcomes: list[_PhaseOutcome] = []
     command = _live_command(recovering)
+    gate_file = runtime_dir / f"gate-{provider}.json"
+    gate_limit = DEFAULT_SINGLE_API_LIMIT if len(apis) == 1 else DEFAULT_COMBINED_RUN_LIMIT
     for index, api in enumerate(apis):
         if index > 0:
             time.sleep(1)
         with output_lock:
             print(f"\n[{provider}] Live provider API: {provider} ({api})", flush=True)
+        report_file = runtime_dir / f"report-{provider}-{api}.json"
         environment = os.environ.copy()
         environment["WEBAI_LIVE_TESTS"] = "1"
         environment["WEBAI_LIVE_PROVIDER"] = provider
         environment["WEBAI_LIVE_API"] = api
+        environment["WEBAI_LIVE_GATE_FILE"] = str(gate_file)
+        environment["WEBAI_LIVE_GATE_LIMIT"] = str(gate_limit)
+        environment["WEBAI_LIVE_REPORT_FILE"] = str(report_file)
         environment["PYTHONUNBUFFERED"] = "1"
         process = subprocess.Popen(
             command,
@@ -111,19 +227,33 @@ def _run_provider(
         finally:
             process.stdout.close()
         returncode = process.wait()
-        if returncode:
-            failures.append((provider, api, returncode))
-        if _provider_cleanup_pending(provider):
+        cleanup_pending = _provider_cleanup_pending(provider)
+        outcome = _read_phase_report(provider, api, report_file, returncode)
+        if cleanup_pending:
+            outcome = _PhaseOutcome(
+                provider=outcome.provider,
+                api=outcome.api,
+                returncode=outcome.returncode,
+                total=outcome.total,
+                passed=outcome.passed,
+                skipped_unsupported=outcome.skipped_unsupported,
+                skipped_rate_limited=outcome.skipped_rate_limited,
+                skipped_setup_failed=outcome.skipped_setup_failed,
+                failed=outcome.failed,
+                feature_skips=outcome.feature_skips,
+                report_missing=outcome.report_missing,
+                cleanup_pending=True,
+            )
+        outcomes.append(outcome)
+        if cleanup_pending:
             with output_lock:
                 print(
                     f"[{provider}] A cleanup journal remains; stopping {provider} so its account can be recovered first.",
                     file=sys.stderr,
                     flush=True,
                 )
-            if not failures:
-                failures.append((provider, api, returncode or 1))
-            return failures
-    return failures
+            return outcomes
+    return outcomes
 
 
 def main() -> int:
@@ -153,40 +283,67 @@ def main() -> int:
         by_provider.setdefault(provider, []).append(api)
 
     output_lock = threading.Lock()
-    failures: list[tuple[str, str, int]] = []
-    if len(by_provider) == 1:
-        provider, apis = next(iter(by_provider.items()))
-        failures.extend(
-            _run_provider(
-                provider,
-                apis,
-                project_root=project_root,
-                recovering=recovering,
-                output_lock=output_lock,
-            )
-        )
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(by_provider)) as pool:
-            future_map = {
-                pool.submit(
-                    _run_provider,
+    outcomes: list[_PhaseOutcome] = []
+    with tempfile.TemporaryDirectory() as runtime_raw:
+        runtime_dir = Path(runtime_raw)
+        if len(by_provider) == 1:
+            provider, apis = next(iter(by_provider.items()))
+            outcomes.extend(
+                _run_provider(
                     provider,
                     apis,
                     project_root=project_root,
+                    runtime_dir=runtime_dir,
                     recovering=recovering,
                     output_lock=output_lock,
-                ): provider
-                for provider, apis in by_provider.items()
-            }
-            for future in concurrent.futures.as_completed(future_map):
-                failures.extend(future.result())
+                )
+            )
+        else:
+            workers = 1 if not supports_process_credentials_lock() else len(by_provider)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_map = {
+                    pool.submit(
+                        _run_provider,
+                        provider,
+                        apis,
+                        project_root=project_root,
+                        runtime_dir=runtime_dir,
+                        recovering=recovering,
+                        output_lock=output_lock,
+                    ): provider
+                    for provider, apis in by_provider.items()
+                }
+                for future in future_map:
+                    outcomes.extend(future.result())
 
+    outcomes.sort(key=lambda item: (item.provider, item.api))
+    print("\nLive API scenario summary:", flush=True)
+    for item in outcomes:
+        if item.report_missing:
+            print(
+                f"  {item.provider}/{item.api}: unverified (missing scenario report; rc={item.returncode})",
+                flush=True,
+            )
+            continue
+        extra = f" feature_skips={item.feature_skips}" if item.feature_skips else ""
+        print(
+            f"  {item.provider}/{item.api}: ran={item.total} passed={item.passed} "
+            f"unsupported={item.skipped_unsupported} rate_limited={item.skipped_rate_limited} "
+            f"setup_skipped={item.skipped_setup_failed} failed={item.failed}{extra}",
+            flush=True,
+        )
+
+    failures = [item for item in outcomes if item.is_failure]
     if failures:
-        failures.sort(key=lambda item: (item[0], item[1]))
-        failed = ", ".join(f"{provider}/{api}" for provider, api, _ in failures)
-        print(f"\nLive API checks failed: {failed}", file=sys.stderr)
-        return failures[0][2]
-    print("\nOffline tests and the selected live API matrix passed.")
+        failed = ", ".join(f"{item.provider}/{item.api}" for item in failures)
+        print(f"\nLive API checks failed or were unverified: {failed}", file=sys.stderr)
+        return failures[0].returncode or 1
+    if any(item.has_skips for item in outcomes):
+        print(
+            "\nOffline tests passed; live API checks completed with skipped scenarios (partial verification only)."
+        )
+        return 0
+    print("\nOffline tests passed; all live scenarios passed without skips.")
     return 0
 
 
