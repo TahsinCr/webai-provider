@@ -674,14 +674,13 @@ class ClaudeProjectEditor:
                 else None
             )
             if isinstance(native, dict):
+                native_id = native.get("uuid") or native.get("id")
                 file_uuid = native.get("file_uuid")
-                if file_uuid:
+                if file_uuid and (file_uuid == v["resource_id"] or native_id == v["resource_id"]):
                     return await call(
                         "POST", path + "/files/delete_many", json={"file_uuids": [file_uuid]}
                     )
-                if (native.get("uuid") or native.get("id")) == v[
-                    "resource_id"
-                ] and "file_uuid" not in native:
+                if native_id == v["resource_id"] and "file_uuid" not in native:
                     return await call("DELETE", path + "/docs/" + rid)
             current = await self.client.request("project", project_id=project_id)
             doc = next(

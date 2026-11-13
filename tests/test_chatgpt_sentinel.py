@@ -7,6 +7,8 @@ from collections import OrderedDict
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
+import httpx
+
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from webaiprovider.providers.chatgpt.sentinel import (
@@ -729,6 +731,38 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.assertIn("temp-conv-1", client.temporary_conversations)
         self.assertEqual(conversation["id"], "temp-conv-1")
         prewarm.assert_called_once_with()
+
+    def test_rate_limit_cooldown_blocks_subsequent_calls_and_closed_skips_prewarm(self):
+        from webaiprovider.errors import RateLimited
+        from webaiprovider.transport import HTTPTransport
+
+        client = make_client()
+        self.addCleanup(client.close)
+        client.http = Mock()
+        client.http.is_closed = False
+        client.http.request = Mock(return_value=httpx.Response(429, headers={"retry-after": "30"}))
+        client.transport = HTTPTransport(
+            "https://chatgpt.com",
+            client_getter=lambda: client.http,
+            headers=client._transport_headers,
+        )
+
+        with self.assertRaises(RateLimited):
+            client.request("GET", "https://chatgpt.com/backend-api/conversations")
+        self.assertEqual(client.http.request.call_count, 1)
+
+        with self.assertRaises(RateLimited):
+            client.request("GET", "https://chatgpt.com/backend-api/conversations")
+        self.assertEqual(client.http.request.call_count, 1)
+
+        with self.assertRaises(RateLimited):
+            client.create_sentinel_headers()
+        self.assertEqual(client.http.request.call_count, 1)
+
+        client.close()
+        client.trigger_sentinel_prewarm()
+        self.assertIsNone(client._prewarmed_sentinel)
+        self.assertFalse(client._prewarming)
 
 
 if __name__ == "__main__":

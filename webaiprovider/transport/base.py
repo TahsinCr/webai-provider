@@ -198,13 +198,24 @@ class _TransportPolicy:
         if not 200 <= code < 300:
             raise ProviderError(f"Provider request failed (HTTP {code})")
 
+    def record_rate_limit(self, retry_after: float | None) -> None:
+        """Record a positive finite rate-limit deadline on this transport."""
+        if (
+            isinstance(retry_after, (int, float))
+            and not isinstance(retry_after, bool)
+            and math.isfinite(retry_after)
+            and retry_after > 0
+        ):
+            deadline = time.monotonic() + float(retry_after)
+            if deadline > self._rate_limited_until:
+                self._rate_limited_until = deadline
+
     def _check_response(self, response, check_status):
         if check_status:
             try:
                 self.check(response)
             except RateLimited as error:
-                if error.retry_after is not None and error.retry_after > 0:
-                    self._rate_limited_until = time.monotonic() + error.retry_after
+                self.record_rate_limit(error.retry_after)
                 raise
 
     def _check_size(self, response):

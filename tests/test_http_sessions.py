@@ -692,3 +692,79 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(read_session(path), {"sessionKey": "token-2", "cf_bm": "v6"})
             finally:
                 await http_session.close()
+
+    async def test_chunked_grok_and_cloudflare_challenge_cookies_persist_immediately(self):
+        from webaiprovider.transport import session as session_module
+
+        cases = [
+            (
+                "https://claude.ai",
+                "sessionKey",
+                {"sessionKey.0": "part-a", "sessionKey.1": "part-b", "misc": "1"},
+                "sessionKey.0",
+                "part-a2",
+            ),
+            (
+                "https://grok.com",
+                None,
+                {"sso": "sso-1", "sso-rw": "rw-1", "cf_clearance": "cf-1"},
+                "sso",
+                "sso-2",
+            ),
+            (
+                "https://grok.com",
+                None,
+                {"sso": "sso-1", "sso-rw": "rw-1", "__cf_bm": "bm-1"},
+                "__cf_bm",
+                "bm-2",
+            ),
+            (
+                "https://claude.ai",
+                "sessionKey",
+                {"sessionKey": "k1", "cf_clearance": "cf-1"},
+                "cf_clearance",
+                "cf-2",
+            ),
+        ]
+        for origin, required_cookie, initial, mutated_name, mutated_value in cases:
+            with self.subTest(origin=origin, mutated_name=mutated_name):
+                with tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / "session.json"
+                    save_session(path, initial)
+                    domain = origin.removeprefix("https://")
+                    jar = httpx.Cookies()
+                    for k, v in initial.items():
+                        jar.set(k, v, domain=domain, path="/")
+
+                    async def fake_request(*_args, jar=jar, domain=domain, **_kwargs):
+                        jar.set(mutated_name, mutated_value, domain=domain, path="/")
+                        return httpx.Response(200, json={"ok": True})
+
+                    fake_client = SimpleNamespace(
+                        cookies=jar,
+                        request=AsyncMock(side_effect=fake_request),
+                        close=AsyncMock(),
+                    )
+                    save_calls = []
+                    original_save = session_module.save_session_async
+
+                    async def counting_save(target_path, cookies, save_calls=save_calls):
+                        save_calls.append(dict(cookies))
+                        await original_save(target_path, cookies)
+
+                    http_session = HttpSession(
+                        origin,
+                        path,
+                        required_cookie,
+                        client_factory=lambda **_: fake_client,
+                    )
+                    try:
+                        with patch.object(
+                            session_module, "save_session_async", side_effect=counting_save
+                        ):
+                            await http_session.send("GET", "/probe")
+                            self.assertEqual(len(save_calls), 1)
+                            self.assertFalse(http_session._dirty)
+                            self.assertEqual(read_session(path)[mutated_name], mutated_value)
+                    finally:
+                        await http_session.close()

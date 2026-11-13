@@ -1303,3 +1303,72 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([f["name"] for f in meta.files], ["one.png", "two.png"])
         finally:
             await provider.close()
+
+    async def test_session_flushes_psidcc_immediately_and_enforces_429_cooldown(self):
+        from webaiprovider.accounts.credentials import save_session
+        from webaiprovider.errors import RateLimited
+        from webaiprovider.providers.gemini import session as gemini_session_mod
+        from webaiprovider.providers.gemini.rpc import RPCPayload
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "gemini.json"
+            save_session(
+                path,
+                {
+                    "__Secure-1PSID": "p1",
+                    "__Secure-1PSIDCC": "cc1",
+                    "SIDCC": "s1",
+                },
+            )
+            cookie_state = {
+                "__Secure-1PSID": "p1",
+                "__Secure-1PSIDCC": "cc1",
+                "SIDCC": "s1",
+            }
+            responses = iter(
+                [
+                    SimpleNamespace(status_code=200, headers={}, content=b"", text=""),
+                    SimpleNamespace(
+                        status_code=429,
+                        headers={"retry-after": "30"},
+                        content=b"",
+                        text="",
+                    ),
+                ]
+            )
+            post = AsyncMock(side_effect=lambda *_args, **_kwargs: next(responses))
+            http = SimpleNamespace(
+                cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
+                post=post,
+                close=AsyncMock(),
+            )
+            save_calls = []
+            original_save = gemini_session_mod.save_session_async
+
+            async def counting_save(target_path, record):
+                save_calls.append(dict(record))
+                await original_save(target_path, record)
+
+            session = GeminiSession(path)
+            session.http = http
+            session.verified = True
+            session.token = "tok-1"
+            session.sid = "sid-1"
+            try:
+                with patch.object(
+                    gemini_session_mod, "save_session_async", side_effect=counting_save
+                ):
+                    await session.persist(force=True)
+                    cookie_state["__Secure-1PSIDCC"] = "cc2"
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                    self.assertEqual(len(save_calls), 2)
+                    self.assertFalse(session._dirty)
+
+                with self.assertRaises(RateLimited):
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                self.assertEqual(post.await_count, 2)
+                with self.assertRaises(RateLimited):
+                    await session.batch([RPCPayload("ESY5D", "[]")])
+                self.assertEqual(post.await_count, 2)
+            finally:
+                await session.close()

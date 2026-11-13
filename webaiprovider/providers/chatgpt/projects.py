@@ -134,7 +134,8 @@ class ChatGPTProjectEditor:
                     )
                 elif operation == "remove_source":
                     rid = values["resource_id"]
-                    if values.get("resource") is None:
+                    resource = values.get("resource")
+                    if resource is None or resource.id != rid:
                         current = client.get_project(project_id)
                         if not any(
                             (x.get("file_id") or x.get("id")) == rid for x in current["resources"]

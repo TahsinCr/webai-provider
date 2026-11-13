@@ -13,6 +13,7 @@ from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
 from ...transport import AsyncRequestTransport, AsyncTransport, TransportConfig
+from ...transport.retry import parse_retry_after
 
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
@@ -28,6 +29,10 @@ _SECONDARY_PERSIST_INTERVAL = 5.0
 _CRITICAL_PERSIST_FIELDS = (
     "__Secure-1PSID",
     "__Secure-1PSIDTS",
+    "__Secure-1PSIDCC",
+    "__Secure-3PSIDTS",
+    "__Secure-3PSIDCC",
+    "SIDCC",
     "token",
     "build",
     "sid",
@@ -134,7 +139,12 @@ class GeminiSession:
         if transport is None:
             raise ValueError("Gemini request origin is not allowed")
         path = target.path + ("?" + target.query if target.query else "")
-        return await transport.send(method, path, check_status=False, **options)
+        response = await transport.send(method, path, check_status=False, **options)
+        if response.status_code == 429:
+            record = getattr(transport, "record_rate_limit", None)
+            if callable(record):
+                record(parse_retry_after(response.headers.get("retry-after"), now=time.time()))
+        return response
 
     def params(self):
         current = self.request_id

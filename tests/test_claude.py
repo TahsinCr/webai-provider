@@ -641,6 +641,18 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         transport.request.assert_not_awaited()
 
+        transport.request = AsyncMock(return_value={"docs": [], "files": []})
+        with self.assertRaises(ValueError):
+            await editor.write(
+                "remove_source",
+                PROJECT,
+                resource_id="foreign-id",
+                resource=ResourceData(
+                    "d-1", "doc.txt", metadata={"native": {"uuid": "d-1", "file_uuid": "fu-1"}}
+                ),
+            )
+        transport.request.assert_awaited_once_with("project", project_id=PROJECT)
+
     async def test_projects_update_reuses_staged_snapshot_without_duplicate_get(self):
         from webaiprovider.collections import Page
         from webaiprovider.resources.common import Origin

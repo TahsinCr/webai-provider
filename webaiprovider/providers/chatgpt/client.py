@@ -95,6 +95,7 @@ class ChatGPTClient:
         self._sentinel_runtime_key: str | None = None
         self._prewarmed_sentinel: tuple[float, str, dict[str, str]] | None = None
         self._prewarming = False
+        self._closed = False
         timing = current_send_timing()
         http_started = time.perf_counter_ns() if timing is not None else None
         self.http = httpx.Client(
@@ -122,6 +123,7 @@ class ChatGPTClient:
 
     def close(self) -> None:
         with self._sentinel_lock:
+            self._closed = True
             self._prewarmed_sentinel = None
             self._prewarming = False
             if self._sentinel_runtime is not None:
@@ -170,6 +172,21 @@ class ChatGPTClient:
             lock = threading.Lock()
             self._refresh_lock = lock
         return lock
+
+    def _is_closed(self) -> bool:
+        return (
+            getattr(self, "_closed", False) is True
+            or getattr(self.http, "is_closed", False) is True
+        )
+
+    def _sentinel_user_agent(self) -> str:
+        with self._state_guard:
+            return self.headers.get("user-agent") or "Mozilla/5.0"
+
+    def _record_rate_limit(self, delay: float | None) -> None:
+        record = getattr(self.transport, "record_rate_limit", None)
+        if callable(record):
+            record(delay)
 
     def _remember_conversation(self, conversation: dict[str, Any]) -> None:
         conversation_id = conversation.get("conversation_id") or conversation.get("id")
@@ -266,6 +283,10 @@ class ChatGPTClient:
             headers=headers,
             timeout=30,
         )
+        if response.status_code == 429:
+            self._record_rate_limit(
+                parse_retry_after(response.headers.get("retry-after"), now=time.time())
+            )
         if response.status_code != 200:
             raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
         try:
@@ -319,10 +340,8 @@ class ChatGPTClient:
                             "The session could not be refreshed; verify it again in the Accounts section."
                         ) from None
         if response.status_code == 429:
-            try:
-                delay = float(response.headers.get("retry-after", ""))
-            except ValueError:
-                delay = None
+            delay = parse_retry_after(response.headers.get("retry-after"), now=time.time())
+            self._record_rate_limit(delay)
             raise RateLimited(delay)
         if response.status_code == 404:
             from ...errors import RemoteNotFound
@@ -910,6 +929,7 @@ class ChatGPTClient:
                 timing.record("sse_connect_ms", response_opened - sse_connect_started)
             if response.status_code == 429:
                 retry_after = response.headers.get("retry-after")
+                self._record_rate_limit(parse_retry_after(retry_after, now=time.time()))
                 suffix = f"; retry after {retry_after} seconds" if retry_after else ""
                 raise ChatGPTError(f"ChatGPT web rate limit reached{suffix}")
             if response.status_code >= 400:
@@ -1172,7 +1192,7 @@ class ChatGPTClient:
 
     def create_sentinel_headers(self) -> dict[str, str]:
         timing = current_send_timing()
-        user_agent = self.headers.get("user-agent") or "Mozilla/5.0"
+        user_agent = self._sentinel_user_agent()
         with self._sentinel_lock:
             prewarmed = getattr(self, "_prewarmed_sentinel", None)
             if prewarmed is not None:
@@ -1187,13 +1207,14 @@ class ChatGPTClient:
 
     def trigger_sentinel_prewarm(self) -> None:
         if (
-            getattr(self.create_sentinel_headers, "__func__", None)
+            self._is_closed()
+            or getattr(self.create_sentinel_headers, "__func__", None)
             is not ChatGPTClient.create_sentinel_headers
         ):
             return
-        user_agent = self.headers.get("user-agent") or "Mozilla/5.0"
+        user_agent = self._sentinel_user_agent()
         with self._sentinel_lock:
-            if self._prewarming:
+            if self._is_closed() or self._prewarming:
                 return
             if self._prewarmed_sentinel is not None:
                 created_at, prewarm_key, _ = self._prewarmed_sentinel
@@ -1204,16 +1225,16 @@ class ChatGPTClient:
         def _worker() -> None:
             try:
                 with self._sentinel_lock:
-                    if getattr(self.http, "is_closed", False) is True:
+                    if self._is_closed():
                         return
-                    ua = self.headers.get("user-agent") or "Mozilla/5.0"
+                    ua = self._sentinel_user_agent()
                     runtime = self._get_or_create_sentinel_runtime(ua)
                     # Serialize the entire proof/prepare/enforcement exchange with a
                     # foreground send. The runtime retains the last initial proof, so
                     # overlapping exchanges could pair one request's requirements with
                     # another request's proof.
                     headers = self._create_sentinel_headers_direct(runtime, None)
-                    if getattr(self.http, "is_closed", False) is not True:
+                    if not self._is_closed():
                         self._prewarmed_sentinel = (time.monotonic(), ua, headers)
             except Exception:
                 pass
@@ -1382,7 +1403,9 @@ class ChatGPTClient:
             timeout=httpx.Timeout(300.0),
         ) as processing:
             if processing.status_code == 429:
-                raise RateLimited(parse_retry_after(processing.headers.get("retry-after")))
+                delay = parse_retry_after(processing.headers.get("retry-after"), now=time.time())
+                self._record_rate_limit(delay)
+                raise RateLimited(delay)
             if processing.status_code in (401, 403):
                 raise ChatGPTAuthenticationError(
                     "ChatGPT session expired or was rejected; verify the account"

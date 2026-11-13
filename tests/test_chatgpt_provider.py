@@ -563,6 +563,15 @@ class ChatGPTProviderOptimizationTests(ChatGPTProviderTests):
             resource=ResourceData("file-1", "doc.txt", "file"),
         )
         self.assertEqual(mock_client.get_project.call_count, 0)
+        mock_client.get_project = Mock(return_value={"resources": []})
+        with self.assertRaises(ValueError):
+            await editor.write(
+                "remove_source",
+                "p-1",
+                resource_id="foreign-id",
+                resource=ResourceData("file-1", "doc.txt", "file"),
+            )
+        self.assertEqual(mock_client.get_project.call_count, 1)
         self.assertEqual(mock_client.request.call_args_list[0].args[0], "PATCH")
         self.assertEqual(mock_client.request.call_args_list[0].kwargs["json"]["emoji"], "sparkles")
         self.assertEqual(mock_client.request.call_args_list[1].args[0], "DELETE")
