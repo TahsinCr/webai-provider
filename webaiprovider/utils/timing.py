@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator
 
 _current: ContextVar[SendTiming | None] = ContextVar("webaiprovider_send_timing", default=None)
 
@@ -22,11 +22,6 @@ class SendTiming:
         self._durations: dict[str, float] = {}
         self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
-
-    def record_elapsed(self, name: str, start_ns: int) -> None:
-        value = max(0, time.perf_counter_ns() - start_ns) / 1_000_000
-        with self._lock:
-            self._durations[name] = value
 
     def record(self, name: str, elapsed_ns: int) -> None:
         with self._lock:

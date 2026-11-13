@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 import time
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -229,14 +228,3 @@ class BrowserSession:
                 }
             time.sleep(0.1)
         raise ChatGPTError("Chrome started but its debugger did not become ready")
-
-    def open_login(self) -> dict[str, Any]:
-        opened = webbrowser.open("https://chatgpt.com/", new=2)
-        if not opened:
-            raise ChatGPTError("default browser could not be opened")
-        return {
-            "browser": "default",
-            "opened": True,
-            "authenticated": False,
-            "reason": "browser_login_does_not_import_the_application_session",
-        }

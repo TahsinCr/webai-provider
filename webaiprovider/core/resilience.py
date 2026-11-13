@@ -14,9 +14,7 @@ T = TypeVar("T")
 def _is_infrastructure_failure(exc: BaseException) -> bool:
     if isinstance(exc, (RateLimited, asyncio.CancelledError)):
         return False
-    if getattr(exc, "code", None) in {"rate_limited", "account_paused"}:
-        return False
-    return True
+    return getattr(exc, "code", None) not in {"rate_limited", "account_paused"}
 
 
 class ProviderResilienceRegistry:
@@ -45,17 +43,8 @@ class ProviderResilienceRegistry:
     def rate_limit_remaining(self, key: str) -> float:
         return self._cooldowns.remaining(key)
 
-    async def wait_rate_limit_async(self, key: str) -> None:
-        await self._cooldowns.wait_async(key)
-
-    def wait_rate_limit(self, key: str) -> None:
-        self._cooldowns.wait(key)
-
     def circuit_state(self) -> str:
         return self._circuit_breaker.state
-
-    def reset_circuit(self) -> None:
-        self._circuit_breaker.reset()
 
     async def execute_protected(
         self,

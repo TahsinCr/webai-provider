@@ -21,8 +21,8 @@ from webaiprovider.providers.chatgpt import (
     SessionPaths,
 )
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
+from webaiprovider.providers.chatgpt.discovery import project_id
 from webaiprovider.providers.chatgpt.errors import ChatGPTError
-from webaiprovider.providers.chatgpt.formats import normalize_conversation
 from webaiprovider.resources.model.model import ModelCatalog
 
 from .fixtures import CATALOG
@@ -167,8 +167,7 @@ class DiscoveryTests(unittest.TestCase):
         page = self.client.list_project_chats("g-p-work", "next-chat")
         self.assertEqual(page["items"][0]["project_id"], "g-p-work")
         self.assertEqual(self.requests[-1].url.params["cursor"], "next-chat")
-        normalized = normalize_conversation({"id": "remote-chat", "gizmo_id": "g-p-work"})
-        self.assertEqual(normalized["project_id"], "g-p-work")
+        self.assertEqual(project_id({"id": "remote-chat", "gizmo_id": "g-p-work"}), "g-p-work")
 
     def test_common_provider_exposes_the_same_real_catalog_and_project_records(self):
         # The common provider owns client lifetime; give each call its own transport.
@@ -237,14 +236,16 @@ class DiscoveryTests(unittest.TestCase):
             self.client.http.close()
             self.client.http = httpx.Client(
                 transport=httpx.MockTransport(
-                    lambda _: httpx.Response(
+                    lambda _, payload=payload: httpx.Response(
                         200, headers={"content-type": "text/event-stream"}, text=payload
                     )
                 )
             )
-            with patch.object(self.client, "create_sentinel_headers", return_value={}):
-                with self.assertRaises(ChatGPTError):
-                    self.client.send_prompt_direct(None, "hello", [])
+            with (
+                patch.object(self.client, "create_sentinel_headers", return_value={}),
+                self.assertRaises(ChatGPTError),
+            ):
+                self.client.send_prompt_direct(None, "hello", [])
 
     def test_timezone_uses_a_real_iana_name_or_omits_the_optional_field(self):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -380,12 +381,12 @@ class DiscoveryTests(unittest.TestCase):
             buffers.append(weakref.ref(value))
             return value
 
-        with patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer):
-            with (
-                patch.object(self.client, "create_sentinel_headers", return_value={}),
-                self.assertRaisesRegex(ChatGPTError, "stream failed"),
-            ):
-                self.client.send_prompt_direct(None, "hello", [])
+        with (
+            patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer),
+            patch.object(self.client, "create_sentinel_headers", return_value={}),
+            self.assertRaisesRegex(ChatGPTError, "stream failed"),
+        ):
+            self.client.send_prompt_direct(None, "hello", [])
 
         gc.collect()
         self.assertEqual(len(buffers), 1)

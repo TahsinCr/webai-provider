@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from collections import deque
 from typing import Any
 
@@ -81,20 +80,9 @@ class ProviderTelemetry:
         }
 
 
-class Stopwatch:
-    __slots__ = ("_start",)
-
-    def __init__(self) -> None:
-        self._start = time.monotonic()
-
-    def elapsed(self) -> float:
-        return time.monotonic() - self._start
-
-
 __all__ = [
     "OperationMetrics",
     "ProviderTelemetry",
-    "Stopwatch",
     "correlation_context",
     "current_correlation_id",
 ]

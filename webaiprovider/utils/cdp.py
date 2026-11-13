@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import time
@@ -130,17 +131,19 @@ def _debugger_websocket(value: str) -> tuple[str, str]:
 
 def _get_json(base: str, path: str, timeout: float = _DEFAULT_TIMEOUT):
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            with client.stream("GET", f"{base}{path}") as response:
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise DevToolsError(
-                        f"Connected browser debugging endpoint returned HTTP {response.status_code}"
-                    )
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    if len(body) + len(chunk) > _MAX_METADATA_BYTES:
-                        raise DevToolsError("Browser debugging metadata exceeds the size limit")
-                    body.extend(chunk)
+        with (
+            httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client,
+            client.stream("GET", f"{base}{path}") as response,
+        ):
+            if response.status_code < 200 or response.status_code >= 300:
+                raise DevToolsError(
+                    f"Connected browser debugging endpoint returned HTTP {response.status_code}"
+                )
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                if len(body) + len(chunk) > _MAX_METADATA_BYTES:
+                    raise DevToolsError("Browser debugging metadata exceeds the size limit")
+                body.extend(chunk)
     except httpx.HTTPError as error:
         raise DevToolsError("Connected browser debugging endpoint is unavailable") from error
     try:
@@ -282,34 +285,14 @@ class DevToolsConnection:
                 return message
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(websocket.WebSocketException, OSError):
             self._socket.close()
-        except (websocket.WebSocketException, OSError):
-            pass
 
     def __enter__(self) -> DevToolsConnection:
         return self
 
     def __exit__(self, *_exc) -> None:
         self.close()
-
-
-def open_provider_page(cdp_url: str, provider_url: str) -> None:
-    """Open the provider's root page only when no matching tab is already open."""
-    base = _local_http_base(cdp_url)
-    origin = _provider_origin(provider_url)
-    pages = _get_json(base, "/json/list")
-    if _find_page(pages, origin) is not None:
-        return
-
-    version = _get_json(base, "/json/version")
-    socket_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
-    if not isinstance(socket_url, str):
-        raise DevToolsError("Browser did not provide a debugging socket")
-    with DevToolsConnection(socket_url) as connection:
-        result = connection.call("Target.createTarget", {"url": f"{origin}/", "background": False})
-    if not isinstance(result.get("targetId"), str) or not result["targetId"]:
-        raise DevToolsError("Browser did not create a provider tab")
 
 
 def read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]:

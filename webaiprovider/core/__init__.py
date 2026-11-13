@@ -9,7 +9,6 @@ from .state import OperationState, OperationStateMachine
 from .telemetry import (
     OperationMetrics,
     ProviderTelemetry,
-    Stopwatch,
     correlation_context,
     current_correlation_id,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "ProviderResilienceRegistry",
     "ProviderResourceScope",
     "ProviderTelemetry",
-    "Stopwatch",
     "PortalBridge",
     "correlation_context",
     "current_correlation_id",

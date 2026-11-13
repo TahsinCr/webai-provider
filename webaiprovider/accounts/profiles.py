@@ -102,12 +102,6 @@ def import_cookies(provider):
     return _import(provider)
 
 
-def _main():
-    from .cookies import _main as _main_impl
-
-    return _main_impl()
-
-
 def _failure_code(error):
     if isinstance(error, ImportError):
         return 3

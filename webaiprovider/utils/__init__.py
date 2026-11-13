@@ -3,7 +3,6 @@ from .cdp import (
     DevToolsError,
     capture_chatgpt_auth,
     is_devtools_available,
-    open_provider_page,
     read_provider_cookies,
 )
 from .files import DownloadSource, NativeDownloadClient, cookie_header
@@ -25,7 +24,6 @@ __all__ = [
     "current_send_timing",
     "fit_attachments",
     "is_devtools_available",
-    "open_provider_page",
     "policy_for",
     "read_provider_cookies",
     "use_send_timing",
