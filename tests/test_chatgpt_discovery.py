@@ -425,6 +425,7 @@ class DiscoveryTests(unittest.TestCase):
         )
 
         _cached_system_timezone.cache_clear()
+        self.addCleanup(_cached_system_timezone.cache_clear)
         with patch(
             "webaiprovider.providers.chatgpt.client.ZoneInfo",
             side_effect=lambda value: Mock(key=value),
