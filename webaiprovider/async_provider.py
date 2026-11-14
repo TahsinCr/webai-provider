@@ -93,11 +93,30 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
     model: str | None = None
     effort: str | None = None
     if message.model is not None:
-        if chat.session is None:
-            raise UnsupportedOperationError("Model selection requires an active provider session")
-        selection = await chat.session.models.resolve(message.model)
-        model = selection.model.id
-        effort = selection.effort.id if selection.effort is not None else None
+        if isinstance(message.model, ModelSelection):
+            target_provider = message.model.model.provider
+            model = message.model.model.id
+            effort = message.model.effort.id if message.model.effort is not None else None
+        elif isinstance(message.model, ModelRef):
+            target_provider = message.model.provider
+            model = message.model.id
+        elif isinstance(message.model, EffortRef):
+            target_provider = message.model.provider
+            model = message.model.model_id
+            effort = message.model.id
+        else:
+            target_provider = None
+        if target_provider is not None:
+            if target_provider != provider.id:
+                raise RemoteNotFound(f"{target_provider} model is not available in this catalog")
+        else:
+            if chat.session is None:
+                raise UnsupportedOperationError(
+                    "Model selection requires an active provider session"
+                )
+            selection = await chat.session.models.resolve(message.model)
+            model = selection.model.id
+            effort = selection.effort.id if selection.effort is not None else None
 
     attachments = tuple(
         {

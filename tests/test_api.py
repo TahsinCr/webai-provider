@@ -37,7 +37,7 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.errors import ProviderError, RemoteNotFound, UnsupportedOperationError
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model.model import (
     EffortSet,
@@ -515,6 +515,17 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ChatGPTModels.GPT_6_INSTANT.id, "gpt-6-instant")
         self.assertEqual(ClaudeModels.SONNET_5_5.id, "claude-sonnet-5-5")
         self.assertEqual(GeminiModels.FLASH.id, "gemini-flash")
+        self.assertEqual(GeminiModels.HYDROGEN.id, "gemini-hydrogen")
+        self.assertEqual(
+            [model.id for model in GeminiModels.list()],
+            [
+                "gemini-flash-lite",
+                "gemini-flash",
+                "gemini-hydrogen",
+                "gemini-pro",
+                "gemini-argon",
+            ],
+        )
         self.assertEqual(GrokModels.GROK_3.id, "fast")
 
         candidates = [
@@ -637,16 +648,37 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
         chat = await provider.chats.create()
 
+        with patch.object(
+            chat.session.models, "resolve", wraps=chat.session.models.resolve
+        ) as resolve_spy:
+            operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
+            await operation.start()
+            self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
+            self.assertIsNone(provider.requests[-1].effort)
+
+            operation = chat.messages.create(
+                "test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH
+            )
+            await operation.start()
+            self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
+            self.assertEqual(provider.requests[-1].effort, "extended")
+
+            operation = chat.messages.create(
+                "test", model=ChatGPTModels.GPT_6_THINKING.select("standard")
+            )
+            await operation.start()
+            self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
+            self.assertEqual(provider.requests[-1].effort, "standard")
+
+            with self.assertRaises(RemoteNotFound):
+                await chat.messages.create("test", model=GeminiModels.HYDROGEN).start()
+
+            resolve_spy.assert_not_awaited()
+            provider._load_model_catalog.assert_not_awaited()
+
         operation = chat.messages.create("test", model="gpt-6-instant")
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-instant")
-        operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
-        await operation.start()
-        self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
-        operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH)
-        await operation.start()
-        self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
-        self.assertEqual(provider.requests[-1].effort, "extended")
         operation = chat.messages.create("test", model=Models.AUTO)
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-instant")
