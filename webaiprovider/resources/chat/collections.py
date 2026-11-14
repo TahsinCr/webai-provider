@@ -205,6 +205,8 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
 
     def _get_cached_or_fetch(self, chat: AsyncChat | str):
         if isinstance(chat, AsyncChat):
+            if chat.session is not self.session:
+                raise ValueError("Chat belongs to a different provider session")
             return chat
         try:
             return QueryableCollection._get_from(self._items, chat)
@@ -266,7 +268,8 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         target = self._get_cached_or_fetch(chat)
         if target is None:
             target = await self.get(str(chat), include_projects=True)
-        await target.delete()
+        if target.remote_id:
+            await self.session._require_provider().delete_chat(target.remote_id)
         self._items = [c for c in self._items if c.id != target.id]
 
 

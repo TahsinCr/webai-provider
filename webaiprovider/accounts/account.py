@@ -18,15 +18,20 @@ class Account:
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
     name: str | None = None
     is_active: bool = True
+    _memory_store: MemoryCredentialStore | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", ProviderType.parse(self.provider).value)
+        if isinstance(self.credentials, dict):
+            object.__setattr__(self, "_memory_store", MemoryCredentialStore(self.credentials))
 
     def store(self) -> CredentialStore:
         if isinstance(self.credentials, CredentialStore):
             return self.credentials
-        if isinstance(self.credentials, dict):
-            return MemoryCredentialStore(self.credentials)
+        if self._memory_store is not None:
+            return self._memory_store
         return FileCredentialStore(self.credentials)
 
     @classmethod

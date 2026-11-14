@@ -5,6 +5,7 @@ import stat
 import tempfile
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from weakref import WeakValueDictionary
@@ -125,7 +126,7 @@ class FileCredentialStore:
 class MemoryCredentialStore:
     def __init__(self, initial: dict | None = None):
         self._lock = threading.Lock()
-        self._value = dict(initial) if initial is not None else None
+        self._value = deepcopy(initial) if initial is not None else None
 
     def exists(self) -> bool:
         with self._lock:
@@ -142,13 +143,13 @@ class MemoryCredentialStore:
         with self._lock:
             if self._value is None:
                 raise AccountPaused("No valid saved session; verify the account")
-            return dict(self._value)
+            return deepcopy(self._value)
 
     def save(self, value: dict) -> None:
         if not isinstance(value, dict):
             raise ValueError("session shape must be dict")
         with self._lock:
-            self._value = dict(value)
+            self._value = deepcopy(value)
 
 
 def session_exists(source: Any) -> bool:

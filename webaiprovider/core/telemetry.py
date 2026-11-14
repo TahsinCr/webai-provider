@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from statistics import median
 from typing import Any
 
 from eventflow import OperationMetrics, correlation_context, current_correlation_id
@@ -54,9 +55,7 @@ class ProviderTelemetry:
     def median_ttft(self) -> float | None:
         if not self._ttft_records:
             return None
-        sorted_records = sorted(self._ttft_records)
-        mid = len(sorted_records) // 2
-        return sorted_records[mid]
+        return float(median(self._ttft_records))
 
     def metrics(self) -> OperationMetrics:
         return OperationMetrics(

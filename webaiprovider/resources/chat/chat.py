@@ -112,7 +112,7 @@ class AsyncChat:
                 conversation_id=self.remote_id,
             )
             return await download_source(source)
-        return b""
+        raise UnsupportedOperationError("Cannot download from an unpersisted chat")
 
     async def rename(self, title: str) -> AsyncChat:
         if self.session is not None:
@@ -121,10 +121,10 @@ class AsyncChat:
         return self
 
     async def delete(self) -> None:
-        if self.remote_id:
-            if self.session is None:
-                raise ProviderError("Chat is not attached to an open provider")
-            await self.session._require_provider().delete_chat(self.remote_id)
+        if self.session is not None:
+            await self.session.chats.delete(self)
+        elif self.remote_id:
+            raise ProviderError("Chat is not attached to an open provider")
 
     def __repr__(self) -> str:
         return f"<AsyncChat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable
+from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
@@ -83,16 +84,12 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
                 metadata=metadata,
                 chat=self.chat,
             )
-        elif isinstance(message, Message):
-            msg = message._resource
-            msg.chat = self.chat
-            if model is not None:
-                msg.model = model
-            if attachments is not None:
-                for item in attachments:
-                    msg.attachments.create(item)
         else:
-            msg = message
+            msg = message._resource if isinstance(message, Message) else message
+            if msg.chat is not None and msg.chat is not self.chat:
+                raise ValueError("Message belongs to a different chat")
+            if any(item is msg for item in self._items):
+                raise ValueError("Message is already in this chat")
             msg.chat = self.chat
             if model is not None:
                 msg.model = model
@@ -140,7 +137,7 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
         msg = AsyncMessage(
             content=new_content,
             model=model if model is not None else target.model,
-            attachments=target.attachments,
+            attachments=Attachments(copy(item) for item in target.attachments),
             metadata={
                 **target.metadata,
                 **options,
@@ -163,7 +160,7 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
         msg = AsyncMessage(
             content=target.content,
             model=model if model is not None else target.model,
-            attachments=target.attachments,
+            attachments=Attachments(copy(item) for item in target.attachments),
             metadata={
                 **target.metadata,
                 **options,
