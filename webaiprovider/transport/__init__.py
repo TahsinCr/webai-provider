@@ -8,7 +8,7 @@ from .base import (
     TransportConfig,
     TransportResponse,
 )
-from .http import AsyncHTTPTransport, AsyncHTTPXTransport, AsyncRequestTransport, HTTPTransport
+from .http import AsyncHTTPTransport, AsyncRequestTransport, HTTPTransport
 from .retry import parse_retry_after
 from .session import HttpSession
 from .threaded import PortalTransport, ThreadedTransport
@@ -23,7 +23,6 @@ __all__ = [
     "StreamResponse",
     "AsyncStreamResponse",
     "AsyncHTTPTransport",
-    "AsyncHTTPXTransport",
     "AsyncRequestTransport",
     "HTTPTransport",
     "HttpSession",

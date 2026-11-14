@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from ...collections import AsyncManageableCollection, QueryableCollection, _CollectionFacade
@@ -77,9 +78,16 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
                 raise UnsupportedOperationError(f"Project resource type is unsupported: {kind}")
 
             known_ids = {record.get("id") for record in self._items}
-            updated = await session._require_provider().add_project_resource(
-                self.project.remote_id, kind, **options
-            )
+            provider = session._require_provider()
+            current = self.project._provider_project
+            stage = getattr(type(provider), "_stage_project_read", None)
+            if (
+                isinstance(current, ProviderProject)
+                and current.origin.remote_id == self.project.remote_id
+                and callable(stage)
+            ):
+                stage(provider, current)
+            updated = await provider.add_project_resource(self.project.remote_id, kind, **options)
             if not isinstance(updated, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
             added = [resource for resource in updated.resources if resource.id not in known_ids]
@@ -88,6 +96,7 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
             resource = matching[-1] if matching else added[0] if len(added) == 1 else None
             if resource is None:
                 raise ProviderError("Provider did not confirm the created project resource")
+            self.project._provider_project = updated
             existing = {record.get("id"): record for record in self._items}
             self._items = [
                 {**existing.get(remote.id, {}), **_resource_record(remote)}
@@ -113,9 +122,29 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
             if self.project.remote_id:
                 if session is None:
                     raise ProviderError("Project is not attached to an open provider")
-                await session._require_provider().remove_project_resource(
+                provider = session._require_provider()
+                current = self.project._provider_project
+                stage = getattr(type(provider), "_stage_project_read", None)
+                if (
+                    isinstance(current, ProviderProject)
+                    and current.origin.remote_id == self.project.remote_id
+                    and callable(stage)
+                ):
+                    stage(provider, current)
+                updated = await provider.remove_project_resource(
                     self.project.remote_id, resource_id
                 )
+                if isinstance(updated, ProviderProject):
+                    self.project._provider_project = updated
+                elif isinstance(self.project._provider_project, ProviderProject):
+                    self.project._provider_project = replace(
+                        self.project._provider_project,
+                        resources=tuple(
+                            r
+                            for r in self.project._provider_project.resources
+                            if r.id != resource_id
+                        ),
+                    )
             del self._items[index]
             return True
         return False
@@ -175,6 +204,7 @@ class AsyncProject:
         self.title = title
         self.session = session
         self.remote_id = remote_id
+        self._provider_project: ProviderProject | None = None
         self.instruction = AsyncProjectInstruction(self)
         self.resources = AsyncProjectResources(self)
         from .chats import AsyncProjectChatsCollection
@@ -189,6 +219,10 @@ class AsyncProject:
     ) -> None:
         if not isinstance(project, ProviderProject):
             raise ProviderError("Provider returned an invalid project")
+        if replace_resources or self._provider_project is None:
+            self._provider_project = project
+        else:
+            self._provider_project = replace(project, resources=self._provider_project.resources)
         self.remote_id = project.origin.remote_id
         self.title = project.name
         self.instruction._text = project.instructions or ""

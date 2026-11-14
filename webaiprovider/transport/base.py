@@ -99,14 +99,17 @@ class _StreamResponse:
 
     def iter_bytes(self) -> Iterator[bytes]:
         size = 0
-        for chunk in self._response.iter_bytes():
+        iterator_fn = getattr(self._response, "iter_content", None) or self._response.iter_bytes
+        for chunk in iterator_fn():
             size += len(chunk)
             if self._limit is not None and size > self._limit:
                 raise ProviderError("Transport stream exceeds the size limit")
             yield chunk
 
     def close(self):
-        self._response.close()
+        close = getattr(self._response, "close", None)
+        if callable(close):
+            close()
 
 
 class _TransportPolicy:

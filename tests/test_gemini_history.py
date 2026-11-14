@@ -41,25 +41,24 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
 
 class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_server_index_may_lag_deletion_without_resubmitting_the_write(self):
+        from webaiprovider.errors import RemoteNotFound
+
         project = SimpleNamespace(
             name="Fixture", origin=SimpleNamespace(remote_id="notebooks/abcdef")
         )
         notebooks = SimpleNamespace(
-            get=AsyncMock(return_value=project),
-            list=AsyncMock(
-                side_effect=[SimpleNamespace(items=[project]), SimpleNamespace(items=[])]
-            ),
+            get=AsyncMock(side_effect=[project, RemoteNotFound("missing")]),
+            list=AsyncMock(),
         )
         provider = AsyncGeminiProvider(
             provider_account("gemini", Path("unused")), notebooks=notebooks
         )
         with (
             patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
-            patch(
-                "webaiprovider.providers.gemini.provider.asyncio.sleep", new_callable=AsyncMock
-            ) as wait,
+            patch("webaiprovider.async_provider.asyncio.sleep", new_callable=AsyncMock) as wait,
         ):
             await provider.delete_project("notebooks/abcdef")
             delete.assert_awaited_once()
-            wait.assert_awaited_once_with(0.25)
-        self.assertEqual(notebooks.list.await_count, 2)
+            wait.assert_awaited_once_with(0.2)
+        self.assertEqual(notebooks.get.await_count, 2)
+        notebooks.list.assert_not_awaited()

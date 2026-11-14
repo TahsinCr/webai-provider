@@ -30,6 +30,7 @@ from ...resources.message.protocol import (
     ProviderEvent,
     ProviderRequest,
     ResponseComplete,
+    TextDelta,
     TextReplacement,
 )
 from ...resources.message.types import MessageAction, target_message
@@ -42,7 +43,7 @@ from ...resources.project.types import ProjectOptions
 from ...transport import AsyncTransport
 from ...utils.timing import current_send_timing
 from . import generation
-from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
+from .errors import GeminiCompatibilityError, GeminiStreamError
 from .history import history
 from .media import PLACEHOLDER, resolve_image_links, valid_media_url
 from .notebooks import field, notebook_id
@@ -258,28 +259,47 @@ class AsyncGeminiProvider(AsyncProvider):
             raise ValueError("invalid Gemini conversation cursor") from None
         if offset < 0 or offset > 5000 or not 1 <= limit <= 100:
             raise ValueError("invalid Gemini conversation page")
-        async with self._gate:
-            await self._connect()
-            from .history import conversations
+        await self._connect()
+        from .history import conversations
 
-            parts = await self.rpc.call(
-                "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
-            )
-            chats = conversations(parts, self._origin)
-            return Page(
-                chats[offset : offset + limit],
-                str(offset + limit) if len(chats) > offset + limit else None,
-            )
+        parts = await self.rpc.call(
+            "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
+        )
+        chats = conversations(parts, self._origin)
+        return Page(
+            chats[offset : offset + limit],
+            str(offset + limit) if len(chats) > offset + limit else None,
+        )
 
     async def get_chat(self, conversation_id):
         from .history import history
+        from .rpc import nested
 
         parts = await self.rpc.call(
             "hNvQHb", [conversation_id, 1000, None, 1, [1], [4], None, 1], "/app"
         )
         if len(parts) != 1:
             raise GeminiCompatibilityError("Gemini history response format changed")
-        return await asyncio.to_thread(history, parts[0], self._origin, conversation_id)
+        chat = await asyncio.to_thread(history, parts[0], self._origin, conversation_id)
+        turns = nested(parts[0], 0, default=[])
+        turn = turns[0] if turns else None
+        metadata = [
+            conversation_id,
+            nested(turn, 0, 1) or "",
+            nested(turn, 3, 0, 0, 0) or "",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "",
+        ]
+        if conversation_id not in self._temporary and self._usable_chat_metadata(
+            metadata, conversation_id
+        ):
+            self._remember_chat_metadata(conversation_id, metadata)
+        return chat
 
     async def branch_chat(self, conversation_id, message_id):
         from ...resources.message.types import target_message
@@ -337,13 +357,7 @@ class AsyncGeminiProvider(AsyncProvider):
         async with self._gate:
             await self.editor.write("delete", remote)
         self._project_contexts.remove(remote)
-        for attempt in range(5):
-            if not any(x.origin.remote_id == remote for x in (await self.notebooks.list()).items):
-                return
-            await asyncio.sleep(0.25 * 2**attempt)
-        raise GeminiError(
-            "Notebook deletion could not be confirmed by the server; the operation was not retried"
-        )
+        await confirm_deleted(lambda: self.notebooks.get(remote))
 
     async def list_projects(self, cursor=None):
         if self.notebooks is None:
@@ -401,8 +415,11 @@ class AsyncGeminiProvider(AsyncProvider):
             timeout.cancel()
             await iterator.aclose()
 
-    async def _project_after_write(self, project_id, confirmed):
+    def _invalidate_project_cache(self, project_id: str) -> None:
         self._project_contexts.remove(notebook_id(project_id))
+
+    async def _project_after_write(self, project_id, confirmed):
+        self._invalidate_project_cache(project_id)
         return await super()._project_after_write(project_id, confirmed)
 
     async def _resolve_project_context(self, project_id, timing):
@@ -507,27 +524,35 @@ class AsyncGeminiProvider(AsyncProvider):
 
     async def _prepare_send_context(self, request: ProviderRequest):
         timing = current_send_timing()
-        gate_started = time.perf_counter_ns() if timing is not None else None
-        async with self._gate:
-            if gate_started is not None:
-                timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
-            client_started = time.perf_counter_ns() if timing is not None else None
-            client = await self._connect()
-            if client_started is not None:
-                timing.record("provider_client_ready_ms", time.perf_counter_ns() - client_started)
+        client_started = time.perf_counter_ns() if timing is not None else None
+        client = await self._connect()
+        if client_started is not None:
+            timing.record("provider_client_ready_ms", time.perf_counter_ns() - client_started)
+        if timing is not None:
+            timing.record("provider_send_gate_wait_ms", 0)
+
+        async def ensure_models() -> None:
             catalog_started = time.perf_counter_ns() if timing is not None else None
             if not client.models:
                 await self._load_model_catalog()
             if catalog_started is not None:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - catalog_started)
-            context = await self._resolve_project_context(request.project_id, timing)
-            request, metadata, action_files = await self._load_chat_continuation(request, timing)
+
+        async def sync_client_activity() -> None:
             activity_started = time.perf_counter_ns() if timing is not None else None
             await client.sync_activity()
             if activity_started is not None:
                 timing.record(
                     "provider_activity_sync_ms", time.perf_counter_ns() - activity_started
                 )
+
+        _, context, continuation, _ = await asyncio.gather(
+            ensure_models(),
+            self._resolve_project_context(request.project_id, timing),
+            self._load_chat_continuation(request, timing),
+            sync_client_activity(),
+        )
+        request, metadata, action_files = continuation
         return client, request, metadata, context, action_files
 
     async def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
@@ -538,6 +563,7 @@ class AsyncGeminiProvider(AsyncProvider):
         seen_file_keys: set[tuple[str, str]] = set()
         raw_sources: list[dict] = []
         seen_source_keys: set[str] = set()
+        rendered_by_channel = {"analysis": "", "final": ""}
         async for chunk in generation.generate(
             client,
             request,
@@ -583,9 +609,18 @@ class AsyncGeminiProvider(AsyncProvider):
                     elif item not in raw_sources:
                         raw_sources.append(item)
             visible = visible or bool(chunk["text"] or images)
-            if chunk["thoughts"]:
-                yield TextReplacement(chunk["thoughts"], "analysis")
-            yield TextReplacement(resolve_image_links(chunk["text"], images), "final")
+            for channel, content_text in (
+                ("analysis", chunk["thoughts"]),
+                ("final", resolve_image_links(chunk["text"], images)),
+            ):
+                rendered = rendered_by_channel[channel]
+                if not content_text or content_text == rendered:
+                    continue
+                if content_text.startswith(rendered):
+                    yield TextDelta(content_text[len(rendered) :], channel)
+                else:
+                    yield TextReplacement(content_text, channel)
+                rendered_by_channel[channel] = content_text
             if chunk.get("response_complete"):
                 yield ResponseComplete()
             rid = metadata[1] if len(metadata) > 1 else None

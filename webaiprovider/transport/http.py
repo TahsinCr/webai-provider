@@ -6,8 +6,13 @@ import os
 import socket
 import sys
 import time
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
-from typing import Any
+from contextlib import (
+    AsyncExitStack,
+    ExitStack,
+    asynccontextmanager,
+    contextmanager,
+    suppress,
+)
 from urllib.parse import urlsplit
 
 from ..core import MultiDimensionBoundedCache
@@ -92,24 +97,6 @@ def _is_curl_timeout(exc: BaseException) -> bool:
     return _isinstance_if_type(exc, CurlTimeout)
 
 
-def _is_httpx_client(client) -> bool:
-    if client is None or "httpx" not in sys.modules:
-        return False
-    import httpx
-
-    return _isinstance_if_type(
-        client, getattr(httpx, "Client", None), getattr(httpx, "AsyncClient", None)
-    )
-
-
-def _coerce_httpx_timeout(timeout):
-    if isinstance(timeout, tuple) and len(timeout) == 2:
-        import httpx
-
-        return httpx.Timeout(timeout[1], connect=timeout[0])
-    return timeout
-
-
 def _is_ip_literal(hostname: str) -> bool:
     try:
         ipaddress.ip_address(hostname.strip("[]").split("%", 1)[0])
@@ -151,6 +138,7 @@ def _extract_and_validate_ips(hostname: str, records) -> tuple[str, ...]:
     addresses = list(dict.fromkeys(record[4][0].split("%", 1)[0] for record in records))
     if not addresses:
         raise ProviderError("Provider host resolution failed")
+    addresses.sort(key=lambda addr: ":" in addr)
     return _validate_resolved_ips(hostname, addresses)
 
 
@@ -271,7 +259,42 @@ def _invalidate_host_dns(hostname: str, port: int, client=None) -> None:
             ]
 
 
-def _prepare_curl_session_sync(client, hostname: str, port: int) -> None:
+class _OriginDNS:
+    """Origin host parsing and cached CurlOpt.RESOLVE formatter."""
+
+    def __init__(self, origin: str) -> None:
+        parsed = urlsplit(origin)
+        hostname = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self.host = hostname
+        self.port = port
+        self.prefix = f"{hostname}:{port}:" if hostname else ""
+        self.is_ip = bool(hostname and _is_ip_literal(hostname))
+        self._resolve_cache: tuple[tuple[str, ...], str] | None = None
+
+    def resolve_entry(self, ips: tuple[str, ...]) -> str:
+        cached = self._resolve_cache
+        if cached is not None and cached[0] == ips:
+            return cached[1]
+        entry = _format_resolve_entry(self.prefix, ips)
+        self._resolve_cache = (ips, entry)
+        return entry
+
+    def invalidate(self, client=None) -> None:
+        if not self.host:
+            return
+        self._resolve_cache = None
+        _invalidate_host_dns(self.host, self.port, client)
+
+
+def _prepare_curl_session_sync(
+    client,
+    hostname: str,
+    port: int,
+    options: dict | None = None,
+    *,
+    dns_state: _OriginDNS | None = None,
+) -> None:
     if not _is_curl_sync_session(client):
         return
     from curl_cffi import CurlOpt
@@ -279,184 +302,41 @@ def _prepare_curl_session_sync(client, hostname: str, port: int) -> None:
     ipv6 = _has_ipv6_connectivity()
     if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
         client.curl_options[CurlOpt.IPRESOLVE] = 1
-    if (
-        not hostname
-        or _is_ip_literal(hostname)
-        or _has_proxy_configured(client, {}, hostname=hostname)
-    ):
+    if not hostname:
+        return
+    if _is_ip_literal(hostname):
+        _validate_ip_literal(hostname)
+        return
+    if _has_proxy_configured(client, options or {}, hostname=hostname):
         return
     ips = _resolve_host_ips_sync(hostname, port, use_ipv6=ipv6)
-    prefix = f"{hostname}:{port}:"
-    _apply_curl_resolve(client, prefix, _format_resolve_entry(prefix, ips))
-
-
-def _attempt_connect_timeout(deadline: float | None, remaining_ips: int) -> float | None:
-    if deadline is None:
-        return None
-    remaining = max(deadline - time.monotonic(), 0.05)
-    if remaining_ips <= 1:
-        return remaining
-    return max(min(remaining, remaining / remaining_ips), 0.25)
-
-
-def _build_safe_sync_backend(inner):
-    import httpcore
-
-    class _SafeSyncNetworkBackend(httpcore.NetworkBackend):
-        def connect_tcp(
-            self,
-            host: str,
-            port: int,
-            timeout: float | None = None,
-            local_address: str | None = None,
-            socket_options=None,
-        ):
-            if _is_ip_literal(host):
-                _validate_ip_literal(host)
-                return inner.connect_tcp(
-                    host,
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            try:
-                ips = _resolve_host_ips_sync(host, port, use_ipv6=_has_ipv6_connectivity())
-            except ProviderError as exc:
-                raise httpcore.ConnectError(str(exc)) from exc
-            deadline = time.monotonic() + float(timeout) if timeout is not None else None
-            last_error = None
-            for index, ip in enumerate(ips):
-                if index > 0 and deadline is not None and time.monotonic() >= deadline:
-                    break
-                attempt_timeout = _attempt_connect_timeout(deadline, len(ips) - index)
-                try:
-                    return inner.connect_tcp(
-                        ip,
-                        port,
-                        timeout=attempt_timeout,
-                        local_address=local_address,
-                        socket_options=socket_options,
-                    )
-                except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                    last_error = exc
-            _invalidate_host_dns(host, port)
-            raise last_error
-
-        def connect_unix_socket(
-            self,
-            path: str,
-            timeout: float | None = None,
-            socket_options=None,
-        ):
-            return inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
-
-        def sleep(self, seconds: float) -> None:
-            inner.sleep(seconds)
-
-    return _SafeSyncNetworkBackend()
-
-
-def _build_safe_async_backend(inner):
-    import httpcore
-
-    class _SafeAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
-        async def connect_tcp(
-            self,
-            host: str,
-            port: int,
-            timeout: float | None = None,
-            local_address: str | None = None,
-            socket_options=None,
-        ):
-            if _is_ip_literal(host):
-                _validate_ip_literal(host)
-                return await inner.connect_tcp(
-                    host,
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            resolve_timeout = float(timeout) if timeout is not None else 10.0
-            try:
-                ipv6 = await _check_ipv6_connectivity()
-                ips = await _resolve_host_ips(host, port, use_ipv6=ipv6, timeout=resolve_timeout)
-            except Exception as exc:
-                if isinstance(exc, ValueError):
-                    raise
-                if _is_curl_timeout(exc):
-                    raise httpcore.ConnectTimeout(str(exc)) from exc
-                if isinstance(exc, ProviderError):
-                    raise httpcore.ConnectError(str(exc)) from exc
-                raise
-            deadline = time.monotonic() + float(timeout) if timeout is not None else None
-            last_error = None
-            for index, ip in enumerate(ips):
-                if index > 0 and deadline is not None and time.monotonic() >= deadline:
-                    break
-                attempt_timeout = _attempt_connect_timeout(deadline, len(ips) - index)
-                try:
-                    return await inner.connect_tcp(
-                        ip,
-                        port,
-                        timeout=attempt_timeout,
-                        local_address=local_address,
-                        socket_options=socket_options,
-                    )
-                except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                    last_error = exc
-            _invalidate_host_dns(host, port)
-            raise last_error
-
-        async def connect_unix_socket(
-            self,
-            path: str,
-            timeout: float | None = None,
-            socket_options=None,
-        ):
-            return await inner.connect_unix_socket(
-                path, timeout=timeout, socket_options=socket_options
-            )
-
-        async def sleep(self, seconds: float) -> None:
-            await inner.sleep(seconds)
-
-    return _SafeAsyncNetworkBackend()
-
-
-def safe_httpx_sync_transport(*, limits=None, trust_env: bool = True, proxy: Any = None):
-    import httpcore
-    import httpx
-
-    if proxy is not None or (trust_env and _has_proxy_configured(None, {})):
-        return None
-    transport = httpx.HTTPTransport(**({"limits": limits} if limits is not None else {}))
-    pool = getattr(transport, "_pool", None)
-    if isinstance(pool, httpcore.ConnectionPool):
-        pool._network_backend = _build_safe_sync_backend(pool._network_backend)
-    return transport
-
-
-def safe_httpx_async_transport(*, limits=None, trust_env: bool = True, proxy: Any = None):
-    import httpcore
-    import httpx
-
-    if proxy is not None or (trust_env and _has_proxy_configured(None, {})):
-        return None
-    transport = httpx.AsyncHTTPTransport(
-        **({"limits": limits} if limits is not None else {}),
-        **({"proxy": proxy} if proxy is not None else {}),
+    prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
+    entry = (
+        dns_state.resolve_entry(ips)
+        if dns_state is not None
+        else _format_resolve_entry(prefix, ips)
     )
-    pool = getattr(transport, "_pool", None)
-    if isinstance(pool, httpcore.AsyncConnectionPool):
-        pool._network_backend = _build_safe_async_backend(pool._network_backend)
-    return transport
+    _apply_curl_resolve(client, prefix, entry)
+
+
+@asynccontextmanager
+async def _open_curl_stream(client, method: str, url: str, options: dict):
+    response = await client.request(method, url, stream=True, allow_redirects=False, **options)
+    try:
+        yield response
+    finally:
+        task = getattr(response, "astream_task", None)
+        try:
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            with suppress(asyncio.CancelledError):
+                await response.aclose()
 
 
 class AsyncHTTPTransport(AsyncTransport):
     _redirect_option = "allow_redirects"
-    _byte_iterator = "aiter_content"
     _close_method = "close"
 
     def __init__(
@@ -476,14 +356,11 @@ class AsyncHTTPTransport(AsyncTransport):
         self.client = None
         self._owned_refs: dict[int, int] = {}
         self._retired_clients: dict[int, object] = {}
-        parsed_origin = urlsplit(self.origin)
-        hostname = parsed_origin.hostname or ""
-        port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
-        self._origin_host = hostname
-        self._origin_port = port
-        self._origin_prefix = f"{hostname}:{port}:" if hostname else ""
-        self._origin_is_ip = bool(hostname and _is_ip_literal(hostname))
-        self._resolve_cache: tuple[tuple[str, ...], str] | None = None
+        self._dns = _OriginDNS(self.origin)
+        self._origin_host = self._dns.host
+        self._origin_port = self._dns.port
+        self._origin_prefix = self._dns.prefix
+        self._origin_is_ip = self._dns.is_ip
 
     def _connect(self):
         if self._client_getter is not None:
@@ -496,18 +373,6 @@ class AsyncHTTPTransport(AsyncTransport):
 
                 factory = AsyncSession
             timeout = self.config.timeout
-            if "httpx" in sys.modules:
-                import httpx
-
-                if factory is httpx.AsyncClient:
-                    timeout = _coerce_httpx_timeout(timeout)
-                    transport = safe_httpx_async_transport(trust_env=False)
-                    self.client = (
-                        factory(timeout=timeout, trust_env=False, transport=transport)
-                        if transport is not None
-                        else factory(timeout=timeout, trust_env=False)
-                    )
-                    return self.client
             if is_default_curl:
                 self.client = factory(timeout=timeout, trust_env=False)
             else:
@@ -540,14 +405,6 @@ class AsyncHTTPTransport(AsyncTransport):
         if self._after_response is not None:
             await self._after_response()
 
-    def _resolve_entry(self, ips: tuple[str, ...]) -> str:
-        cached = self._resolve_cache
-        if cached is not None and cached[0] == ips:
-            return cached[1]
-        entry = _format_resolve_entry(self._origin_prefix, ips)
-        self._resolve_cache = (ips, entry)
-        return entry
-
     async def _prepare_curl(self, options, *, client=None):
         client = client if client is not None else self._connect()
         if not _is_curl_async_session(client):
@@ -557,32 +414,29 @@ class AsyncHTTPTransport(AsyncTransport):
         ipv6 = await _check_ipv6_connectivity()
         if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
             client.curl_options[CurlOpt.IPRESOLVE] = 1
-        hostname = self._origin_host
-        if (
-            not hostname
-            or self._origin_is_ip
-            or _has_proxy_configured(client, options, hostname=hostname)
-        ):
+        hostname = self._dns.host
+        if not hostname:
+            return
+        if self._dns.is_ip:
+            _validate_ip_literal(hostname)
+            return
+        if _has_proxy_configured(client, options, hostname=hostname):
             return
         ips = await _resolve_host_ips(
             hostname,
-            self._origin_port,
+            self._dns.port,
             use_ipv6=ipv6,
             timeout=_connect_timeout(options.get("timeout", self.config.timeout)),
         )
-        _apply_curl_resolve(client, self._origin_prefix, self._resolve_entry(ips))
+        _apply_curl_resolve(client, self._dns.prefix, self._dns.resolve_entry(ips))
 
     def _invalidate_curl_dns(self, failed_client=None):
-        hostname = self._origin_host
-        if not hostname:
-            return
-        self._resolve_cache = None
         client = (
             failed_client
             if failed_client is not None
             else (self._client_getter() if self._client_getter is not None else self.client)
         )
-        _invalidate_host_dns(hostname, self._origin_port, client)
+        self._dns.invalidate(client)
 
     async def _reset_owned_client(self, failed_client):
         if self._client_getter is not None or self.client is not failed_client:
@@ -597,8 +451,6 @@ class AsyncHTTPTransport(AsyncTransport):
 
     async def _send(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
-        if _is_httpx_client(client) and isinstance(options.get("timeout"), tuple):
-            options = {**options, "timeout": _coerce_httpx_timeout(options["timeout"])}
         await self._prepare_curl(options, client=client)
         return await client.request(method, url, **{self._redirect_option: False}, **options)
 
@@ -636,9 +488,11 @@ class AsyncHTTPTransport(AsyncTransport):
     @asynccontextmanager
     async def _open_stream(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
-        if _is_httpx_client(client) and isinstance(options.get("timeout"), tuple):
-            options = {**options, "timeout": _coerce_httpx_timeout(options["timeout"])}
         await self._prepare_curl(options, client=client)
+        if _is_curl_async_session(client):
+            async with _open_curl_stream(client, method, url, options) as response:
+                yield response
+            return
         async with client.stream(
             method, url, **{self._redirect_option: False}, **options
         ) as response:
@@ -672,11 +526,12 @@ class AsyncHTTPTransport(AsyncTransport):
                         continue
                     raise
             try:
-                yield _AsyncStreamResponse(
-                    response,
-                    getattr(response, self._byte_iterator)(),
-                    self.config.max_stream_bytes,
+                chunks = (
+                    response.aiter_content()
+                    if hasattr(response, "aiter_content")
+                    else response.aiter_bytes()
                 )
+                yield _AsyncStreamResponse(response, chunks, self.config.max_stream_bytes)
             finally:
                 try:
                     await stack.aclose()
@@ -699,19 +554,6 @@ class AsyncHTTPTransport(AsyncTransport):
                 await getattr(item, self._close_method)()
 
 
-class AsyncHTTPXTransport(AsyncHTTPTransport):
-    _redirect_option = "follow_redirects"
-    _byte_iterator = "aiter_bytes"
-    _close_method = "aclose"
-
-    def __init__(self, origin, **options):
-        if not options.get("client_factory") and not options.get("client_getter"):
-            import httpx
-
-            options["client_factory"] = httpx.AsyncClient
-        super().__init__(origin, **options)
-
-
 class AsyncRequestTransport(AsyncHTTPTransport):
     """Clients that open streaming responses with request(stream=True)."""
 
@@ -724,20 +566,13 @@ class AsyncRequestTransport(AsyncHTTPTransport):
     async def _open_stream(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
         await self._prepare_curl(options, client=client)
-        response = await client.request(method, url, stream=True, allow_redirects=False, **options)
-        try:
+        async with _open_curl_stream(client, method, url, options) as response:
             yield response
-        finally:
-            task = getattr(response, "astream_task", None)
-            try:
-                if isinstance(task, asyncio.Task) and not task.done():
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-            finally:
-                await response.aclose()
 
 
 class HTTPTransport(Transport):
+    """Blocking HTTP transport backed by ``curl_cffi.requests.Session`` by default."""
+
     def __init__(
         self, origin, *, client_factory=None, client_getter=None, config=None, headers=None
     ):
@@ -745,33 +580,47 @@ class HTTPTransport(Transport):
         self.factory = client_factory
         self._client_getter = client_getter
         self.client = None
+        self._dns = _OriginDNS(self.origin)
 
     def _connect(self):
         if self._client_getter is not None:
             return self._client_getter()
         if self.client is None:
-            import httpx
+            factory = self.factory
+            if factory is None:
+                from curl_cffi.requests import Session as CurlSession
 
-            factory = self.factory or httpx.Client
-            if factory is httpx.Client:
-                timeout = _coerce_httpx_timeout(self.config.timeout)
-                transport = safe_httpx_sync_transport()
-                self.client = (
-                    factory(timeout=timeout, transport=transport)
-                    if transport is not None
-                    else factory(timeout=timeout)
-                )
+                self.client = CurlSession(timeout=self.config.timeout, trust_env=False)
             else:
                 self.client = factory(timeout=self.config.timeout)
         return self.client
 
+    def _reset_owned_client(self, failed_client):
+        if self._client_getter is not None or self.client is not failed_client:
+            return
+        client, self.client = self.client, None
+        with suppress(Exception):
+            client.close()
+
     def send(self, method, path, *, check_status=True, **options):
         url = self.url(path)
         options = self._options(options, method, path)
-        client = self._connect()
-        if _is_httpx_client(client) and isinstance(options.get("timeout"), tuple):
-            options = {**options, "timeout": _coerce_httpx_timeout(options["timeout"])}
-        response = client.request(method, url, follow_redirects=False, **options)
+        can_retry = method.upper() in _IDEMPOTENT_METHODS
+        response = None
+        for attempt in (0, 1):
+            client = self._connect()
+            try:
+                _prepare_curl_session_sync(
+                    client, self._dns.host, self._dns.port, options, dns_state=self._dns
+                )
+                response = client.request(method, url, allow_redirects=False, **options)
+                break
+            except BaseException as exc:
+                if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                    self._dns.invalidate(client)
+                    self._reset_owned_client(client)
+                    continue
+                raise
         self._check_response(response, check_status)
         self._check_size(response)
         return response
@@ -780,14 +629,36 @@ class HTTPTransport(Transport):
     def stream(self, method, path, *, check_status=True, **options):
         url = self.url(path)
         options = self._options(options, method, path)
-        client = self._connect()
-        if _is_httpx_client(client) and isinstance(options.get("timeout"), tuple):
-            options = {**options, "timeout": _coerce_httpx_timeout(options["timeout"])}
-        with client.stream(method, url, follow_redirects=False, **options) as response:
-            self._check_response(response, check_status)
+        can_retry = method.upper() in _IDEMPOTENT_METHODS
+        with ExitStack() as stack:
+            response = None
+            for attempt in (0, 1):
+                client = self._connect()
+                try:
+                    _prepare_curl_session_sync(
+                        client, self._dns.host, self._dns.port, options, dns_state=self._dns
+                    )
+                    response = stack.enter_context(
+                        client.stream(method, url, allow_redirects=False, **options)
+                    )
+                    self._check_response(response, check_status)
+                    break
+                except BaseException as exc:
+                    stack.close()
+                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                        self._dns.invalidate(client)
+                        self._reset_owned_client(client)
+                        continue
+                    raise
             yield _StreamResponse(response, self.config.max_stream_bytes)
 
     def close(self):
         client, self.client = self.client, None
         if client is not None:
             client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()

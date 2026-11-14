@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 from ...accounts import delete_session, session_exists
 from ...accounts.account import Account
@@ -162,8 +161,7 @@ class AsyncClaudeProvider(AsyncProvider):
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def _load_model_catalog(self, *, force: bool = False):
-        async with self._gate:
-            return await self.client.request("models", force=force)
+        return await self.client.request("models", force=force)
 
     async def list_chats(self, cursor=None, limit=50):
         values = await self.client.request("chats", cursor=cursor, limit=limit)
@@ -227,8 +225,7 @@ class AsyncClaudeProvider(AsyncProvider):
             )
 
     async def delete_chat(self, conversation_id):
-        async with self._gate:
-            await self.client.request("delete_chat", conversation_id=conversation_id)
+        await self.client.request("delete_chat", conversation_id=conversation_id)
 
     async def delete_project(self, project_id):
         async with self._gate:
@@ -259,68 +256,64 @@ class AsyncClaudeProvider(AsyncProvider):
                     mime_type=item.get("mime_type"),
                 )
         timing = current_send_timing()
-        gate_started = time.perf_counter_ns() if timing is not None else None
-        async with self._gate:
-            if gate_started is not None:
-                timing.record("provider_send_gate_wait_ms", time.perf_counter_ns() - gate_started)
-            uploaded = list(request.attachments)
-            pending = [
-                (index, item)
-                for index, item in enumerate(uploaded)
-                if isinstance(item, dict) and ("bytes" in item or "path" in item)
-            ]
-            if pending:
-                results = await gather_bounded(
-                    pending,
-                    lambda entry: self.client.upload_file(
-                        entry[1].get("path"),
-                        content=entry[1].get("bytes"),
-                        name=entry[1].get("name"),
-                        mime_type=entry[1].get("mime_type"),
-                    ),
-                    limit=2,
-                )
-                for (index, _), attachment in zip(pending, results, strict=True):
-                    uploaded[index] = attachment
-            attachments = tuple(uploaded)
-            completed = False
-            async for event in self.client.events(
-                "send",
-                prompt=request.prompt,
-                conversation_id=request.conversation_id,
-                project_id=request.project_id,
-                model=request.model,
-                effort=request.effort,
-                temporary=request.temporary,
-                attachments=attachments,
-                **(
-                    {"action": request.action, "message_id": request.message_id}
-                    if request.action
-                    else {}
+        if timing is not None:
+            timing.record("provider_send_gate_wait_ms", 0)
+        uploaded = list(request.attachments)
+        pending = [
+            (index, item)
+            for index, item in enumerate(uploaded)
+            if isinstance(item, dict) and ("bytes" in item or "path" in item)
+        ]
+        if pending:
+            results = await gather_bounded(
+                pending,
+                lambda entry: self.client.upload_file(
+                    entry[1].get("path"),
+                    content=entry[1].get("bytes"),
+                    name=entry[1].get("name"),
+                    mime_type=entry[1].get("mime_type"),
                 ),
-            ):
-                if event["type"] == "bound":
-                    yield ConversationBound(event["id"])
-                elif event["type"] in ("replace", "delta"):
-                    event_type = TextDelta if event["type"] == "delta" else TextReplacement
-                    yield event_type(event["text"], event.get("channel", "final"))
-                elif event["type"] == "done":
-                    completed = True
-                elif event["type"] == "response_complete":
-                    yield ResponseComplete()
-                elif event["type"] == "metadata":
-                    yield MessageMetadata(
-                        message_id=event.get("message_id"),
-                        user_message_id=event.get("user_message_id"),
-                        model=event.get("model") or request.model,
-                        effort=request.effort,
-                        sources=tuple(event.get("sources", ())),
-                        files=tuple(event.get("files", ())),
-                    )
-            if not completed:
-                raise ClaudeStreamError(
-                    "Claude response ended before completion; it was not resent"
+                limit=2,
+            )
+            for (index, _), attachment in zip(pending, results, strict=True):
+                uploaded[index] = attachment
+        attachments = tuple(uploaded)
+        completed = False
+        async for event in self.client.events(
+            "send",
+            prompt=request.prompt,
+            conversation_id=request.conversation_id,
+            project_id=request.project_id,
+            model=request.model,
+            effort=request.effort,
+            temporary=request.temporary,
+            attachments=attachments,
+            **(
+                {"action": request.action, "message_id": request.message_id}
+                if request.action
+                else {}
+            ),
+        ):
+            if event["type"] == "bound":
+                yield ConversationBound(event["id"])
+            elif event["type"] in ("replace", "delta"):
+                event_type = TextDelta if event["type"] == "delta" else TextReplacement
+                yield event_type(event["text"], event.get("channel", "final"))
+            elif event["type"] == "done":
+                completed = True
+            elif event["type"] == "response_complete":
+                yield ResponseComplete()
+            elif event["type"] == "metadata":
+                yield MessageMetadata(
+                    message_id=event.get("message_id"),
+                    user_message_id=event.get("user_message_id"),
+                    model=event.get("model") or request.model,
+                    effort=request.effort,
+                    sources=tuple(event.get("sources", ())),
+                    files=tuple(event.get("files", ())),
                 )
+        if not completed:
+            raise ClaudeStreamError("Claude response ended before completion; it was not resent")
 
 
 class ClaudeChat(MovableChat, Chat):

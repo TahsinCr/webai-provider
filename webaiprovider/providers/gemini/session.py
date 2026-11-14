@@ -22,9 +22,7 @@ BASE = ORIGIN + "/_/BardChatUi/data/"
 HEADERS = {"Origin": ORIGIN, "Referer": ORIGIN + "/", "X-Same-Domain": "1"}
 GRAPHQL_PATH = "/_/BardChatUi/"
 GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
-RENAME_CONVERSATION_SIGNATURE = "2/AK6lUKXaLqlYDDOn9zA0qKcCFN+eXBsWI9SXBtcRr1o="
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="
-_RENAME_TIMEOUT = (10.0, 60.0)
 _BOOTSTRAP_FIELDS = ("SNlM0e", "cfb2h", "FdrFJe", "TuX5cc", "qKIAYe", "eptZe")
 _BOOTSTRAP_FIELD_RE = re.compile(r'"(' + "|".join(_BOOTSTRAP_FIELDS) + r')"\s*:\s*"([^"\\]*)"')
 _SECONDARY_PERSIST_INTERVAL = 5.0
@@ -79,6 +77,7 @@ class GeminiSession:
         self.verified = False
         self.persistence_warning = None
         self._save_lock = asyncio.Lock()
+        self._activity_lock = asyncio.Lock()
         self._last_persisted_at: float | None = None
         self._dirty = False
 
@@ -219,8 +218,15 @@ class GeminiSession:
             return
         from .rpc import RPCPayload
 
-        await self.batch([RPCPayload("ESY5D", '[[["bard_activity_enabled"]]]')])
-        self._activity_synced_at = now
+        async with self._activity_lock:
+            if (
+                not force
+                and self._activity_synced_at is not None
+                and now - self._activity_synced_at < 300
+            ):
+                return
+            await self.batch([RPCPayload("ESY5D", '[[["bard_activity_enabled"]]]')])
+            self._activity_synced_at = now
 
     def graphql_endpoints(self):
         prefix = self.rpc_path_prefix
@@ -233,7 +239,7 @@ class GeminiSession:
             f"{base}/xsrfToken",
         )
 
-    async def _graphql_post(self, payload, *, timeout=None):
+    async def _graphql_post(self, payload):
         endpoint, xsrf_endpoint = self.graphql_endpoints()
         headers = {
             **HEADERS,
@@ -243,17 +249,14 @@ class GeminiSession:
         }
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         request_options = {"headers": headers, "data": body, "allow_redirects": False}
-        if timeout is not None:
-            request_options["timeout"] = timeout
         response = await self.request("POST", endpoint, **request_options)
         if response.status_code == 400 and self._has_xsrf_error(response):
-            token_options = {
-                "headers": {**HEADERS, "Accept": "text/plain"},
-                "allow_redirects": False,
-            }
-            if timeout is not None:
-                token_options["timeout"] = timeout
-            token_response = await self.request("GET", xsrf_endpoint, **token_options)
+            token_response = await self.request(
+                "GET",
+                xsrf_endpoint,
+                headers={**HEADERS, "Accept": "text/plain"},
+                allow_redirects=False,
+            )
             AsyncTransport.check(token_response)
             token = token_response.text.strip()
             if not token:
@@ -272,29 +275,25 @@ class GeminiSession:
             raise ValueError("Gemini chat title must contain 1–100 characters")
         if self.http is None or not self.token:
             raise AccountPaused("Gemini session is not ready; reverify the account")
+        from .rpc import RPCPayload, nested, rpc_parts
 
-        response = await self._graphql_post(
-            {
-                "querySignature": RENAME_CONVERSATION_SIGNATURE,
-                "variables": {"conversationId": conversation_id, "title": title},
-            },
-            timeout=_RENAME_TIMEOUT,
+        response = await self.batch(
+            [
+                RPCPayload(
+                    "MUAZcd",
+                    json.dumps(
+                        [None, [["title"]], [conversation_id, title]],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+            ],
+            source_path="/app/" + conversation_id.removeprefix("c_"),
         )
-        result = self._decode_graphql(response.text)
-        errors = result.get("errors")
-        if errors:
-            message = errors[0].get("message") if isinstance(errors[0], dict) else None
-            raise ProviderError(message or "Gemini conversation could not be renamed")
-        data = result.get("data")
-        update = data.get("updateConversation") if isinstance(data, dict) else None
-        conversation = update.get("clientConversation") if isinstance(update, dict) else None
-        if (
-            not isinstance(conversation, dict)
-            or conversation.get("conversationId") != conversation_id
-            or conversation.get("title") != title
-        ):
+        parts = list(rpc_parts(response.text, "MUAZcd"))
+        row = nested(parts[0], 1) if parts else None
+        if nested(row, 0) != conversation_id or nested(row, 1) != title:
             raise ProviderError("Gemini conversation rename could not be confirmed by the server")
-        await self.persist()
 
     @staticmethod
     def _has_xsrf_error(response):

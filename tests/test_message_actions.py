@@ -7,9 +7,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
-import httpx
-
-from tests.fakes import bind_stream
+from tests.fakes import FakeHTTPClient, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
@@ -88,7 +86,7 @@ class ChatGPTActionsTests(unittest.TestCase):
                     "content": {"content_type": "text", "parts": ["New answer"]},
                 },
             }
-            return httpx.Response(
+            return FakeHTTPResponse(
                 200,
                 headers={"content-type": "text/event-stream"},
                 text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
@@ -121,7 +119,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         client.headers = {}
         client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
         client.create_sentinel_headers = dict
-        with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
+        with FakeHTTPClient(accept) as client.http:
             result = client.send_prompt_direct(
                 conversation,
                 "Edited",
@@ -171,7 +169,7 @@ class ChatGPTActionsTests(unittest.TestCase):
                     "content": {"content_type": "text", "parts": ["Branch answer"]},
                 },
             }
-            return httpx.Response(
+            return FakeHTTPResponse(
                 200,
                 headers={"content-type": "text/event-stream"},
                 text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
@@ -190,7 +188,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         client.headers = {}
         client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
         client.create_sentinel_headers = dict
-        with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
+        with FakeHTTPClient(accept) as client.http:
             resolved_id, _, _, _ = client.send_prompt_direct(
                 conversation,
                 "Branch prompt",
@@ -214,7 +212,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         def accept(request):
             requests_seen.append((request.method, request.url.path))
             if request.method == "GET":
-                return httpx.Response(mapping_status, json=mapping_payload)
+                return FakeHTTPResponse(mapping_status, json=mapping_payload)
             requests_seen.append(json.loads(request.content))
             event = {
                 "conversation_id": "chat",
@@ -225,7 +223,7 @@ class ChatGPTActionsTests(unittest.TestCase):
                     "content": {"content_type": "text", "parts": ["Edited answer"]},
                 },
             }
-            return httpx.Response(
+            return FakeHTTPResponse(
                 200,
                 headers={"content-type": "text/event-stream"},
                 text="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
@@ -247,7 +245,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         client.headers = {}
         client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
         client.create_sentinel_headers = dict
-        with httpx.Client(transport=httpx.MockTransport(accept)) as client.http:
+        with FakeHTTPClient(accept) as client.http:
             client.send_prompt_direct(
                 conversation,
                 "Edited first turn",

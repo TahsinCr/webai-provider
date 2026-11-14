@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -17,13 +18,14 @@ from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import httpx
+from curl_cffi.requests import Session as CurlSession
+from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core import MultiDimensionBoundedCache
 from ...errors import RateLimited
 from ...frames import SSEFrameDecoder
 from ...transport import HTTPTransport, Transport, TransportConfig
-from ...transport.http import _is_ip_literal, safe_httpx_sync_transport
+from ...transport.http import _is_ip_literal
 from ...transport.retry import parse_retry_after
 from ...utils.timing import SendTiming, current_send_timing
 from .catalogs import parse_model_catalog
@@ -105,31 +107,29 @@ class ChatGPTClient:
         self._prewarmed_sentinel: tuple[float, str, dict[str, str]] | None = None
         self._prewarming = False
         self._sentinel_inflight: threading.Event | None = None
-        self._upload_http: httpx.Client | None = None
+        self._upload_http: CurlSession | None = None
+        self._active_streams: dict[int, Any] = {}
         self._closed = False
         timing = current_send_timing()
         http_started = time.perf_counter_ns() if timing is not None else None
-        limits = httpx.Limits(max_keepalive_connections=5, keepalive_expiry=60.0)
-        safe_transport = (
-            safe_httpx_sync_transport(limits=limits, trust_env=False) if transport is None else None
-        )
-        client_kwargs: dict[str, Any] = {
-            "follow_redirects": False,
-            "trust_env": False,
-            "timeout": httpx.Timeout(30.0),
-            "limits": limits,
-        }
-        if safe_transport is not None:
-            client_kwargs["transport"] = safe_transport
-        self.http = httpx.Client(**client_kwargs)
-        self.transport = transport or HTTPTransport(
-            CHATGPT_ORIGIN,
-            client_getter=lambda: self.http,
-            config=TransportConfig(timeout=30),
-            headers=self._transport_headers,
-        )
-        if http_started is not None:
-            timing.record("httpx_client_construct_ms", time.perf_counter_ns() - http_started)
+        if transport is None:
+            self.http = CurlSession(
+                impersonate="chrome",
+                trust_env=False,
+                timeout=30.0,
+                discard_cookies=True,
+            )
+            self.transport = HTTPTransport(
+                CHATGPT_ORIGIN,
+                client_getter=lambda: self.http,
+                config=TransportConfig(timeout=30),
+                headers=self._transport_headers,
+            )
+            if http_started is not None:
+                timing.record("http_client_construct_ms", time.perf_counter_ns() - http_started)
+        else:
+            self.http = None
+            self.transport = transport
         if authenticate:
             try:
                 auth_started = time.perf_counter_ns() if timing is not None else None
@@ -137,7 +137,8 @@ class ChatGPTClient:
                 if auth_started is not None:
                     timing.record("provider_auth_refresh_ms", time.perf_counter_ns() - auth_started)
             except BaseException:
-                self.http.close()
+                if self.http is not None:
+                    self.http.close()
                 raise
 
     def close(self) -> None:
@@ -174,12 +175,22 @@ class ChatGPTClient:
                     self.pending_branches = OrderedDict()
             upload_http = getattr(self, "_upload_http", None)
             self._upload_http = None
+            raw_streams = getattr(self, "_active_streams", None)
+            active_streams = (
+                list(raw_streams.values())
+                if isinstance(raw_streams, dict)
+                else list(raw_streams or ())
+            )
+            http_client = getattr(self, "http", None)
+        for stream in active_streams:
+            with suppress(Exception):
+                stream.close()
         if upload_http is not None:
-            try:
+            with suppress(Exception):
                 upload_http.close()
-            except Exception:
-                pass
-        self.http.close()
+        if http_client is not None:
+            with suppress(Exception):
+                http_client.close()
 
     @staticmethod
     def _conversation_text_size(conversation: dict[str, Any]) -> int:
@@ -217,10 +228,33 @@ class ChatGPTClient:
         return lock
 
     def _is_closed(self) -> bool:
+        http_client = getattr(self, "http", None)
         return (
             getattr(self, "_closed", False) is True
-            or getattr(self.http, "is_closed", False) is True
+            or getattr(http_client, "_closed", False) is True
+            or getattr(http_client, "is_closed", False) is True
         )
+
+    @contextmanager
+    def _tracked_stream(self, method: str, path: str, **options):
+        with self.transport.stream(method, path, **options) as stream:
+            stream_key = id(stream)
+            with self._state_guard:
+                active = getattr(self, "_active_streams", None)
+                if not isinstance(active, dict):
+                    active = {}
+                    self._active_streams = active
+                active[stream_key] = stream
+            try:
+                if self._is_closed():
+                    with suppress(Exception):
+                        stream.close()
+                yield stream
+            finally:
+                with self._state_guard:
+                    active = getattr(self, "_active_streams", None)
+                    if isinstance(active, dict):
+                        active.pop(stream_key, None)
 
     def _sentinel_user_agent(self) -> str:
         with self._state_guard:
@@ -340,9 +374,7 @@ class ChatGPTClient:
             snapshot = dict(self.headers)
         self.session.save(list_url, snapshot)
 
-    def request(
-        self, method: str, url: str, *, expect_json: bool = True, **kwargs: Any
-    ) -> httpx.Response:
+    def request(self, method: str, url: str, *, expect_json: bool = True, **kwargs: Any) -> Any:
         target = urlsplit(url)
         if target.scheme != "https" or target.netloc != "chatgpt.com":
             raise ChatGPTError("authenticated requests must stay on the ChatGPT origin")
@@ -382,8 +414,14 @@ class ChatGPTClient:
                 "ChatGPT session expired or was rejected; verify the account"
             )
         if response.status_code >= 400:
+            raw_url = getattr(response, "url", None)
+            resp_path = (
+                urlsplit(raw_url).path
+                if isinstance(raw_url, str)
+                else getattr(raw_url, "path", None)
+            ) or target.path
             raise ChatGPTError(
-                f"ChatGPT returned HTTP {response.status_code} for {method} {response.url.path}"
+                f"ChatGPT returned HTTP {response.status_code} for {method} {resp_path}"
             )
         content_type = response.headers.get("content-type", "")
         if (
@@ -553,24 +591,46 @@ class ChatGPTClient:
         self._forget_conversation(conversation_id)
 
     def move_conversation(self, conversation_id: str, project_id: str | None) -> dict[str, Any]:
-        """Change native membership, then require the server to confirm it."""
+        """Update native project membership without an extra conversation readback GET."""
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ValueError("conversation ID is required")
         if project_id is not None and (
             not isinstance(project_id, str) or not project_id.startswith("g-p-")
         ):
             raise ValueError("invalid project ID")
-        self.request(
+        response = self.request(
             "PATCH",
             urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"),
             json={"gizmo_id": project_id},
+            expect_json=False,
         )
-        conversation = self.get_conversation(conversation_id)
-        if extract_project_id(conversation) != project_id:
-            raise ChatGPTError(
-                "Server did not confirm project membership; refresh this conversation"
-            )
-        return conversation
+        payload = response.json() if response.content else None
+        if isinstance(payload, dict):
+            if payload.get("success") is False:
+                raise ChatGPTError(
+                    "Server did not confirm project membership; refresh this conversation"
+                )
+            if (
+                any(
+                    key in payload for key in ("gizmo_id", "project_id", "conversation_template_id")
+                )
+                and extract_project_id(payload) != project_id
+            ):
+                raise ChatGPTError(
+                    "Server did not confirm project membership; refresh this conversation"
+                )
+        with self._state_guard:
+            cached = self._cached_conversation(conversation_id)
+            if isinstance(cached, dict):
+                updated_snapshot = dict(cached)
+                updated_snapshot["gizmo_id"] = project_id
+                updated_snapshot["project_id"] = project_id
+                self._remember_conversation(updated_snapshot)
+        result = dict(payload) if isinstance(payload, dict) else {}
+        result.setdefault("conversation_id", conversation_id)
+        result["project_id"] = project_id
+        result["gizmo_id"] = project_id
+        return result
 
     def _resolve_send_previous(
         self,
@@ -615,19 +675,19 @@ class ChatGPTClient:
                             "pre_send_conversation_cache_lookup_ms",
                             time.perf_counter_ns() - cache_lookup_started,
                         )
-                if cached is not None:
-                    previous = cached
-                    if timing is not None:
-                        timing.increment("pre_send_conversation_cache_hit")
-                else:
-                    started = time.perf_counter_ns() if timing is not None else None
-                    previous = self.get_conversation(conversation_id)
-                    if started is not None:
-                        timing.record(
-                            "pre_send_get_conversation_ms", time.perf_counter_ns() - started
-                        )
-                    if timing is not None and may_reuse_snapshot:
-                        timing.increment("pre_send_conversation_cache_miss")
+                    if cached is not None:
+                        previous = cached
+                        if timing is not None:
+                            timing.increment("pre_send_conversation_cache_hit")
+                    else:
+                        started = time.perf_counter_ns() if timing is not None else None
+                        previous = self.get_conversation(conversation_id)
+                        if started is not None:
+                            timing.record(
+                                "pre_send_get_conversation_ms", time.perf_counter_ns() - started
+                            )
+                        if timing is not None and may_reuse_snapshot:
+                            timing.increment("pre_send_conversation_cache_miss")
             previous_messages = previous.get("messages", [])
             if isinstance(previous_messages, list):
                 previous_ids = {
@@ -958,13 +1018,13 @@ class ChatGPTClient:
         sse_connect_started = time.perf_counter_ns() if timing is not None else None
         first_sse_event = False
         first_assistant_text = False
-        with self.transport.stream(
+        with self._tracked_stream(
             method,
             url.removeprefix(CHATGPT_ORIGIN),
             check_status=False,
             headers=headers,
             json=body,
-            timeout=httpx.Timeout(300.0),
+            timeout=(30.0, 300.0),
         ) as response:
             response_opened = time.perf_counter_ns() if timing is not None else None
             if response_opened is not None:
@@ -1201,7 +1261,7 @@ class ChatGPTClient:
             raise SentinelCompatibilityError("Sentinel did not return required enforcement tokens")
 
         enforcement_started = time.perf_counter_ns() if timing is not None else None
-        _, proof, turnstile = runtime.create_enforcement_tokens(requirements)
+        _, proof, turnstile = runtime.create_enforcement_tokens(requirements, initial_proof=initial)
         if enforcement_started is not None:
             timing.record(
                 "local_validation_enforcement_ms",
@@ -1222,7 +1282,7 @@ class ChatGPTClient:
         elif not isinstance(so_requirements, dict):
             raise SentinelCompatibilityError("Sentinel session observer field was invalid")
         elif so_requirements.get("required") is True:
-            so_token = runtime.create_session_observer_token(so_requirements)
+            so_token = runtime.create_session_observer_token(so_requirements, initial_proof=initial)
             if not isinstance(so_token, str) or not so_token:
                 raise SentinelCompatibilityError(
                     "Sentinel session observer challenge returned no token"
@@ -1451,24 +1511,18 @@ class ChatGPTClient:
                 body["conversation_id"] = conversation_id
         return body
 
-    def _get_upload_http(self) -> httpx.Client:
+    def _get_upload_http(self) -> CurlSession:
         with self._state_guard:
             existing = getattr(self, "_upload_http", None)
-            if existing is not None and not getattr(existing, "is_closed", False):
+            if (
+                existing is not None
+                and not getattr(existing, "_closed", False)
+                and not getattr(existing, "is_closed", False)
+            ):
                 return existing
             if self._is_closed():
                 raise ChatGPTError("ChatGPT client is closed")
-            limits = httpx.Limits(max_keepalive_connections=4, keepalive_expiry=60.0)
-            client_kwargs: dict[str, Any] = {
-                "follow_redirects": False,
-                "trust_env": False,
-                "timeout": httpx.Timeout(30.0),
-                "limits": limits,
-            }
-            safe_transport = safe_httpx_sync_transport(limits=limits, trust_env=False)
-            if safe_transport is not None:
-                client_kwargs["transport"] = safe_transport
-            client = httpx.Client(**client_kwargs)
+            client = CurlSession(trust_env=False, timeout=30.0, discard_cookies=True)
             self._upload_http = client
             return client
 
@@ -1488,8 +1542,8 @@ class ChatGPTClient:
             response = transport.send("PUT", path, check_status=False, **options)
         except ChatGPTError:
             raise
-        except httpx.HTTPError:
-            # Never propagate raw httpx exceptions carrying signed SAS upload query tokens.
+        except CurlRequestException:
+            # Never propagate raw transport exceptions carrying signed SAS upload query tokens.
             raise ChatGPTError("ChatGPT file upload request failed") from None
         if response.status_code >= 400:
             raise ChatGPTError(f"ChatGPT upload returned HTTP {response.status_code}")
@@ -1529,12 +1583,12 @@ class ChatGPTClient:
             "mime_type": mime_type,
             "use_case": "gizmo",
         }
-        with self.transport.stream(
+        with self._tracked_stream(
             "POST",
             "/backend-api/files/process_upload_stream",
             check_status=False,
             json=payload,
-            timeout=httpx.Timeout(300.0),
+            timeout=(30.0, 300.0),
         ) as processing:
             if processing.status_code == 429:
                 delay = parse_retry_after(processing.headers.get("retry-after"), now=time.time())
@@ -1669,9 +1723,8 @@ class ChatGPTClient:
             else:
                 content = data
 
-            timeout = httpx.Timeout(connect=30, read=15, write=15, pool=30)
             response = self._upload_request(
-                upload_url, content=content, headers=headers, timeout=timeout
+                upload_url, content=content, headers=headers, timeout=(30.0, 270.0)
             )
             response.raise_for_status()
             ensure_active()
@@ -1736,7 +1789,7 @@ class ChatGPTClient:
             upload_url,
             content=data,
             headers=headers,
-            timeout=httpx.Timeout(connect=30, read=15, write=15, pool=30),
+            timeout=(30.0, 120.0),
         )
         upload.raise_for_status()
         if ensure_active is not None:

@@ -6,10 +6,11 @@ import contextlib
 import ipaddress
 import json
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from urllib.parse import urlsplit
 
-import httpx
 import websocket
 
 _PROVIDER_ORIGINS = frozenset(
@@ -129,22 +130,35 @@ def _debugger_websocket(value: str) -> tuple[str, str]:
     return value, origin
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_CDP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+
+
 def _get_json(base: str, path: str, timeout: float = _DEFAULT_TIMEOUT):
     try:
-        with (
-            httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client,
-            client.stream("GET", f"{base}{path}") as response,
-        ):
-            if response.status_code < 200 or response.status_code >= 300:
-                raise DevToolsError(
-                    f"Connected browser debugging endpoint returned HTTP {response.status_code}"
-                )
+        with _CDP_OPENER.open(f"{base}{path}", timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            if status < 200 or status >= 300:
+                raise DevToolsError(f"Connected browser debugging endpoint returned HTTP {status}")
             body = bytearray()
-            for chunk in response.iter_bytes():
+            while True:
+                chunk = response.read(min(65536, _MAX_METADATA_BYTES - len(body) + 1))
+                if not chunk:
+                    break
                 if len(body) + len(chunk) > _MAX_METADATA_BYTES:
                     raise DevToolsError("Browser debugging metadata exceeds the size limit")
                 body.extend(chunk)
-    except httpx.HTTPError as error:
+    except urllib.error.HTTPError as error:
+        try:
+            code = error.code
+        finally:
+            error.close()
+        raise DevToolsError(f"Connected browser debugging endpoint returned HTTP {code}") from error
+    except (urllib.error.URLError, OSError) as error:
         raise DevToolsError("Connected browser debugging endpoint is unavailable") from error
     try:
         return json.loads(body)

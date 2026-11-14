@@ -6,8 +6,7 @@ from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
-
+from tests.fakes import FakeHTTPResponse
 from webaiprovider.accounts import (
     Account,
     FileCredentialStore,
@@ -238,19 +237,19 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     session.url(invalid)
 
             with self.assertRaises(AccountPaused):
-                session.check(httpx.Response(401))
+                session.check(FakeHTTPResponse(401))
 
             with self.assertRaises(AccountPaused):
-                session.check(httpx.Response(302))
+                session.check(FakeHTTPResponse(302))
 
             with self.assertRaises(ProviderError):
-                session.check(httpx.Response(403))
+                session.check(FakeHTTPResponse(403))
 
             with self.assertRaises(RemoteNotFound):
-                session.check(httpx.Response(404))
+                session.check(FakeHTTPResponse(404))
 
             with self.assertRaises(RateLimited) as ctx:
-                session.check(httpx.Response(429, headers={"retry-after": "15"}))
+                session.check(FakeHTTPResponse(429, headers={"retry-after": "15"}))
             self.assertEqual(ctx.exception.retry_after, 15.0)
 
     def test_session_write_lock_entries_reclaimed_by_gc(self):

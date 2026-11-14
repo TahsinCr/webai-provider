@@ -236,12 +236,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 NativeMessage("a-think", "assistant", (Content("text", "Thinking"),), "analysis"),
                 NativeMessage("a-1", "assistant", (Content("text", "Hi there!"),)),
             ),
+            metadata={"default_model_slug": "sonnet"},
         )
         self.provider.get_chat.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
         messages = await chat.messages.refresh()
         self.assertEqual(chat.title, "Loaded Title")
+        self.assertEqual(chat.metadata, {"default_model_slug": "sonnet"})
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0].id, "u-1")
         self.assertEqual(messages[0].role, "user")
@@ -258,7 +260,11 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         provider.prepare = AsyncMock()
         provider._close_provider = AsyncMock()
         project_alpha = NativeProject(Origin(account.provider, account.id, "proj-1"), "Alpha")
-        loose_conv = Conversation(Origin(account.provider, account.id, "chat-loose"), "Loose")
+        loose_conv = Conversation(
+            Origin(account.provider, account.id, "chat-loose"),
+            "Loose",
+            metadata={"temporary": False, "source": "list"},
+        )
         shared_conv = Conversation(
             Origin(account.provider, account.id, "chat-shared"), "Shared In Main"
         )
@@ -282,6 +288,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         main_page = await provider.chats.refresh()
         self.assertEqual([c.remote_id for c in main_page], ["chat-loose", "chat-shared"])
+        self.assertEqual(main_page[0].metadata, {"temporary": False, "source": "list"})
         self.assertTrue(all(c.project is None for c in main_page))
         provider.list_projects.assert_not_awaited()
         provider.list_project_chats.assert_not_awaited()

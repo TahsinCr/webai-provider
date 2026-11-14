@@ -5,7 +5,7 @@ import mimetypes
 import time
 from urllib.parse import quote
 
-from ...resources.common import Choice
+from ...resources.common import Choice, ResourceData
 from ...resources.project.types import (
     ProjectOptions,
     source_file,
@@ -13,9 +13,10 @@ from ...resources.project.types import (
 
 
 class ChatGPTProjectEditor:
-    def __init__(self, session, factory, *, client_scope=None):
+    def __init__(self, session, factory, *, client_scope=None, aux_client_scope=None):
         self.session, self.factory = session, factory
         self.client_scope = client_scope or (lambda: self.factory(self.session))
+        self.aux_client_scope = aux_client_scope
 
     async def close(self):
         pass
@@ -64,7 +65,14 @@ class ChatGPTProjectEditor:
 
     async def write(self, operation, project_id=None, **values):
         def send():
-            scope = self.factory(self.session) if operation == "add_source" else self.client_scope()
+            if operation == "add_source":
+                scope = (
+                    self.aux_client_scope()
+                    if self.aux_client_scope is not None
+                    else self.factory(self.session)
+                )
+            else:
+                scope = self.client_scope()
             with scope as client:
                 path = "https://chatgpt.com/backend-api/projects/" + quote(project_id, safe="")
                 if operation == "update":
@@ -116,21 +124,45 @@ class ChatGPTProjectEditor:
                     else:
                         raise ValueError("Unsupported project source type")
                     uploaded = client.upload_file(name, mime, data, project_id=project_id)
-                    client.request(
+                    file_payload = {
+                        "file_id": uploaded["id"],
+                        "last_modified": last_modified,
+                        "name": name,
+                        "size": uploaded.get("size_bytes", size),
+                        "type": mime,
+                        "location": "fs",
+                    }
+                    attached = client.request(
                         "POST",
                         path + "/files",
-                        json={
-                            "files": [
-                                {
-                                    "file_id": uploaded["id"],
-                                    "last_modified": last_modified,
-                                    "name": name,
-                                    "size": uploaded.get("size_bytes", size),
-                                    "type": mime,
-                                    "location": "fs",
-                                }
-                            ]
-                        },
+                        json={"files": [file_payload]},
+                    )
+                    attached_item = (
+                        attached["files"][0]
+                        if isinstance(attached, dict)
+                        and isinstance(attached.get("files"), list)
+                        and attached["files"]
+                        and isinstance(attached["files"][0], dict)
+                        else attached
+                        if isinstance(attached, dict)
+                        and (attached.get("file_id") or attached.get("id"))
+                        else {
+                            "file_id": uploaded["id"],
+                            "id": uploaded["id"],
+                            "name": name,
+                            "type": mime,
+                            **file_payload,
+                        }
+                    )
+                    return ResourceData(
+                        str(
+                            attached_item.get("file_id")
+                            or attached_item.get("id")
+                            or uploaded["id"]
+                        ),
+                        str(attached_item.get("name") or name),
+                        attached_item.get("type") or mime,
+                        metadata=dict(attached_item),
                     )
                 elif operation == "remove_source":
                     rid = values["resource_id"]

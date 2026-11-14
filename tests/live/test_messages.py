@@ -322,6 +322,16 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             else:
                 self.context.skip("chats.rename: unsupported")
         finally:
+            first_cleanup_error: Exception | None = None
             if branch_entry is not None:
-                await self.context.cleanup_entry_async(branch_entry)
-            await self.context.cleanup_entry_async(entry)
+                try:
+                    await self.context.cleanup_entry_async(branch_entry)
+                except Exception as exc:
+                    first_cleanup_error = exc
+            try:
+                await self.context.cleanup_entry_async(entry)
+            except Exception as exc:
+                if first_cleanup_error is None:
+                    first_cleanup_error = exc
+            if first_cleanup_error is not None:
+                raise first_cleanup_error

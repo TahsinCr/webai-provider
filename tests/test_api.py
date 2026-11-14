@@ -418,12 +418,31 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_op.message.content, "Updated via messages.update")
         self.assertEqual(update_op.message.metadata.get("action"), "edit")
 
+        branch_meta = {
+            "pending_branch": {"conversation_id": "remote-chat-id", "message_id": "msg-orig-1"}
+        }
         session.branch_chat.return_value = Conversation(
-            Origin(acc.provider, acc.id, "branch-chat-id"), "Branch chat"
+            Origin(acc.provider, acc.id, "branch-chat-id"),
+            "Branch chat",
+            metadata=branch_meta,
         )
         branched_chat = await chat.branch(msg.id, title="Branch chat")
         session.branch_chat.assert_awaited_once_with("remote-chat-id", "msg-orig-1")
         self.assertEqual(branched_chat.remote_id, "branch-chat-id")
+        self.assertEqual(branched_chat.metadata, branch_meta)
+        branched_chat.metadata["local_only"] = True
+        self.assertNotIn("local_only", branch_meta)
+
+        from webaiprovider.providers.chatgpt import ChatGPTProvider
+
+        sync_provider = ChatGPTProvider(acc)
+        try:
+            sync_branched = sync_provider._wrap_chat(branched_chat)
+            self.assertEqual(sync_branched.metadata, {**branch_meta, "local_only": True})
+            sync_branched.metadata = {"custom": 1}
+            self.assertEqual(branched_chat.metadata, {"custom": 1})
+        finally:
+            sync_provider.close()
 
     async def test_generic_constructors_select_native_provider_classes(self) -> None:
         for kind, title, operations in (
@@ -1073,15 +1092,28 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_projects_update_stages_snapshot_for_single_arg_update_project(self) -> None:
+        from types import SimpleNamespace
+
         from webaiprovider.collections import Page
-        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.common import Origin, ResourceData
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class StagingProvider(AsyncProvider):
             def __init__(self, account: Account) -> None:
                 super().__init__(account)
+                self._gate = asyncio.Lock()
                 self.staged_during_update: list[NativeProject | None] = []
                 self.submitted: list[NativeProject] = []
+                self.get_calls = 0
+                self.editor = SimpleNamespace(
+                    write=AsyncMock(
+                        side_effect=lambda op, *_args, **_kw: (
+                            ResourceData("remote-n1", "n1", "text/plain")
+                            if op == "add_source"
+                            else None
+                        )
+                    )
+                )
 
             async def prepare(self) -> None:
                 return None
@@ -1093,6 +1125,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 return Page((await self.get_project("proj-1"),), None)
 
             async def get_project(self, project_id: str):
+                self.get_calls += 1
                 return NativeProject(
                     Origin("claude", self.account_id, project_id),
                     "Original",
@@ -1109,6 +1142,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         account = Account.from_cookies("claude", {"sessionKey": "fixture"})
         async with StagingProvider(account) as provider:
             await provider.projects.refresh()
+            self.assertEqual(provider.get_calls, 1)
             updated = await provider.projects.update(
                 "proj-1",
                 title="Renamed",
@@ -1119,6 +1153,12 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider.staged_during_update[0].name, "Original")
             self.assertEqual(provider.submitted[0].name, "Renamed")
             self.assertEqual(updated.title, "Renamed")
+            self.assertFalse(provider._staged_project_reads)
+
+            added = await updated.resources.add("Body", resource_type="text", name="n1")
+            self.assertEqual(added["id"], "remote-n1")
+            self.assertTrue(await updated.resources.remove("remote-n1"))
+            self.assertEqual(provider.get_calls, 1)
             self.assertFalse(provider._staged_project_reads)
 
 

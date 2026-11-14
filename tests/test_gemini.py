@@ -19,6 +19,7 @@ from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.resources.common import Choice
 from webaiprovider.resources.message.protocol import (
     ProviderRequest,
+    TextDelta,
     TextReplacement,
 )
 from webaiprovider.resources.model.model import Model
@@ -930,12 +931,64 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(metadata[:3], parent)
                 self.assertEqual(files, [{"name": filename}])
 
-    async def test_rename_conversation_uses_extended_timeout_and_refreshes_xsrf_token(self):
+    async def test_rename_conversation_uses_muazcd_batch_and_confirms_title(self):
+        session = GeminiSession(Path("unused"))
+        session.http = SimpleNamespace(cookies=SimpleNamespace(get_dict=dict))
+        session.token = "tok-1"
+        session.sid = "sid-1"
+        session.persist = AsyncMock()
+        response_payload = json.dumps(
+            [
+                [
+                    "wrb.fr",
+                    "MUAZcd",
+                    json.dumps([None, ["conv_1", "Renamed", "2026-11-14T00:00:00Z"]]),
+                ]
+            ]
+        )
+        session.request = AsyncMock(
+            return_value=SimpleNamespace(
+                status_code=200, text=")]}'\n" + response_payload, headers={}
+            )
+        )
+
+        await session.rename_conversation("conv_1", " Renamed ")
+
+        session.persist.assert_awaited_once_with(force=False)
+        session.request.assert_awaited_once()
+        _, call_url = session.request.await_args.args[:2]
+        kwargs = session.request.await_args.kwargs
+        self.assertTrue(call_url.endswith("/_/BardChatUi/data/batchexecute"))
+        self.assertEqual(kwargs["params"]["rpcids"], "MUAZcd")
+        self.assertEqual(kwargs["params"]["source-path"], "/app/conv_1")
+        f_req = json.loads(kwargs["data"]["f.req"])
+        self.assertEqual(f_req[0][0][0], "MUAZcd")
+        self.assertEqual(json.loads(f_req[0][0][1]), [None, [["title"]], ["conv_1", "Renamed"]])
+
+        session.request.return_value = SimpleNamespace(
+            status_code=200,
+            text=json.dumps([["wrb.fr", "MUAZcd", json.dumps([None, ["conv_1", "Wrong"]])]]),
+            headers={},
+        )
+        with self.assertRaises(ProviderError):
+            await session.rename_conversation("conv_1", "Renamed")
+
+    async def test_discover_models_refreshes_xsrf_token_on_400(self):
         session = GeminiSession(Path("unused"))
         session.http = object()
         session.rpc_path_prefix = "/_/BardChatUi/"
         session.token = "stale-token"
-        session.persist = AsyncMock()
+        status = {
+            "bardModeConfigs": [{"id": "remote", "modeCategory": "FAST"}],
+            "geminiModePolicy": {
+                "configs": [
+                    {
+                        "modeConfig": {"id": "", "modeCategory": "FAST", "title": "Provider model"},
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                    }
+                ]
+            },
+        }
         responses = [
             SimpleNamespace(
                 status_code=400,
@@ -947,32 +1000,26 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(status_code=200, text=" fresh-token\n", headers={}),
             SimpleNamespace(
                 status_code=200,
-                text=json.dumps(
-                    [
-                        {
-                            "data": {
-                                "updateConversation": {
-                                    "clientConversation": {
-                                        "conversationId": "conv_1",
-                                        "title": "Renamed",
-                                    }
-                                }
-                            }
-                        }
-                    ]
-                ),
+                text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
                 headers={},
             ),
         ]
+        legacy = [None] * 18
+        row = [None] * 18
+        row[0], row[1], row[11], row[17] = "remote", "flash", "Flash", 1
+        legacy[15], legacy[16], legacy[17] = [row], [], []
         session.request = AsyncMock(side_effect=responses)
+        session.batch = AsyncMock(
+            return_value=SimpleNamespace(
+                text=json.dumps([["wrb.fr", "otAQ7b", json.dumps(legacy)]]) + "\n"
+            )
+        )
 
-        await session.rename_conversation("conv_1", " Renamed ")
+        models = await session.discover_models()
 
         self.assertEqual(session.token, "fresh-token")
-        session.persist.assert_awaited_once_with()
+        self.assertEqual([m.title for m in models], ["Provider model"])
         self.assertEqual(session.request.await_count, 3)
-        for call in session.request.await_args_list:
-            self.assertEqual(call.kwargs["timeout"], (10.0, 60.0))
         self.assertEqual(
             session.request.await_args_list[2].kwargs["headers"]["X-Framework-XSRF-Token"],
             "fresh-token",
@@ -1361,3 +1408,130 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         bad_response = SimpleNamespace(text='[["wrb.fr","CNgdBe","{not-json"]]')
         with self.assertRaises(GeminiCompatibilityError):
             NotebookRPC._decode(bad_response, "CNgdBe", False)
+
+    async def test_get_chat_warms_metadata_and_prepare_send_runs_rpcs_concurrently(self):
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        turn = [["c_warm", "r_warm"], None, [["hi"]], [[["rc_warm", ["hello"]]]]]
+        client = SimpleNamespace(models=(Model("m1", "Model 1"),), sync_activity=None)
+        started = {
+            "context": asyncio.Event(),
+            "history": asyncio.Event(),
+            "activity": asyncio.Event(),
+        }
+
+        async def fake_context(_project_id, _timing):
+            started["context"].set()
+            await asyncio.wait_for(
+                asyncio.gather(started["history"].wait(), started["activity"].wait()), 0.5
+            )
+            return ("notebooks/abcdef", [1, None, None, None, 0])
+
+        async def fake_rpc_call(rpc, *_args, **_kwargs):
+            if rpc == "hNvQHb":
+                if started["context"].is_set():
+                    started["history"].set()
+                    await asyncio.wait_for(
+                        asyncio.gather(started["context"].wait(), started["activity"].wait()), 0.5
+                    )
+                return [[[turn]]]
+            raise AssertionError(rpc)
+
+        async def fake_sync():
+            started["activity"].set()
+            await asyncio.wait_for(
+                asyncio.gather(started["context"].wait(), started["history"].wait()), 0.5
+            )
+
+        client.sync_activity = fake_sync
+        provider._connect = AsyncMock(return_value=client)
+        provider.rpc.call = AsyncMock(side_effect=fake_rpc_call)
+        try:
+            chat = await provider.get_chat("c_warm")
+            self.assertEqual(chat.origin.remote_id, "c_warm")
+            self.assertEqual(
+                provider._chat_metadata.get("c_warm")[:3], ["c_warm", "r_warm", "rc_warm"]
+            )
+
+            provider._resolve_project_context = fake_context
+            # Clear cache for c_uncached so hNvQHb actually runs in parallel with context & activity.
+            _, req, meta, ctx, _ = await provider._prepare_send_context(
+                ProviderRequest("next", conversation_id="c_uncached", project_id="notebooks/abcdef")
+            )
+            self.assertEqual(req.conversation_id, "c_uncached")
+            self.assertEqual(meta[:3], ["c_uncached", "r_warm", "rc_warm"])
+            self.assertEqual(ctx[0], "notebooks/abcdef")
+        finally:
+            await provider.close()
+
+    async def test_notebook_get_raises_remote_not_found_when_server_returns_empty_or_null(self):
+        from webaiprovider.errors import RemoteNotFound
+        from webaiprovider.providers.gemini.notebooks import Notebooks
+        from webaiprovider.providers.gemini.rpc import NotebookRPC
+
+        client = SimpleNamespace(
+            batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","HcT8bb",null]]'))
+        )
+        rpc = NotebookRPC(AsyncMock(return_value=client))
+        notebooks = Notebooks("acc")
+        notebooks.reader = rpc.read
+
+        with self.assertRaises(RemoteNotFound):
+            await notebooks.get("notebooks/abcdef")
+
+    async def test_stream_emits_deltas_on_appends_and_replacement_on_rewrite(self):
+        provider = AsyncGeminiProvider(provider_account("gemini"))
+        client = SimpleNamespace(models=("gemini-2.5-flash",), sync_activity=AsyncMock())
+
+        async def fake_prepare(req):
+            return client, req, ["", "", ""], None, None
+
+        async def fake_generate(*_args, **_kwargs):
+            yield {
+                "cid": "c_stream",
+                "metadata": ["c_stream", "r1", "rc1"],
+                "thoughts": "Step 1",
+                "text": "Hel",
+                "files": [],
+                "sources": [],
+                "response_complete": False,
+            }
+            yield {
+                "cid": "c_stream",
+                "metadata": ["c_stream", "r1", "rc1"],
+                "thoughts": "Step 1 and 2",
+                "text": "Hello",
+                "files": [],
+                "sources": [],
+                "response_complete": False,
+            }
+            yield {
+                "cid": "c_stream",
+                "metadata": ["c_stream", "r1", "rc1"],
+                "thoughts": "Step 1 and 2",
+                "text": "Revised Hello ![img](http://googleusercontent.com/image_generation_content/img1)",
+                "files": [
+                    {
+                        "alias": "http://googleusercontent.com/image_generation_content/img1",
+                        "name": "img.png",
+                        "url": "https://lh3.googleusercontent.com/resolved",
+                        "media_type": "image/png",
+                    }
+                ],
+                "sources": [],
+                "response_complete": True,
+            }
+
+        provider._prepare_send_context = fake_prepare
+        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
+            events = [event async for event in provider._stream_request(ProviderRequest("hi"))]
+
+        self.assertIn(TextDelta("Step 1", "analysis"), events)
+        self.assertIn(TextDelta(" and 2", "analysis"), events)
+        self.assertIn(TextDelta("Hel", "final"), events)
+        self.assertIn(TextDelta("lo", "final"), events)
+        self.assertIn(
+            TextReplacement(
+                "Revised Hello ![img](https://lh3.googleusercontent.com/resolved)", "final"
+            ),
+            events,
+        )

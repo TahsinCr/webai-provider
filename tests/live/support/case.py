@@ -143,7 +143,7 @@ class LiveSession:
             if recover and state is None:
                 raise SafetyError("No pending cleanup journal exists")
 
-            for logger_name in ("httpx", "httpcore", "curl_cffi", "websockets", "urllib3"):
+            for logger_name in ("curl_cffi", "websockets", "urllib3"):
                 logging.getLogger(logger_name).setLevel(logging.WARNING)
             return self._new_context(account, state, journal_path=journal_path)
         except BaseException:
@@ -184,14 +184,13 @@ class LiveSession:
     @staticmethod
     def _retryable_open_error(error: LiveApiError) -> bool:
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
-        from httpx import TimeoutException
 
         from webaiprovider.errors import ProviderError
 
         if not str(error).startswith("session.open failed after "):
             return False
         cause = error.__context__
-        if isinstance(cause, (CurlTimeout, TimeoutException, TimeoutError)):
+        if isinstance(cause, (CurlTimeout, TimeoutError)):
             return True
         # Retry transient edge/5xx bootstrap errors once, but never auth, rate-limit,
         # compatibility, network-unavailable, or HTTP 403 rejections.

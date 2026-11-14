@@ -6,8 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import httpx
-
+from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 from webaiprovider.errors import RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import BrowserSession, ChatGPTClient, SessionPaths
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
@@ -48,7 +47,7 @@ class SendOptionsTests(unittest.TestCase):
                     "content": {"parts": ["Answer"]},
                 },
             ]
-            return httpx.Response(
+            return FakeHTTPResponse(
                 200,
                 headers={"content-type": "text/event-stream"},
                 text="\n\n".join(
@@ -61,7 +60,7 @@ class SendOptionsTests(unittest.TestCase):
                 + "\n\n",
             )
 
-        self.client.http = httpx.Client(transport=httpx.MockTransport(handle))
+        self.client.http = FakeHTTPClient(handle)
         self.addCleanup(self.client.close)
         self.client.create_sentinel_headers = Mock(return_value={})
         self.client.trigger_sentinel_prewarm = Mock()
@@ -318,11 +317,13 @@ class SendOptionsTests(unittest.TestCase):
         def handle(request):
             calls.append(request.url.path)
             if request.url.path.endswith("/c-ok"):
-                return httpx.Response(200, json={"id": "c-ok", "mapping": {}, "current_node": None})
-            return httpx.Response(404, json={"detail": "Not found"})
+                return FakeHTTPResponse(
+                    200, json={"id": "c-ok", "mapping": {}, "current_node": None}
+                )
+            return FakeHTTPResponse(404, json={"detail": "Not found"})
 
         self.client.http.close()
-        self.client.http = httpx.Client(transport=httpx.MockTransport(handle))
+        self.client.http = FakeHTTPClient(handle)
         self.client._conversation_endpoint_verified = False
 
         with self.assertRaises(RemoteNotFound):
@@ -357,10 +358,10 @@ class SendOptionsTests(unittest.TestCase):
 
     def test_consume_chat_stream_maps_http_429_to_pre_send_rate_limited(self):
         def handle(_request):
-            return httpx.Response(429, headers={"retry-after": "3"})
+            return FakeHTTPResponse(429, headers={"retry-after": "3"})
 
         self.client.http.close()
-        self.client.http = httpx.Client(transport=httpx.MockTransport(handle))
+        self.client.http = FakeHTTPClient(handle)
         with self.assertRaises(RateLimited) as ctx:
             self.client.send_prompt_direct(None, "Hi", [])
         self.assertEqual(ctx.exception.retry_after, 3.0)

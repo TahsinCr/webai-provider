@@ -10,9 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpcore
-import httpx
-
+from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 from webaiprovider import Account, AsyncProvider, Provider, ProviderType
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
@@ -27,8 +25,8 @@ from webaiprovider.resources.message.protocol import (
 )
 from webaiprovider.transport import (
     AsyncHTTPTransport,
-    AsyncHTTPXTransport,
     HTTPTransport,
+    PortalTransport,
     ThreadedTransport,
     TransportConfig,
 )
@@ -101,7 +99,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 yield event
 
         client = SimpleNamespace(
-            request=AsyncMock(return_value=httpx.Response(200, json={"answer": "reply"})),
+            request=AsyncMock(return_value=FakeHTTPResponse(200, json={"answer": "reply"})),
             close=AsyncMock(),
         )
         transport = AsyncHTTPTransport("https://grok.com", client_factory=lambda **_: client)
@@ -116,29 +114,18 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.request.call_args.kwargs["json"], {"text": "question"})
         client.close.assert_awaited_once()
 
-    async def test_httpx_strategy_uses_the_same_request_and_stream_contract(self):
-        async with httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"ok": True}))
-        ) as client:
-            transport = AsyncHTTPXTransport("https://claude.ai", client_getter=lambda: client)
-            self.assertEqual(await transport.request("GET", "/fixture"), {"ok": True})
-            async with transport.stream("GET", "/fixture") as response:
-                content = b"".join([chunk async for chunk in response.aiter_bytes()])
-            self.assertEqual(content, b'{"ok":true}')
-            with self.assertRaises(ValueError):
-                TransportConfig(timeout=(0.0, 5.0))
-            with self.assertRaises(ValueError):
-                TransportConfig(timeout=(True, 5.0))
-            tuple_transport = AsyncHTTPXTransport(
-                "https://claude.ai",
-                config=TransportConfig(timeout=(4.0, 19.0)),
-            )
-            client_instance = tuple_transport._connect()
-            try:
-                self.assertEqual(client_instance.timeout.connect, 4.0)
-                self.assertEqual(client_instance.timeout.read, 19.0)
-            finally:
-                await tuple_transport.close()
+    def test_http_transport_defaults_to_curl_session_and_validates_config(self):
+        from curl_cffi.requests import Session as CurlSession
+
+        with self.assertRaises(ValueError):
+            TransportConfig(timeout=(0.0, 5.0))
+        with self.assertRaises(ValueError):
+            TransportConfig(timeout=(True, 5.0))
+        with HTTPTransport("https://claude.ai", config=TransportConfig(timeout=(4.0, 19.0))) as tr:
+            session = tr._connect()
+            self.assertIsInstance(session, CurlSession)
+            self.assertFalse(session.trust_env)
+            self.assertEqual(session.timeout, (4.0, 19.0))
 
     async def test_curl_dns_pinning_ssrf_block_and_idempotent_get_retry(self):
         import socket
@@ -153,7 +140,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         session = AsyncSession()
         responses = [
             CurlTimeout("curl: (28) Resolving timed out"),
-            httpx.Response(200, json={"ok": True}),
+            FakeHTTPResponse(200, json={"ok": True}),
         ]
 
         async def fake_request(method, url, **options):
@@ -261,10 +248,10 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                     await release_sibling.wait()
                     if closed_flag:
                         raise RuntimeError("sibling client closed while in flight")
-                    return httpx.Response(200, json={"sibling": True})
+                    return FakeHTTPResponse(200, json={"sibling": True})
                 if client_index == 0:
                     raise CurlTimeout("first client timed out")
-                return httpx.Response(200, json={"retried": True})
+                return FakeHTTPResponse(200, json={"retried": True})
 
             client = SimpleNamespace(request=request, close=close, is_closed=lambda: closed_flag)
             clients.append(client)
@@ -286,7 +273,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
     def transport(self, origin="https://claude.ai", **options):
         client = SimpleNamespace(
-            request=AsyncMock(return_value=httpx.Response(200, json={"ok": True})),
+            request=AsyncMock(return_value=FakeHTTPResponse(200, json={"ok": True})),
             close=AsyncMock(),
         )
         return AsyncHTTPTransport(origin, client_getter=lambda: client, **options), client
@@ -312,7 +299,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.kwargs["timeout"], 7)
         self.assertEqual(call.kwargs["headers"]["authorization"], "fixture")
         self.assertFalse(call.kwargs["allow_redirects"])
-        client.request.return_value = httpx.Response(503)
+        client.request.return_value = FakeHTTPResponse(503)
         with self.assertRaises(ProviderError):
             await transport.send("POST", "/api/test")
         self.assertEqual(client.request.await_count, 2)
@@ -325,7 +312,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_rate_limits_are_isolated_between_accounts_on_the_same_origin(self):
         first, first_client = self.transport()
         second, _ = self.transport()
-        first_client.request.return_value = httpx.Response(429, headers={"retry-after": "60"})
+        first_client.request.return_value = FakeHTTPResponse(429, headers={"retry-after": "60"})
         for _ in range(2):
             with self.assertRaises(RateLimited):
                 await first.request("GET", "/api/test")
@@ -405,7 +392,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         closed = threading.Event()
         read = 0
 
-        class Bytes(httpx.SyncByteStream):
+        class Bytes:
             def __iter__(self):
                 nonlocal read
                 while not closed.is_set():
@@ -415,9 +402,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 closed.set()
 
-        client = httpx.Client(
-            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Bytes()))
-        )
+        client = FakeHTTPClient(lambda _: FakeHTTPResponse(200, stream=Bytes()))
         self.addCleanup(client.close)
         native = HTTPTransport("https://chatgpt.com", client_getter=lambda: client)
 
@@ -435,7 +420,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_threaded_cancellation_closes_a_blocking_read_and_joins_it(self):
         entered, released, finished = threading.Event(), threading.Event(), threading.Event()
 
-        class Bytes(httpx.SyncByteStream):
+        class Bytes:
             def __iter__(self):
                 try:
                     entered.set()
@@ -448,9 +433,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 released.set()
 
-        with httpx.Client(
-            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Bytes()))
-        ) as client:
+        with FakeHTTPClient(lambda _: FakeHTTPResponse(200, stream=Bytes())) as client:
 
             @contextmanager
             def scope():
@@ -470,6 +453,58 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(released.is_set())
         self.assertTrue(finished.is_set())
 
+    async def test_portal_transport_cancels_inflight_async_stream_immediately_on_close(self):
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        exited = asyncio.Event()
+
+        class HungStream:
+            async def aiter_content(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"never"
+
+        async_tr = SimpleNamespace(
+            origin="https://chatgpt.com",
+            config=TransportConfig(),
+            url=lambda path: "https://chatgpt.com" + path,
+            close=AsyncMock(),
+        )
+
+        @asynccontextmanager
+        async def open_stream(*_args, **_kwargs):
+            try:
+                yield FakeHTTPResponse(200, stream=HungStream().aiter_content())
+            finally:
+                exited.set()
+
+        async_tr.stream = open_stream
+        portal = PortalTransport(
+            lambda coro: asyncio.run_coroutine_threadsafe(coro, loop).result(),
+            lambda: async_tr,
+            close_transport=False,
+        )
+        portal.close()
+        async_tr.close.assert_not_awaited()
+
+        read_done = threading.Event()
+        holder = []
+
+        def worker():
+            try:
+                with portal.stream("POST", "/backend-api/f/conversation") as stream:
+                    holder.append(stream)
+                    list(stream.iter_bytes())
+            finally:
+                read_done.set()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await asyncio.to_thread(holder[0].close)
+        await asyncio.wait_for(exited.wait(), timeout=1.0)
+        self.assertTrue(await asyncio.to_thread(read_done.wait, 1.0))
+
 
 class BlockingTransportTests(unittest.TestCase):
     def test_chatgpt_native_and_public_transport_share_headers_without_refreshing_with_old_token(
@@ -479,11 +514,9 @@ class BlockingTransportTests(unittest.TestCase):
         native = ChatGPTClient(SimpleNamespace(cdp_url="unused", save=Mock()), authenticate=False)
         self.addCleanup(native.close)
         native.http.close()
-        native.http = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: (
-                    requests.append(request) or httpx.Response(200, json={"accessToken": "new"})
-                )
+        native.http = FakeHTTPClient(
+            lambda request: (
+                requests.append(request) or FakeHTTPResponse(200, json={"accessToken": "new"})
             )
         )
         native.headers = {"authorization": "Bearer old"}
@@ -499,7 +532,7 @@ class BlockingTransportTests(unittest.TestCase):
 
         async def request(*args, **options):
             threads.add(threading.get_ident())
-            return httpx.Response(200, json={"ok": True})
+            return FakeHTTPResponse(200, json={"ok": True})
 
         async def chunks():
             threads.add(threading.get_ident())
@@ -545,12 +578,8 @@ class BlockingTransportTests(unittest.TestCase):
 
     def test_sync_http_request_checks_response_limits_and_disables_redirects(self):
         requests = []
-        with httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: (
-                    requests.append(request) or httpx.Response(200, content=b"large body")
-                )
-            )
+        with FakeHTTPClient(
+            lambda request: requests.append(request) or FakeHTTPResponse(200, content=b"large body")
         ) as client:
             transport = HTTPTransport(
                 "https://claude.ai",
@@ -560,6 +589,73 @@ class BlockingTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ProviderError, "size limit"):
                 transport.send("POST", "/fixture")
             self.assertEqual(len(requests), 1)
+
+    def test_sync_http_transport_pins_dns_blocks_ssrf_and_retries_idempotent_get(self):
+        import socket
+
+        from curl_cffi import CurlOpt
+        from curl_cffi.requests import Session as CurlSession
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        import webaiprovider.transport.http as transport_http
+        from webaiprovider.core import MultiDimensionBoundedCache
+
+        outcomes = [
+            CurlTimeout("curl: (28) Resolving timed out"),
+            FakeHTTPResponse(200, json={"ok": True}),
+        ]
+        created = []
+
+        def fake_session(**_kwargs):
+            sess = CurlSession()
+            sess.request = Mock(
+                side_effect=lambda *_a, **_kw: (
+                    (_ for _ in ()).throw(res)
+                    if isinstance((res := outcomes.pop(0)), BaseException)
+                    else res
+                )
+            )
+            created.append(sess)
+            return sess
+
+        fresh_cache = MultiDimensionBoundedCache(max_entries=16, max_bytes=4096, default_ttl=60)
+        with (
+            patch.object(transport_http, "_DNS_CACHE", fresh_cache),
+            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+            patch.object(
+                transport_http.socket,
+                "getaddrinfo",
+                return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+            ) as getaddr,
+        ):
+            transport = HTTPTransport("https://api.example", client_factory=fake_session)
+            result = transport.request("GET", "/v1")
+            self.assertEqual(result, {"ok": True})
+            self.assertEqual(len(created), 2)
+            self.assertEqual(created[1].curl_options[CurlOpt.IPRESOLVE], 1)
+            self.assertEqual(
+                created[1].curl_options[CurlOpt.RESOLVE],
+                ["api.example:443:93.184.216.34"],
+            )
+            self.assertEqual(getaddr.call_count, 2)
+            transport.close()
+
+            with (
+                patch.object(
+                    transport_http.socket,
+                    "getaddrinfo",
+                    return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))],
+                ),
+                self.assertRaises(ValueError),
+            ):
+                HTTPTransport("https://rebind.example", client_factory=fake_session).request(
+                    "GET", "/v1"
+                )
+
+            with self.assertRaises(ValueError):
+                HTTPTransport("https://169.254.169.254", client_factory=fake_session).request(
+                    "GET", "/latest"
+                )
 
 
 class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
@@ -572,7 +668,7 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
         import webaiprovider.transport.http as transport_http
 
         session = AsyncSession()
-        session.request = AsyncMock(return_value=httpx.Response(200, json={"ok": True}))
+        session.request = AsyncMock(return_value=FakeHTTPResponse(200, json={"ok": True}))
         resolved_ips = iter(["93.184.216.34", "93.184.216.35"])
 
         async def fake_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
@@ -591,7 +687,7 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resolve_one, ["claude.ai:443:93.184.216.34"])
 
                 with patch.object(
-                    transport, "_resolve_entry", wraps=transport._resolve_entry
+                    transport._dns, "resolve_entry", wraps=transport._dns.resolve_entry
                 ) as build_entry:
                     await transport.send("GET", "/two-again")
                     self.assertIs(session.curl_options[CurlOpt.RESOLVE], resolve_one)
@@ -638,151 +734,6 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(await transport_http._check_ipv6_connectivity())
         finally:
             transport_http._ipv6_connectivity_cache = previous_cache
-
-    async def test_safe_httpx_transports_pin_dns_preserve_sni_block_ssrf_and_invalidate(self):
-        import webaiprovider.transport.http as transport_http
-
-        transport_http._DNS_CACHE.clear()
-        calls = []
-        sync_captured = []
-        async_captured = []
-
-        def fake_getaddrinfo(host, port, family=0, type=0, *_extra):
-            calls.append((host, port, family))
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
-        class _Done(Exception):
-            pass
-
-        class SpyStream:
-            def __init__(self, sink):
-                self._sink = sink
-
-            def start_tls(self, ssl_context, server_hostname=None, timeout=None):
-                self._sink[-1]["sni"] = server_hostname
-                raise _Done
-
-            def close(self):
-                pass
-
-        class SpySyncInner(httpcore.NetworkBackend):
-            def __init__(self, *, fail=False):
-                self.fail = fail
-
-            def connect_tcp(
-                self, host, port, timeout=None, local_address=None, socket_options=None
-            ):
-                sync_captured.append({"tcp_host": host, "port": port})
-                if self.fail:
-                    raise httpcore.ConnectError("down")
-                return SpyStream(sync_captured)
-
-            def connect_unix_socket(self, path, timeout=None, socket_options=None):
-                raise AssertionError("unexpected unix socket")
-
-            def sleep(self, seconds):
-                pass
-
-        class SpyAsyncStream:
-            def __init__(self, sink):
-                self._sink = sink
-
-            async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
-                self._sink[-1]["sni"] = server_hostname
-                raise _Done
-
-            async def aclose(self):
-                pass
-
-        class SpyAsyncInner(httpcore.AsyncNetworkBackend):
-            def __init__(self, *, fail=False):
-                self.fail = fail
-
-            async def connect_tcp(
-                self, host, port, timeout=None, local_address=None, socket_options=None
-            ):
-                async_captured.append({"tcp_host": host, "port": port})
-                if self.fail:
-                    raise httpcore.ConnectError("down")
-                return SpyAsyncStream(async_captured)
-
-            async def connect_unix_socket(self, path, timeout=None, socket_options=None):
-                raise AssertionError("unexpected unix socket")
-
-            async def sleep(self, seconds):
-                pass
-
-        with patch.dict("os.environ", {"HTTPS_PROXY": "http://proxy.invalid:8080"}):
-            self.assertIsNone(transport_http.safe_httpx_sync_transport())
-            self.assertIsNone(transport_http.safe_httpx_async_transport())
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
-            patch.object(transport_http.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
-        ):
-            sync_tr = transport_http.safe_httpx_sync_transport()
-            sync_tr._pool._network_backend = transport_http._build_safe_sync_backend(SpySyncInner())
-            with httpx.Client(transport=sync_tr) as client:
-                with self.assertRaises(_Done):
-                    client.get("https://api.example/v1")
-            with httpx.Client(transport=transport_http.safe_httpx_sync_transport()) as bad_client:
-                with self.assertRaises(ValueError):
-                    bad_client.get("https://169.254.169.254/latest")
-
-            async_tr = transport_http.safe_httpx_async_transport()
-            async_tr._pool._network_backend = transport_http._build_safe_async_backend(
-                SpyAsyncInner()
-            )
-            async with httpx.AsyncClient(transport=async_tr) as aclient:
-                with self.assertRaises(_Done):
-                    await aclient.get("https://api.example/v1")
-
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0][2], socket.AF_INET)
-            self.assertEqual(
-                sync_captured, [{"tcp_host": "93.184.216.34", "port": 443, "sni": "api.example"}]
-            )
-            self.assertEqual(
-                async_captured, [{"tcp_host": "93.184.216.34", "port": 443, "sni": "api.example"}]
-            )
-
-            failing_sync = transport_http.safe_httpx_sync_transport()
-            failing_sync._pool._network_backend = transport_http._build_safe_sync_backend(
-                SpySyncInner(fail=True)
-            )
-            with httpx.Client(transport=failing_sync) as bad_connect:
-                with self.assertRaises(httpx.ConnectError):
-                    bad_connect.get("https://api.example/v1")
-            self.assertIsNone(transport_http._DNS_CACHE.get(("api.example", 443, False)))
-
-            failing_async = transport_http.safe_httpx_async_transport()
-            failing_async._pool._network_backend = transport_http._build_safe_async_backend(
-                SpyAsyncInner(fail=True)
-            )
-            async with httpx.AsyncClient(transport=failing_async) as bad_aconnect:
-                with self.assertRaises(httpx.ConnectError):
-                    await bad_aconnect.get("https://api.example/v1")
-            self.assertEqual(len(calls), 2)
-            self.assertIsNone(transport_http._DNS_CACHE.get(("api.example", 443, False)))
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
-            patch.object(
-                transport_http.socket,
-                "getaddrinfo",
-                return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))],
-            ),
-        ):
-            with httpx.Client(transport=transport_http.safe_httpx_sync_transport()) as priv_client:
-                with self.assertRaises(ValueError):
-                    priv_client.get("https://rebind.example/v1")
-            async with httpx.AsyncClient(
-                transport=transport_http.safe_httpx_async_transport()
-            ) as priv_aclient:
-                with self.assertRaises(ValueError):
-                    await priv_aclient.get("https://rebind.example/v1")
 
     def test_chatgpt_browser_session_import_cookies_pins_dns_and_invalidates_on_timeout(self):
         from curl_cffi import CurlOpt
@@ -842,3 +793,28 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
             timeout_client = instances[-1]
             self.assertEqual(timeout_client.curl_options.get(CurlOpt.RESOLVE), [])
             self.assertIsNone(transport_http._DNS_CACHE.get(("chatgpt.com", 443, False)))
+
+    def test_dual_stack_resolution_prefers_ipv4_before_ipv6(self):
+        import webaiprovider.transport.http as transport_http
+
+        transport_http._DNS_CACHE.clear()
+        try:
+            records = [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:4700::1111", 443, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700:4700::1001", 443, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 443)),
+            ]
+            with patch.object(transport_http.socket, "getaddrinfo", return_value=records):
+                ips = transport_http._resolve_host_ips_sync("dual.example", 443, use_ipv6=True)
+            self.assertEqual(
+                ips,
+                (
+                    "93.184.216.34",
+                    "93.184.216.35",
+                    "2606:4700:4700::1111",
+                    "2606:4700:4700::1001",
+                ),
+            )
+        finally:
+            transport_http._DNS_CACHE.clear()

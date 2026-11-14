@@ -44,6 +44,7 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
             raise ProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
             self.chat.title = conversation.title
+        self.chat.metadata = dict(conversation.metadata)
         if conversation.project is not None:
             resolved_project = _project_from_data(session, conversation.project)
             if self.chat.project is None:

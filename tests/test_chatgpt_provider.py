@@ -205,34 +205,48 @@ class ChatGPTProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await history).origin.remote_id, "remote")
 
     async def test_default_http_client_is_reused_after_startup_warmup(self):
-        import httpx
+        from curl_cffi.requests import Session as CurlSession
+
+        from webaiprovider.transport import AsyncHTTPTransport
 
         raw = {"id": "remote", "title": "Example", "messages": []}
         catalog = ModelCatalog(ModelCatalogState.AVAILABLE)
         self.session.load = lambda: ("https://chatgpt.com/", {"authorization": "Bearer test"})
-        real_http_client = httpx.Client
         with (
             patch(
-                "webaiprovider.providers.chatgpt.client.httpx.Client", wraps=real_http_client
-            ) as clients,
+                "webaiprovider.providers.chatgpt.provider.AsyncHTTPTransport",
+                wraps=AsyncHTTPTransport,
+            ) as transports,
+            patch(
+                "webaiprovider.providers.chatgpt.client.CurlSession",
+                wraps=CurlSession,
+            ) as sync_sessions,
             patch.object(ChatGPTClient, "model_catalog", return_value=catalog) as model_catalog,
+            patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as prewarm,
             patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
             patch.object(ChatGPTClient, "get_conversation", return_value=raw),
             patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
         ):
             provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
-            await provider.prepare()
-            await provider._load_model_catalog()
-            await provider._load_model_catalog(force=True)
-            await provider.list_chats(limit=1)
-            await provider.get_chat("remote")
-            await provider.project_options("project")
-            self.assertEqual(clients.call_count, 1)
-            self.assertIsNotNone(provider._http_client)
-            self.assertIs(
-                provider._http_client.temporary_conversations, provider._temporary_conversations
-            )
-            model_catalog.assert_called_with(refresh=True)
+            try:
+                await provider.prepare()
+                prewarm.assert_called_once_with()
+                await provider._load_model_catalog()
+                await provider._load_model_catalog(force=True)
+                await provider.list_chats(limit=1)
+                await provider.get_chat("remote")
+                await provider.project_options("project")
+                self.assertEqual(transports.call_count, 1)
+                self.assertEqual(sync_sessions.call_count, 0)
+                self.assertIsNotNone(provider._http_client)
+                self.assertIsNotNone(provider._owned_transport)
+                self.assertIs(
+                    provider._http_client.temporary_conversations,
+                    provider._temporary_conversations,
+                )
+                model_catalog.assert_called_with(refresh=True)
+            finally:
+                await provider.close()
             await provider.close()
             self.assertIsNone(provider._http_client)
 
@@ -601,10 +615,150 @@ class ChatGPTProviderOptimizationTests(ChatGPTProviderTests):
             loaded = await self.provider.projects.refresh()
             result = await self.provider.projects.update(loaded[0], title="Updated Name")
             self.assertEqual(result.title, "Updated Name")
-            self.assertEqual(get_calls, 2)
+            self.assertEqual(get_calls, 0)
             self.assertFalse(self.provider._staged_project_reads)
         finally:
             await self.provider.close()
+
+    async def test_reads_and_metadata_ops_bypass_send_gate_and_list_chats_has_no_idle_sleep(self):
+        self.client.list_page = lambda offset=0, limit=28: {
+            "items": [{"id": f"c-{offset}", "title": "Chat", "messages": []}]
+        }
+        self.client.get_conversation = lambda cid: {"id": cid, "title": "Chat", "messages": []}
+        self.client.get_project = lambda pid: {
+            "id": pid,
+            "name": "Proj",
+            "instructions": "",
+            "resources": [],
+            "metadata": {},
+        }
+        self.client.model_catalog = lambda refresh=False: ModelCatalog(ModelCatalogState.AVAILABLE)
+        self.client.rename_conversation = lambda *_args: None
+        self.client.move_conversation = lambda *_args: {"project_id": None}
+
+        async with self.provider._gate:
+            with patch("asyncio.sleep", side_effect=AssertionError("unexpected idle sleep")):
+                page1 = await asyncio.wait_for(self.provider.list_chats(limit=1), 1.0)
+                page2 = await asyncio.wait_for(self.provider.list_chats("1", limit=1), 1.0)
+            chat = await asyncio.wait_for(self.provider.get_chat("c-0"), 1.0)
+            proj = await asyncio.wait_for(self.provider.get_project("g-p-1"), 1.0)
+            catalog = await asyncio.wait_for(self.provider._load_model_catalog(), 1.0)
+            await asyncio.wait_for(self.provider.rename_chat("c-0", "New Title"), 1.0)
+            await asyncio.wait_for(self.provider.move_chat("c-0", None), 1.0)
+
+        self.assertEqual(page1.items[0].origin.remote_id, "c-0")
+        self.assertEqual(page2.items[0].origin.remote_id, "c-1")
+        self.assertEqual(chat.origin.remote_id, "c-0")
+        self.assertEqual(proj.origin.remote_id, "g-p-1")
+        self.assertEqual(catalog.state, ModelCatalogState.AVAILABLE)
+
+    async def test_aux_client_reused_across_renames_and_project_uploads(self):
+        from webaiprovider.transport import HTTPTransport
+
+        created = []
+
+        class PersistentAuxClient:
+            def __init__(self, session):
+                self.session = session
+                self.closed = threading.Event()
+                self.renamed = []
+                self.temporary_conversations = None
+                self.pending_branches = None
+                self.transport = HTTPTransport("https://chatgpt.com")
+                created.append(self)
+
+            def rename_conversation(self, cid, title):
+                self.renamed.append((cid, title))
+
+            def upload_file(self, name, mime, data, **_kwargs):
+                return {"id": "file-aux", "name": name, "mime_type": mime, "size_bytes": len(data)}
+
+            def request(self, *_args, **_kwargs):
+                return {
+                    "files": [{"file_id": "file-aux", "name": "note.txt", "type": "text/plain"}]
+                }
+
+            def close(self):
+                self.closed.set()
+
+        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentAuxClient):
+            provider = AsyncChatGPTProvider(
+                provider_account("chatgpt"),
+                session=self.session,
+                client_factory=PersistentAuxClient,
+            )
+        try:
+            await provider.rename_chat("c-1", "One")
+            await provider.rename_chat("c-2", "Two")
+            await provider.editor.write(
+                "add_source", "g-p-1", kind="text", name="note", text="hello"
+            )
+            self.assertEqual(len(created), 1)
+            self.assertIs(provider._aux_http_client, created[0])
+            await provider._discard_http_client()
+            self.assertFalse(created[0].closed.is_set())
+        finally:
+            await provider.close()
+        self.assertTrue(created[0].closed.is_set())
+        self.assertIsNone(provider._aux_http_client)
+
+    async def test_resolve_download_reuses_cached_snapshot_and_falls_back_on_miss(self):
+        from unittest.mock import Mock
+
+        cached_file_chat = {
+            "id": "chat-1",
+            "messages": [
+                {
+                    "id": "m-1",
+                    "content": {"parts": []},
+                    "metadata": {
+                        "attachments": [{"id": "file-cached", "name": "a.txt"}],
+                    },
+                }
+            ],
+        }
+        self.client._cached_conversation = lambda cid: cached_file_chat if cid == "chat-1" else None
+        self.client.get_conversation = Mock(
+            return_value={
+                "id": "chat-1",
+                "messages": [
+                    {"id": "m-2", "content": {"parts": ["See /mnt/data/report.csv"]}},
+                ],
+            }
+        )
+        self.client.request = Mock(
+            side_effect=[
+                Mock(json=lambda: {"download_url": "https://cdn.example/f", "file_name": "a.txt"}),
+                Mock(json=lambda: {"download_url": "https://cdn.example/r"}),
+            ]
+        )
+        source_cached = await self.provider.resolve_download("file-service://file-cached", "chat-1")
+        self.assertEqual(source_cached.filename, "a.txt")
+        self.client.get_conversation.assert_not_called()
+
+        source_miss = await self.provider.resolve_download("sandbox:/mnt/data/report.csv", "chat-1")
+        self.assertEqual(source_miss.url, "https://cdn.example/r")
+        self.client.get_conversation.assert_called_once_with("chat-1")
+
+    async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
+        from webaiprovider.providers.chatgpt.provider import _prepare_chatgpt_attachments
+
+        barrier = threading.Barrier(2, timeout=1.0)
+        self.client.upload_file = lambda name, mime, data, **_kwargs: (
+            barrier.wait(),
+            {"id": f"id-{name}", "name": name},
+        )[1]
+        request = ProviderRequest(
+            "hi",
+            attachments=(
+                {"bytes": b"a", "name": "first.txt", "mime_type": "text/plain"},
+                {"bytes": b"b", "name": "second.txt", "mime_type": "text/plain"},
+            ),
+        )
+        result = await asyncio.to_thread(
+            _prepare_chatgpt_attachments, self.client, request, threading.Event()
+        )
+        self.assertEqual([item["id"] for item in result], ["id-first.txt", "id-second.txt"])
 
     async def test_stream_request_emits_mid_stream_bound_once_and_skips_trailing_duplicate(self):
         self.client.ensure_authenticated = Mock_auth = lambda *_a, **_kw: None
@@ -634,3 +788,156 @@ class ChatGPTProviderOptimizationTests(ChatGPTProviderTests):
         self.assertIsInstance(events[0], ConversationBound)
         self.assertEqual(events[1], TextDelta("hello", "final"))
         self.assertIn(ResponseComplete(), events)
+
+    async def test_pending_branch_first_send_binds_real_id_without_get_conversation(self):
+        import json
+
+        from tests.fakes import FakeHTTPClient, FakeHTTPRequest, FakeHTTPResponse
+        from webaiprovider.resources.model import ModelCatalogState
+        from webaiprovider.transport import HTTPTransport
+
+        requests_seen = []
+        sent_payloads = []
+        persisted_conversation = {
+            "conversation_id": "c_persisted_branch",
+            "title": "Source Chat",
+            "default_model_slug": "gpt-4o-mini",
+            "messages": [
+                {
+                    "id": "m_user_branch",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Branch prompt"]},
+                },
+                {
+                    "id": "m_branch_reply",
+                    "author": {"role": "assistant"},
+                    "channel": "final",
+                    "content": {"content_type": "text", "parts": ["BRANCH"]},
+                },
+            ],
+        }
+        root_conversation = {
+            "conversation_id": "c_root",
+            "title": "Source Chat",
+            "default_model_slug": "gpt-4o-mini",
+            "current_node": "m_root_a",
+            "messages": [
+                {
+                    "id": "m_root_u",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Hello"]},
+                },
+                {
+                    "id": "m_root_a",
+                    "author": {"role": "assistant"},
+                    "channel": "final",
+                    "content": {"content_type": "text", "parts": ["Hi"]},
+                },
+            ],
+        }
+        preview_conversation = {
+            "conversation_id": "preview-branch-1",
+            "title": "Source Chat",
+            "default_model_slug": "gpt-4o-mini",
+            "current_node": "node-a",
+            "mapping": {
+                "node-a": {
+                    "parent": None,
+                    "message": {
+                        "id": "m_root_a",
+                        "author": {"role": "assistant"},
+                        "channel": "final",
+                        "content": {"content_type": "text", "parts": ["Hi"]},
+                    },
+                }
+            },
+        }
+
+        def handler(request: FakeHTTPRequest) -> FakeHTTPResponse:
+            requests_seen.append((request.method, request.url.path))
+            if request.method == "GET" and request.url.path == "/backend-api/conversations/c_root":
+                return FakeHTTPResponse(200, json=root_conversation)
+            if (
+                request.method == "POST"
+                and request.url.path == "/backend-api/conversation/new_branch"
+            ):
+                return FakeHTTPResponse(200, json={"conversation": preview_conversation})
+            if request.method == "POST" and request.url.path == "/backend-api/f/conversation":
+                payload = json.loads(request.content)
+                sent_payloads.append(payload)
+                persisted_conversation["messages"][0]["id"] = payload["messages"][0]["id"]
+                events = [
+                    {
+                        "conversation_id": "c_persisted_branch",
+                        "message": {
+                            "id": "m_branch_reply",
+                            "author": {"role": "assistant"},
+                            "channel": "final",
+                            "status": "finished_successfully",
+                            "content": {"content_type": "text", "parts": ["BRANCH"]},
+                        },
+                    }
+                ]
+                body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+                return FakeHTTPResponse(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    text=body,
+                )
+            if (
+                request.method == "GET"
+                and request.url.path == "/backend-api/conversations/c_persisted_branch"
+            ):
+                return FakeHTTPResponse(200, json=persisted_conversation)
+            raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+        catalog = ModelCatalog(
+            ModelCatalogState.AVAILABLE,
+            (Model("gpt-4o-mini", "GPT-4o mini"),),
+            default_model="gpt-4o-mini",
+        )
+
+        def make_client(session):
+            mock_http = FakeHTTPClient(handler)
+            client = ChatGPTClient(
+                session,
+                authenticate=False,
+                transport=HTTPTransport("https://chatgpt.com", client_getter=lambda: mock_http),
+            )
+            client.http = mock_http
+            client.headers = {"authorization": "Bearer token", "cookie": "cf=ok"}
+            client.list_url = "https://chatgpt.com/backend-api/conversations"
+            client.ensure_authenticated = lambda *_a, **_kw: None
+            client.create_sentinel_headers = dict
+            client.trigger_sentinel_prewarm = lambda: None
+            client.model_catalog = lambda *_a, **_kw: catalog
+            client._conversation_endpoint_verified = True
+            return client
+
+        provider = AsyncChatGPTProvider(
+            provider_account("chatgpt"),
+            session=self.session,
+            client_factory=make_client,
+        )
+        provider.prepare = AsyncMock()
+        provider._catalog = catalog
+        await provider.open()
+        try:
+            chat = provider._chat_type(title="Source Chat", remote_id="c_root", session=provider)
+            branched = await chat.branch("m_root_a")
+            self.assertEqual(branched.remote_id, "preview-branch-1")
+            self.assertEqual(
+                branched.metadata.get("pending_branch"),
+                {"conversation_id": "c_root", "message_id": "m_root_a"},
+            )
+            response = await branched.messages.create("Branch prompt").start()
+            self.assertEqual(response.message.content, "BRANCH")
+            self.assertEqual(branched.remote_id, "c_persisted_branch")
+            self.assertNotIn("pending_branch", branched.metadata)
+            self.assertNotIn(("GET", "/backend-api/conversations/preview-branch-1"), requests_seen)
+            self.assertEqual(len(sent_payloads), 1)
+            self.assertNotIn("conversation_id", sent_payloads[0])
+            self.assertEqual(sent_payloads[0]["branching_from_conversation_id"], "c_root")
+            self.assertEqual(sent_payloads[0]["branching_from_message_id"], "m_root_a")
+        finally:
+            await provider.close()

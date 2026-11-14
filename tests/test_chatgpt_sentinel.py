@@ -7,8 +7,7 @@ from collections import OrderedDict
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-import httpx
-
+from tests.fakes import FakeHTTPResponse
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from webaiprovider.providers.chatgpt.sentinel import (
@@ -572,7 +571,9 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             SentinelRuntime, "create_session_observer_token", return_value="so-token"
         ) as create_so:
             headers = client.create_sentinel_headers()
-        create_so.assert_called_once_with(response.json.return_value["so"])
+        create_so.assert_called_once()
+        self.assertEqual(create_so.call_args.args, (response.json.return_value["so"],))
+        self.assertTrue(create_so.call_args.kwargs["initial_proof"].startswith("gAAAAAC"))
         self.assertEqual(
             headers["openai-sentinel-chat-requirements-prepare-token"],
             "server-issued-so",
@@ -740,7 +741,9 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.addCleanup(client.close)
         client.http = Mock()
         client.http.is_closed = False
-        client.http.request = Mock(return_value=httpx.Response(429, headers={"retry-after": "30"}))
+        client.http.request = Mock(
+            return_value=FakeHTTPResponse(429, headers={"retry-after": "30"})
+        )
         client.transport = HTTPTransport(
             "https://chatgpt.com",
             client_getter=lambda: client.http,
@@ -807,6 +810,74 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             self.assertFalse(closed_runtime.is_set())
             release.set()
             self.assertTrue(closed_runtime.wait(timeout=2.0))
+
+    def test_native_c99_extension_matches_pure_python_fallback_and_solves_live_clock(self):
+        from webaiprovider.providers.chatgpt.sentinel import proof
+
+        self.assertIsNotNone(proof._native)
+        samples = (
+            "",
+            "hello",
+            "café",
+            "中文",
+            "seed-\U0001f680",
+            "mixed-\xe9-\u4e2d-\U0001f600",
+        )
+        for text in samples:
+            with self.subTest(text=text):
+                expected = proof._fnv1a_finalize_py(proof._fnv1a_step_utf16_py(2166136261, text))
+                self.assertEqual(proof._fnv1a_avalanche(text), expected)
+                with patch.object(proof, "_native", None):
+                    self.assertEqual(proof._fnv1a_avalanche(text), expected)
+
+        for data, key in (
+            ("HelloSentinel", "k3y"),
+            ("café-\u4e2d", "key-\U0001f680"),
+            ("\U0001f680", "\x01\x02"),
+        ):
+            with patch.object(proof, "_native", None):
+                py_enc = _xor_strings(data, key)
+            c_enc = _xor_strings(data, key)
+            self.assertEqual(c_enc, py_enc)
+            self.assertEqual(_xor_strings(c_enc, key), data)
+
+        with patch.object(proof, "_native", None), self.assertRaises(SentinelCompatibilityError):
+            _xor_strings("abc", "")
+        with self.assertRaises(SentinelCompatibilityError):
+            _xor_strings("abc", "")
+
+        # Verify patched-clock PoW parity between C extension and Python fallback.
+        base_ctx = [1920, "1080", 4000, None, "Mozilla/5.0", "", "script", "dpl", "en-US", None, 1]
+        c_ctx = list(base_ctx)
+        py_ctx = list(base_ctx)
+        with patch.object(proof.time, "perf_counter_ns", side_effect=[0] + [123_490_000] * 120):
+            c_token = proof._solve_pow(
+                c_ctx, "0.987654321", "00fff", spec=SentinelSpec(max_attempts=20000)
+            )
+        with (
+            patch.object(proof, "_native", None),
+            patch.object(proof.time, "perf_counter_ns", side_effect=[0] + [123_490_000] * 120),
+        ):
+            py_token = proof._solve_pow(
+                py_ctx, "0.987654321", "00fff", spec=SentinelSpec(max_attempts=20000)
+            )
+        self.assertEqual(c_token, py_token)
+        self.assertEqual(c_ctx, py_ctx)
+
+        # Verify autonomous live-clock path honors target difficulty and started_ns offset.
+        live_ctx = list(base_ctx)
+        started_ns = time.perf_counter_ns() - 15_000_000
+        live_token = proof._solve_pow(
+            live_ctx,
+            "0.1234567890abcdef",
+            "000fff",
+            spec=SentinelSpec(max_attempts=500000),
+            started_ns=started_ns,
+        )
+        self.assertLessEqual(
+            int(_fnv1a_avalanche("0.1234567890abcdef" + live_token)[:6], 16), 0xFFF
+        )
+        self.assertGreaterEqual(live_ctx[9], 14)
 
 
 if __name__ == "__main__":

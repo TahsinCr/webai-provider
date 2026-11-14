@@ -671,7 +671,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             loaded = await provider.projects.refresh()
             result = await provider.projects.update(loaded[0], title="New Name")
             self.assertEqual(result.title, "New Name")
-            self.assertEqual(provider.get_project.await_count, 2)
+            self.assertEqual(provider.get_project.await_count, 0)
             provider.editor.write.assert_awaited_once_with(
                 "update", PROJECT, current=initial, name="New Name"
             )
@@ -1105,3 +1105,62 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 validate_upload_candidate(subdir)
             with self.assertRaises(ValueError):
                 _gemini_upload_spec(subdir)
+
+    async def test_rename_and_move_skip_readback_get_and_stream_does_not_block_gate(self):
+        import asyncio
+
+        calls = []
+
+        async def fake_request(method, path, **_kwargs):
+            calls.append((method, path))
+            if method == "PUT":
+                return {"name": "New Title"}
+            if method == "POST" and path.endswith("/move_many"):
+                return {}
+            raise AssertionError((method, path))
+
+        session = SimpleNamespace(
+            path="/",
+            request=AsyncMock(side_effect=fake_request),
+            connect=None,
+            url=lambda p: p,
+            check=lambda _r: None,
+            close=AsyncMock(),
+        )
+        client = ClaudeClient(Path("unused"), session=bind_stream(session))
+        client.organization = PROJECT
+        await client.request("rename_chat", conversation_id=CHAT, title="New Title")
+        await client.request("move_chat", conversation_id=CHAT, project_id=PROJECT)
+        self.assertEqual(
+            calls,
+            [
+                ("PUT", f"/api/organizations/{PROJECT}/chat_conversations/{CHAT}"),
+                ("POST", f"/api/organizations/{PROJECT}/chat_conversations/move_many"),
+            ],
+        )
+
+        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        stream_entered = asyncio.Event()
+        release_stream = asyncio.Event()
+
+        async def blocking_events(*_args, **_kwargs):
+            stream_entered.set()
+            await release_stream.wait()
+            yield {"type": "done"}
+
+        provider.client.authenticated = True
+        provider.client.events = blocking_events
+        provider.client.request = AsyncMock(return_value={})
+
+        stream_task = asyncio.create_task(anext(provider._stream_request(ProviderRequest("hi"))))
+        try:
+            await asyncio.wait_for(stream_entered.wait(), 1.0)
+            self.assertFalse(provider._gate.locked())
+            await asyncio.wait_for(provider.delete_chat(CHAT), 1.0)
+            await asyncio.wait_for(provider._load_model_catalog(), 1.0)
+            release_stream.set()
+            with self.assertRaises(StopAsyncIteration):
+                await stream_task
+        finally:
+            release_stream.set()
+            await provider.close()

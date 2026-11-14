@@ -26,6 +26,7 @@ def resolve_network_addresses(address_str: str, allow_private: bool = False) -> 
         addresses = list(
             dict.fromkeys(ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records)
         )
+        addresses.sort(key=lambda ip: ip.version == 6)
 
     if not addresses:
         raise ValueError("Download host has no usable network address")

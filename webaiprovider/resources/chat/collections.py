@@ -36,6 +36,7 @@ def _chat_from_conversation(
         remote_id=item.origin.remote_id,
         project=project,
         temporary=bool(item.metadata.get("temporary", False)),
+        metadata=item.metadata,
         session=session,
     )
 

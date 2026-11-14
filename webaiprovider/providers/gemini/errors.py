@@ -1,8 +1,12 @@
-from ...errors import CompatibilityError, ProviderError, StreamError
+from ...errors import CompatibilityError, ProviderError, RemoteNotFound, StreamError
 
 
 class GeminiError(ProviderError):
     code = "gemini_error"
+
+
+class GeminiNotFoundError(RemoteNotFound, GeminiError):
+    code = "gemini_not_found"
 
 
 class GeminiCompatibilityError(CompatibilityError, GeminiError):

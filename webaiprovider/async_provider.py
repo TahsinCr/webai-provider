@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from .accounts.status import SessionState, SessionStatus
@@ -16,7 +17,7 @@ from .provider import ProviderType, _construct_provider
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
-from .resources.common import Origin
+from .resources.common import Origin, ResourceData
 from .resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -225,6 +226,9 @@ class AsyncProvider(BaseProvider):
             async for event in self._stream_request(request):
                 if isinstance(event, ConversationBound):
                     operation.chat.remote_id = event.conversation_id
+                    chat_metadata = getattr(operation.chat, "metadata", None)
+                    if isinstance(chat_metadata, dict):
+                        chat_metadata.pop("pending_branch", None)
                 elif isinstance(event, ThoughtDelta) or (
                     isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
                 ):
@@ -379,8 +383,12 @@ class AsyncProvider(BaseProvider):
     ) -> Any | None:
         return None
 
+    def _invalidate_project_cache(self, project_id: str) -> None:
+        del project_id
+
     async def _project_after_write(self, project_id: str, confirmed: Any) -> ProjectData:
         host = self
+        host._invalidate_project_cache(project_id)
         for _ in range(12):
             project = await host.get_project(project_id)
             if confirmed(project):
@@ -424,28 +432,37 @@ class AsyncProvider(BaseProvider):
         if not changes:
             return current
         async with host._gate:
-            await host.editor.write("update", remote, current=current, **changes)
-        return await self._project_after_write(
-            remote,
-            lambda current: (
-                current.name == project.name
-                and (current.instructions or "") == (project.instructions or "")
-            ),
+            result = await host.editor.write("update", remote, current=current, **changes)
+        host._invalidate_project_cache(remote)
+        if isinstance(result, ProjectData):
+            return result
+        return replace(
+            current,
+            name=project.name,
+            instructions=project.instructions,
         )
 
     async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> ProjectData:
         host = self
-        host._staged_project_reads.pop(project_id, None)
-        before = await host.get_project(project_id)
+        staged = host._staged_project_reads.pop(project_id, None)
+        if staged is not None and time.monotonic() - staged[0] < 5.0:
+            before = staged[1]
+        else:
+            before = await host.get_project(project_id)
         ids = {resource.id for resource in before.resources}
         async with host._gate:
-            await host.editor.write(
+            result = await host.editor.write(
                 "add_source",
                 project_id,
                 kind=kind,
                 existing_resources=before.resources,
                 **values,
             )
+        host._invalidate_project_cache(project_id)
+        if isinstance(result, ResourceData):
+            return replace(before, resources=(*before.resources, result))
+        if isinstance(result, ProjectData):
+            return result
         return await self._project_after_write(
             project_id,
             lambda project: any(resource.id not in ids for resource in project.resources),
@@ -453,11 +470,19 @@ class AsyncProvider(BaseProvider):
 
     async def remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
         host = self
-        host._staged_project_reads.pop(project_id, None)
-        before = await host.get_project(project_id)
+        staged = host._staged_project_reads.pop(project_id, None)
+        if staged is not None and time.monotonic() - staged[0] < 5.0:
+            before = staged[1]
+        else:
+            before = await host.get_project(project_id)
         source = next(
             (resource for resource in before.resources if resource.id == resource_id), None
         )
+        if source is None and staged is not None:
+            before = await host.get_project(project_id)
+            source = next(
+                (resource for resource in before.resources if resource.id == resource_id), None
+            )
         if source is None:
             raise ValueError("Project resource was not found")
         async with host._gate:
@@ -468,9 +493,10 @@ class AsyncProvider(BaseProvider):
                 resource_name=source.name,
                 resource=source,
             )
-        return await self._project_after_write(
-            project_id,
-            lambda project: all(resource.id != resource_id for resource in project.resources),
+        host._invalidate_project_cache(project_id)
+        return replace(
+            before,
+            resources=tuple(r for r in before.resources if r.id != resource_id),
         )
 
     async def ask(

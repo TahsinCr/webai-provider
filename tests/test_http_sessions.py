@@ -13,9 +13,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
-
-from tests.fakes import bind_stream
+from tests.fakes import FakeCookiesJar, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.accounts.credentials import read_session, save_session, save_session_async
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
@@ -32,7 +30,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.directory.name) / "session.json"
         save_session(self.path, {"sessionKey": "fixture"})
         self.client = SimpleNamespace(
-            request=AsyncMock(return_value=httpx.Response(200, json={"ok": True})),
+            request=AsyncMock(return_value=FakeHTTPResponse(200, json={"ok": True})),
             cookies={"sessionKey": "rotated"},
             close=AsyncMock(),
         )
@@ -59,7 +57,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.factory.assert_not_called()
 
     async def test_remote_mutation_failure_is_not_replayed(self):
-        self.client.request.return_value = httpx.Response(403, json={"error": "denied"})
+        self.client.request.return_value = FakeHTTPResponse(403, json={"error": "denied"})
         with self.assertRaises(ProviderError) as error:
             await self.session.request("POST", "/api/project")
         self.assertNotIsInstance(error.exception, AccountPaused)
@@ -108,12 +106,12 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             (429, RateLimited),
         ]:
             with self.subTest(status=status), self.assertRaises(kind):
-                HttpSession.check(httpx.Response(status, headers={"retry-after": "2"}))
+                HttpSession.check(FakeHTTPResponse(status, headers={"retry-after": "2"}))
 
     def test_rate_limit_accepts_http_date_retry_after(self):
         now = datetime(2030, 1, 1, tzinfo=timezone.utc)
         retry_at = now + timedelta(seconds=30)
-        response = httpx.Response(
+        response = FakeHTTPResponse(
             429, headers={"retry-after": format_datetime(retry_at, usegmt=True)}
         )
         with (
@@ -123,7 +121,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             HttpSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
 
-        response = httpx.Response(429, headers={"retry-after": "not-a-date"})
+        response = FakeHTTPResponse(429, headers={"retry-after": "not-a-date"})
         with self.assertRaises(RateLimited) as error:
             HttpSession.check(response)
         self.assertIsNone(error.exception.retry_after)
@@ -617,7 +615,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"
             save_session(path, {"sessionKey": "token-1", "cf_bm": "v1"})
-            jar = httpx.Cookies()
+            jar = FakeCookiesJar()
             jar.set("sessionKey", "token-1", domain="claude.ai", path="/")
             jar.set("cf_bm", "v1", domain="claude.ai", path="/")
             steps = iter(
@@ -634,7 +632,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
             async def fake_request(*_args, **_kwargs):
                 name, value = next(steps)
                 jar.set(name, value, domain="claude.ai", path="/")
-                return httpx.Response(200, json={"ok": True})
+                return FakeHTTPResponse(200, json={"ok": True})
 
             fake_client = SimpleNamespace(
                 cookies=jar,
@@ -734,7 +732,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 path = Path(folder) / "session.json"
                 save_session(path, initial)
                 domain = origin.removeprefix("https://")
-                jar = httpx.Cookies()
+                jar = FakeCookiesJar()
                 for k, v in initial.items():
                     jar.set(k, v, domain=domain, path="/")
 
@@ -747,7 +745,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     **_kwargs,
                 ):
                     jar.set(mutated_name, mutated_value, domain=domain, path="/")
-                    return httpx.Response(200, json={"ok": True})
+                    return FakeHTTPResponse(200, json={"ok": True})
 
                 fake_client = SimpleNamespace(
                     cookies=jar,

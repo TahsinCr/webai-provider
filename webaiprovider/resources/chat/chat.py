@@ -83,6 +83,7 @@ class AsyncChat:
         remote_id: str | None = None,
         project: AsyncProject | None = None,
         temporary: bool = False,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
         self.title = title
@@ -90,6 +91,7 @@ class AsyncChat:
         self.remote_id = remote_id
         self.project: AsyncProject | None = project
         self.temporary: bool = bool(temporary)
+        self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
 
         from ..message.collections import AsyncMessagesCollection
 
@@ -148,6 +150,7 @@ class AsyncBranchableChat(AsyncChat):
             title=title or branched.title,
             remote_id=branched.origin.remote_id,
             project=project,
+            metadata=branched.metadata,
             session=self.session,
         )
 
@@ -228,6 +231,14 @@ class Chat:
     @property
     def temporary(self) -> bool:
         return self._resource.temporary
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self._resource.metadata
+
+    @metadata.setter
+    def metadata(self, value: Mapping[str, Any]) -> None:
+        self._resource.metadata = dict(value)
 
     def get(self, message_id: str) -> Message:
         return self.messages.get(message_id)

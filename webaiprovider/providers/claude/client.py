@@ -16,6 +16,7 @@ from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
 from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
 from ...normalizers import files_from, sources_from
+from ...resources.common import ResourceData
 from ...resources.message.types import MessageAction, target_message
 from ...resources.project.types import (
     ProjectOptions,
@@ -98,8 +99,10 @@ class ClaudeClient:
         self._discovered_at = 0.0
 
     async def _discover(self):
-        data = await self.http.request("GET", "/api/bootstrap")
-        values = await read_session_async(self.path)
+        data, values = await asyncio.gather(
+            self.http.request("GET", "/api/bootstrap"),
+            read_session_async(self.path),
+        )
         last_org = values.get("cookies", values).get("lastActiveOrg")
         try:
             organization = organization_from_bootstrap(data, last_org)
@@ -307,8 +310,12 @@ class ClaudeClient:
             await call("DELETE", path)
             return await confirm_deleted(lambda: call("GET", path))
         if mode == "rename_chat":
-            await call("PUT", path, json={"name": v["title"]})
-            if (await call("GET", path)).get("name") != v["title"]:
+            updated = await call("PUT", path, json={"name": v["title"]})
+            if (
+                isinstance(updated, dict)
+                and "name" in updated
+                and updated.get("name") != v["title"]
+            ):
                 raise ProviderError("Claude rename readback failed")
             return None
         if mode == "move_chat":
@@ -317,8 +324,6 @@ class ClaudeClient:
                 base + "/chat_conversations/move_many",
                 json={"conversation_uuids": [cid], "project_uuid": pid},
             )
-            if (await call("GET", path)).get("project_uuid") != pid:
-                raise ProviderError("Claude project membership readback failed")
             return None
         raise ValueError("Unsupported Claude operation")
 
@@ -696,9 +701,16 @@ class ClaudeProjectEditor:
             return await call("PUT", path, json=fields)
         if operation == "add_source":
             if v["kind"] == "text":
-                return await call(
+                result = await call(
                     "POST", path + "/docs", json={"file_name": v["name"], "content": v["text"]}
                 )
+                if isinstance(result, dict) and (result.get("uuid") or result.get("id")):
+                    return ResourceData(
+                        str(result.get("uuid") or result.get("id") or ""),
+                        result.get("file_name") or result.get("name") or v["name"],
+                        metadata={"native": result},
+                    )
+                return result
             if v["kind"] != "file":
                 raise ValueError("Unsupported source type")
             from curl_cffi import CurlMime
@@ -707,9 +719,20 @@ class ClaudeProjectEditor:
             mime = CurlMime()
             try:
                 mime.addpart(name="file", filename=file.name, local_path=str(file))
-                return await call("POST", path + "/upload", multipart=mime)
+                result = await call("POST", path + "/upload", multipart=mime)
             finally:
                 mime.close()
+            if (
+                isinstance(result, dict)
+                and (result.get("uuid") or result.get("id"))
+                and result.get("file_uuid")
+            ):
+                return ResourceData(
+                    str(result.get("uuid") or result.get("id") or ""),
+                    result.get("file_name") or result.get("name") or file.name,
+                    metadata={"native": result},
+                )
+            return result
         if operation == "remove_source":
             rid = quote(v["resource_id"], safe="")
             resource = v.get("resource")

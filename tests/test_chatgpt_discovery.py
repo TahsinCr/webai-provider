@@ -10,8 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import httpx
-
+from tests.fakes import FakeHTTPClient, FakeHTTPRequest, FakeHTTPResponse
 from tests.provider_fakes import provider_account
 from webaiprovider.providers.chatgpt import (
     AsyncChatGPTProvider,
@@ -65,17 +64,17 @@ class DiscoveryTests(unittest.TestCase):
                 }
             else:
                 value = PROJECT["gizmo"]
-            return httpx.Response(200, json=value)
+            return FakeHTTPResponse(200, json=value)
 
-        self.client.http = httpx.Client(transport=httpx.MockTransport(respond))
+        self.client.http = FakeHTTPClient(respond)
 
     def test_rejected_session_uses_the_common_authentication_error(self):
         from unittest.mock import patch
 
         from webaiprovider.errors import AuthenticationError
 
-        request = httpx.Request("GET", "https://chatgpt.com/backend-api/models")
-        response = httpx.Response(401, request=request)
+        request = FakeHTTPRequest("GET", "https://chatgpt.com/backend-api/models")
+        response = FakeHTTPResponse(401, request=request)
         with (
             patch.object(self.client, "_transport_headers", return_value={}),
             patch.object(self.client, "refresh_session"),
@@ -88,7 +87,7 @@ class DiscoveryTests(unittest.TestCase):
         from unittest.mock import Mock
 
         self.client.request = Mock(
-            return_value=httpx.Response(
+            return_value=FakeHTTPResponse(
                 200, json={"resource": {"id": "g-p-created", "display": {"name": "Demo"}}}
             )
         )
@@ -169,7 +168,7 @@ class DiscoveryTests(unittest.TestCase):
         def factory(_session):
             client = ChatGPTClient(self.session, authenticate=False)
             client.http.close()
-            client.http = httpx.Client(transport=self.client.http._transport)
+            client.http = FakeHTTPClient(self.client.http._handler)
             return client
 
         provider = AsyncChatGPTProvider(
@@ -193,9 +192,7 @@ class DiscoveryTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ChatGPTError):
                 parse_model_catalog(value)
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"unexpected": []}))
-        )
+        self.client.http = FakeHTTPClient(lambda _: FakeHTTPResponse(200, json={"unexpected": []}))
         with self.assertRaisesRegex(ChatGPTError, "items"):
             self.client.list_projects()
 
@@ -229,11 +226,9 @@ class DiscoveryTests(unittest.TestCase):
             'data: {"error":{"message":"secret"}}\n\ndata: [DONE]\n\n',
         ):
             self.client.http.close()
-            self.client.http = httpx.Client(
-                transport=httpx.MockTransport(
-                    lambda _, payload=payload: httpx.Response(
-                        200, headers={"content-type": "text/event-stream"}, text=payload
-                    )
+            self.client.http = FakeHTTPClient(
+                lambda _, payload=payload: FakeHTTPResponse(
+                    200, headers={"content-type": "text/event-stream"}, text=payload
                 )
             )
             with (
@@ -262,9 +257,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_empty_mutation_success_is_explicit_and_json_reads_remain_strict(self):
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(lambda _: httpx.Response(204))
-        )
+        self.client.http = FakeHTTPClient(lambda _: FakeHTTPResponse(204))
         self.client.delete_conversation("chat")
         with self.assertRaises(ChatGPTError):
             self.client.request("GET", "https://chatgpt.com/backend-api/test")
@@ -274,14 +267,14 @@ class DiscoveryTests(unittest.TestCase):
 
         def respond(request):
             sent.append(json.loads(request.content))
-            return httpx.Response(
+            return FakeHTTPResponse(
                 200,
                 headers={"content-type": "text/event-stream"},
                 text='data: {"conversation_id":"chat","message":{"id":"a","author":{"role":"assistant"},"content":{"parts":["Answer"]}}}\n\ndata: [DONE]\n\n',
             )
 
         self.client.http.close()
-        self.client.http = httpx.Client(transport=httpx.MockTransport(respond))
+        self.client.http = FakeHTTPClient(respond)
         with patch.object(self.client, "create_sentinel_headers", return_value={}):
             self.client.send_prompt_direct(
                 None, "hello", [], model="account-thinking", effort="standard"
@@ -306,11 +299,9 @@ class DiscoveryTests(unittest.TestCase):
             f": keepalive\n\ndata:{event[:midpoint]}\ndata: {event[midpoint:]}\n\ndata:[DONE]\n\n"
         )
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _: httpx.Response(
-                    200, headers={"content-type": "text/event-stream"}, text=payload
-                )
+        self.client.http = FakeHTTPClient(
+            lambda _: FakeHTTPResponse(
+                200, headers={"content-type": "text/event-stream"}, text=payload
             )
         )
         with patch.object(self.client, "create_sentinel_headers", return_value={}):
@@ -331,18 +322,16 @@ class DiscoveryTests(unittest.TestCase):
             },
         }
 
-        class Stream(httpx.SyncByteStream):
+        class Stream:
             def __iter__(self):
                 yield f"data: {json.dumps(event)}\n\n".encode()
                 case.assertTrue(any(item.get("text") == "Answer" for item in events))
                 yield b"data: [DONE]\n\n"
 
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _: httpx.Response(
-                    200, headers={"content-type": "text/event-stream"}, stream=Stream()
-                )
+        self.client.http = FakeHTTPClient(
+            lambda _: FakeHTTPResponse(
+                200, headers={"content-type": "text/event-stream"}, stream=Stream()
             )
         )
         with patch.object(self.client, "create_sentinel_headers", return_value={}):
@@ -359,11 +348,9 @@ class DiscoveryTests(unittest.TestCase):
         }
         payload = f"data: {json.dumps(message)}\n\ndata: {json.dumps({'error': True})}\n\n"
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _: httpx.Response(
-                    200, headers={"content-type": "text/event-stream"}, text=payload
-                )
+        self.client.http = FakeHTTPClient(
+            lambda _: FakeHTTPResponse(
+                200, headers={"content-type": "text/event-stream"}, text=payload
             )
         )
         buffers = []
@@ -400,11 +387,9 @@ class DiscoveryTests(unittest.TestCase):
         }
         payload = "data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n"
         self.client.http.close()
-        self.client.http = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _: httpx.Response(
-                    200, headers={"content-type": "text/event-stream"}, text=payload
-                )
+        self.client.http = FakeHTTPClient(
+            lambda _: FakeHTTPResponse(
+                200, headers={"content-type": "text/event-stream"}, text=payload
             )
         )
         received = []
@@ -450,3 +435,36 @@ class DiscoveryTests(unittest.TestCase):
 
         with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}, clear=False):
             self.assertEqual(system_timezone(), "Asia/Tokyo")
+
+    def test_move_conversation_validates_patch_and_updates_cache_without_get(self):
+        snapshot = {
+            "id": "conv-move",
+            "current_node": "node-1",
+            "gizmo_id": "g-p-old",
+            "messages": [],
+        }
+        self.client._remember_conversation(snapshot)
+        self.client.get_conversation = Mock(side_effect=AssertionError("unexpected readback GET"))
+
+        with patch.object(
+            self.client,
+            "request",
+            return_value=FakeHTTPResponse(200, json={"success": True}),
+        ) as req:
+            result = self.client.move_conversation("conv-move", "g-p-new")
+
+        req.assert_called_once()
+        self.assertEqual(result["project_id"], "g-p-new")
+        cached = self.client._cached_conversation("conv-move")
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["gizmo_id"], "g-p-new")
+
+        with (
+            patch.object(
+                self.client,
+                "request",
+                return_value=FakeHTTPResponse(200, json={"success": False}),
+            ),
+            self.assertRaises(ChatGPTError),
+        ):
+            self.client.move_conversation("conv-move", "g-p-other")

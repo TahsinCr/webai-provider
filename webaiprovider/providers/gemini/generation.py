@@ -338,4 +338,4 @@ async def generate(
         raise GeminiStreamError(
             "Gemini stream ended before completion; the request was not retried"
         )
-    await session.persist()
+    await session.persist(force=False)

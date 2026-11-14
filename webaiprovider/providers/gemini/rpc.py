@@ -101,11 +101,11 @@ class NotebookRPC:
                 raise ValueError("Notebook required")
             rpc, args = "MaZiqc", [10, cursor, [None, None, 1, remote, 1]]
         elif remote:
-            rpc, args = "HcT8bb", [remote, ["en"], 0]
+            path = "/notebook/" + remote.split("/")[1]
+            return await self.call("HcT8bb", [remote, ["en"], 0], path, allow_empty=True)
         else:
             rpc, args = "CNgdBe", [2, ["en"], 0, None, [2]]
-        path = "/notebook/" + remote.split("/")[1] if remote else "/notebooks/view"
-        return await self.call(rpc, args, path)
+        return await self.call(rpc, args, "/notebooks/view")
 
 
 class NotebookEditor:

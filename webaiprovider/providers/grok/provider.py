@@ -258,6 +258,7 @@ class AsyncGrokProvider(AsyncProvider):
 
     async def prepare(self):
         await self.authenticate()
+        await self._load_model_catalog()
 
     async def _close_provider(self):
         async with self._gate:
@@ -352,6 +353,9 @@ class AsyncGrokProvider(AsyncProvider):
                 chat.project,
                 {**chat.metadata, "generation": {"active": True}},
             )
+        active = active_responses(history) if isinstance(history, dict) else ()
+        if active and isinstance(active[-1], dict) and active[-1].get("responseId"):
+            self._remember_continuation(conversation_id, active[-1]["responseId"])
         return chat
 
     async def conversation_attachment_count(self, conversation_id):

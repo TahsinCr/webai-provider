@@ -148,20 +148,22 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         client.request.assert_not_called()
 
     def test_upload_uses_cookie_isolated_client_and_sanitizes_sas_errors(self):
-        import httpx
+        from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
+
+        from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {"authorization": "Bearer secret-tok", "cookie": "session=supersecret"}
-        client.http = httpx.Client()
+        client.http = FakeHTTPClient(lambda _req: FakeHTTPResponse(200))
         self.addCleanup(client.http.close)
 
         seen_calls = []
 
-        def fake_send(request: httpx.Request) -> httpx.Response:
+        def fake_send(request) -> FakeHTTPResponse:
             seen_calls.append(dict(request.headers))
-            return httpx.Response(403, request=request)
+            return FakeHTTPResponse(403, request=request)
 
-        client._upload_http = httpx.Client(transport=httpx.MockTransport(fake_send))
+        client._upload_http = FakeHTTPClient(fake_send)
         self.addCleanup(client._upload_http.close)
 
         sas_url = "https://blob.example/container/file?sig=VERYSECRETSIG"
@@ -171,10 +173,10 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         self.assertNotIn("cookie", seen_calls[0])
         self.assertNotIn("authorization", seen_calls[0])
 
-        def failing_send(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError(f"failed reaching {request.url}", request=request)
+        def failing_send(request) -> FakeHTTPResponse:
+            raise CurlConnectionError(f"failed reaching {request.url}")
 
-        failing_http = httpx.Client(transport=httpx.MockTransport(failing_send))
+        failing_http = FakeHTTPClient(failing_send)
         self.addCleanup(failing_http.close)
         client._upload_http = failing_http
         with self.assertRaisesRegex(ChatGPTError, "upload request failed") as ctx:

@@ -22,7 +22,6 @@ from webaiprovider.resources.message.operation import (
     OutputBegin,
     OutputDelta,
     OutputEnd,
-    OutputReplace,
     SourceDiscovered,
     ThinkingBegin,
     ThinkingDelta,
@@ -244,7 +243,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(ThinkingDelta, event_types)
         self.assertIn(ThinkingEnd, event_types)
         self.assertIn(OutputBegin, event_types)
-        self.assertIn(OutputReplace, event_types)
+        self.assertIn(OutputDelta, event_types)
         self.assertIn(SourceDiscovered, event_types)
         self.assertIn(ArtifactDiscovered, event_types)
         self.assertIn(OutputEnd, event_types)

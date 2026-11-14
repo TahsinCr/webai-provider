@@ -3,7 +3,7 @@
 import asyncio
 import concurrent.futures
 import threading
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 
 from .base import AsyncTransport, Transport, _AsyncStreamResponse
 
@@ -103,9 +103,10 @@ class ThreadedTransport(AsyncTransport):
 class PortalTransport(Transport):
     """Blocking facade over the provider's existing async runtime."""
 
-    def __init__(self, call, get_transport):
+    def __init__(self, call, get_transport, *, close_transport: bool = True):
         self._call = call
         self._get_transport = get_transport
+        self._close_transport = close_transport
 
     @property
     def origin(self):
@@ -129,13 +130,22 @@ class PortalTransport(Transport):
         manager = self._get_transport().stream(method, path, **options)
         response = self._call(manager.__aenter__())
         call = self._call
+        state_lock = threading.Lock()
         closed = False
+        active_task: asyncio.Task | None = None
+        task_loop: asyncio.AbstractEventLoop | None = None
 
         def finish(exc_type=None, error=None, traceback=None):
             nonlocal closed
-            if closed:
-                return False
-            closed = True
+            with state_lock:
+                if closed:
+                    return False
+                closed = True
+                task = active_task
+                loop = task_loop
+            if task is not None and loop is not None:
+                with suppress(RuntimeError):
+                    loop.call_soon_threadsafe(task.cancel)
             return call(manager.__aexit__(exc_type, error, traceback))
 
         class Stream:
@@ -147,14 +157,43 @@ class PortalTransport(Transport):
 
             def iter_bytes(self):
                 iterator = response.aiter_bytes()
+
+                async def next_chunk():
+                    nonlocal active_task, task_loop
+                    loop = asyncio.get_running_loop()
+                    task = asyncio.create_task(anext(iterator))
+                    with state_lock:
+                        if closed:
+                            task.cancel()
+                        else:
+                            active_task = task
+                            task_loop = loop
+                    try:
+                        return await task
+                    finally:
+                        with state_lock:
+                            if active_task is task:
+                                active_task = None
+                                task_loop = None
+
                 try:
                     while True:
                         try:
-                            yield call(anext(iterator))
+                            yield call(next_chunk())
+                        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                            with state_lock:
+                                if closed:
+                                    return
+                            raise
                         except StopAsyncIteration:
                             return
                 finally:
-                    call(iterator.aclose())
+                    with suppress(
+                        asyncio.CancelledError,
+                        concurrent.futures.CancelledError,
+                        StopAsyncIteration,
+                    ):
+                        call(iterator.aclose())
 
         try:
             yield Stream()
@@ -165,4 +204,5 @@ class PortalTransport(Transport):
             finish()
 
     def close(self):
-        self._call(self._get_transport().close())
+        if self._close_transport:
+            self._call(self._get_transport().close())

@@ -13,6 +13,13 @@ from typing import Any
 from ..errors import SentinelCompatibilityError
 from .spec import DEFAULT_SENTINEL_SPEC, SentinelSpec
 
+try:
+    from . import _native
+except ImportError:  # pragma: no cover - optional compiled extension fallback
+    _native = None
+
+_DEFAULT_PERF_COUNTER_NS = time.perf_counter_ns
+
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 _CONTROL_ESCAPE = {
     0x08: "\\b",
@@ -47,14 +54,19 @@ def _utf16_code_units(text: str):
         index += 1
 
 
-def _fnv1a_step_utf16(hash_value: int, text: str) -> int:
+def _fnv1a_step_utf16_py(hash_value: int, text: str) -> int:
+    if text.isascii():
+        for unit in text.encode("ascii"):
+            hash_value ^= unit
+            hash_value = (hash_value * 16777619) & 0xFFFFFFFF
+        return hash_value
     for unit in _utf16_code_units(text):
         hash_value ^= unit
         hash_value = (hash_value * 16777619) & 0xFFFFFFFF
     return hash_value
 
 
-def _fnv1a_finalize(hash_value: int) -> str:
+def _fnv1a_finalize_py(hash_value: int) -> str:
     hash_value ^= hash_value >> 16
     hash_value = (hash_value * 2246822507) & 0xFFFFFFFF
     hash_value ^= hash_value >> 13
@@ -63,9 +75,17 @@ def _fnv1a_finalize(hash_value: int) -> str:
     return f"{hash_value:08x}"
 
 
+def _fnv1a_step_utf16(hash_value: int, text: str) -> int:
+    if _native is not None:
+        return _native.fnv1a_step_utf16(hash_value, text)
+    return _fnv1a_step_utf16_py(hash_value, text)
+
+
 def _fnv1a_avalanche(text: str) -> str:
     """Match the Sentinel SDK's UTF-16 FNV-1a and avalanche mix."""
-    return _fnv1a_finalize(_fnv1a_step_utf16(2166136261, text))
+    if _native is not None:
+        return _native.fnv1a_avalanche(text)
+    return _fnv1a_finalize_py(_fnv1a_step_utf16_py(2166136261, text))
 
 
 def _json_string(value: str) -> str:
@@ -183,6 +203,8 @@ def _atob(encoded: str) -> str:
 def _xor_strings(data: str, key: str) -> str:
     if not key:
         raise SentinelCompatibilityError("Sentinel VM key must be non-empty")
+    if _native is not None:
+        return _native.xor_strings(data, key)
     key_codes = [ord(ch) for ch in key]
     key_len = len(key_codes)
     return "".join(chr(ord(ch) ^ key_codes[index % key_len]) for index, ch in enumerate(data))
@@ -253,15 +275,61 @@ def _solve_pow(
     aligned = (len(prefix_bytes) // 3) * 3
     head_b64 = base64.b64encode(prefix_bytes[:aligned]) if aligned else b""
     tail_prefix = prefix_bytes[aligned:]
+    target_int = int(difficulty, 16)
+    shift = (8 - len(difficulty)) * 4
+    perf_ns = time.perf_counter_ns
 
-    prefix_hash = _fnv1a_step_utf16(2166136261, seed)
+    if _native is not None:
+        prefix_hash = _native.fnv1a_step_bytes(
+            _native.fnv1a_step_utf16(2166136261, seed),
+            head_b64,
+        )
+        solved: tuple[int, int, str] | None = None
+        if perf_ns is _DEFAULT_PERF_COUNTER_NS:
+            initial_elapsed_ns = 0 if started_ns is None else max(0, perf_ns() - started_ns)
+            solved = _native.solve_pow_segments(
+                prefix_hash,
+                tail_prefix,
+                middle_bytes,
+                suffix_bytes,
+                target_int,
+                shift,
+                0,
+                spec.max_attempts,
+                -1,
+                initial_elapsed_ns,
+            )
+        else:
+            origin_ns = perf_ns() if started_ns is None else started_ns
+            for nonce_start in range(0, spec.max_attempts, 128):
+                elapsed_ms = max(0, round((perf_ns() - origin_ns) / 1_000_000))
+                batch = min(128, spec.max_attempts - nonce_start)
+                solved = _native.solve_pow_segments(
+                    prefix_hash,
+                    tail_prefix,
+                    middle_bytes,
+                    suffix_bytes,
+                    target_int,
+                    shift,
+                    nonce_start,
+                    batch,
+                    elapsed_ms,
+                    0,
+                )
+                if solved is not None:
+                    break
+        if solved is None:
+            raise SentinelCompatibilityError("Sentinel proof-of-work exceeded the attempt limit")
+        nonce, elapsed_ms, tail_b64_str = solved
+        context[nonce_idx] = nonce
+        context[elapsed_idx] = elapsed_ms
+        return head_b64.decode("ascii") + tail_b64_str
+
+    prefix_hash = _fnv1a_step_utf16_py(2166136261, seed)
     for byte in head_b64:
         prefix_hash ^= byte
         prefix_hash = (prefix_hash * 16777619) & 0xFFFFFFFF
 
-    target_int = int(difficulty, 16)
-    shift = (8 - len(difficulty)) * 4
-    perf_ns = time.perf_counter_ns
     origin_ns = perf_ns() if started_ns is None else started_ns
     b64encode = base64.b64encode
 
@@ -272,7 +340,8 @@ def _solve_pow(
         if nonce and (nonce & 0x7F) == 0:
             elapsed_ms = max(0, round((perf_ns() - origin_ns) / 1_000_000))
             after_nonce = middle_bytes + str(elapsed_ms).encode("ascii") + suffix_bytes
-        tail_b64 = b64encode(tail_prefix + str(nonce).encode("ascii") + after_nonce)
+        nonce_bytes = str(nonce).encode("ascii")
+        tail_b64 = b64encode(tail_prefix + nonce_bytes + after_nonce)
         h = prefix_hash
         for byte in tail_b64:
             h ^= byte

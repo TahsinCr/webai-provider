@@ -12,7 +12,7 @@ from ...resources.common import (
     ResourceData,
 )
 from ...resources.project.types import ProjectData
-from .errors import GeminiCompatibilityError, GeminiError
+from .errors import GeminiCompatibilityError, GeminiError, GeminiNotFoundError
 from .history import timestamp
 
 
@@ -120,6 +120,8 @@ class Notebooks:
         remote = notebook_id(remote)
         parts = await self.read(remote)
         rows = [row for part in parts for row in part if field(row, 0) == remote]
+        if not rows:
+            raise GeminiNotFoundError("Gemini notebook details were not found")
         if len(rows) != 1:
             raise GeminiError("Gemini notebook details were not found")
         return project_from_native(rows[0], self.account_id)

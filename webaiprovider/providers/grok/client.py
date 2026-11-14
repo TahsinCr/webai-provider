@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
+from ...resources.common import ResourceData
 from ...resources.project.types import (
     ProjectOptions,
     source_file,
@@ -302,7 +303,7 @@ class GrokProjectEditor:
                 for source in values.get("existing_resources", ())
             ):
                 raise ValueError("A Grok project resource with this name already exists")
-            return await self.client.request(
+            result = await self.client.request(
                 "POST",
                 project_path + "/files/upload",
                 json={
@@ -311,6 +312,23 @@ class GrokProjectEditor:
                     "content": encoded,
                 },
             )
+            item = (
+                result["file"]
+                if isinstance(result, dict) and isinstance(result.get("file"), dict)
+                else result
+            )
+            if isinstance(item, dict) and (item.get("path") or item.get("assetId")):
+                return ResourceData(
+                    str(item.get("path") or item.get("assetId")),
+                    str(item.get("name") or name),
+                    item.get("mimeType") or mime_type,
+                    metadata={
+                        key: item[key]
+                        for key in ("path", "assetId", "size", "createdAt", "modifiedAt")
+                        if key in item
+                    },
+                )
+            return result
         if operation == "remove_source":
             source = values["resource"]
             if source.id != values["resource_id"]:

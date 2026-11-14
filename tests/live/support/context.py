@@ -6,7 +6,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-import httpx
 from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
 from .actions import ActionGate
@@ -22,8 +21,6 @@ def _safe_error_label(exc: Exception) -> str:
             return "provider DNS resolution timeout"
         if "Connection timed out" in message or "Connection timeout" in message:
             return "provider connection timeout"
-        return "provider network timeout"
-    if isinstance(exc, httpx.TimeoutException):
         return "provider network timeout"
     if isinstance(exc, TimeoutError):
         return "operation timeout"

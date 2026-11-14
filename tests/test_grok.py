@@ -910,7 +910,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             provider.client.request.reset_mock()
             updated = await provider.update_project(replace(current, instructions="New"))
             self.assertEqual(updated.instructions, "New")
-            self.assertEqual(provider.client.request.await_count, 5)
+            self.assertEqual(provider.client.request.await_count, 3)
             self.assertEqual(workspace["preferredModel"], "keep")
             self.assertFalse(workspace["isPublic"])
 
@@ -925,7 +925,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             provider.client.request.reset_mock()
             removed = await provider.remove_project_resource("workspace", "/notes.txt")
             self.assertEqual(removed.resources, ())
-            self.assertEqual(provider.client.request.await_count, 5)
+            self.assertEqual(provider.client.request.await_count, 3)
         finally:
             await provider.close()
 
@@ -1462,5 +1462,31 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 [item["fileMetadataId"] for item in file_attachments],
                 ["id-f0.txt", "id-f1.txt", "id-f2.txt", "id-f3.txt"],
             )
+        finally:
+            await provider.close()
+
+    async def test_prepare_warms_models_and_get_chat_warms_continuation(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        provider.authenticate = AsyncMock()
+        provider._load_model_catalog = AsyncMock()
+        try:
+            await provider.prepare()
+            provider.authenticate.assert_awaited_once_with()
+            provider._load_model_catalog.assert_awaited_once_with()
+
+            provider.client.request = AsyncMock(
+                side_effect=[
+                    {"conversationId": "c-grok", "title": "Chat"},
+                    {
+                        "responses": [
+                            {"responseId": "u1", "sender": "human", "message": "Hi"},
+                            {"responseId": "a1", "sender": "assistant", "message": "Hey"},
+                        ]
+                    },
+                ]
+            )
+            chat = await provider.get_chat("c-grok")
+            self.assertEqual(chat.origin.remote_id, "c-grok")
+            self.assertEqual(provider._continuations.get("c-grok"), "a1")
         finally:
             await provider.close()
