@@ -473,27 +473,53 @@ class AsyncHTTPTransport(AsyncTransport):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
-        response = None
-        client = None
-        for attempt in (0, 1):
-            client = await self._acquire_client_async()
-            try:
-                response = await self._send(method, url, options, client=client)
-                break
-            except BaseException as exc:
-                await self._release_client(client)
-                if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                    self._invalidate_curl_dns(client)
-                    await self._reset_owned_client(client)
-                    continue
-                raise
         try:
-            try:
-                self._check_response(response, check_status)
-                self._check_size(response)
-                return response
-            finally:
-                await self._release_client(client)
+            for attempt in (0, 1):
+                client = await self._acquire_client_async()
+                streaming = (
+                    callable(getattr(client, "stream", None))
+                    or _is_curl_async_session(client)
+                    or type(self)._open_stream is not AsyncHTTPTransport._open_stream
+                )
+                if not streaming:
+                    try:
+                        response = await self._send(method, url, options, client=client)
+                        self._check_response(response, check_status)
+                        self._check_size(response)
+                        return response
+                    except BaseException as exc:
+                        if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                            self._invalidate_curl_dns(client)
+                            await self._reset_owned_client(client)
+                            continue
+                        raise
+                    finally:
+                        await self._release_client(client)
+
+                stack = AsyncExitStack()
+                try:
+                    response = await stack.enter_async_context(
+                        self._open_stream(method, url, options, client=client)
+                    )
+                    self._check_response(response, check_status)
+                except BaseException as exc:
+                    try:
+                        await stack.aclose()
+                    finally:
+                        await self._release_client(client)
+                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                        self._invalidate_curl_dns(client)
+                        await self._reset_owned_client(client)
+                        continue
+                    raise
+                try:
+                    return await self._buffer_response_async(response)
+                finally:
+                    try:
+                        await stack.aclose()
+                    finally:
+                        await self._release_client(client)
+            raise ProviderError("Provider request could not be completed")
         finally:
             await self._after()
 
@@ -618,24 +644,45 @@ class HTTPTransport(Transport):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
-        response = None
         for attempt in (0, 1):
             client = self._connect()
+            if not callable(getattr(client, "stream", None)):
+                try:
+                    _prepare_curl_session_sync(
+                        client, self._dns.host, self._dns.port, options, dns_state=self._dns
+                    )
+                    response = client.request(method, url, allow_redirects=False, **options)
+                    self._check_response(response, check_status)
+                    self._check_size(response)
+                    return response
+                except BaseException as exc:
+                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                        self._dns.invalidate(client)
+                        self._reset_owned_client(client)
+                        continue
+                    raise
+
+            stack = ExitStack()
             try:
                 _prepare_curl_session_sync(
                     client, self._dns.host, self._dns.port, options, dns_state=self._dns
                 )
-                response = client.request(method, url, allow_redirects=False, **options)
-                break
+                response = stack.enter_context(
+                    client.stream(method, url, allow_redirects=False, **options)
+                )
+                self._check_response(response, check_status)
             except BaseException as exc:
+                stack.close()
                 if attempt == 0 and can_retry and _is_curl_timeout(exc):
                     self._dns.invalidate(client)
                     self._reset_owned_client(client)
                     continue
                 raise
-        self._check_response(response, check_status)
-        self._check_size(response)
-        return response
+            try:
+                return self._buffer_response(response)
+            finally:
+                stack.close()
+        raise ProviderError("Provider request could not be completed")
 
     @contextmanager
     def stream(self, method, path, *, check_status=True, **options):

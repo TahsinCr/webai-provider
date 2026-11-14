@@ -1154,14 +1154,29 @@ class AsyncChatGPTProvider(AsyncProvider):
                         raise value
                     yield value
             finally:
-                stopped.set()
-                if holder and (not self._persistent_client or not stream_finished):
-                    # Closing local transport cannot guarantee remote generation stops.
-                    await asyncio.to_thread(holder[0].close)
-                # Keep the account gate until the worker exits; do not overlap an ambiguous send.
-                await asyncio.shield(worker)
-                if self._persistent_client and not stream_finished:
-                    await self._discard_http_client()
+
+                async def cleanup():
+                    stopped.set()
+                    try:
+                        if holder and (not self._persistent_client or not stream_finished):
+                            # Closing local transport cannot guarantee remote generation stops.
+                            await asyncio.to_thread(holder[0].close)
+                    finally:
+                        # Keep the account gate until the worker exits; do not overlap an ambiguous send.
+                        await worker
+                        if self._persistent_client and not stream_finished:
+                            await self._discard_http_client()
+
+                cleanup_task = asyncio.create_task(cleanup())
+                cancelled = False
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                cleanup_task.result()
+                if cancelled:
+                    raise asyncio.CancelledError
 
 
 class ChatGPTChat(BranchableChat, MovableChat, Chat):

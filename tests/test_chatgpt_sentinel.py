@@ -741,6 +741,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.addCleanup(client.close)
         client.http = Mock()
         client.http.is_closed = False
+        client.http.stream = None
         client.http.request = Mock(
             return_value=FakeHTTPResponse(429, headers={"retry-after": "30"})
         )

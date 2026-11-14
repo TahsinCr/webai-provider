@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 import time
@@ -35,6 +36,34 @@ class TransportResponse(_ResponseHead, Protocol):
     def text(self) -> str: ...
 
     def json(self) -> Any: ...
+
+
+class _BufferedResponse:
+    """Small response value returned after a bounded streamed read."""
+
+    def __init__(self, response, content: bytes):
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self.content = content
+        self._encoding = getattr(response, "encoding", None)
+        for attribute in ("cookies", "url", "request"):
+            if hasattr(response, attribute):
+                setattr(self, attribute, getattr(response, attribute))
+
+    @property
+    def text(self) -> str:
+        encoding = self._encoding
+        if not encoding:
+            content_type = self.headers.get("content-type", "")
+            match = re.search(r"charset\s*=\s*[\"']?([^;\"']+)", content_type, re.IGNORECASE)
+            encoding = match.group(1).strip() if match else "utf-8"
+        try:
+            return self.content.decode(encoding, errors="replace")
+        except LookupError:
+            return self.content.decode("utf-8", errors="replace")
+
+    def json(self, **options):
+        return json.loads(self.content, **options)
 
 
 class StreamResponse(_ResponseHead, Protocol):
@@ -225,6 +254,59 @@ class _TransportPolicy:
     def _check_size(self, response):
         if len(response.content) > self.config.max_response_bytes:
             raise ProviderError("Provider response exceeds the size limit")
+
+    @staticmethod
+    def _header(headers, name: str):
+        value = headers.get(name)
+        if value is not None:
+            return value
+        return next(
+            (value for key, value in headers.items() if str(key).casefold() == name),
+            None,
+        )
+
+    def _check_declared_size(self, response) -> None:
+        if self._header(response.headers, "content-encoding") not in (None, "", "identity"):
+            return
+        raw_length = self._header(response.headers, "content-length")
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            return
+        if length > self.config.max_response_bytes:
+            raise ProviderError("Provider response exceeds the size limit")
+
+    def _buffer_response(self, response) -> _BufferedResponse:
+        self._check_declared_size(response)
+        iterator = getattr(response, "iter_content", None) or getattr(response, "iter_bytes", None)
+        if not callable(iterator):
+            raise ProviderError("Provider response cannot be streamed")
+        chunks = []
+        total = 0
+        for chunk in iterator():
+            total += len(chunk)
+            if total > self.config.max_response_bytes:
+                raise ProviderError("Provider response exceeds the size limit")
+            if chunk:
+                chunks.append(bytes(chunk))
+        return _BufferedResponse(response, b"".join(chunks))
+
+    async def _buffer_response_async(self, response) -> _BufferedResponse:
+        self._check_declared_size(response)
+        iterator = getattr(response, "aiter_content", None) or getattr(
+            response, "aiter_bytes", None
+        )
+        if not callable(iterator):
+            raise ProviderError("Provider response cannot be streamed")
+        chunks = []
+        total = 0
+        async for chunk in iterator():
+            total += len(chunk)
+            if total > self.config.max_response_bytes:
+                raise ProviderError("Provider response exceeds the size limit")
+            if chunk:
+                chunks.append(bytes(chunk))
+        return _BufferedResponse(response, b"".join(chunks))
 
 
 class AsyncTransport(_TransportPolicy, ABC):

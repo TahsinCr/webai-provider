@@ -32,6 +32,31 @@ async def delayed_response(_request):
     yield TextReplacement("answer")
 
 
+def _enable_streaming_requests(client):
+    if callable(getattr(client, "request", None)):
+        return client
+
+    async def request(method, url, **options):
+        options.pop("stream", None)
+        response = await getattr(client, method.lower())(url, **options)
+        content = getattr(response, "content", b"")
+        if not content:
+            content = getattr(response, "text", "").encode()
+        response.headers = getattr(response, "headers", {})
+
+        async def aiter_content():
+            if content:
+                yield content
+
+        response.aiter_content = aiter_content
+        response.astream_task = None
+        response.aclose = AsyncMock()
+        return response
+
+    client.request = request
+    return client
+
+
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
     async def test_saved_parameters_do_not_bypass_remote_session_validation(self):
         saved = {
@@ -45,6 +70,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             get=AsyncMock(return_value=SimpleNamespace(status_code=401, content=b"")),
             close=AsyncMock(),
         )
+        _enable_streaming_requests(http)
         factory = Mock(return_value=http)
         session = GeminiSession(Path("unused"), http_factory=factory)
         with (
@@ -312,9 +338,11 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
             content=b"",
         )
-        session.http = SimpleNamespace(
-            get=AsyncMock(return_value=mock_status_response),
-            post=AsyncMock(return_value=mock_status_response),
+        session.http = _enable_streaming_requests(
+            SimpleNamespace(
+                get=AsyncMock(return_value=mock_status_response),
+                post=AsyncMock(return_value=mock_status_response),
+            )
         )
         session.batch = AsyncMock(
             return_value=SimpleNamespace(
@@ -408,10 +436,12 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             paths = [Path(directory) / name for name in ("one.txt", "two.txt")]
             for path in paths:
                 path.write_text("fixture")
-            http = SimpleNamespace(
-                post=AsyncMock(
-                    return_value=SimpleNamespace(
-                        status_code=200, text="uploaded", headers={}, content=b"uploaded"
+            http = _enable_streaming_requests(
+                SimpleNamespace(
+                    post=AsyncMock(
+                        return_value=SimpleNamespace(
+                            status_code=200, text="uploaded", headers={}, content=b"uploaded"
+                        )
                     )
                 )
             )
@@ -504,7 +534,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError("temporary network outage")
             return response
 
-        session.http = SimpleNamespace(post=post)
+        session.http = _enable_streaming_requests(SimpleNamespace(post=post))
         session.persist = AsyncMock()
         delays = []
 
@@ -524,8 +554,12 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cookie_refresh_stops_on_expired_session(self):
         session = GeminiSession(Path("unused"))
-        session.http = SimpleNamespace(
-            post=AsyncMock(return_value=SimpleNamespace(status_code=401, headers={}, content=b""))
+        session.http = _enable_streaming_requests(
+            SimpleNamespace(
+                post=AsyncMock(
+                    return_value=SimpleNamespace(status_code=401, headers={}, content=b"")
+                )
+            )
         )
 
         with patch("webaiprovider.providers.gemini.session.asyncio.sleep", new=AsyncMock()):
@@ -889,9 +923,11 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             text=json.dumps([{"data": {"viewer": {"rpcs": {"getUserStatus": status}}}}]),
             content=b"",
         )
-        session.http = SimpleNamespace(
-            get=AsyncMock(return_value=mock_status_response),
-            post=AsyncMock(return_value=mock_status_response),
+        session.http = _enable_streaming_requests(
+            SimpleNamespace(
+                get=AsyncMock(return_value=mock_status_response),
+                post=AsyncMock(return_value=mock_status_response),
+            )
         )
         session.batch = AsyncMock(
             return_value=SimpleNamespace(
@@ -1075,14 +1111,16 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             '<script>window.WIZ_global_data={"eptZe":"/_/BardChatUi/","FdrFJe":"sid-1",'
             '"SNlM0e":"tok-1","TuX5cc":"tr","cfb2h":"bld-1"};</script>'
         )
-        http = SimpleNamespace(
-            get=AsyncMock(
-                return_value=SimpleNamespace(
-                    status_code=200, headers={}, content=html.encode(), text=html
-                )
-            ),
-            cookies=SimpleNamespace(get_dict=lambda: {"__Secure-1PSID": "cookie-1"}),
-            close=AsyncMock(),
+        http = _enable_streaming_requests(
+            SimpleNamespace(
+                get=AsyncMock(
+                    return_value=SimpleNamespace(
+                        status_code=200, headers={}, content=html.encode(), text=html
+                    )
+                ),
+                cookies=SimpleNamespace(get_dict=lambda: {"__Secure-1PSID": "cookie-1"}),
+                close=AsyncMock(),
+            )
         )
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
@@ -1112,12 +1150,16 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             path = Path(folder) / "gemini.json"
             save_session(path, {"__Secure-1PSID": "p1", "NID": "n1"})
             cookie_state = {"__Secure-1PSID": "p1", "NID": "n1"}
-            http = SimpleNamespace(
-                cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
-                post=AsyncMock(
-                    return_value=SimpleNamespace(status_code=200, headers={}, content=b"", text="")
-                ),
-                close=AsyncMock(),
+            http = _enable_streaming_requests(
+                SimpleNamespace(
+                    cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
+                    post=AsyncMock(
+                        return_value=SimpleNamespace(
+                            status_code=200, headers={}, content=b"", text=""
+                        )
+                    ),
+                    close=AsyncMock(),
+                )
             )
             save_calls = []
             original_save = gemini_session_mod.save_session_async
@@ -1403,10 +1445,12 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
             post = AsyncMock(side_effect=lambda *_args, **_kwargs: next(responses))
-            http = SimpleNamespace(
-                cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
-                post=post,
-                close=AsyncMock(),
+            http = _enable_streaming_requests(
+                SimpleNamespace(
+                    cookies=SimpleNamespace(get_dict=lambda: dict(cookie_state)),
+                    post=post,
+                    close=AsyncMock(),
+                )
             )
             save_calls = []
             original_save = gemini_session_mod.save_session_async

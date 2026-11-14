@@ -359,6 +359,46 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.wait_for(task, 1)
                 self.assertTrue(released.is_set())
 
+    async def test_send_limits_unknown_length_body_and_closes_stream_without_retry(self):
+        for headers, chunks, expected_reads in (
+            ({"content-length": "9"}, [b"1234", b"56"], 0),
+            ({}, [b"1234", b"56"], 2),
+        ):
+            with self.subTest(headers=headers):
+                reads = 0
+                opens = 0
+                closed = asyncio.Event()
+
+                async def body():
+                    nonlocal reads
+                    for chunk in chunks:
+                        reads += 1
+                        yield chunk
+
+                @asynccontextmanager
+                async def stream(*_args, **_options):
+                    nonlocal opens
+                    opens += 1
+                    try:
+                        yield SimpleNamespace(
+                            status_code=200,
+                            headers=headers,
+                            aiter_content=body,
+                        )
+                    finally:
+                        closed.set()
+
+                transport = AsyncHTTPTransport(
+                    "https://claude.ai",
+                    client_getter=lambda: SimpleNamespace(stream=stream),
+                    config=TransportConfig(max_response_bytes=5),
+                )
+                with self.assertRaisesRegex(ProviderError, "size limit"):
+                    await transport.send("POST", "/fixture")
+                self.assertEqual(reads, expected_reads)
+                self.assertEqual(opens, 1)
+                self.assertTrue(closed.is_set())
+
     async def test_provider_specific_facades_expose_the_same_injected_transport(self):
         for provider_type, origin, cls in (
             ("chatgpt", "https://chatgpt.com", AsyncChatGPTProvider),
@@ -534,14 +574,20 @@ class BlockingTransportTests(unittest.TestCase):
             threads.add(threading.get_ident())
             return FakeHTTPResponse(200, json={"ok": True})
 
-        async def chunks():
+        async def chunks(data=b"stream"):
             threads.add(threading.get_ident())
-            yield b"stream"
+            yield data
 
         @asynccontextmanager
         async def stream(*args, **options):
+            fixture = args[1].endswith("/fixture")
             try:
-                yield SimpleNamespace(status_code=200, headers={}, aiter_content=chunks)
+                yield SimpleNamespace(
+                    status_code=200,
+                    headers={"content-type": "application/json"} if fixture else {},
+                    aiter_content=lambda: chunks(b'{"ok": true}' if fixture else b"stream"),
+                    encoding="utf-8",
+                )
             finally:
                 exits.append(True)
                 closed.set()
@@ -574,7 +620,7 @@ class BlockingTransportTests(unittest.TestCase):
         self.assertEqual(len(threads), 1)
         self.assertNotIn(threading.get_ident(), threads)
         self.assertTrue(closed.is_set())
-        self.assertEqual(len(exits), 2)
+        self.assertEqual(len(exits), 3)
 
     def test_sync_http_request_checks_response_limits_and_disables_redirects(self):
         requests = []
