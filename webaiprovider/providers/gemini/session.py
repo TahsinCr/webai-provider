@@ -103,8 +103,10 @@ class GeminiSession:
                 cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
             )
         else:
+            from ...transport.http import curl_cookie_jar
+
             self.http = AsyncSession(
-                cookies=cookies,
+                cookies=curl_cookie_jar(cookies),
                 impersonate="chrome",
                 timeout=(10.0, 35.0),
                 trust_env=False,

@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import (
     AsyncExitStack,
     ExitStack,
@@ -18,6 +19,17 @@ from urllib.parse import urlsplit
 from ..core import MultiDimensionBoundedCache
 from ..errors import ProviderError
 from .base import AsyncTransport, Transport, _AsyncStreamResponse, _StreamResponse
+
+
+def curl_cookie_jar(cookies: Mapping[str, str]):
+    """Build a cookie jar for curl_cffi with secure flags matching cookie prefixes."""
+    from curl_cffi.requests.cookies import Cookies
+
+    jar = Cookies()
+    for name, value in cookies.items():
+        jar.set(name, value, secure=name.startswith(("__Secure-", "__Host-")))
+    return jar.jar
+
 
 _PROXY_ENV_VARS = (
     "HTTP_PROXY",

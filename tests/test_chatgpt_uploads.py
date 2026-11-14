@@ -228,3 +228,23 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         self.assertEqual(
             stream_headers.get("x-openai-target-route"), "/backend-api/files/process_upload_stream"
         )
+
+    def test_curl_cookie_jar_handles_prefixed_cookies_without_warning(self):
+        import warnings
+
+        from curl_cffi.requests import Session as CurlSession
+
+        from webaiprovider.transport.http import curl_cookie_jar
+
+        jar = curl_cookie_jar(
+            {
+                "__Secure-1PSID": "val1",
+                "__Host-next-auth.csrf-token": "val2",
+                "oai-did": "device",
+            }
+        )
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            session = CurlSession(cookies=jar, trust_env=False)
+            session.close()
+        self.assertEqual([w for w in recorded if "CurlCffiWarning" in w.category.__name__], [])

@@ -74,7 +74,14 @@ class BrowserSession:
         }
         if cookies.get("oai-did"):
             headers["oai-device-id"] = cookies["oai-did"]
-        with Session(impersonate="chrome", cookies=cookies, timeout=30, trust_env=False) as client:
+        from ...transport.http import curl_cookie_jar
+
+        with Session(
+            impersonate="chrome",
+            cookies=curl_cookie_jar(cookies),
+            timeout=30,
+            trust_env=False,
+        ) as client:
             from ...transport.http import (
                 _invalidate_host_dns,
                 _is_curl_timeout,

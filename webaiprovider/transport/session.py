@@ -76,6 +76,9 @@ class HttpSession(AsyncHTTPTransport):
             },
         )
         if is_default_curl:
+            from .http import curl_cookie_jar
+
+            kwargs["cookies"] = curl_cookie_jar(cookies)
             kwargs["trust_env"] = False
         return factory(**kwargs)
 
