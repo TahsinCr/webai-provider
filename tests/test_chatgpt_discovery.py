@@ -425,16 +425,22 @@ class DiscoveryTests(unittest.TestCase):
         )
 
         _cached_system_timezone.cache_clear()
-        with (
-            patch.dict("os.environ", {"TZ": "Europe/Istanbul"}, clear=False),
-            patch.object(Path, "resolve", return_value=Path("/usr/share/zoneinfo/UTC")) as resolve,
+        with patch(
+            "webaiprovider.providers.chatgpt.client.ZoneInfo",
+            side_effect=lambda value: Mock(key=value),
         ):
-            self.assertEqual(system_timezone(), "Europe/Istanbul")
-            self.assertEqual(system_timezone(), "Europe/Istanbul")
-            self.assertEqual(resolve.call_count, 1)
+            with (
+                patch.dict("os.environ", {"TZ": "Europe/Istanbul"}, clear=False),
+                patch.object(
+                    Path, "resolve", return_value=Path("/usr/share/zoneinfo/UTC")
+                ) as resolve,
+            ):
+                self.assertEqual(system_timezone(), "Europe/Istanbul")
+                self.assertEqual(system_timezone(), "Europe/Istanbul")
+                self.assertEqual(resolve.call_count, 1)
 
-        with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}, clear=False):
-            self.assertEqual(system_timezone(), "Asia/Tokyo")
+            with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}, clear=False):
+                self.assertEqual(system_timezone(), "Asia/Tokyo")
 
     def test_move_conversation_validates_patch_and_updates_cache_without_get(self):
         snapshot = {

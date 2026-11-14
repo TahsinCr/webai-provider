@@ -141,7 +141,9 @@ class ActionGate:
     def _start(self) -> None:
         delay = self._reserve_slot()
         if delay > 0:
-            time.sleep(delay)
+            deadline = time.monotonic() + delay
+            while (remaining := deadline - time.monotonic()) > 0:
+                time.sleep(remaining)
 
     def call_sync(self, action: Callable[[], T]) -> T:
         with self._sync_lock:
@@ -156,7 +158,9 @@ class ActionGate:
             with self._sync_lock:
                 delay = self._reserve_slot()
             if delay > 0:
-                await asyncio.sleep(delay)
+                deadline = time.monotonic() + delay
+                while (remaining := deadline - time.monotonic()) > 0:
+                    await asyncio.sleep(remaining)
             try:
                 return await asyncio.wait_for(action(), timeout=self.timeout)
             finally:

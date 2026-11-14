@@ -45,7 +45,14 @@ jobs:
       - run: python -m twine check dist/*
       - run: python -m pip install --force-reinstall dist/*.whl
       - run: python -m pip check
-      - run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
+      - name: Prepare isolated test sources
+        run: |
+          mkdir -p "$RUNNER_TEMP/package-tests"
+          cp -R tests "$RUNNER_TEMP/package-tests/tests"
+          cp run_tests.py run_live_tests.py "$RUNNER_TEMP/package-tests/"
+      - name: Test installed wheel
+        working-directory: ${{ runner.temp }}/package-tests
+        run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
       - name: Verify installed wheel metadata and typing marker
         run: >-
           python -I -c
@@ -54,7 +61,9 @@ jobs:
           assert u.find_spec('webai_provider') is None;
           assert r.files('webaiprovider').joinpath('py.typed').is_file()"
       - run: python -m pip install --force-reinstall --no-deps dist/*.tar.gz
-      - run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
+      - name: Test installed source distribution
+        working-directory: ${{ runner.temp }}/package-tests
+        run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
       - name: Verify installed source distribution metadata and typing marker
         run: >-
           python -I -c

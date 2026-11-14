@@ -117,7 +117,8 @@ class LiveCredentialTests(unittest.TestCase):
             select_account(accounts, "chatgpt", "default-browser").credentials,
             browser_cookies,
         )
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_existing_browser_import_is_not_refreshed_or_rewritten(self) -> None:
         self._write(
@@ -188,7 +189,8 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(len(saved["accounts"]), 2)
         self.assertEqual(saved["accounts"][0]["credentials"], account.credentials)
         self.assertEqual(saved["accounts"][1]["credentials"], {"cookies": {"session": "preserved"}})
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_automatic_cookie_refresh_does_not_replace_named_accounts(self) -> None:
         self._write(

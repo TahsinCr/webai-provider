@@ -169,7 +169,7 @@ async def _resolve_host_ips(
             ),
             timeout=timeout,
         )
-    except TimeoutError:
+    except asyncio.TimeoutError:
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
         raise CurlTimeout(f"Resolving timed out after {int(timeout * 1000)} ms") from None
