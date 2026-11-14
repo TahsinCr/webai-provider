@@ -16,6 +16,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Move the native Sentinel sources into the ChatGPT provider package and its C test into the main test directory.
+- Preserve in-memory credential updates and isolate nested credential data, protect resource ownership across sessions, and correct stream completion and TTFT median handling.
+- Serialize same-chat sends and same-project mutations, and make provider shutdown wait for accepted operations without losing cleanup on cancellation.
+- Enforce HTTP response byte limits while streaming bodies into the existing response contract, and expose thinking replacements as replacement events.
+
 - Align the module layout around clean package boundaries (`webaiprovider.base`, `webaiprovider.provider` with `ProviderType`, `webaiprovider.async_provider`, `webaiprovider.collections`, `webaiprovider.resources`, `webaiprovider.normalizers`, `webaiprovider.frames`, `webaiprovider.core`, `webaiprovider.transport`, and `webaiprovider.providers.<provider>`); use plain names for synchronous APIs and the `Async` prefix for asynchronous providers, resources, and collections.
 - Rename immutable transfer snapshots to `MessageData`, `ProjectData`, and `ResourceData` to separate them from SDK resource objects, and give `Attachments` collection-style `create()`, metadata-only `update()`, and local `delete()` with provider-specific attachment validation and ChatGPT upload cancellation.
 - Consolidate message send, edit, retry, and `ask()` model selection onto a single `model=` parameter accepting `Models` policies, `ModelRef`, or `EffortRef` (`AUTO` resolves to the provider default) checked against the account's live catalog without silent downgrades; separate ChatGPT web IDs from API IDs using dynamic Astra discovery and removing work-only Luna and Sol entries from `webaiprovider.providers.chatgpt.catalogs`.

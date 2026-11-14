@@ -28,8 +28,8 @@ $(STATIC_LIB): $(STATIC_OBJS) | $(BUILD_DIR)
 $(SHARED_LIB): $(SHARED_OBJS) | $(BUILD_DIR)
 	$(CC) -shared $(LDFLAGS) -o $@ $^
 
-$(TEST_BIN): tests/test_sentinel.c $(STATIC_LIB) $(HDRS) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) -DSENTINEL_STATIC $(CFLAGS) $(LDFLAGS) tests/test_sentinel.c $(STATIC_LIB) -o $@
+$(TEST_BIN): ../../../../tests/test_sentinel.c $(STATIC_LIB) $(HDRS) | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) -DSENTINEL_STATIC $(CFLAGS) $(LDFLAGS) ../../../../tests/test_sentinel.c $(STATIC_LIB) -o $@
 
 $(BUILD_DIR) $(BUILD_DIR)/obj/static $(BUILD_DIR)/obj/shared:
 	mkdir -p $@
@@ -37,9 +37,9 @@ $(BUILD_DIR) $(BUILD_DIR)/obj/static $(BUILD_DIR)/obj/shared:
 test: $(TEST_BIN)
 	$(TEST_BIN)
 
-test-san: $(SRCS) tests/test_sentinel.c $(HDRS) | $(BUILD_DIR)
+test-san: $(SRCS) ../../../../tests/test_sentinel.c $(HDRS) | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) -DSENTINEL_STATIC -std=c99 -O1 -g -Wall -Wextra -Werror \
-		-fsanitize=address,undefined $(SRCS) tests/test_sentinel.c -o $(BUILD_DIR)/test_sentinel_san
+		-fsanitize=address,undefined $(SRCS) ../../../../tests/test_sentinel.c -o $(BUILD_DIR)/test_sentinel_san
 	$(BUILD_DIR)/test_sentinel_san
 
 clean:

@@ -97,8 +97,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Async and blocking extension contracts |
 | `AsyncHTTPTransport` | Async HTTP client with streaming context; defaults to curl-cffi |
 | `AsyncRequestTransport` | Async client that opens streams with `request(stream=True)` |
-| `AsyncHTTPXTransport` | Async HTTPX client and its redirect/stream conventions |
-| `HTTPTransport` | Blocking HTTPX client |
+| `HTTPTransport` | Blocking curl_cffi transport |
 | `HttpSession` | Account cookie persistence over the shared async transport |
 | `ThreadedTransport` | Bounded bridge for a scoped blocking transport |
 

@@ -97,8 +97,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Контракты асинхронных и синхронных расширений |
 | `AsyncHTTPTransport` | Асинхронный HTTP-клиент с потоковым контекстом; по умолчанию используется curl-cffi |
 | `AsyncRequestTransport` | Асинхронный клиент, открывающий поток через `request(stream=True)` |
-| `AsyncHTTPXTransport` | Асинхронный HTTPX-клиент с его правилами перенаправления и потоков |
-| `HTTPTransport` | Синхронный HTTPX-клиент |
+| `HTTPTransport` | Синхронный curl_cffi-клиент |
 | `HttpSession` | Сохранение cookies аккаунта через общий асинхронный transport |
 | `ThreadedTransport` | Ограниченный мост для scoped синхронного transport |
 

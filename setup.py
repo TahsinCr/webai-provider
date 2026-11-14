@@ -22,14 +22,14 @@ class _BuildExt(build_ext):
 _SENTINEL_EXTENSION = Extension(
     "webaiprovider.providers.chatgpt.sentinel._native",
     sources=[
-        "sentinel/_native.c",
-        "sentinel/base64.c",
-        "sentinel/clock.c",
-        "sentinel/fnv1a.c",
-        "sentinel/pow.c",
-        "sentinel/xor.c",
+        "webaiprovider/providers/chatgpt/sentinel/_native.c",
+        "webaiprovider/providers/chatgpt/sentinel/base64.c",
+        "webaiprovider/providers/chatgpt/sentinel/clock.c",
+        "webaiprovider/providers/chatgpt/sentinel/fnv1a.c",
+        "webaiprovider/providers/chatgpt/sentinel/pow.c",
+        "webaiprovider/providers/chatgpt/sentinel/xor.c",
     ],
-    include_dirs=["sentinel"],
+    include_dirs=["webaiprovider/providers/chatgpt/sentinel"],
     define_macros=[("SENTINEL_STATIC", "1")],
     optional=True,
 )

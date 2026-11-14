@@ -97,8 +97,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Asenkron ve senkron uzantı sözleşmeleri |
 | `AsyncHTTPTransport` | Akış bağlamı sunan asenkron HTTP istemcisi; varsayılanı curl-cffi’dir |
 | `AsyncRequestTransport` | Akışı `request(stream=True)` ile açan asenkron istemci |
-| `AsyncHTTPXTransport` | Yönlendirme ve akış kurallarıyla asenkron HTTPX istemcisi |
-| `HTTPTransport` | Senkron HTTPX istemcisi |
+| `HTTPTransport` | Senkron curl_cffi istemcisi |
 | `HttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
 | `ThreadedTransport` | Kapsamı belirli senkron transport için sınırlı köprü |
 
