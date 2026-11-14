@@ -1,4 +1,4 @@
-"""Native Gemini protocol tests; no Gemini SDK imports or SDK-shaped mocks."""
+"""Gemini provider session, streaming, history, and notebook tests."""
 
 import asyncio
 import json
@@ -10,23 +10,22 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from tests.fixtures import notebook
 from tests.provider_fakes import provider_account
 from webaiprovider.async_provider import MessageAction
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
 from webaiprovider.providers.gemini.generation import generation_request, upload_files
+from webaiprovider.providers.gemini.notebooks import Notebooks, project_from_native
 from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.resources.common import Choice
-from webaiprovider.resources.message.protocol import (
-    ProviderRequest,
-    TextDelta,
-    TextReplacement,
-)
+from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.model.model import Model
 from webaiprovider.transport import AsyncRequestTransport
 
 
+# Session, catalog, streaming, and optimization contracts
 async def delayed_response(_request):
     await asyncio.sleep(0.02)
     yield TextReplacement("answer")
@@ -1622,3 +1621,87 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             ),
             events,
         )
+
+
+# History and deletion verification
+def message(role, text, **extra):
+    return {"role": role, "text": text, **extra}
+
+
+class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_listing_reads_remote_pages_and_returns_real_pagination(self):
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider._connect = AsyncMock()
+        provider.rpc.call = AsyncMock(
+            return_value=[[None, None, [["c_" + str(i), str(i)] for i in range(5)]]]
+        )
+        first = await provider.list_chats(limit=2)
+        second = await provider.list_chats(first.next_cursor, limit=2)
+        self.assertEqual([x.title for x in first.items], ["0", "1"])
+        self.assertEqual([x.title for x in second.items], ["2", "3"])
+        self.assertEqual(second.next_cursor, "4")
+        self.assertEqual(provider.rpc.call.await_count, 2)
+
+    async def test_message_ids_do_not_shift_when_older_history_arrives(self):
+        def turn(rid):
+            return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]
+
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider.rpc.call = AsyncMock(return_value=[[[turn("r_stable")]]])
+        first = await provider.get_chat("c_abc")
+        provider.rpc.call.return_value = [[[turn("r_stable"), turn("r_old")]]]
+        second = await provider.get_chat("c_abc")
+        self.assertEqual([m.id for m in first.messages], [m.id for m in second.messages[-2:]])
+
+
+class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_server_index_may_lag_deletion_without_resubmitting_the_write(self):
+        from webaiprovider.errors import RemoteNotFound
+
+        project = SimpleNamespace(
+            name="Fixture", origin=SimpleNamespace(remote_id="notebooks/abcdef")
+        )
+        notebooks = SimpleNamespace(
+            get=AsyncMock(side_effect=[project, RemoteNotFound("missing")]),
+            list=AsyncMock(),
+        )
+        provider = AsyncGeminiProvider(
+            provider_account("gemini", Path("unused")), notebooks=notebooks
+        )
+        with (
+            patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
+            patch("webaiprovider.async_provider.asyncio.sleep", new_callable=AsyncMock) as wait,
+        ):
+            await provider.delete_project("notebooks/abcdef")
+            delete.assert_awaited_once()
+            wait.assert_awaited_once_with(0.2)
+        self.assertEqual(notebooks.get.await_count, 2)
+        notebooks.list.assert_not_awaited()
+
+
+# Notebook contracts
+class NotebookTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_notebook_details_and_resources_are_normalized(self):
+        service = Notebooks("account")
+        service.read = AsyncMock(return_value=[[None, None, [notebook()]]])
+        page = await service.list()
+        project = page.items[0]
+        self.assertEqual(project.origin.provider_id, "gemini")
+        self.assertEqual(project.origin.account_id, "account")
+        self.assertEqual(project.name, "My notebook")
+        self.assertEqual(project.instructions, "Use citations")
+        self.assertEqual(project.metadata["description"], "Notebook description")
+        self.assertEqual(project.resources[0].name, "Research notes")
+        self.assertEqual(project.metadata["kind"], "notebook")
+        self.assertEqual(project.metadata["notebook_type"], 3)
+        self.assertTrue(project.metadata["url"].startswith("https://gemini.google.com/"))
+        service.read.return_value = [[notebook()]]
+        self.assertEqual(await service.get("notebooks/abcdef"), project)
+
+    async def test_unknown_native_contract_fails_without_inventing_data(self):
+        with self.assertRaises(ProviderError):
+            project_from_native(["wrong-id", []], "account")
+        service = Notebooks("account")
+        service.read = AsyncMock(return_value=[[]])
+        with self.assertRaises(ProviderError):
+            await service.get("notebooks/missing")
