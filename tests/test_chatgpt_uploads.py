@@ -182,3 +182,49 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ChatGPTError, "upload request failed") as ctx:
             client._upload_request(sas_url, content=b"abc")
         self.assertNotIn("VERYSECRETSIG", str(ctx.exception))
+
+    def test_tracked_stream_injects_transport_headers_for_headerless_transport(self):
+        captured = []
+
+        class HeaderlessTransport:
+            origin = "https://chatgpt.com"
+
+            def send(self, method, path, **options):
+                captured.append(("send", method, path, dict(options.get("headers") or {})))
+                return SimpleNamespace(
+                    status_code=200,
+                    headers={"content-type": "application/json"},
+                    json=lambda: {"file_id": "file-id", "upload_url": "https://upload.example/put"},
+                )
+
+            def stream(self, method, path, **options):
+                captured.append(("stream", method, path, dict(options.get("headers") or {})))
+                response = SimpleNamespace(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream"},
+                    iter_bytes=lambda: iter((b'{"type":"file.processing.completed"}\n',)),
+                )
+                return nullcontext(response)
+
+        session = SimpleNamespace(cdp_url=None, load=lambda: {}, headers={})
+        client = ChatGPTClient(session, transport=HeaderlessTransport(), authenticate=False)
+        client.headers = {
+            "authorization": "Bearer tok",
+            "cookie": "__Secure-next-auth.session-token=secret",
+            "user-agent": "UA",
+        }
+        client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
+
+        result = client.upload_file("note.txt", "text/plain", b"hello", project_id="g-p-1")
+        self.assertEqual(result["id"], "file-id")
+        self.assertEqual(captured[1][0], "stream")
+        self.assertEqual(captured[1][2], "/backend-api/files/process_upload_stream")
+        stream_headers = captured[1][3]
+        self.assertEqual(stream_headers.get("authorization"), "Bearer tok")
+        self.assertIn("__Secure-next-auth.session-token=secret", stream_headers.get("cookie", ""))
+        self.assertEqual(
+            stream_headers.get("x-openai-target-path"), "/backend-api/files/process_upload_stream"
+        )
+        self.assertEqual(
+            stream_headers.get("x-openai-target-route"), "/backend-api/files/process_upload_stream"
+        )

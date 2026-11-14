@@ -237,6 +237,12 @@ class ChatGPTClient:
 
     @contextmanager
     def _tracked_stream(self, method: str, path: str, **options):
+        if (
+            options.get("inherit_headers", True)
+            and "headers" not in options
+            and getattr(self, "headers", None) is not None
+        ):
+            options["headers"] = self._transport_headers(method, path)
         with self.transport.stream(method, path, **options) as stream:
             stream_key = id(stream)
             with self._state_guard:
