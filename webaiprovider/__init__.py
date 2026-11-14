@@ -73,6 +73,7 @@ from .resources.message.operation import (
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
+    ThinkingReplace,
 )
 from .resources.message.response import (
     Artifact,
@@ -166,6 +167,7 @@ __all__ = [
     "TerminalStatus",
     "ThinkingBegin",
     "ThinkingDelta",
+    "ThinkingReplace",
     "ThinkingEnd",
     "TimingMetrics",
     "AccountPaused",

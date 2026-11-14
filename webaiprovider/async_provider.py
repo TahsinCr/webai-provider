@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability
@@ -29,11 +31,11 @@ from .resources.message.operation import (
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
+    ThinkingReplace,
 )
 from .resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
-    ProviderEvent,
     ProviderRequest,
     TextDelta,
     TextReplacement,
@@ -149,6 +151,14 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
     )
 
 
+_ACTIVE_SEND_LOCKS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "webai_active_send_locks", default=frozenset()
+)
+_ACTIVE_PROVIDERS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "webai_active_providers", default=frozenset()
+)
+
+
 class AsyncProvider(BaseProvider):
     def __new__(cls, *args, **options):
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
@@ -173,6 +183,15 @@ class AsyncProvider(BaseProvider):
         self.telemetry = ProviderTelemetry()
         self._scope: ProviderResourceScope | None = None
         self._opened = False
+        self._closed = False
+        self._closing = False
+        self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_condition = asyncio.Condition()
+        self._close_task: asyncio.Task[None] | None = None
+        self._active_operations = 0
+        self._active_asks = 0
+        self._send_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._project_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._staged_project_reads: dict[str, tuple[float, ProjectData]] = {}
         self.chats = AsyncChatsCollection(self)
         self.projects = self._projects_collection_type(self)
@@ -204,7 +223,9 @@ class AsyncProvider(BaseProvider):
         if self._transport is not None:
             await self._transport.close()
 
-    async def open(self) -> AsyncProvider:
+    async def _open_locked(self) -> AsyncProvider:
+        if self._closed or self._closing:
+            raise ProviderError("A closed provider cannot be reopened")
         if self._opened:
             return self
         self._loop = asyncio.get_running_loop()
@@ -219,7 +240,12 @@ class AsyncProvider(BaseProvider):
         scope.defer(self._close_provider)
         self._scope = scope
         self._opened = True
+        self._closed = False
         return self
+
+    async def open(self) -> AsyncProvider:
+        async with self._lifecycle_lock:
+            return await self._open_locked()
 
     def _require_provider(self) -> AsyncProvider:
         if not self._opened:
@@ -227,17 +253,86 @@ class AsyncProvider(BaseProvider):
         return self
 
     async def close(self) -> None:
+        if id(self) in _ACTIVE_PROVIDERS.get():
+            raise ProviderError("Cannot close a provider from one of its active operations")
+        async with self._lifecycle_lock:
+            if self._closed:
+                return
+            if self._close_task is None:
+                async with self._lifecycle_condition:
+                    self._closing = True
+                self._close_task = asyncio.create_task(self._finish_close())
+            task = self._close_task
+
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_close(self) -> None:
+        async with self._lifecycle_condition:
+            await self._lifecycle_condition.wait_for(
+                lambda: self._active_operations == 0 and self._active_asks == 0
+            )
         scope, self._scope = self._scope, None
         self._opened = False
-        if scope is not None:
-            await scope.aclose()
-        else:
-            await self._close_provider()
+        try:
+            if scope is not None:
+                await scope.aclose()
+            else:
+                await self._close_provider()
+        finally:
+            self._closed = True
+            async with self._lifecycle_condition:
+                self._closing = False
+                self._lifecycle_condition.notify_all()
 
-    def _stream_request(self, request: ProviderRequest) -> AsyncGenerator[ProviderEvent, None]:
-        raise NotImplementedError
+    def _send_lock(self, conversation_id: str) -> asyncio.Lock:
+        lock = self._send_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[conversation_id] = lock
+        return lock
+
+    def _project_lock(self, project_id: str) -> asyncio.Lock:
+        lock = self._project_locks.get(project_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._project_locks[project_id] = lock
+        return lock
 
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
+        chat = operation.chat
+        conversation_id = chat.remote_id or chat.id
+        lock = self._send_lock(conversation_id)
+        lock_id = id(lock)
+        if lock_id in _ACTIVE_SEND_LOCKS.get():
+            raise ProviderError("A send hook cannot await another send in the same conversation")
+        async with self._lifecycle_condition:
+            if self._closed or (self._closing and id(self) not in _ACTIVE_PROVIDERS.get()):
+                raise ProviderError("Provider is closing or is closed")
+            self._active_operations += 1
+        send_token = _ACTIVE_SEND_LOCKS.set(_ACTIVE_SEND_LOCKS.get() | {lock_id})
+        provider_token = _ACTIVE_PROVIDERS.set(_ACTIVE_PROVIDERS.get() | {id(self)})
+        try:
+            async with lock:
+                async for event in self._execute_stream_events(operation, lock):
+                    yield event
+        finally:
+            _ACTIVE_PROVIDERS.reset(provider_token)
+            _ACTIVE_SEND_LOCKS.reset(send_token)
+            async with self._lifecycle_condition:
+                self._active_operations -= 1
+                self._lifecycle_condition.notify_all()
+
+    async def _execute_stream_events(
+        self, operation: Any, send_lock: asyncio.Lock
+    ) -> AsyncGenerator[StreamEvent, None]:
         request = await _prepare_operation(operation, self)
         output_started = thinking_started = False
         thinking_text = ""
@@ -245,6 +340,7 @@ class AsyncProvider(BaseProvider):
             async for event in self._stream_request(request):
                 if isinstance(event, ConversationBound):
                     operation.chat.remote_id = event.conversation_id
+                    self._send_locks[event.conversation_id] = send_lock
                     chat_metadata = getattr(operation.chat, "metadata", None)
                     if isinstance(chat_metadata, dict):
                         chat_metadata.pop("pending_branch", None)
@@ -253,33 +349,36 @@ class AsyncProvider(BaseProvider):
                 ):
                     delta = event.text
                     if isinstance(event, TextReplacement):
-                        delta = (
-                            event.text[len(thinking_text) :]
-                            if event.text.startswith(thinking_text)
-                            else event.text
-                        )
+                        replaced = not event.text.startswith(thinking_text)
+                        delta = event.text[len(thinking_text) :] if not replaced else ""
                         thinking_text = event.text
                     else:
                         thinking_text += delta
                     if not thinking_started:
                         thinking_started = True
                         yield ThinkingBegin()
-                    if delta:
+                    if isinstance(event, TextReplacement) and replaced:
+                        yield ThinkingReplace(text=thinking_text)
+                    elif delta:
                         yield ThinkingDelta(delta=delta)
                 elif isinstance(event, TextReplacement):
                     if not event.text and not output_started:
                         continue
                     if thinking_started:
+                        completed_thinking = thinking_text
+                        thinking_text = ""
                         thinking_started = False
-                        yield ThinkingEnd(text=thinking_text)
+                        yield ThinkingEnd(text=completed_thinking)
                     if not output_started:
                         output_started = True
                         yield OutputBegin()
                     yield OutputReplace(text=event.text)
                 elif isinstance(event, TextDelta) and event.text:
                     if thinking_started:
+                        completed_thinking = thinking_text
+                        thinking_text = ""
                         thinking_started = False
-                        yield ThinkingEnd(text=thinking_text)
+                        yield ThinkingEnd(text=completed_thinking)
                     if not output_started:
                         output_started = True
                         yield OutputBegin()
@@ -434,6 +533,10 @@ class AsyncProvider(BaseProvider):
         remote = project.origin.remote_id
         if not project.name.strip():
             raise ValueError("Project name is required")
+        return await host._update_project_locked(project, remote)
+
+    async def _update_project_locked(self, project: ProjectData, remote: str) -> ProjectData:
+        host = self
         staged = host._staged_project_reads.pop(remote, None)
         if (
             staged is not None
@@ -462,6 +565,12 @@ class AsyncProvider(BaseProvider):
         )
 
     async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> ProjectData:
+        async with self._project_lock(project_id):
+            return await self._add_project_resource_locked(project_id, kind, **values)
+
+    async def _add_project_resource_locked(
+        self, project_id: str, kind: str, **values: Any
+    ) -> ProjectData:
         host = self
         staged = host._staged_project_reads.pop(project_id, None)
         if staged is not None and time.monotonic() - staged[0] < 5.0:
@@ -488,6 +597,12 @@ class AsyncProvider(BaseProvider):
         )
 
     async def remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
+        async with self._project_lock(project_id):
+            return await self._remove_project_resource_locked(project_id, resource_id)
+
+    async def _remove_project_resource_locked(
+        self, project_id: str, resource_id: str
+    ) -> ProjectData:
         host = self
         staged = host._staged_project_reads.pop(project_id, None)
         if staged is not None and time.monotonic() - staged[0] < 5.0:
@@ -525,9 +640,15 @@ class AsyncProvider(BaseProvider):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
     ) -> Response:
-        was_open = self._opened
-        if not was_open:
-            await self.open()
+        async with self._lifecycle_lock:
+            if self._closed or self._closing:
+                raise ProviderError("A closed provider cannot accept requests")
+            was_open = self._opened
+            if not was_open:
+                await self._open_locked()
+            async with self._lifecycle_condition:
+                self._active_asks += 1
+        provider_token = _ACTIVE_PROVIDERS.set(_ACTIVE_PROVIDERS.get() | {id(self)})
         try:
             chat = await self.chats.create()
             return await chat.messages.create(
@@ -536,6 +657,10 @@ class AsyncProvider(BaseProvider):
                 attachments=attachments,
             ).start()
         finally:
+            _ACTIVE_PROVIDERS.reset(provider_token)
+            async with self._lifecycle_condition:
+                self._active_asks -= 1
+                self._lifecycle_condition.notify_all()
             if not was_open:
                 await self.close()
 

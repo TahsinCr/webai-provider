@@ -81,27 +81,32 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
         instruction: str | None = None,
     ) -> AsyncProject:
         target = project if isinstance(project, AsyncProject) else await self.get(project)
+        if target.session is not self.session:
+            raise ValueError("Project belongs to a different provider session")
         if target.remote_id:
             provider = self.session._require_provider()
-            current = target._provider_project
-            if (
-                not isinstance(current, ProviderProject)
-                or current.origin.remote_id != target.remote_id
-            ):
-                current = await provider.get_project(target.remote_id)
-                if not isinstance(current, ProviderProject):
-                    raise ProviderError("Provider returned an invalid project")
-            stage = getattr(type(provider), "_stage_project_read", None)
-            if callable(stage):
-                stage(provider, current)
-            updated = await provider.update_project(
-                replace(
-                    current,
-                    name=title if title is not None else current.name,
-                    instructions=(instruction if instruction is not None else current.instructions),
+            async with provider._project_lock(target.remote_id):
+                current = target._provider_project
+                if (
+                    not isinstance(current, ProviderProject)
+                    or current.origin.remote_id != target.remote_id
+                ):
+                    current = await provider.get_project(target.remote_id)
+                    if not isinstance(current, ProviderProject):
+                        raise ProviderError("Provider returned an invalid project")
+                stage = getattr(type(provider), "_stage_project_read", None)
+                if callable(stage):
+                    stage(provider, current)
+                updated = await provider.update_project(
+                    replace(
+                        current,
+                        name=title if title is not None else current.name,
+                        instructions=(
+                            instruction if instruction is not None else current.instructions
+                        ),
+                    )
                 )
-            )
-            target._apply_provider_project(updated, replace_resources=False)
+                target._apply_provider_project(updated, replace_resources=False)
         else:
             if title is not None:
                 target.title = title
@@ -111,6 +116,8 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
 
     async def delete(self, project: AsyncProject | str) -> None:
         target = project if isinstance(project, AsyncProject) else await self.get(project)
+        if target.session is not self.session:
+            raise ValueError("Project belongs to a different provider session")
         if target.remote_id:
             await self.session._require_provider().delete_project(target.remote_id)
         self._items = [item for item in self._items if item is not target]

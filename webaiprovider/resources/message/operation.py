@@ -34,6 +34,12 @@ class ThinkingDelta(StreamEvent):
 
 
 @dataclass(frozen=True)
+class ThinkingReplace(StreamEvent):
+    text: str = ""
+    event: str = field(init=False, default="thinking.replace")
+
+
+@dataclass(frozen=True)
 class ThinkingEnd(StreamEvent):
     text: str = ""
     event: str = field(init=False, default="thinking.end")
@@ -223,22 +229,26 @@ class AsyncMessageOperation:
     async def _next_stream_batch(
         self, index: int, limit: int = 32
     ) -> tuple[list[StreamEvent], int, bool]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
         task = self._ensure_started()
         while True:
             async with self._condition:
                 await self._condition.wait_for(
                     lambda current=index: current < len(self._events) or self._completed
                 )
-                if index >= len(self._events):
-                    await task
-                    return [], index, True
-                end = min(len(self._events), index + limit)
-                chunk = [
-                    event
-                    for event in self._events[index:end]
-                    if not isinstance(event, TerminalStatus)
-                ]
-                index = end
+                done = index >= len(self._events)
+                if not done:
+                    end = min(len(self._events), index + limit)
+                    chunk = [
+                        event
+                        for event in self._events[index:end]
+                        if not isinstance(event, TerminalStatus)
+                    ]
+                    index = end
+            if done:
+                await task
+                return [], index, True
             if chunk:
                 return chunk, index, False
 
