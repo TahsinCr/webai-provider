@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import ClassVar
 
 from ...errors import AccountPaused, ProviderError
@@ -23,6 +24,7 @@ THINKING_VALUES = {
     "THINKING_LEVEL_DEEP_THINK": 3,
     "THINKING_LEVEL_MEDIUM": 4,
 }
+_LEADING_VERSION_RE = re.compile(r"^\d+(?:\.\d+)?\s+")
 
 
 class GeminiFlashLiteEfforts(EffortSet):
@@ -35,6 +37,12 @@ class GeminiFlashEfforts(EffortSet):
     STANDARD: ClassVar[EffortRef] = effort_ref("gemini", "gemini-flash", "standard")
     MEDIUM: ClassVar[EffortRef] = effort_ref("gemini", "gemini-flash", "medium")
     EXTENDED: ClassVar[EffortRef] = effort_ref("gemini", "gemini-flash", "extended")
+
+
+class GeminiHydrogenEfforts(EffortSet):
+    STANDARD: ClassVar[EffortRef] = effort_ref("gemini", "gemini-hydrogen", "standard")
+    MEDIUM: ClassVar[EffortRef] = effort_ref("gemini", "gemini-hydrogen", "medium")
+    EXTENDED: ClassVar[EffortRef] = effort_ref("gemini", "gemini-hydrogen", "extended")
 
 
 class GeminiProEfforts(EffortSet):
@@ -60,6 +68,9 @@ class GeminiModels(StaticModelCatalog):
     )
     FLASH: ClassVar[ModelRef[GeminiFlashEfforts]] = ModelRef(
         "gemini", "gemini-flash", "Gemini 3.8 Flash", efforts=GeminiFlashEfforts
+    )
+    HYDROGEN: ClassVar[ModelRef[GeminiHydrogenEfforts]] = ModelRef(
+        "gemini", "gemini-hydrogen", "Gemini 4 Hydrogen", efforts=GeminiHydrogenEfforts
     )
     PRO: ClassVar[ModelRef[GeminiProEfforts]] = ModelRef(
         "gemini", "gemini-pro", "Gemini 3.1 Pro", efforts=GeminiProEfforts
@@ -153,9 +164,12 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
         is_fast = (
             mode_category in {"FAST", "MODE_CATEGORY_FAST"} and "lite" not in variant_name.split()
         )
+        category_slug = _LEADING_VERSION_RE.sub("", str(category).strip()).lower().replace(
+            " ", "-"
+        ) or str(category).lower().replace(" ", "-")
         models.append(
             Model(
-                "gemini-" + str(category).lower().replace(" ", "-"),
+                "gemini-" + category_slug,
                 str(title),
                 tuple(efforts),
                 default_effort=default,

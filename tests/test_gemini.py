@@ -14,6 +14,7 @@ from tests.provider_fakes import provider_account
 from webaiprovider.async_provider import MessageAction
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.providers.gemini import AsyncGeminiProvider
+from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
 from webaiprovider.providers.gemini.generation import generation_request, upload_files
 from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.resources.common import Choice
@@ -359,6 +360,48 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaisesRegex(ProviderError, "available models"):
             await session.discover_models()
+
+    def test_parse_model_catalog_normalizes_hydrogen_version_prefix(self):
+        row = [None] * 18
+        row[0] = "56fdd199312815e2"
+        row[1] = "4 Hydrogen"
+        row[2] = "4 Hydrogen"
+        row[11] = "4 Hydrogen"
+        row[17] = 20
+        legacy = [None] * 18
+        legacy[15], legacy[16], legacy[17] = [row], [], []
+        status = {
+            "bardModeConfigs": [{"id": "56fdd199312815e2", "modeCategory": "MODE_CATEGORY_FAST"}],
+            "geminiModePolicy": {
+                "configs": [
+                    {
+                        "modeConfig": {
+                            "id": "56fdd199312815e2",
+                            "modeCategory": "MODE_CATEGORY_FAST",
+                            "title": "4 Hydrogen",
+                        },
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                        "implicitThinkingLevel": "THINKING_LEVEL_STANDARD",
+                        "thinkingLevelConfigs": [
+                            {"thinkingLevel": "THINKING_LEVEL_STANDARD"},
+                            {"thinkingLevel": "THINKING_LEVEL_MEDIUM"},
+                            {"thinkingLevel": "THINKING_LEVEL_EXTENDED"},
+                        ],
+                    }
+                ]
+            },
+        }
+        rpc_text = json.dumps([["wrb.fr", "otAQ7b", json.dumps(legacy)]]) + "\n"
+        (model,) = parse_model_catalog(status, rpc_text)
+        self.assertEqual(model.id, GeminiModels.HYDROGEN.id)
+        self.assertEqual(model.id, "gemini-hydrogen")
+        self.assertEqual(model.metadata["model_id"], "56fdd199312815e2")
+        self.assertIsNone(model.metadata["selector_id"])
+        self.assertIsNone(model.metadata["number"])
+        self.assertEqual(
+            [choice.id for choice in model.efforts],
+            ["standard", "medium", "extended"],
+        )
 
     async def test_uploads_use_local_paths_serially_and_close_mime(self):
         with tempfile.TemporaryDirectory() as directory:

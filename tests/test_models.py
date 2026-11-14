@@ -193,6 +193,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(GrokModels.GROK_3.name, "Grok 3")
         self.assertEqual(GrokModels.GROK_3.id, "fast")
         self.assertEqual(GrokModels.GROK_3.metadata["modelName"], "grok-3")
+        self.assertEqual(
+            tuple(model.id for model in GeminiModels.list()),
+            ("gemini-flash-lite", "gemini-flash", "gemini-hydrogen", "gemini-pro", "gemini-argon"),
+        )
+        self.assertEqual(GeminiModels.HYDROGEN.name, "Gemini 4 Hydrogen")
+        self.assertEqual(
+            [effort.id for effort in GeminiModels.HYDROGEN.efforts.list()],
+            ["standard", "medium", "extended"],
+        )
 
     def test_static_catalog_lookup_methods(self) -> None:
         model = ChatGPTModels.get("gpt-6-thinking")
