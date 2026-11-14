@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Add tag-triggered PyPI releases through Trusted Publishing, gated by CI, CodeQL, and verified platform distributions.
 - Reorganize the library under the standalone `webaiprovider` package with PEP 561 `py.typed` metadata and a single-source `__version__`.
 - Split the public API into `BaseProvider`, `AsyncProvider`, blocking `Provider` (whose generic constructor selects the concrete provider class directly), and provider-specific sync/async facades (`ChatGPTProvider`, `AsyncChatGPTProvider`, `ClaudeProvider`, `AsyncClaudeProvider`, `GeminiProvider`, `AsyncGeminiProvider`, `GrokProvider`, `AsyncGrokProvider`) with explicit `open()` and `close()` lifecycles.
 - Publish the typed message-operation pipeline contracts in `webaiprovider.resources.message.protocol`, normalized stream events (`OutputBegin`, `OutputDelta`, `OutputReplace`, `OutputEnd`, `ThinkingBegin`, `ThinkingDelta`, `ThinkingEnd`, `SourceDiscovered`, `ArtifactDiscovered`, `TerminalStatus`), and origin-scoped `provider.transport` with custom transport injection, request/stream execution strategies, and bounded `PortalBridge` orchestration.

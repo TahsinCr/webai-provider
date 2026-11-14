@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  codeql:
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      security-events: write
+
+  wheels:
+    uses: ./.github/workflows/wheels.yml
+
+  verify:
+    name: Verify release distributions
+    needs: [ci, codeql, wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download release distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: webai-provider-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Verify tag, package names, and versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -m pip install --disable-pip-version-check packaging
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+          from packaging.version import Version
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v[0-9][A-Za-z0-9.!+_-]*", tag):
+              raise SystemExit(f"Invalid release tag: {tag}")
+          try:
+              expected = Version(tag[1:])
+          except Exception as exc:
+              raise SystemExit(f"Release tag is not a valid package version: {tag}") from exc
+
+          distributions = sorted(Path("dist").iterdir())
+          if not distributions:
+              raise SystemExit("No release distributions were downloaded")
+
+          wheels = 0
+          sdists = 0
+          for path in distributions:
+              if path.name.endswith(".whl"):
+                  name, version, _, _ = parse_wheel_filename(path.name)
+                  wheels += 1
+              elif path.name.endswith(".tar.gz"):
+                  name, version = parse_sdist_filename(path.name)
+                  sdists += 1
+              else:
+                  raise SystemExit(f"Unexpected artifact in release distributions: {path.name}")
+              if canonicalize_name(name) != canonicalize_name("webai-provider"):
+                  raise SystemExit(f"Unexpected distribution name: {path.name}")
+              if version != expected:
+                  raise SystemExit(
+                      f"Distribution version does not match tag {tag}: {path.name}"
+                  )
+
+          if not wheels or sdists != 1:
+              raise SystemExit(
+                  f"Expected at least one wheel and exactly one sdist; got {wheels} wheels, {sdists} sdists"
+              )
+          PY
+
+      - name: Check distribution metadata
+        run: |
+          python -m pip install --disable-pip-version-check twine
+          python -m twine check --strict dist/*
+
+      - name: Save verified distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish to PyPI
+    needs: verify
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-dist
+          path: dist
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
