@@ -750,11 +750,13 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
             await session.close()
 
     async def test_check_ipv6_connectivity_offloads_uncached_probe_to_worker_thread(self):
+        import socket
         import time
 
         import webaiprovider.transport.http as transport_http
 
         previous_cache = transport_http._ipv6_connectivity_cache
+        socket_type = socket.socket
         caller_thread = threading.get_ident()
         probe_threads = []
 
@@ -764,14 +766,15 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         transport_http._ipv6_connectivity_cache = None
         try:
-            with patch("webaiprovider.transport.http.socket.socket", side_effect=fake_socket):
+            with patch.object(transport_http, "_create_ipv6_probe_socket", side_effect=fake_socket):
                 self.assertFalse(await transport_http._check_ipv6_connectivity())
+            self.assertIs(socket.socket, socket_type)
             self.assertEqual(len(probe_threads), 1)
             self.assertNotEqual(probe_threads[0], caller_thread)
 
             transport_http._ipv6_connectivity_cache = (time.monotonic(), True)
             with patch(
-                "webaiprovider.transport.http.socket.socket",
+                "webaiprovider.transport.http._create_ipv6_probe_socket",
                 side_effect=AssertionError("unexpected"),
             ):
                 self.assertTrue(await transport_http._check_ipv6_connectivity())

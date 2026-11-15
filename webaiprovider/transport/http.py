@@ -47,6 +47,10 @@ _IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
 
 
+def _create_ipv6_probe_socket() -> socket.socket:
+    return socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+
+
 def _has_ipv6_connectivity() -> bool:
     global _ipv6_connectivity_cache
     now = time.monotonic()
@@ -56,7 +60,7 @@ def _has_ipv6_connectivity() -> bool:
     reachable = False
     sock = None
     try:
-        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sock = _create_ipv6_probe_socket()
         sock.connect(("2606:4700:4700::1111", 53))
         reachable = True
     except OSError:
