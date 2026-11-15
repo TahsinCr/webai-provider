@@ -1206,7 +1206,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             release_confirm.set()
             await task
 
-    async def test_project_editor_and_update_skip_redundant_get_project(self):
+    async def test_project_update_reuses_staged_state_and_confirms_remote_result(self):
         from contextlib import nullcontext
         from unittest.mock import Mock
 
@@ -1276,7 +1276,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         def fake_get_project(project_id):
             nonlocal get_calls
             get_calls += 1
-            return states[0] if get_calls == 1 else states[1]
+            return states[1]
 
         self.client.get_project = fake_get_project
         self.client.request = Mock(return_value={})
@@ -1286,7 +1286,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             loaded = await self.provider.projects.refresh()
             result = await self.provider.projects.update(loaded[0], title="Updated Name")
             self.assertEqual(result.title, "Updated Name")
-            self.assertEqual(get_calls, 0)
+            self.assertEqual(get_calls, 1)
             self.assertFalse(self.provider._staged_project_reads)
         finally:
             await self.provider.close()

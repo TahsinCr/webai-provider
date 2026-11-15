@@ -910,7 +910,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             provider.client.request.reset_mock()
             updated = await provider.update_project(replace(current, instructions="New"))
             self.assertEqual(updated.instructions, "New")
-            self.assertEqual(provider.client.request.await_count, 3)
+            self.assertEqual(provider.client.request.await_count, 5)
             self.assertEqual(workspace["preferredModel"], "keep")
             self.assertFalse(workspace["isPublic"])
 
@@ -925,7 +925,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             provider.client.request.reset_mock()
             removed = await provider.remove_project_resource("workspace", "/notes.txt")
             self.assertEqual(removed.resources, ())
-            self.assertEqual(provider.client.request.await_count, 3)
+            self.assertEqual(provider.client.request.await_count, 5)
         finally:
             await provider.close()
 
