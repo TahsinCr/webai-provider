@@ -1076,6 +1076,77 @@ class TestSyncApi(unittest.TestCase):
 
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_project_update_serializes_with_collection_update(self) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from webaiprovider.resources.common import Origin
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class ConcurrentProjectProvider(AsyncProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
+                self._gate = asyncio.Lock()
+                self.remote = NativeProject(
+                    Origin("claude", account.id, "project-1"), "Research", "Instructions"
+                )
+                self.active_writes = 0
+                self.max_active_writes = 0
+                self.first_write_started = asyncio.Event()
+                self.release_first_write = asyncio.Event()
+                self.overlap_detected = asyncio.Event()
+                self.editor = SimpleNamespace(write=self.write)
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def get_project(self, _project_id: str) -> NativeProject:
+                return self.remote
+
+            async def write(self, _action: str, _project_id: str, *, current, **changes):
+                self.active_writes += 1
+                self.max_active_writes = max(self.max_active_writes, self.active_writes)
+                if self.active_writes == 1:
+                    self.first_write_started.set()
+                    await self.release_first_write.wait()
+                else:
+                    self.overlap_detected.set()
+                result = replace(current, **changes)
+                self.active_writes -= 1
+                return result
+
+        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
+        async with ConcurrentProjectProvider(account) as provider:
+            project = provider._project_type(
+                title=provider.remote.name,
+                remote_id=provider.remote.origin.remote_id,
+                session=provider,
+            )
+            project._apply_provider_project(provider.remote)
+            provider.projects._items.append(project)
+
+            direct = asyncio.create_task(
+                provider.update_project(replace(provider.remote, name="Direct update"))
+            )
+            await provider.first_write_started.wait()
+            collection_started = asyncio.Event()
+
+            async def update_collection() -> None:
+                collection_started.set()
+                await provider.projects.update(project, title="Collection update")
+
+            collection = asyncio.create_task(update_collection())
+            await collection_started.wait()
+            self.assertFalse(provider.overlap_detected.is_set())
+            provider.release_first_write.set()
+            await asyncio.gather(direct, collection)
+
+            self.assertEqual(provider.max_active_writes, 1)
+            self.assertFalse(provider.overlap_detected.is_set())
+
     def test_sync_stream_batches_buffered_events_and_propagates_errors(self) -> None:
         from webaiprovider.resources.message.operation import MessageOperation
         from webaiprovider.resources.message.protocol import ConversationBound, ResponseComplete

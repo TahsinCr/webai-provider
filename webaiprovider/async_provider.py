@@ -168,6 +168,35 @@ _ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = conte
 )
 
 
+class _ReentrantAsyncLock:
+    __slots__ = ("_lock", "_owner", "_depth", "__weakref__")
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task[Any] | None = None
+        self._depth = 0
+
+    async def __aenter__(self) -> _ReentrantAsyncLock:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("Project locks require an active asyncio task")
+        if self._owner is task:
+            self._depth += 1
+        else:
+            await self._lock.acquire()
+            self._owner = task
+            self._depth = 1
+        return self
+
+    async def __aexit__(self, *_exc_info: Any) -> None:
+        if self._owner is not asyncio.current_task():
+            raise RuntimeError("Project lock released by a non-owner task")
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+
 def _has_active_operation(provider_id: int, *, send_lock_id: int | None = None) -> bool:
     return any(
         operation.active
@@ -219,7 +248,7 @@ class AsyncProvider(BaseProvider):
         self._close_task: asyncio.Task[None] | None = None
         self._active_operations = 0
         self._send_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
-        self._project_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._project_locks: WeakValueDictionary[str, _ReentrantAsyncLock] = WeakValueDictionary()
         self._staged_project_reads: dict[str, tuple[float, ProjectData]] = {}
         self.chats = AsyncChatsCollection(self)
         self.projects = self._projects_collection_type(self)
@@ -326,10 +355,10 @@ class AsyncProvider(BaseProvider):
             self._send_locks[conversation_id] = lock
         return lock
 
-    def _project_lock(self, project_id: str) -> asyncio.Lock:
+    def _project_lock(self, project_id: str) -> _ReentrantAsyncLock:
         lock = self._project_locks.get(project_id)
         if lock is None:
-            lock = asyncio.Lock()
+            lock = _ReentrantAsyncLock()
             self._project_locks[project_id] = lock
         return lock
 
@@ -583,7 +612,8 @@ class AsyncProvider(BaseProvider):
         remote = project.origin.remote_id
         if not project.name.strip():
             raise ValueError("Project name is required")
-        return await host._update_project_locked(project, remote)
+        async with host._project_lock(remote):
+            return await host._update_project_locked(project, remote)
 
     async def _update_project_locked(self, project: ProjectData, remote: str) -> ProjectData:
         host = self

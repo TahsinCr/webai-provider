@@ -79,18 +79,19 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
 
             known_ids = {record.get("id") for record in self._items}
             provider = session._require_provider()
-            current = self.project._provider_project
-            stage = getattr(type(provider), "_stage_project_read", None)
-            if (
-                isinstance(current, ProviderProject)
-                and current.origin.remote_id == self.project.remote_id
-                and callable(stage)
-            ):
-                stage(provider, current)
             async with session._activity():
-                updated = await provider.add_project_resource(
-                    self.project.remote_id, kind, **options
-                )
+                async with provider._project_lock(self.project.remote_id):
+                    current = self.project._provider_project
+                    stage = getattr(type(provider), "_stage_project_read", None)
+                    if (
+                        isinstance(current, ProviderProject)
+                        and current.origin.remote_id == self.project.remote_id
+                        and callable(stage)
+                    ):
+                        stage(provider, current)
+                    updated = await provider.add_project_resource(
+                        self.project.remote_id, kind, **options
+                    )
             if not isinstance(updated, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
             added = [resource for resource in updated.resources if resource.id not in known_ids]
@@ -126,18 +127,19 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
                 if session is None:
                     raise ProviderError("Project is not attached to an open provider")
                 provider = session._require_provider()
-                current = self.project._provider_project
-                stage = getattr(type(provider), "_stage_project_read", None)
-                if (
-                    isinstance(current, ProviderProject)
-                    and current.origin.remote_id == self.project.remote_id
-                    and callable(stage)
-                ):
-                    stage(provider, current)
                 async with session._activity():
-                    updated = await provider.remove_project_resource(
-                        self.project.remote_id, resource_id
-                    )
+                    async with provider._project_lock(self.project.remote_id):
+                        current = self.project._provider_project
+                        stage = getattr(type(provider), "_stage_project_read", None)
+                        if (
+                            isinstance(current, ProviderProject)
+                            and current.origin.remote_id == self.project.remote_id
+                            and callable(stage)
+                        ):
+                            stage(provider, current)
+                        updated = await provider.remove_project_resource(
+                            self.project.remote_id, resource_id
+                        )
                 if isinstance(updated, ProviderProject):
                     self.project._provider_project = updated
                 elif isinstance(self.project._provider_project, ProviderProject):
