@@ -271,15 +271,15 @@ class AsyncGrokProvider(AsyncProvider):
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
     @_provider_activity
-    async def session_status(self):
-        return SessionStatus(
-            SessionState.AUTHENTICATED
-            if self.client.session.authenticated
-            else SessionState.UNKNOWN
-            if session_exists(self.credential_file)
-            else SessionState.LOGIN_REQUIRED,
-            session_exists(self.credential_file),
-        )
+    async def session_status(self) -> SessionStatus:
+        saved = session_exists(self.credential_file)
+        if self.client.session.authenticated:
+            state = SessionState.AUTHENTICATED
+        elif saved:
+            state = SessionState.UNKNOWN
+        else:
+            state = SessionState.LOGIN_REQUIRED
+        return SessionStatus(state, saved)
 
     @_provider_activity
     async def forget_session(self):

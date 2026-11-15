@@ -197,15 +197,15 @@ class AsyncGeminiProvider(AsyncProvider):
             raise editor_error
 
     @_provider_activity
-    async def session_status(self):
-        return SessionStatus(
-            SessionState.AUTHENTICATED
-            if self._client
-            else SessionState.UNKNOWN
-            if session_exists(self.cookie_file)
-            else SessionState.LOGIN_REQUIRED,
-            session_exists(self.cookie_file),
-        )
+    async def session_status(self) -> SessionStatus:
+        saved = session_exists(self.cookie_file)
+        if self._client:
+            state = SessionState.AUTHENTICATED
+        elif saved:
+            state = SessionState.UNKNOWN
+        else:
+            state = SessionState.LOGIN_REQUIRED
+        return SessionStatus(state, saved)
 
     @_provider_activity
     async def authenticate(self):
