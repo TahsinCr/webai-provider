@@ -158,6 +158,36 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.message.content, "Hello World!")
         self.assertEqual(res.message.role, "assistant")
 
+    async def test_cancelling_one_waiter_does_not_cancel_shared_send(self) -> None:
+        provider = await self.open_provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
+        chat = await provider.chats.create()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fake_stream(_operation: AsyncMessageOperation):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            yield OutputBegin()
+            yield OutputDelta(delta="shared result")
+            yield OutputEnd()
+
+        provider.execute_stream = fake_stream
+        operation = chat.messages.create("prompt")
+        first = asyncio.create_task(operation.start())
+        second = asyncio.create_task(operation.wait())
+        await started.wait()
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+
+        release.set()
+        response = await second
+        self.assertEqual(response.text, "shared result")
+        self.assertEqual(calls, 1)
+
     async def test_hooks_await_future_results_before_continuing(self) -> None:
         from webaiprovider.resources.message.operation import OperationHooks
 

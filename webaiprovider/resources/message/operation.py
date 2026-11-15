@@ -362,7 +362,7 @@ class AsyncMessageOperation:
                 self._condition.notify_all()
 
     async def start(self) -> Response:
-        return await self._ensure_started()
+        return await asyncio.shield(self._ensure_started())
 
     async def wait(self) -> Response:
         return await self.start()
