@@ -1076,6 +1076,73 @@ class TestSyncApi(unittest.TestCase):
 
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_project_writes_confirm_incomplete_editor_results_without_replay(self) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        from webaiprovider.resources.common import Origin, ResourceData
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class ConfirmingProjectProvider(AsyncProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
+                self._gate = asyncio.Lock()
+                self.project = NativeProject(
+                    Origin("claude", account.id, "project-1"),
+                    "Research",
+                    "Old instructions",
+                    (ResourceData("resource-1", "Source", "text/plain"),),
+                    metadata={"confirmed": "initial"},
+                )
+                self.get_calls = 0
+                self.writes: list[str] = []
+                self.editor = SimpleNamespace(write=self.write)
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                return None
+
+            async def get_project(self, _project_id: str) -> NativeProject:
+                self.get_calls += 1
+                return self.project
+
+            async def write(self, action: str, _project_id: str, *, current=None, **changes):
+                self.writes.append(action)
+                if action == "update":
+                    self.project = replace(
+                        current,
+                        **changes,
+                        metadata={"confirmed": "update"},
+                    )
+                else:
+                    self.project = replace(
+                        self.project,
+                        resources=tuple(
+                            resource
+                            for resource in self.project.resources
+                            if resource.id != changes["resource_id"]
+                        ),
+                        metadata={"confirmed": "remove"},
+                    )
+                return None
+
+        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
+        async with ConfirmingProjectProvider(account) as provider:
+            updated = await provider.update_project(
+                replace(provider.project, name="Updated", instructions="New instructions")
+            )
+            self.assertEqual(updated.name, "Updated")
+            self.assertEqual(updated.metadata["confirmed"], "update")
+
+            removed = await provider.remove_project_resource("project-1", "resource-1")
+            self.assertEqual(removed.resources, ())
+            self.assertEqual(removed.metadata["confirmed"], "remove")
+
+        self.assertEqual(provider.writes, ["update", "remove_source"])
+        self.assertEqual(provider.get_calls, 4)
+
     async def test_direct_project_update_serializes_with_collection_update(self) -> None:
         from dataclasses import replace
         from types import SimpleNamespace
@@ -1291,7 +1358,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             added = await updated.resources.add("Body", resource_type="text", name="n1")
             self.assertEqual(added["id"], "remote-n1")
             self.assertTrue(await updated.resources.remove("remote-n1"))
-            self.assertEqual(provider.get_calls, 1)
+            self.assertEqual(provider.get_calls, 2)
             self.assertFalse(provider._staged_project_reads)
 
 

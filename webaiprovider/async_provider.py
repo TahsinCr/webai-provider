@@ -635,13 +635,15 @@ class AsyncProvider(BaseProvider):
             return current
         async with host._gate:
             result = await host.editor.write("update", remote, current=current, **changes)
-        host._invalidate_project_cache(remote)
         if isinstance(result, ProjectData):
+            host._invalidate_project_cache(remote)
             return result
-        return replace(
-            current,
-            name=project.name,
-            instructions=project.instructions,
+        return await host._project_after_write(
+            remote,
+            lambda saved: (
+                saved.name == project.name
+                and (saved.instructions or "") == (project.instructions or "")
+            ),
         )
 
     async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> ProjectData:
@@ -700,17 +702,19 @@ class AsyncProvider(BaseProvider):
         if source is None:
             raise ValueError("Project resource was not found")
         async with host._gate:
-            await host.editor.write(
+            result = await host.editor.write(
                 "remove_source",
                 project_id,
                 resource_id=resource_id,
                 resource_name=source.name,
                 resource=source,
             )
-        host._invalidate_project_cache(project_id)
-        return replace(
-            before,
-            resources=tuple(r for r in before.resources if r.id != resource_id),
+        if isinstance(result, ProjectData):
+            host._invalidate_project_cache(project_id)
+            return result
+        return await host._project_after_write(
+            project_id,
+            lambda project: all(resource.id != resource_id for resource in project.resources),
         )
 
     async def ask(
