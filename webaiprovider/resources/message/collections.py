@@ -16,7 +16,7 @@ from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
 from ..message.attachments import Attachments
 from ..message.message import AsyncMessage, Message
-from ..message.operation import AsyncMessageOperation, MessageOperation
+from ..message.operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
 from ..model.collections import Models
 from ..model.model import (
     EffortRef,
@@ -104,8 +104,12 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
         session = self.chat.session
         if session is None:
             raise ProviderError("No provider session is attached to this chat")
-        async for event in session._require_provider().execute_stream(operation):
-            yield event
+        stream = session._require_provider().execute_stream(operation)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _close_async_iterator(stream)
 
     def update(
         self,

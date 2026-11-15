@@ -32,6 +32,7 @@ from .resources.message.operation import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingReplace,
+    _close_async_iterator,
 )
 from .resources.message.protocol import (
     ConversationBound,
@@ -319,16 +320,20 @@ class AsyncProvider(BaseProvider):
             self._active_operations += 1
         send_token = _ACTIVE_SEND_LOCKS.set(_ACTIVE_SEND_LOCKS.get() | {lock_id})
         provider_token = _ACTIVE_PROVIDERS.set(_ACTIVE_PROVIDERS.get() | {id(self)})
+        events = self._execute_stream_events(operation, lock)
         try:
             async with lock:
-                async for event in self._execute_stream_events(operation, lock):
+                async for event in events:
                     yield event
         finally:
-            _ACTIVE_PROVIDERS.reset(provider_token)
-            _ACTIVE_SEND_LOCKS.reset(send_token)
-            async with self._lifecycle_condition:
-                self._active_operations -= 1
-                self._lifecycle_condition.notify_all()
+            try:
+                await _close_async_iterator(events)
+            finally:
+                _ACTIVE_PROVIDERS.reset(provider_token)
+                _ACTIVE_SEND_LOCKS.reset(send_token)
+                async with self._lifecycle_condition:
+                    self._active_operations -= 1
+                    self._lifecycle_condition.notify_all()
 
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
@@ -336,8 +341,9 @@ class AsyncProvider(BaseProvider):
         request = await _prepare_operation(operation, self)
         output_started = thinking_started = False
         thinking_text = ""
+        stream = self._stream_request(request)
         try:
-            async for event in self._stream_request(request):
+            async for event in stream:
                 if isinstance(event, ConversationBound):
                     operation.chat.remote_id = event.conversation_id
                     self._send_locks[event.conversation_id] = send_lock
@@ -429,6 +435,8 @@ class AsyncProvider(BaseProvider):
             raise
         except Exception as exc:
             raise ProviderError("Provider request failed") from exc
+        finally:
+            await _close_async_iterator(stream)
 
     async def _load_model_catalog(self, *, force: bool = False) -> ModelCatalog:
         raise FeatureUnavailable(Capability.MODELS, "not_implemented")

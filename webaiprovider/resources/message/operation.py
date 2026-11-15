@@ -17,6 +17,12 @@ if TYPE_CHECKING:
     from ..chat.chat import AsyncChat, Chat
 
 
+async def _close_async_iterator(stream: AsyncIterator[Any] | None) -> None:
+    close = getattr(stream, "aclose", None)
+    if close is not None:
+        await close()
+
+
 @dataclass(frozen=True)
 class StreamEvent:
     event: str = field(init=False, default="")
@@ -264,6 +270,7 @@ class AsyncMessageOperation:
 
     async def _run_internal(self) -> Response:
         started_at = time.perf_counter()
+        stream: AsyncIterator[StreamEvent] | None = None
         first_token_at: float | None = None
         collected_text: list[str] = []
         collected_sources: list[Any] = []
@@ -275,7 +282,8 @@ class AsyncMessageOperation:
         try:
             assert self._executor is not None
             self._transition_to(OperationState.SENDING)
-            async for event in self._executor(self):
+            stream = self._executor(self)
+            async for event in stream:
                 if self._cancelled:
                     raise OperationCancelledError("Operation cancelled")
 
@@ -357,9 +365,12 @@ class AsyncMessageOperation:
             await self._finish(TerminalStatus("failed", exc))
             raise
         finally:
-            self._completed = True
-            async with self._condition:
-                self._condition.notify_all()
+            try:
+                await _close_async_iterator(stream)
+            finally:
+                self._completed = True
+                async with self._condition:
+                    self._condition.notify_all()
 
     async def start(self) -> Response:
         return await asyncio.shield(self._ensure_started())

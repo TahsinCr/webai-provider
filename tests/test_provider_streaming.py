@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +12,7 @@ from webaiprovider import (
     AsyncMessageOperation,
     AsyncProvider,
 )
-from webaiprovider.errors import AccountPaused, RateLimited
+from webaiprovider.errors import AccountPaused, OperationCancelledError, RateLimited
 from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
 from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
@@ -27,6 +28,7 @@ from webaiprovider.resources.message.operation import (
     ThinkingDelta,
     ThinkingEnd,
 )
+from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import Model as CatalogModel
 from webaiprovider.resources.model.model import ModelCatalog
@@ -49,6 +51,53 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
         )
     )
     return session
+
+
+class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_during_hook_closes_stream_and_releases_provider_resources(self) -> None:
+        class CleanupProvider(AsyncProvider):
+            def __init__(self) -> None:
+                super().__init__(Account.from_cookies("chatgpt", {"session": "token"}))
+                self.stream_closed = asyncio.Event()
+                self.provider_closed = asyncio.Event()
+
+            async def prepare(self) -> None:
+                return None
+
+            async def _close_provider(self) -> None:
+                self.provider_closed.set()
+
+            async def _stream_request(self, _request):
+                try:
+                    yield TextDelta("partial")
+                    await asyncio.Event().wait()
+                finally:
+                    self.stream_closed.set()
+
+        provider = CleanupProvider()
+        await provider.open()
+        chat = await provider.chats.create(title="Cancellation")
+        operation = chat.messages.create("prompt")
+        hook_started = asyncio.Event()
+        release_hook = asyncio.Event()
+
+        async def block_on_output(_event) -> None:
+            hook_started.set()
+            await release_hook.wait()
+
+        operation.hooks.add("output.delta", block_on_output)
+        waiter = asyncio.create_task(operation.start())
+        await hook_started.wait()
+        operation.cancel()
+
+        with self.assertRaises(OperationCancelledError):
+            await waiter
+
+        self.assertTrue(provider.stream_closed.is_set())
+        self.assertEqual(provider._active_operations, 0)
+        self.assertFalse(provider._send_lock(chat.id).locked())
+        await asyncio.wait_for(provider.close(), timeout=1)
+        self.assertTrue(provider.provider_closed.is_set())
 
 
 class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
