@@ -5,7 +5,7 @@ import contextlib
 import contextvars
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
@@ -152,12 +152,25 @@ async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
     )
 
 
-_ACTIVE_SEND_LOCKS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
-    "webai_active_send_locks", default=frozenset()
+@dataclass(slots=True, eq=False)
+class _ActiveOperation:
+    provider_id: int
+    send_lock_id: int | None = None
+    active: bool = True
+
+
+_ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = contextvars.ContextVar(
+    "webai_active_operations", default=()
 )
-_ACTIVE_PROVIDERS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
-    "webai_active_providers", default=frozenset()
-)
+
+
+def _has_active_operation(provider_id: int, *, send_lock_id: int | None = None) -> bool:
+    return any(
+        operation.active
+        and operation.provider_id == provider_id
+        and (send_lock_id is None or operation.send_lock_id == send_lock_id)
+        for operation in _ACTIVE_OPERATIONS.get()
+    )
 
 
 class AsyncProvider(BaseProvider):
@@ -254,7 +267,7 @@ class AsyncProvider(BaseProvider):
         return self
 
     async def close(self) -> None:
-        if id(self) in _ACTIVE_PROVIDERS.get():
+        if _has_active_operation(id(self)):
             raise ProviderError("Cannot close a provider from one of its active operations")
         async with self._lifecycle_lock:
             if self._closed:
@@ -307,33 +320,40 @@ class AsyncProvider(BaseProvider):
             self._project_locks[project_id] = lock
         return lock
 
+    @contextlib.contextmanager
+    def _operation_marker(self, *, send_lock_id: int | None = None):
+        operation = _ActiveOperation(id(self), send_lock_id)
+        token = _ACTIVE_OPERATIONS.set((*_ACTIVE_OPERATIONS.get(), operation))
+        try:
+            yield
+        finally:
+            operation.active = False
+            _ACTIVE_OPERATIONS.reset(token)
+
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
         lock = self._send_lock(conversation_id)
         lock_id = id(lock)
-        if lock_id in _ACTIVE_SEND_LOCKS.get():
+        if _has_active_operation(id(self), send_lock_id=lock_id):
             raise ProviderError("A send hook cannot await another send in the same conversation")
         async with self._lifecycle_condition:
-            if self._closed or (self._closing and id(self) not in _ACTIVE_PROVIDERS.get()):
+            if self._closed or (self._closing and not _has_active_operation(id(self))):
                 raise ProviderError("Provider is closing or is closed")
             self._active_operations += 1
-        send_token = _ACTIVE_SEND_LOCKS.set(_ACTIVE_SEND_LOCKS.get() | {lock_id})
-        provider_token = _ACTIVE_PROVIDERS.set(_ACTIVE_PROVIDERS.get() | {id(self)})
         events = self._execute_stream_events(operation, lock)
         try:
-            async with lock:
-                async for event in events:
-                    yield event
+            with self._operation_marker(send_lock_id=lock_id):
+                try:
+                    async with lock:
+                        async for event in events:
+                            yield event
+                finally:
+                    await _close_async_iterator(events)
         finally:
-            try:
-                await _close_async_iterator(events)
-            finally:
-                _ACTIVE_PROVIDERS.reset(provider_token)
-                _ACTIVE_SEND_LOCKS.reset(send_token)
-                async with self._lifecycle_condition:
-                    self._active_operations -= 1
-                    self._lifecycle_condition.notify_all()
+            async with self._lifecycle_condition:
+                self._active_operations -= 1
+                self._lifecycle_condition.notify_all()
 
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
@@ -656,16 +676,15 @@ class AsyncProvider(BaseProvider):
                 await self._open_locked()
             async with self._lifecycle_condition:
                 self._active_asks += 1
-        provider_token = _ACTIVE_PROVIDERS.set(_ACTIVE_PROVIDERS.get() | {id(self)})
         try:
-            chat = await self.chats.create()
-            return await chat.messages.create(
-                prompt,
-                model=model,
-                attachments=attachments,
-            ).start()
+            with self._operation_marker():
+                chat = await self.chats.create()
+                return await chat.messages.create(
+                    prompt,
+                    model=model,
+                    attachments=attachments,
+                ).start()
         finally:
-            _ACTIVE_PROVIDERS.reset(provider_token)
             async with self._lifecycle_condition:
                 self._active_asks -= 1
                 self._lifecycle_condition.notify_all()

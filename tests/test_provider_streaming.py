@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.provider_fakes import provider_account
+from tests.streaming_support import StreamTestProvider
 from webaiprovider import (
     Account,
     AsyncChat,
@@ -12,7 +13,12 @@ from webaiprovider import (
     AsyncMessageOperation,
     AsyncProvider,
 )
-from webaiprovider.errors import AccountPaused, OperationCancelledError, RateLimited
+from webaiprovider.errors import (
+    AccountPaused,
+    OperationCancelledError,
+    ProviderError,
+    RateLimited,
+)
 from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
 from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
@@ -54,6 +60,60 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
 
 
 class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_hook_cannot_await_send_in_same_conversation(self) -> None:
+        provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
+        await provider.open()
+        chat = await provider.chats.create(title="Reentrant send")
+        operation = chat.messages.create("first")
+        nested_errors: list[ProviderError] = []
+
+        async def send_from_hook(_event) -> None:
+            try:
+                await chat.messages.create("nested").start()
+            except ProviderError as error:
+                nested_errors.append(error)
+
+        operation.hooks.add("output.delta", send_from_hook)
+        response = await operation.start()
+
+        self.assertEqual(response.text, "answer")
+        self.assertEqual(len(provider.requests), 1)
+        self.assertEqual(len(nested_errors), 1)
+        self.assertIn("same conversation", str(nested_errors[0]))
+        await provider.close()
+
+    async def test_child_task_can_send_and_close_after_parent_send_finishes(self) -> None:
+        provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
+        await provider.open()
+        chat = await provider.chats.create(title="Context lifetime")
+        send_lock = provider._send_lock(chat.id)
+        self.assertIs(send_lock, provider._send_lock(chat.id))
+        operation = chat.messages.create("first")
+        first_finished = asyncio.Event()
+        child_task: asyncio.Task | None = None
+
+        async def spawn_followup(_event) -> None:
+            nonlocal child_task
+            if child_task is not None:
+                return
+
+            async def followup():
+                await first_finished.wait()
+                response = await chat.messages.create("second").start()
+                await provider.close()
+                return response
+
+            child_task = asyncio.create_task(followup())
+
+        operation.hooks.add("output.delta", spawn_followup)
+        await operation.start()
+        first_finished.set()
+        assert child_task is not None
+        response = await asyncio.wait_for(child_task, timeout=1)
+
+        self.assertEqual(response.text, "answer")
+        self.assertTrue(provider._closed)
+
     async def test_cancel_during_hook_closes_stream_and_releases_provider_resources(self) -> None:
         class CleanupProvider(AsyncProvider):
             def __init__(self) -> None:
