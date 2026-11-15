@@ -10,7 +10,7 @@ from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
-from ...async_provider import AsyncProvider
+from ...async_provider import AsyncProvider, _provider_activity
 from ...base import Capability
 from ...collections import Page
 from ...core import gather_bounded
@@ -88,11 +88,13 @@ class AsyncClaudeProvider(AsyncProvider):
     async def upload_file(self, path):
         return await self.client.upload_file(path)
 
+    @_provider_activity
     async def authenticate(self):
         async with self._gate:
             await self.client.request("status")
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
+    @_provider_activity
     async def session_status(self):
         return SessionStatus(
             SessionState.AUTHENTICATED
@@ -153,6 +155,7 @@ class AsyncClaudeProvider(AsyncProvider):
             NativeDownloadClient,
         )
 
+    @_provider_activity
     async def forget_session(self):
         async with self._gate:
             await self.close()

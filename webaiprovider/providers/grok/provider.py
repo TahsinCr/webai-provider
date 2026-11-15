@@ -13,7 +13,7 @@ from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
-from ...async_provider import AsyncProvider
+from ...async_provider import AsyncProvider, _provider_activity
 from ...base import Capability
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
@@ -265,10 +265,12 @@ class AsyncGrokProvider(AsyncProvider):
             self._continuations.clear()
             await self.client.close()
 
+    @_provider_activity
     async def authenticate(self):
         await self.client.authenticate()
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
+    @_provider_activity
     async def session_status(self):
         return SessionStatus(
             SessionState.AUTHENTICATED
@@ -279,6 +281,7 @@ class AsyncGrokProvider(AsyncProvider):
             session_exists(self.credential_file),
         )
 
+    @_provider_activity
     async def forget_session(self):
         async with self._gate:
             await self.client.close()

@@ -87,7 +87,10 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
                 and callable(stage)
             ):
                 stage(provider, current)
-            updated = await provider.add_project_resource(self.project.remote_id, kind, **options)
+            async with session._activity():
+                updated = await provider.add_project_resource(
+                    self.project.remote_id, kind, **options
+                )
             if not isinstance(updated, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
             added = [resource for resource in updated.resources if resource.id not in known_ids]
@@ -131,9 +134,10 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
                     and callable(stage)
                 ):
                     stage(provider, current)
-                updated = await provider.remove_project_resource(
-                    self.project.remote_id, resource_id
-                )
+                async with session._activity():
+                    updated = await provider.remove_project_resource(
+                        self.project.remote_id, resource_id
+                    )
                 if isinstance(updated, ProviderProject):
                     self.project._provider_project = updated
                 elif isinstance(self.project._provider_project, ProviderProject):
@@ -183,8 +187,11 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
         if url and self.project.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            source: DownloadSource | None = await session._require_provider().resolve_download(url)
-            return await download_source(source)
+            async with session._activity():
+                source: DownloadSource | None = await session._require_provider().resolve_download(
+                    url
+                )
+                return await download_source(source)
         for key in ("bytes", "content", "data"):
             if key in item:
                 return item[key]
@@ -242,7 +249,7 @@ class AsyncProject:
         if self.remote_id:
             if session is None:
                 raise ProviderError("Project is not attached to an open provider")
-            await session._require_provider().delete_project(self.remote_id)
+            await session.projects.delete(self)
         if session is not None:
             session.projects._items = [item for item in session.projects._items if item is not self]
 

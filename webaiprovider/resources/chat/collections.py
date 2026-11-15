@@ -149,32 +149,33 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         return project_map, [chat for batch in batches for chat in batch]
 
     async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
-        provider = self.session._require_provider()
-        if include_projects and Capability.PROJECTS in self.session.capabilities:
-            raw_page, projects = await asyncio.gather(
-                provider.list_chats(),
-                self.session.projects.refresh(),
-            )
-            page = _require_conversation_page(raw_page)
-            project_map, project_chats = await self._fetch_project_chats(projects)
-            normal_chats = [
+        async with self.session._activity():
+            provider = self.session._require_provider()
+            if include_projects and Capability.PROJECTS in self.session.capabilities:
+                raw_page, projects = await asyncio.gather(
+                    provider.list_chats(),
+                    self.session.projects.refresh(),
+                )
+                page = _require_conversation_page(raw_page)
+                project_map, project_chats = await self._fetch_project_chats(projects)
+                normal_chats = [
+                    _chat_from_conversation(item, self.session, project_map) for item in page.items
+                ]
+                self._items = _merge_chat_lists(normal_chats, project_chats)
+                self._projects_loaded = True
+                return list(self._items)
+
+            page = _require_conversation_page(await provider.list_chats())
+            project_map = {p.remote_id: p for p in self.session.projects._items if p.remote_id}
+            self._items = [
                 _chat_from_conversation(item, self.session, project_map) for item in page.items
             ]
-            self._items = _merge_chat_lists(normal_chats, project_chats)
-            self._projects_loaded = True
-            return list(self._items)
-
-        page = _require_conversation_page(await provider.list_chats())
-        project_map = {p.remote_id: p for p in self.session.projects._items if p.remote_id}
-        self._items = [
-            _chat_from_conversation(item, self.session, project_map) for item in page.items
-        ]
-        self._projects_loaded = (
-            include_projects and Capability.PROJECTS not in self.session.capabilities
-        )
-        if include_projects:
-            return list(self._items)
-        return [chat for chat in self._items if chat.project is None]
+            self._projects_loaded = (
+                include_projects and Capability.PROJECTS not in self.session.capabilities
+            )
+            if include_projects:
+                return list(self._items)
+            return [chat for chat in self._items if chat.project is None]
 
     async def list(self, *, include_projects: bool = False) -> list[AsyncChat]:
         if (
@@ -183,12 +184,15 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
             and getattr(self.session, "_opened", False)
             and Capability.PROJECTS in self.session.capabilities
         ):
-            if not self._items:
-                return await self.refresh(include_projects=True)
-            projects = list(self.session.projects._items) or await self.session.projects.refresh()
-            _, project_chats = await self._fetch_project_chats(projects)
-            self._items = _merge_chat_lists(self._items, project_chats)
-            self._projects_loaded = True
+            async with self.session._activity():
+                if not self._items:
+                    return await self.refresh(include_projects=True)
+                projects = (
+                    list(self.session.projects._items) or await self.session.projects.refresh()
+                )
+                _, project_chats = await self._fetch_project_chats(projects)
+                self._items = _merge_chat_lists(self._items, project_chats)
+                self._projects_loaded = True
         if include_projects:
             return list(self._items)
         return [chat for chat in self._items if chat.project is None]
@@ -260,7 +264,8 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
             target = await self.get(str(chat), include_projects=True)
         if title is not None and title != target.title:
             if target.remote_id:
-                await self.session._require_provider().rename_chat(target.remote_id, title)
+                async with self.session._activity():
+                    await self.session._require_provider().rename_chat(target.remote_id, title)
             target.title = title
         return target
 
@@ -269,7 +274,8 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         if target is None:
             target = await self.get(str(chat), include_projects=True)
         if target.remote_id:
-            await self.session._require_provider().delete_chat(target.remote_id)
+            async with self.session._activity():
+                await self.session._require_provider().delete_chat(target.remote_id)
         self._items = [c for c in self._items if c.id != target.id]
 
 

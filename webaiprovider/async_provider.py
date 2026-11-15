@@ -6,7 +6,8 @@ import contextvars
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Concatenate, ParamSpec, TypeVar
 from weakref import WeakValueDictionary
 
 from .accounts.status import SessionState, SessionStatus
@@ -69,6 +70,9 @@ from .transport import AsyncTransport
 
 if TYPE_CHECKING:
     from .accounts.account import Account
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 async def _prepare_operation(operation: Any, provider: Any) -> ProviderRequest:
@@ -173,6 +177,17 @@ def _has_active_operation(provider_id: int, *, send_lock_id: int | None = None) 
     )
 
 
+def _provider_activity(
+    method: Callable[Concatenate[AsyncProvider, _P], Awaitable[_R]],
+) -> Callable[Concatenate[AsyncProvider, _P], Awaitable[_R]]:
+    @wraps(method)
+    async def wrapped(self: AsyncProvider, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        async with self._activity():
+            return await method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class AsyncProvider(BaseProvider):
     def __new__(cls, *args, **options):
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
@@ -203,7 +218,6 @@ class AsyncProvider(BaseProvider):
         self._lifecycle_condition = asyncio.Condition()
         self._close_task: asyncio.Task[None] | None = None
         self._active_operations = 0
-        self._active_asks = 0
         self._send_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._project_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._staged_project_reads: dict[str, tuple[float, ProjectData]] = {}
@@ -227,8 +241,9 @@ class AsyncProvider(BaseProvider):
         return self.account.id
 
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
-        catalog = await self._load_model_catalog(force=refresh)
-        return _model_refs_from_catalog(self.type.value, catalog)
+        async with self._activity():
+            catalog = await self._load_model_catalog(force=refresh)
+            return _model_refs_from_catalog(self.type.value, catalog)
 
     async def prepare(self) -> None:
         return None
@@ -238,7 +253,7 @@ class AsyncProvider(BaseProvider):
             await self._transport.close()
 
     async def _open_locked(self) -> AsyncProvider:
-        if self._closed or self._closing:
+        if self._closed or (self._closing and not _has_active_operation(id(self))):
             raise ProviderError("A closed provider cannot be reopened")
         if self._opened:
             return self
@@ -290,9 +305,7 @@ class AsyncProvider(BaseProvider):
 
     async def _finish_close(self) -> None:
         async with self._lifecycle_condition:
-            await self._lifecycle_condition.wait_for(
-                lambda: self._active_operations == 0 and self._active_asks == 0
-            )
+            await self._lifecycle_condition.wait_for(lambda: self._active_operations == 0)
         scope, self._scope = self._scope, None
         self._opened = False
         try:
@@ -330,30 +343,36 @@ class AsyncProvider(BaseProvider):
             operation.active = False
             _ACTIVE_OPERATIONS.reset(token)
 
+    @contextlib.asynccontextmanager
+    async def _activity(self, *, send_lock_id: int | None = None):
+        if send_lock_id is not None and _has_active_operation(id(self), send_lock_id=send_lock_id):
+            raise ProviderError("A send hook cannot await another send in the same conversation")
+        with self._operation_marker(send_lock_id=send_lock_id):
+            async with self._lifecycle_lock:
+                if self._closed or (self._closing and not _has_active_operation(id(self))):
+                    raise ProviderError("Provider is closing or is closed")
+                async with self._lifecycle_condition:
+                    self._active_operations += 1
+            try:
+                yield
+            finally:
+                async with self._lifecycle_condition:
+                    self._active_operations -= 1
+                    self._lifecycle_condition.notify_all()
+
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
         lock = self._send_lock(conversation_id)
         lock_id = id(lock)
-        if _has_active_operation(id(self), send_lock_id=lock_id):
-            raise ProviderError("A send hook cannot await another send in the same conversation")
-        async with self._lifecycle_condition:
-            if self._closed or (self._closing and not _has_active_operation(id(self))):
-                raise ProviderError("Provider is closing or is closed")
-            self._active_operations += 1
         events = self._execute_stream_events(operation, lock)
-        try:
-            with self._operation_marker(send_lock_id=lock_id):
-                try:
-                    async with lock:
-                        async for event in events:
-                            yield event
-                finally:
-                    await _close_async_iterator(events)
-        finally:
-            async with self._lifecycle_condition:
-                self._active_operations -= 1
-                self._lifecycle_condition.notify_all()
+        async with self._activity(send_lock_id=lock_id):
+            try:
+                async with lock:
+                    async for event in events:
+                        yield event
+            finally:
+                await _close_async_iterator(events)
 
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
@@ -470,12 +489,15 @@ class AsyncProvider(BaseProvider):
     def _origin(self, remote: str) -> Origin:
         return Origin(getattr(self, "id", ""), getattr(self, "account_id", "default"), remote)
 
+    @_provider_activity
     async def authenticate(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "not_implemented")
 
+    @_provider_activity
     async def session_status(self) -> SessionStatus:
         return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
 
+    @_provider_activity
     async def forget_session(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "forget_session_not_implemented")
 
@@ -668,16 +690,13 @@ class AsyncProvider(BaseProvider):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
     ) -> Response:
-        async with self._lifecycle_lock:
-            if self._closed or self._closing:
-                raise ProviderError("A closed provider cannot accept requests")
-            was_open = self._opened
-            if not was_open:
-                await self._open_locked()
-            async with self._lifecycle_condition:
-                self._active_asks += 1
+        opened_here = False
         try:
-            with self._operation_marker():
+            async with self._activity():
+                async with self._lifecycle_lock:
+                    if not self._opened:
+                        await self._open_locked()
+                        opened_here = True
                 chat = await self.chats.create()
                 return await chat.messages.create(
                     prompt,
@@ -685,10 +704,7 @@ class AsyncProvider(BaseProvider):
                     attachments=attachments,
                 ).start()
         finally:
-            async with self._lifecycle_condition:
-                self._active_asks -= 1
-                self._lifecycle_condition.notify_all()
-            if not was_open:
+            if opened_here:
                 await self.close()
 
     async def __aenter__(self) -> AsyncProvider:

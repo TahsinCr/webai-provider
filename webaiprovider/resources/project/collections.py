@@ -29,49 +29,57 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
         project = self.session._project_type(title=title, session=self.session)
         if instruction is not None:
             project.instruction._text = instruction
-        created = await self.session._require_provider().create_project(
-            project.title,
-            instructions=instruction or "",
-        )
+        async with self.session._activity():
+            created = await self.session._require_provider().create_project(
+                project.title,
+                instructions=instruction or "",
+            )
         project._apply_provider_project(created)
         self._items.insert(0, project)
         return project
 
     async def refresh(self) -> list[AsyncProject]:
-        provider = self.session._require_provider()
-        values = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        for _ in range(_MAX_PROJECT_PAGES):
-            page = await provider.list_projects(cursor=cursor)
-            if not isinstance(page, Page) or any(
-                not isinstance(item, ProviderProject) for item in page.items
-            ):
-                raise ProviderError("Provider returned an invalid project page")
-            values.extend(page.items)
-            next_cursor = page.next_cursor
-            if next_cursor is None:
-                break
-            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+        async with self.session._activity():
+            provider = self.session._require_provider()
+            values = []
+            cursor: str | None = None
+            seen_cursors: set[str] = set()
+            for _ in range(_MAX_PROJECT_PAGES):
+                page = await provider.list_projects(cursor=cursor)
+                if not isinstance(page, Page) or any(
+                    not isinstance(item, ProviderProject) for item in page.items
+                ):
+                    raise ProviderError("Provider returned an invalid project page")
+                values.extend(page.items)
+                next_cursor = page.next_cursor
+                if next_cursor is None:
+                    break
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or next_cursor in seen_cursors
+                ):
+                    raise ProviderError(
+                        "Provider project pagination returned an invalid or repeating cursor"
+                    )
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+            else:
                 raise ProviderError(
-                    "Provider project pagination returned an invalid or repeating cursor"
+                    f"Provider project pagination exceeded {_MAX_PROJECT_PAGES} pages"
                 )
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
-        else:
-            raise ProviderError(f"Provider project pagination exceeded {_MAX_PROJECT_PAGES} pages")
 
-        projects = []
-        for item in values:
-            project = self.session._project_type(
-                title=item.name,
-                remote_id=item.origin.remote_id,
-                session=self.session,
-            )
-            project._apply_provider_project(item)
-            projects.append(project)
-        self._items = projects
-        return list(self._items)
+            projects = []
+            for item in values:
+                project = self.session._project_type(
+                    title=item.name,
+                    remote_id=item.origin.remote_id,
+                    session=self.session,
+                )
+                project._apply_provider_project(item)
+                projects.append(project)
+            self._items = projects
+            return list(self._items)
 
     async def update(
         self,
@@ -85,28 +93,29 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
             raise ValueError("Project belongs to a different provider session")
         if target.remote_id:
             provider = self.session._require_provider()
-            async with provider._project_lock(target.remote_id):
-                current = target._provider_project
-                if (
-                    not isinstance(current, ProviderProject)
-                    or current.origin.remote_id != target.remote_id
-                ):
-                    current = await provider.get_project(target.remote_id)
-                    if not isinstance(current, ProviderProject):
-                        raise ProviderError("Provider returned an invalid project")
-                stage = getattr(type(provider), "_stage_project_read", None)
-                if callable(stage):
-                    stage(provider, current)
-                updated = await provider.update_project(
-                    replace(
-                        current,
-                        name=title if title is not None else current.name,
-                        instructions=(
-                            instruction if instruction is not None else current.instructions
-                        ),
+            async with self.session._activity():
+                async with provider._project_lock(target.remote_id):
+                    current = target._provider_project
+                    if (
+                        not isinstance(current, ProviderProject)
+                        or current.origin.remote_id != target.remote_id
+                    ):
+                        current = await provider.get_project(target.remote_id)
+                        if not isinstance(current, ProviderProject):
+                            raise ProviderError("Provider returned an invalid project")
+                    stage = getattr(type(provider), "_stage_project_read", None)
+                    if callable(stage):
+                        stage(provider, current)
+                    updated = await provider.update_project(
+                        replace(
+                            current,
+                            name=title if title is not None else current.name,
+                            instructions=(
+                                instruction if instruction is not None else current.instructions
+                            ),
+                        )
                     )
-                )
-                target._apply_provider_project(updated, replace_resources=False)
+                    target._apply_provider_project(updated, replace_resources=False)
         else:
             if title is not None:
                 target.title = title
@@ -119,7 +128,8 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
         if target.session is not self.session:
             raise ValueError("Project belongs to a different provider session")
         if target.remote_id:
-            await self.session._require_provider().delete_project(target.remote_id)
+            async with self.session._activity():
+                await self.session._require_provider().delete_project(target.remote_id)
         self._items = [item for item in self._items if item is not target]
 
 

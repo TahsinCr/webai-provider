@@ -13,6 +13,7 @@ from webaiprovider import (
     AsyncMessageOperation,
     AsyncProvider,
 )
+from webaiprovider.collections import Page
 from webaiprovider.errors import (
     AccountPaused,
     OperationCancelledError,
@@ -60,6 +61,68 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
 
 
 class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_waits_for_resource_refreshes(self) -> None:
+        class SlowRefreshProvider(AsyncProvider):
+            def __init__(self) -> None:
+                super().__init__(Account.from_cookies("chatgpt", {"session": "token"}))
+                self.refresh_started = asyncio.Event()
+                self.release_refresh = asyncio.Event()
+                self.close_started = asyncio.Event()
+                self.provider_closed = asyncio.Event()
+
+            async def prepare(self) -> None:
+                return None
+
+            async def list_chats(self, **_options) -> Page:
+                self.refresh_started.set()
+                await self.release_refresh.wait()
+                return Page(())
+
+            async def list_projects(self, **_options) -> Page:
+                self.refresh_started.set()
+                await self.release_refresh.wait()
+                return Page(())
+
+            async def _load_model_catalog(self, *, force: bool = False) -> ModelCatalog:
+                self.refresh_started.set()
+                await self.release_refresh.wait()
+                model = CatalogModel(
+                    "default-model",
+                    "Default Model",
+                    (Choice("standard", "Standard"),),
+                    default_effort="standard",
+                )
+                return ModelCatalog(ModelCatalogState.AVAILABLE, (model,), model.id)
+
+            async def _finish_close(self) -> None:
+                self.close_started.set()
+                await super()._finish_close()
+
+            async def _close_provider(self) -> None:
+                self.provider_closed.set()
+
+        for refresh in (
+            lambda provider: provider.chats.refresh(),
+            lambda provider: provider.projects.refresh(),
+            lambda provider: provider.models.refresh(),
+        ):
+            with self.subTest(refresh=refresh):
+                provider = SlowRefreshProvider()
+                await provider.open()
+                refresh_task = asyncio.create_task(refresh(provider))
+                await provider.refresh_started.wait()
+                self.assertEqual(provider._active_operations, 1)
+
+                close_task = asyncio.create_task(provider.close())
+                await provider.close_started.wait()
+                self.assertFalse(close_task.done())
+                self.assertFalse(provider.provider_closed.is_set())
+
+                provider.release_refresh.set()
+                await refresh_task
+                await close_task
+                self.assertTrue(provider.provider_closed.is_set())
+
     async def test_send_hook_cannot_await_send_in_same_conversation(self) -> None:
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
         await provider.open()

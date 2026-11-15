@@ -26,9 +26,10 @@ class AsyncProjectChatsCollection(AsyncQueryableCollection[AsyncChat]):
         if not self.project.remote_id:
             page = Page(())
         else:
-            page = await session._require_provider().list_project_chats(
-                self.project.remote_id, cursor
-            )
+            async with session._activity():
+                page = await session._require_provider().list_project_chats(
+                    self.project.remote_id, cursor
+                )
         if not isinstance(page, Page) or any(
             not isinstance(item, Conversation) for item in page.items
         ):

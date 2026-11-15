@@ -19,7 +19,7 @@ from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
-from ...async_provider import AsyncProvider, confirm_deleted
+from ...async_provider import AsyncProvider, _provider_activity, confirm_deleted
 from ...base import Capability
 from ...collections import Page
 from ...errors import (
@@ -451,6 +451,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                 if self._provided_transport is not None:
                     await self._provided_transport.close()
 
+    @_provider_activity
     async def session_status(self) -> SessionStatus:
         saved = session_exists(self.session.paths.session_file)
         return SessionStatus(
@@ -459,6 +460,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             "snapshot_not_verified" if saved else "no_saved_session",
         )
 
+    @_provider_activity
     async def authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
         def verify():
             if capture_browser and self.session.is_ready():
@@ -478,6 +480,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             SessionState.AUTHENTICATED, session_exists(self.session.paths.session_file)
         )
 
+    @_provider_activity
     async def forget_session(self) -> SessionStatus:
         async with self._gate:
             await self._discard_http_client(include_aux=True)

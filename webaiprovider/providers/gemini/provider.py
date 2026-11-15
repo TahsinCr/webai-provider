@@ -16,7 +16,7 @@ from ...accounts.status import (
     SessionState,
     SessionStatus,
 )
-from ...async_provider import AsyncProvider, confirm_deleted
+from ...async_provider import AsyncProvider, _provider_activity, confirm_deleted
 from ...base import Capability
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
@@ -196,6 +196,7 @@ class AsyncGeminiProvider(AsyncProvider):
         if editor_error is not None:
             raise editor_error
 
+    @_provider_activity
     async def session_status(self):
         return SessionStatus(
             SessionState.AUTHENTICATED
@@ -206,6 +207,7 @@ class AsyncGeminiProvider(AsyncProvider):
             session_exists(self.cookie_file),
         )
 
+    @_provider_activity
     async def authenticate(self):
         await self._connect()
         return SessionStatus(SessionState.AUTHENTICATED, True)
@@ -214,6 +216,7 @@ class AsyncGeminiProvider(AsyncProvider):
         """Open the authenticated HTTP session and discover its initial models."""
         await self._load_model_catalog()
 
+    @_provider_activity
     async def forget_session(self):
         async with self._gate, self._connect_gate:
             await self._close_unlocked()
