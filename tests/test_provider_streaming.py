@@ -61,6 +61,15 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
 
 
 class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_stream_requires_open_provider(self) -> None:
+        from types import SimpleNamespace
+
+        provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
+        operation = SimpleNamespace(chat=SimpleNamespace(id="chat-1", remote_id=None))
+
+        with self.assertRaisesRegex(ProviderError, "Open the provider"):
+            await provider.execute_stream(operation).__anext__()
+
     async def test_close_waits_for_resource_refreshes(self) -> None:
         class SlowRefreshProvider(AsyncProvider):
             def __init__(self) -> None:

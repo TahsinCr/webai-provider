@@ -390,6 +390,7 @@ class AsyncProvider(BaseProvider):
                     self._lifecycle_condition.notify_all()
 
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
+        self._require_provider()
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
         lock = self._send_lock(conversation_id)
