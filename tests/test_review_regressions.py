@@ -386,3 +386,41 @@ class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ValueError", logs.output[0])
         self.assertNotIn("secret-token", logs.output[0])
         self.assertNotIn("private-message", logs.output[0])
+
+
+class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_keeps_resources_and_unsent_messages(self):
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.message.types import Content, MessageData
+
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        origin = Origin("claude", provider.account_id, "chat")
+        remote = Conversation(
+            origin, "Before", (MessageData("message", "user", (Content("text", text="old"),)),)
+        )
+        provider.list_chats = AsyncMock(return_value=Page((remote,)))
+        provider.get_chat = AsyncMock(return_value=remote)
+        project = ProjectData(Origin("claude", provider.account_id, "project"), "Before")
+        provider.list_projects = AsyncMock(return_value=Page((project,)))
+        async with provider:
+            chat = (await provider.chats.refresh())[0]
+            message = (await chat.messages.refresh())[0]
+            pending = chat.messages.create("pending").message
+            provider.list_chats.return_value = Page((replace(remote, title="After"),))
+            self.assertIs((await provider.chats.refresh())[0], chat)
+            self.assertEqual(chat.title, "After")
+            provider.get_chat.return_value = replace(
+                remote,
+                messages=(replace(remote.messages[0], content=(Content("text", text="new"),)),),
+            )
+            messages = await chat.messages.refresh()
+            self.assertIs(messages[0], message)
+            self.assertEqual(message.content, "new")
+            self.assertIn(pending, messages)
+            first = (await provider.projects.refresh())[0]
+            provider.list_projects.return_value = Page((replace(project, name="After"),))
+            self.assertIs((await provider.projects.refresh())[0], first)
+            self.assertEqual(first.title, "After")

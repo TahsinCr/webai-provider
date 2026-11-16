@@ -41,6 +41,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Retain chat, project, and message object identity during refresh and preserve local messages absent from the remote snapshot.
+
 - Enforce stream byte limits across partial reads, reject concurrent consumers and invalid limit types, and report hook failures without exception text or message contents.
 
 - Normalize asynchronous DNS-resolution timeouts on Python 3.10 and keep live API test calls at or beyond their configured interval across platform timer resolutions.

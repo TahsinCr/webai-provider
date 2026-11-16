@@ -69,9 +69,10 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
                     f"Provider project pagination exceeded {_MAX_PROJECT_PAGES} pages"
                 )
 
+            existing = {item.remote_id: item for item in self._items if item.remote_id}
             projects = []
             for item in values:
-                project = self.session._project_type(
+                project = existing.get(item.origin.remote_id) or self.session._project_type(
                     title=item.name,
                     remote_id=item.origin.remote_id,
                     session=self.session,

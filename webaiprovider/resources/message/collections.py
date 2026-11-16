@@ -52,20 +52,28 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
                 self.chat.project = resolved_project
             elif conversation.project.name and not self.chat.project.title:
                 self.chat.project.title = conversation.project.name
-        messages = [
-            AsyncMessage(
-                content="\n".join(
-                    part.text for part in item.content if part.kind == "text" and part.text
-                ),
-                role=item.role,
-                id=item.id,
-                metadata={**item.metadata, "actions": item.actions},
-                chat=self.chat,
+        existing = {item.remote_id or item.id: item for item in self._items}
+        messages = []
+        remote_ids = set()
+        for item in conversation.messages:
+            if item.channel == "analysis":
+                continue
+            remote_ids.add(item.id)
+            message = existing.get(item.id)
+            content = "\n".join(
+                part.text for part in item.content if part.kind == "text" and part.text
             )
-            for item in conversation.messages
-            if item.channel != "analysis"
-        ]
-        self._items = list(messages)
+            if message is None:
+                message = AsyncMessage(role=item.role, id=item.id, chat=self.chat)
+            message.remote_id = item.id
+            message.content = content
+            message.metadata = {**item.metadata, "actions": item.actions}
+            messages.append(message)
+        # Keep local sends that have not appeared in the remote snapshot yet.
+        messages.extend(
+            item for item in self._items if item.remote_id is None and item.id not in remote_ids
+        )
+        self._items = messages
         return list(self._items)
 
     def create(

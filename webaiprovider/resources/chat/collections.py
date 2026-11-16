@@ -151,6 +151,18 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
     async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
         async with self.session._activity():
             provider = self.session._require_provider()
+            existing = {chat.remote_id: chat for chat in self._items if chat.remote_id}
+
+            def reconcile(chat):
+                cached = existing.get(chat.remote_id)
+                if cached is None:
+                    return chat
+                cached.title = chat.title
+                cached.project = chat.project
+                cached.temporary = chat.temporary
+                cached.metadata = dict(chat.metadata)
+                return cached
+
             if include_projects and Capability.PROJECTS in self.session.capabilities:
                 raw_page, projects = await asyncio.gather(
                     provider.list_chats(),
@@ -161,14 +173,17 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
                 normal_chats = [
                     _chat_from_conversation(item, self.session, project_map) for item in page.items
                 ]
-                self._items = _merge_chat_lists(normal_chats, project_chats)
+                self._items = [
+                    reconcile(chat) for chat in _merge_chat_lists(normal_chats, project_chats)
+                ]
                 self._projects_loaded = True
                 return list(self._items)
 
             page = _require_conversation_page(await provider.list_chats())
             project_map = {p.remote_id: p for p in self.session.projects._items if p.remote_id}
             self._items = [
-                _chat_from_conversation(item, self.session, project_map) for item in page.items
+                reconcile(_chat_from_conversation(item, self.session, project_map))
+                for item in page.items
             ]
             self._projects_loaded = (
                 include_projects and Capability.PROJECTS not in self.session.capabilities
