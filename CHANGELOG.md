@@ -41,6 +41,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Enforce stream byte limits across partial reads, reject concurrent consumers and invalid limit types, and report hook failures without exception text or message contents.
+
 - Normalize asynchronous DNS-resolution timeouts on Python 3.10 and keep live API test calls at or beyond their configured interval across platform timer resolutions.
 - Preserve `Conversation.metadata` on `AsyncChat` and `Chat` across `AsyncBranchableChat.branch()`, chat listing, and `AsyncMessagesCollection.refresh()`, clear transient `"pending_branch"` metadata on `ConversationBound` in `AsyncProvider.execute_stream()`, bind shared `pending_branches` onto the ChatGPT client inside `AsyncChatGPTProvider.branch_chat()`, and fix an `UnboundLocalError` on `cached` in `ChatGPTClient._resolve_send_previous` when sending the first turn on a branched preview.
 - Emit ChatGPT `ConversationBound` mid-stream and yield Claude `bound` before `move_chat` and completion, defer live ChatGPT `pending_branch` renames until the first branched message binds a remote ID (excluding synthetic preview IDs), map ChatGPT HTTP 429 and transport cooldown errors to `RateLimited(..., message_submitted=False)`, and clear pre-send cleanup journal `attempted` state when a pre-submission rate limit occurs without a bound ID.

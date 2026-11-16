@@ -330,3 +330,59 @@ async def _collect(operation):
 
 async def _collect_provider_stream(provider, operation):
     return [event async for event in provider.execute_stream(operation)]
+
+
+class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_limit_survives_partial_reads(self):
+        from webaiprovider.transport.base import _AsyncStreamResponse, _StreamResponse
+
+        response = SimpleNamespace(status_code=200, headers={})
+        chunks = iter([b"abc", b"def"])
+        response.iter_bytes = lambda: chunks
+        sync = _StreamResponse(response, limit=5)
+        reader = sync.iter_bytes()
+        self.assertEqual(next(reader), b"abc")
+        with self.assertRaisesRegex(RuntimeError, "Concurrent"):
+            next(sync.iter_bytes())
+        reader.close()
+        with self.assertRaisesRegex(ProviderError, "size limit"):
+            next(sync.iter_bytes())
+
+        async def produce():
+            yield b"abc"
+            yield b"def"
+
+        stream = _AsyncStreamResponse(response, produce(), limit=5)
+        reader = stream.aiter_bytes()
+        self.assertEqual(await anext(reader), b"abc")
+        with self.assertRaisesRegex(RuntimeError, "Concurrent"):
+            await anext(stream.aiter_bytes())
+        await reader.aclose()
+        with self.assertRaisesRegex(ProviderError, "size limit"):
+            await anext(stream.aiter_bytes())
+
+    def test_byte_limits_require_positive_integers(self):
+        from webaiprovider.transport.base import TransportConfig
+
+        for field in ("max_response_bytes", "max_stream_bytes"):
+            for value in (True, False, 1.5, float("inf"), float("nan"), "10", 0, -1):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    TransportConfig(**{field: value})
+
+    async def test_hook_failure_is_sanitized_and_does_not_stop_later_hooks(self):
+        from webaiprovider.resources.message.operation import OperationHooks
+
+        hooks = OperationHooks()
+        calls = []
+
+        def fail(_event):
+            raise ValueError("secret-token")
+
+        hooks.on("*", fail)
+        hooks.on("*", lambda event: calls.append(event))
+        with self.assertLogs("webaiprovider.resources.message.operation", level="WARNING") as logs:
+            await hooks.emit(OutputDelta(delta="private-message"))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("ValueError", logs.output[0])
+        self.assertNotIn("secret-token", logs.output[0])
+        self.assertNotIn("private-message", logs.output[0])

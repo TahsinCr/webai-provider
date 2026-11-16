@@ -97,9 +97,15 @@ class TransportConfig:
             )
         else:
             valid_timeout = _is_positive_finite(self.timeout)
-        if not valid_timeout or self.max_response_bytes <= 0:
+        if (
+            not valid_timeout
+            or type(self.max_response_bytes) is not int
+            or self.max_response_bytes <= 0
+        ):
             raise ValueError("Transport timeout and response limit must be positive")
-        if self.max_stream_bytes is not None and self.max_stream_bytes <= 0:
+        if self.max_stream_bytes is not None and (
+            type(self.max_stream_bytes) is not int or self.max_stream_bytes <= 0
+        ):
             raise ValueError("Transport stream limit must be positive")
 
 
@@ -109,14 +115,21 @@ class _AsyncStreamResponse:
         self.headers: Mapping[str, str] = response.headers
         self._chunks = chunks
         self._limit = limit
+        self._total_bytes = 0
+        self._reading = False
 
     async def aiter_bytes(self) -> AsyncIterator[bytes]:
-        size = 0
-        async for chunk in self._chunks:
-            size += len(chunk)
-            if self._limit is not None and size > self._limit:
-                raise ProviderError("Transport stream exceeds the size limit")
-            yield chunk
+        if self._reading:
+            raise RuntimeError("Concurrent reads from one stream are unsupported")
+        self._reading = True
+        try:
+            async for chunk in self._chunks:
+                self._total_bytes += len(chunk)
+                if self._limit is not None and self._total_bytes > self._limit:
+                    raise ProviderError("Transport stream exceeds the size limit")
+                yield chunk
+        finally:
+            self._reading = False
 
 
 class _StreamResponse:
@@ -125,15 +138,22 @@ class _StreamResponse:
         self.headers: Mapping[str, str] = response.headers
         self._response = response
         self._limit = limit
+        self._total_bytes = 0
+        self._reading = False
 
     def iter_bytes(self) -> Iterator[bytes]:
-        size = 0
-        iterator_fn = getattr(self._response, "iter_content", None) or self._response.iter_bytes
-        for chunk in iterator_fn():
-            size += len(chunk)
-            if self._limit is not None and size > self._limit:
-                raise ProviderError("Transport stream exceeds the size limit")
-            yield chunk
+        if self._reading:
+            raise RuntimeError("Concurrent reads from one stream are unsupported")
+        self._reading = True
+        try:
+            iterator_fn = getattr(self._response, "iter_content", None) or self._response.iter_bytes
+            for chunk in iterator_fn():
+                self._total_bytes += len(chunk)
+                if self._limit is not None and self._total_bytes > self._limit:
+                    raise ProviderError("Transport stream exceeds the size limit")
+                yield chunk
+        finally:
+            self._reading = False
 
     def close(self):
         close = getattr(self._response, "close", None)

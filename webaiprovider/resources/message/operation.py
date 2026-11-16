@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
@@ -130,8 +131,12 @@ class OperationHooks:
                 res = fn(event)
                 if inspect.isawaitable(res):
                     await res
-            except Exception:
-                pass
+            except Exception as error:
+                logging.getLogger(__name__).warning(
+                    "Operation hook failed: event=%s error_type=%s",
+                    event.event,
+                    type(error).__name__,
+                )
 
 
 class AsyncMessageOperation:
