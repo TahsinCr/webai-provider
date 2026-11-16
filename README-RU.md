@@ -146,6 +146,21 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
+## Диагностика
+
+Измерение времени отправки включается явно и сохраняет именованные длительности и счётчики без содержимого сообщений и учётных данных. Активируйте его вокруг ожидаемой операции; автоматически оно не запускается.
+
+```python
+from webaiprovider.utils.timing import SendTiming, use_send_timing
+
+timing = SendTiming(provider.id)
+with use_send_timing(timing):
+    response = await provider.ask("Hello")
+durations_ms, counters = timing.snapshot()
+```
+
+`patch_project(project_id, name=...)` изменяет только переданные поля; для очистки инструкций используйте `instructions=""`. Перед записью изменений проекта текущее состояние сервера считывается под блокировкой. Потоки операций сохраняют всю историю событий для повторного чтения, поэтому потребление памяти сохранёнными операциями растёт с числом событий.
+
 ## Ссылки
 
 - [История изменений](CHANGELOG.md)

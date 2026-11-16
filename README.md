@@ -146,6 +146,21 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
+## Diagnostics
+
+Send timing is opt-in and records named durations and counters without message or credential contents. Activate it around an awaited operation; it does not run automatically.
+
+```python
+from webaiprovider.utils.timing import SendTiming, use_send_timing
+
+timing = SendTiming(provider.id)
+with use_send_timing(timing):
+    response = await provider.ask("Hello")
+durations_ms, counters = timing.snapshot()
+```
+
+`patch_project(project_id, name=...)` changes only the supplied fields; use `instructions=""` to clear instructions. Project mutations read current server state under their lock before writing. Operation streams retain their complete event history for replay, so retained operations use memory proportional to their event count.
+
 ## Links
 
 - [Changelog](CHANGELOG.md)

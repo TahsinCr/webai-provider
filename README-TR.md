@@ -146,6 +146,21 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
+## Tanılama
+
+Gönderim ölçümü isteğe bağlıdır; mesaj ve kimlik bilgisi içeriklerini kaydetmeden adlandırılmış süreleri ve sayaçları tutar. Beklenen işlemin çevresinde etkinleştirin; kendiliğinden çalışmaz.
+
+```python
+from webaiprovider.utils.timing import SendTiming, use_send_timing
+
+timing = SendTiming(provider.id)
+with use_send_timing(timing):
+    response = await provider.ask("Hello")
+durations_ms, counters = timing.snapshot()
+```
+
+`patch_project(project_id, name=...)` yalnızca verilen alanları değiştirir; talimatları temizlemek için `instructions=""` kullanın. Proje değişiklikleri yazmadan önce kilit altında sunucunun güncel durumunu okur. İşlem akışları tekrar okunabilmek için tüm olay geçmişini saklar; bellekte tutulan işlemlerin bellek kullanımı olay sayısıyla artar.
+
 ## Bağlantılar
 
 - [Değişiklik günlüğü](CHANGELOG.md)
