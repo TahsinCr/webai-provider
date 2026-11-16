@@ -497,3 +497,108 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 1)
+
+
+class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
+    async def test_grok_real_open_is_idempotent_and_does_not_reenter_activity(self):
+        from webaiprovider.providers.grok import AsyncGrokProvider
+
+        provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
+        provider.client.authenticate = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider._load_model_catalog = AsyncMock()
+        try:
+            await asyncio.wait_for(provider.open(), 1)
+            await asyncio.wait_for(provider.open(), 1)
+            provider.client.authenticate.assert_awaited_once_with()
+            provider._load_model_catalog.assert_awaited_once_with()
+        finally:
+            await asyncio.wait_for(provider.close(), 1)
+        provider.client.close.assert_awaited_once_with()
+
+    async def test_claude_forget_waits_for_activity_and_deletes_credentials(self):
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "fixture"}))
+        provider.client.prepare = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider.editor.close = AsyncMock()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def active():
+            async with provider._activity():
+                entered.set()
+                await release.wait()
+
+        await provider.open()
+        task = asyncio.create_task(active())
+        await entered.wait()
+        forgetting = asyncio.create_task(provider.forget_session())
+        await asyncio.sleep(0)
+        self.assertFalse(forgetting.done())
+        release.set()
+        await task
+        await asyncio.wait_for(asyncio.gather(forgetting, provider.forget_session()), 1)
+        from webaiprovider.accounts import session_exists
+
+        self.assertFalse(session_exists(provider.credential_file))
+        self.assertTrue(provider._closed)
+        provider.client.close.assert_awaited_once_with()
+        with self.assertRaises(ProviderError):
+            await provider.authenticate()
+
+    async def test_refresh_preserves_unsent_chat_in_both_listing_modes(self):
+        from webaiprovider.collections import Page
+
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        provider.list_chats = AsyncMock(return_value=Page(()))
+        provider.list_projects = AsyncMock(return_value=Page(()))
+        async with provider:
+            chat = await provider.chats.create("Pending")
+            for include_projects in (False, True):
+                self.assertIn(chat, await provider.chats.refresh(include_projects=include_projects))
+
+    async def test_stream_completion_reuses_assistant_loaded_during_send(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        chat = AsyncChat()
+
+        async def execute(operation):
+            operation._assistant_message_id = "assistant-1"
+            yield OutputDelta(delta="answer")
+            entered.set()
+            await release.wait()
+
+        operation = AsyncMessageOperation(chat, AsyncMessage("question"), executor=execute)
+        task = asyncio.create_task(operation.start())
+        await entered.wait()
+        loaded = AsyncMessage("partial", role="assistant", id="assistant-1", chat=chat)
+        loaded.remote_id = "assistant-1"
+        chat.messages._items.append(loaded)
+        release.set()
+        response = await task
+        self.assertIs(response.message, loaded)
+        self.assertEqual(loaded.content, "answer")
+        self.assertEqual(len(chat.messages._items), 1)
+
+    async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
+        from webaiprovider.resources.message.operation import _close_async_iterator
+
+        primary = ProviderError("stream failed")
+        cleanup = RuntimeError("cleanup failed")
+        stream = SimpleNamespace(aclose=AsyncMock(side_effect=cleanup))
+        try:
+            raise primary
+        except ProviderError:
+            with self.assertRaises(ProviderError) as caught:
+                await _close_async_iterator(stream)
+        self.assertIs(caught.exception, primary)
+        self.assertIs(caught.exception.__cause__, cleanup)
+        with self.assertRaises(RuntimeError):
+            await _close_async_iterator(stream)
+
+    def test_generic_tuple_size_does_not_trust_third_member(self):
+        from webaiprovider.core.cache import _default_size_calculator
+
+        self.assertGreater(
+            _default_size_calculator("key", ("record", {"text": "x" * 100000}, 1)), 100000
+        )

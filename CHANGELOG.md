@@ -16,6 +16,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Fix Grok opening deadlocks and make Claude logout drain accepted operations before closing and deleting credentials.
+- Preserve unsent chats and project-chat identities during refresh, and reuse assistant messages already loaded while a send completes.
+- Preserve primary stream errors when iterator cleanup also fails, and isolate ChatGPT continuation size accounting from the generic nested cache estimator.
+
 - Move the native Sentinel sources into the ChatGPT provider package and its C test into the main test directory.
 - Preserve in-memory credential updates and isolate nested credential data, protect resource ownership across sessions, and correct stream completion and TTFT median handling.
 - Serialize same-chat sends and same-project mutations, and make provider shutdown wait for accepted operations without losing cleanup on cancellation.

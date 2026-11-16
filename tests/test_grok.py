@@ -1467,11 +1467,11 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prepare_warms_models_and_get_chat_warms_continuation(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.authenticate = AsyncMock()
+        provider.client.authenticate = AsyncMock()
         provider._load_model_catalog = AsyncMock()
         try:
             await provider.prepare()
-            provider.authenticate.assert_awaited_once_with()
+            provider.client.authenticate.assert_awaited_once_with()
             provider._load_model_catalog.assert_awaited_once_with()
 
             provider.client.request = AsyncMock(

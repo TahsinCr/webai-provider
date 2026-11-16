@@ -257,7 +257,7 @@ class AsyncGrokProvider(AsyncProvider):
         self._continuations.put(conversation_id, response_id)
 
     async def prepare(self):
-        await self.authenticate()
+        await self.client.authenticate()
         await self._load_model_catalog()
 
     async def _close_provider(self):

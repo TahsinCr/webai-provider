@@ -98,6 +98,7 @@ class ChatGPTClient:
             max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
             max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
             default_ttl=_CONTINUATION_CACHE_TTL_SECONDS,
+            getsizeof=lambda key, value: len(key) + value[2],
         )
         self._sentinel_lock = threading.Lock()
         self._state_lock = threading.RLock()

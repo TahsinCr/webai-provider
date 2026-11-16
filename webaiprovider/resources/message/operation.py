@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
@@ -21,7 +22,13 @@ if TYPE_CHECKING:
 async def _close_async_iterator(stream: AsyncIterator[Any] | None) -> None:
     close = getattr(stream, "aclose", None)
     if close is not None:
-        await close()
+        original = sys.exc_info()[1]
+        try:
+            await close()
+        except BaseException as cleanup:
+            if original is None:
+                raise
+            raise original from cleanup
 
 
 @dataclass(frozen=True)
@@ -346,8 +353,27 @@ class AsyncMessageOperation:
                 id=self._assistant_message_id,
                 chat=self.chat,
             )
+            response_message.remote_id = self._assistant_message_id
             if self.chat is not None and hasattr(self.chat, "messages"):
-                self.chat.messages._items.append(response_message)
+                existing = next(
+                    (
+                        item
+                        for item in self.chat.messages._items
+                        if self._assistant_message_id
+                        and (
+                            item.remote_id == self._assistant_message_id
+                            or item.id == self._assistant_message_id
+                        )
+                    ),
+                    None,
+                )
+                if existing is None:
+                    self.chat.messages._items.append(response_message)
+                else:
+                    existing.content = full_text
+                    existing.model = self.message.model
+                    existing.remote_id = self._assistant_message_id
+                    response_message = existing
             self._response = Response(
                 response_message,
                 sources=collected_sources,

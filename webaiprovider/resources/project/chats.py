@@ -35,7 +35,19 @@ class AsyncProjectChatsCollection(AsyncQueryableCollection[AsyncChat]):
         ):
             raise ProviderError("Provider returned an invalid project conversation page")
         project_map = {self.project.remote_id: self.project} if self.project.remote_id else {}
-        chats = tuple(_chat_from_conversation(item, session, project_map) for item in page.items)
+        existing = {
+            chat.remote_id: chat for chat in (*session.chats._items, *self._items) if chat.remote_id
+        }
+        chats = []
+        for item in page.items:
+            chat = existing.get(item.origin.remote_id)
+            if chat is None:
+                chat = _chat_from_conversation(item, session, project_map)
+            else:
+                chat.title = item.title
+                chat.metadata = dict(item.metadata)
+            chats.append(chat)
+        chats = tuple(chats)
         for chat in chats:
             if chat.project is None:
                 chat.project = self.project

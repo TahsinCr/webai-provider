@@ -155,10 +155,9 @@ class AsyncClaudeProvider(AsyncProvider):
             NativeDownloadClient,
         )
 
-    @_provider_activity
     async def forget_session(self):
+        await self.close()
         async with self._gate:
-            await self.close()
             delete_session(self.credential_file)
             self.client.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)

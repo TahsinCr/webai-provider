@@ -13,8 +13,6 @@ V = TypeVar("V")
 
 def _default_size_calculator(key: Any, value: Any) -> int:
     size = sys.getsizeof(key, 32)
-    if isinstance(value, tuple) and len(value) == 3 and isinstance(value[2], int):
-        return size + value[2]
     pending = [value]
     seen = set()
     while pending:
