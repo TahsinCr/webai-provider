@@ -436,3 +436,64 @@ class CacheSizeTests(unittest.TestCase):
         self.assertLess(_default_size_calculator("key", value), 20000)
         value["self"] = value
         self.assertGreater(_default_size_calculator("key", value), 10000)
+
+
+class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cross_thread_cancel_changes_state_on_owner_loop(self):
+        started = asyncio.Event()
+
+        async def execute(_operation):
+            started.set()
+            await asyncio.Event().wait()
+            yield OutputDelta(delta="unused")
+
+        operation = AsyncMessageOperation(AsyncChat(), AsyncMessage("question"), executor=execute)
+        task = asyncio.create_task(operation.start())
+        await started.wait()
+        await asyncio.to_thread(operation.cancel)
+        from webaiprovider.errors import OperationCancelledError
+
+        with self.assertRaises(OperationCancelledError):
+            await asyncio.wait_for(task, 1)
+        self.assertEqual(operation.state.value, "CANCELLED")
+
+    async def test_repeated_upload_cancellation_waits_for_blocking_close(self):
+        import threading
+
+        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+
+        started = threading.Event()
+        closing = threading.Event()
+        release = threading.Event()
+
+        class Client:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def upload_file(self, *_args, cancel_event):
+                started.set()
+                release.wait(3)
+                return None
+
+            def close(self):
+                closing.set()
+                release.wait(3)
+
+        provider = AsyncChatGPTProvider(
+            Account.from_cookies("chatgpt", {}), client_factory=lambda _session: Client()
+        )
+        task = asyncio.create_task(provider.upload_file("fixture.txt"))
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            task.cancel()
+            self.assertTrue(await asyncio.to_thread(closing.wait, 1))
+            task.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+        finally:
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)

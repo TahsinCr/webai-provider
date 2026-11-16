@@ -417,18 +417,24 @@ class AsyncChatGPTProvider(AsyncProvider):
             return result
         except asyncio.CancelledError:
             cancelled.set()
+
             # This dedicated client only serves this upload. Closing its transport
             # interrupts an in-flight PUT; chunk checks stop the worker if it is
             # between writes. Wait for the worker so cancellation cannot leak it.
-            if holder:
+            async def cleanup():
+                if holder:
+                    with suppress(Exception):
+                        await asyncio.to_thread(holder[0].close)
                 with suppress(Exception):
-                    holder[0].close()
-            try:
-                cleanup = asyncio.shield(worker)
-                cleanup.add_done_callback(consume_failure)
-                await cleanup
-            except BaseException:
-                pass
+                    await worker
+
+            cleanup_task = asyncio.create_task(cleanup())
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    continue
+            cleanup_task.result()
             raise
 
     async def _close_provider(self):

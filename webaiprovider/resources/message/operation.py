@@ -170,6 +170,15 @@ class AsyncMessageOperation:
             self._state_machine.transition(target)
 
     def cancel(self) -> None:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if current_loop is not loop:
+                loop.call_soon_threadsafe(self.cancel)
+                return
         if self._completed:
             return
         self._cancelled = True

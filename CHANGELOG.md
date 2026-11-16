@@ -41,6 +41,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Join ChatGPT upload workers despite repeated cancellation, close upload clients off the event loop, and route cross-thread operation cancellation to its owner loop.
+
 - Include nested container payloads in default cache size estimates while handling cycles and shared objects once.
 
 - Retain chat, project, and message object identity during refresh and preserve local messages absent from the remote snapshot.
