@@ -13,13 +13,23 @@ V = TypeVar("V")
 
 def _default_size_calculator(key: Any, value: Any) -> int:
     size = sys.getsizeof(key, 32)
-    if isinstance(value, str):
-        return size + sys.getsizeof(value)
-    if isinstance(value, bytes):
-        return size + len(value)
     if isinstance(value, tuple) and len(value) == 3 and isinstance(value[2], int):
         return size + value[2]
-    return size + sys.getsizeof(value, 64)
+    pending = [value]
+    seen = set()
+    while pending:
+        item = pending.pop()
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        size += sys.getsizeof(item, 64)
+        if isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            pending.extend(item)
+    return size
 
 
 class MultiDimensionBoundedCache(Generic[K, V]):

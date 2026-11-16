@@ -41,6 +41,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Include nested container payloads in default cache size estimates while handling cycles and shared objects once.
+
 - Retain chat, project, and message object identity during refresh and preserve local messages absent from the remote snapshot.
 
 - Enforce stream byte limits across partial reads, reject concurrent consumers and invalid limit types, and report hook failures without exception text or message contents.

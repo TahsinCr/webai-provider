@@ -424,3 +424,15 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
             provider.list_projects.return_value = Page((replace(project, name="After"),))
             self.assertIs((await provider.projects.refresh())[0], first)
             self.assertEqual(first.title, "After")
+
+
+class CacheSizeTests(unittest.TestCase):
+    def test_nested_payload_is_counted_once_and_cycles_terminate(self):
+        from webaiprovider.core.cache import _default_size_calculator
+
+        shared = "a" * 10000
+        value = {"messages": [shared, shared]}
+        self.assertGreater(_default_size_calculator("key", value), 10000)
+        self.assertLess(_default_size_calculator("key", value), 20000)
+        value["self"] = value
+        self.assertGreater(_default_size_calculator("key", value), 10000)
