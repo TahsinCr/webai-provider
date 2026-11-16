@@ -41,6 +41,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Remove the unused Attribution export and credential read aliases in favor of load(), and route project object deletion through the existing collection path.
+
 - Join ChatGPT upload workers despite repeated cancellation, close upload clients off the event loop, and route cross-thread operation cancellation to its owner loop.
 
 - Include nested container payloads in default cache size estimates while handling cycles and shared objects once.

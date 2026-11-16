@@ -77,7 +77,6 @@ from .resources.message.operation import (
 )
 from .resources.message.response import (
     Artifact,
-    Attribution,
     Response,
     Source,
     TimingMetrics,
@@ -152,7 +151,6 @@ __all__ = [
     "ChatGPTProjectsCollection",
     "Artifact",
     "ArtifactDiscovered",
-    "Attribution",
     "EffortRef",
     "EffortSet",
     "ModelRef",

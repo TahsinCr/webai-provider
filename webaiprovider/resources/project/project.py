@@ -248,12 +248,10 @@ class AsyncProject:
 
     async def delete(self) -> None:
         session = self.session
-        if self.remote_id:
-            if session is None:
-                raise ProviderError("Project is not attached to an open provider")
-            await session.projects.delete(self)
         if session is not None:
-            session.projects._items = [item for item in session.projects._items if item is not self]
+            await session.projects.delete(self)
+        elif self.remote_id:
+            raise ProviderError("Project is not attached to an open provider")
 
     def __repr__(self) -> str:
         return f"<Project id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"

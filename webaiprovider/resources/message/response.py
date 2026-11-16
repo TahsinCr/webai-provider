@@ -19,14 +19,6 @@ class Source:
 
 
 @dataclass(frozen=True)
-class Attribution:
-    source_id: str
-    start_index: int
-    end_index: int
-    text_segment: str = ""
-
-
-@dataclass(frozen=True)
 class Artifact:
     id: str
     kind: str

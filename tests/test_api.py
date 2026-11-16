@@ -87,7 +87,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         acc = Account.from_cookies("chatgpt", {"session_token": "mock-token-xyz"})
         self.assertEqual(acc.provider, "chatgpt")
         self.assertTrue(acc.is_active)
-        self.assertIn("session_token", acc.store().read())
+        self.assertIn("session_token", acc.store().load())
         self.assertFalse(hasattr(acc, "connect"))
 
         provider = AsyncProvider(acc, type=ProviderType.CHATGPT)
