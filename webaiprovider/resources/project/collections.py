@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from ...collections import AsyncManageableCollection, ManageableCollection, Page, _CollectionFacade
@@ -95,28 +94,10 @@ class AsyncProjectsCollection(AsyncManageableCollection[AsyncProject]):
         if target.remote_id:
             provider = self.session._require_provider()
             async with self.session._activity():
-                async with provider._project_lock(target.remote_id):
-                    current = target._provider_project
-                    if (
-                        not isinstance(current, ProviderProject)
-                        or current.origin.remote_id != target.remote_id
-                    ):
-                        current = await provider.get_project(target.remote_id)
-                        if not isinstance(current, ProviderProject):
-                            raise ProviderError("Provider returned an invalid project")
-                    stage = getattr(type(provider), "_stage_project_read", None)
-                    if callable(stage):
-                        stage(provider, current)
-                    updated = await provider.update_project(
-                        replace(
-                            current,
-                            name=title if title is not None else current.name,
-                            instructions=(
-                                instruction if instruction is not None else current.instructions
-                            ),
-                        )
-                    )
-                    target._apply_provider_project(updated, replace_resources=False)
+                updated = await provider.patch_project(
+                    target.remote_id, name=title, instructions=instruction
+                )
+                target._apply_provider_project(updated, replace_resources=False)
         else:
             if title is not None:
                 target.title = title

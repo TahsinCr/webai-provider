@@ -411,9 +411,10 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_chatgpt_asset_reference_gets_a_fresh_url_and_checks_conversation_membership(
         self,
     ):
+        from webaiprovider import Account
         from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 
-        provider = AsyncChatGPTProvider.__new__(AsyncChatGPTProvider)
+        provider = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {}))
         client = Mock()
         client.get_conversation.return_value = {
             "messages": [

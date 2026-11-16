@@ -653,7 +653,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             )
         transport.request.assert_awaited_once_with("project", project_id=PROJECT)
 
-    async def test_projects_update_reuses_staged_snapshot_and_confirms_remote_state(self):
+    async def test_projects_patch_reads_current_snapshot_and_confirms_remote_state(self):
         from webaiprovider.collections import Page
         from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
@@ -664,18 +664,17 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         updated = NativeProject(origin, "New Name", "Keep brief", metadata={"native": {}})
         provider.prepare = AsyncMock()
         provider.list_projects = AsyncMock(return_value=Page((initial,), None))
-        provider.get_project = AsyncMock(return_value=updated)
+        provider.get_project = AsyncMock(side_effect=[initial, updated])
         provider.editor.write = AsyncMock()
         await provider.open()
         try:
             loaded = await provider.projects.refresh()
             result = await provider.projects.update(loaded[0], title="New Name")
             self.assertEqual(result.title, "New Name")
-            self.assertEqual(provider.get_project.await_count, 1)
+            self.assertEqual(provider.get_project.await_count, 2)
             provider.editor.write.assert_awaited_once_with(
                 "update", PROJECT, current=initial, name="New Name"
             )
-            self.assertFalse(provider._staged_project_reads)
         finally:
             await provider.close()
 

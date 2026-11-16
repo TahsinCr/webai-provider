@@ -291,6 +291,7 @@ class AsyncGrokProvider(AsyncProvider):
             self.client.session.authenticated = False
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
+    @_provider_activity
     async def upload_file(self, path):
         return await self.client.upload_file(path)
 
@@ -310,6 +311,7 @@ class AsyncGrokProvider(AsyncProvider):
             self._catalog_at = time.monotonic()
             return self._catalog
 
+    @_provider_activity
     async def list_chats(self, cursor=None, limit=50):
         query = {"pageSize": max(1, min(int(limit), 100))}
         if cursor:
@@ -341,6 +343,7 @@ class AsyncGrokProvider(AsyncProvider):
     async def _conversation_metadata(self, conversation_id):
         return await self._conversation_get(conversation_id, includeWorkspaces=True)
 
+    @_provider_activity
     async def get_chat(self, conversation_id):
         metadata, history = await asyncio.gather(
             self._conversation_metadata(conversation_id),
@@ -364,6 +367,7 @@ class AsyncGrokProvider(AsyncProvider):
     async def conversation_attachment_count(self, conversation_id):
         return None
 
+    @_provider_activity
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
             raise ValueError("Conversation title must be between 1 and 200 characters")
@@ -373,12 +377,14 @@ class AsyncGrokProvider(AsyncProvider):
             json={"title": title.strip()},
         )
 
+    @_provider_activity
     async def delete_chat(self, conversation_id):
         await self.client.request(
             "DELETE", "/rest/app-chat/conversations/" + remote_id(conversation_id)
         )
         self._continuations.pop(conversation_id, None)
 
+    @_provider_activity
     async def list_projects(self, cursor=None):
         query = {"pageSize": 50}
         if cursor:
@@ -394,6 +400,7 @@ class AsyncGrokProvider(AsyncProvider):
             data.get("nextPageToken"),
         )
 
+    @_provider_activity
     async def get_project(self, project_id):
         path = "/rest/workspaces/" + remote_id(project_id)
         workspace, listing = await asyncio.gather(
@@ -407,6 +414,7 @@ class AsyncGrokProvider(AsyncProvider):
             raise ProviderError("Grok workspace file response contract changed")
         return project(workspace, self.account_id, files or [])
 
+    @_provider_activity
     async def list_project_chats(self, project_id, cursor=None):
         query = {"pageSize": 50, "workspaceId": project_id}
         if cursor:
@@ -431,6 +439,7 @@ class AsyncGrokProvider(AsyncProvider):
             data.get("nextPageToken"),
         )
 
+    @_provider_activity
     async def create_project(self, name, instructions=""):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Project name must be between 1 and 200 characters")
@@ -443,9 +452,11 @@ class AsyncGrokProvider(AsyncProvider):
         )
         return project(data, self.account_id)
 
+    @_provider_activity
     async def delete_project(self, project_id):
         await self.client.request("DELETE", "/rest/workspaces/" + remote_id(project_id))
 
+    @_provider_activity
     async def move_chat(self, conversation_id, project_id):
         metadata = await self._conversation_metadata(conversation_id)
         chat = conversation(metadata, self.account_id)

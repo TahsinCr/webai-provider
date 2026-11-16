@@ -125,6 +125,7 @@ class AsyncGeminiProvider(AsyncProvider):
             Capability.RESOURCES,
         }
 
+    @_provider_activity
     async def upload_file(self, path):
         from .generation import _gemini_upload_spec
 
@@ -255,6 +256,7 @@ class AsyncGeminiProvider(AsyncProvider):
     def _remember_chat_metadata(self, conversation_id, metadata):
         self._chat_metadata.put(conversation_id, list(metadata))
 
+    @_provider_activity
     async def list_chats(self, cursor=None, limit=50):
         try:
             offset = int(cursor or 0)
@@ -274,6 +276,7 @@ class AsyncGeminiProvider(AsyncProvider):
             str(offset + limit) if len(chats) > offset + limit else None,
         )
 
+    @_provider_activity
     async def get_chat(self, conversation_id):
         from .history import history
         from .rpc import nested
@@ -304,6 +307,7 @@ class AsyncGeminiProvider(AsyncProvider):
             self._remember_chat_metadata(conversation_id, metadata)
         return chat
 
+    @_provider_activity
     async def branch_chat(self, conversation_id, message_id):
         from ...resources.message.types import target_message
         from .rpc import nested
@@ -331,6 +335,7 @@ class AsyncGeminiProvider(AsyncProvider):
             )
         return chat
 
+    @_provider_activity
     async def delete_chat(self, conversation_id):
         async with self._gate:
             await self._connect()
@@ -346,6 +351,7 @@ class AsyncGeminiProvider(AsyncProvider):
         )
         self._chat_metadata.pop(conversation_id, None)
 
+    @_provider_activity
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
             raise ValueError("Gemini chat title must contain 1–100 characters")
@@ -353,6 +359,7 @@ class AsyncGeminiProvider(AsyncProvider):
             client = await self._connect()
             await client.rename_conversation(conversation_id, title.strip())
 
+    @_provider_activity
     async def delete_project(self, project_id):
         from .notebooks import notebook_id
 
@@ -362,16 +369,19 @@ class AsyncGeminiProvider(AsyncProvider):
         self._project_contexts.remove(remote)
         await confirm_deleted(lambda: self.notebooks.get(remote))
 
+    @_provider_activity
     async def list_projects(self, cursor=None):
         if self.notebooks is None:
             raise FeatureUnavailable(Capability.PROJECTS)
         return await self.notebooks.list(cursor)
 
+    @_provider_activity
     async def project_options(self, project_id=None):
         if not hasattr(self, "editor"):
             return ProjectOptions()
         return await super().project_options(project_id)
 
+    @_provider_activity
     async def create_project(self, name, instructions=""):
         if not hasattr(self, "editor"):
             raise FeatureUnavailable(Capability.PROJECT_CREATE)
@@ -383,11 +393,13 @@ class AsyncGeminiProvider(AsyncProvider):
             remote = await self.editor.write("create", name=name.strip())
         return await self.get_project(remote)
 
+    @_provider_activity
     async def get_project(self, project_id):
         if self.notebooks is None:
             raise FeatureUnavailable(Capability.PROJECTS)
         return await self.notebooks.get(project_id)
 
+    @_provider_activity
     async def list_project_chats(self, project_id, cursor=None):
         if self.notebooks is None:
             raise FeatureUnavailable(Capability.PROJECTS)
@@ -648,6 +660,7 @@ class AsyncGeminiProvider(AsyncProvider):
                 oldest = next(iter(self._temporary))
                 self._temporary.pop(oldest)
 
+    @_provider_activity
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
 

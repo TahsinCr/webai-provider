@@ -71,6 +71,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             "list_project_chats",
             "create_project",
             "update_project",
+            "patch_project",
             "project_options",
             "add_project_resource",
             "remove_project_resource",
@@ -355,9 +356,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def get_project(_project_id):
             return remote[0]
 
-        async def update_project(project):
-            remote[0] = project
-            return project
+        async def patch_project(project_id, *, name=None, instructions=None):
+            remote[0] = replace(
+                remote[0],
+                name=name if name is not None else remote[0].name,
+                instructions=instructions if instructions is not None else remote[0].instructions,
+            )
+            return remote[0]
 
         async def add_resource(_project_id, kind, **options):
             resource = ResourceData(
@@ -378,7 +383,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         mock_provider.create_project.side_effect = create_project
         mock_provider.get_project.side_effect = get_project
-        mock_provider.update_project.side_effect = update_project
+        mock_provider.patch_project.side_effect = patch_project
         mock_provider.add_project_resource.side_effect = add_resource
         mock_provider.remove_project_resource.side_effect = remove_resource
 
@@ -406,9 +411,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
-        submitted = mock_provider.update_project.await_args.args[0]
-        self.assertEqual(submitted.name, "Updated Project")
-        self.assertEqual(submitted.instructions, "Updated Instruction")
+        mock_provider.patch_project.assert_awaited_with(
+            "proj-abc", name="Updated Project", instructions="Updated Instruction"
+        )
         self.assertEqual(project.title, "Updated Project")
         self.assertEqual(await project.instruction.get(), "Updated Instruction")
 
@@ -1290,76 +1295,6 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 [type(e) for e in custom_sync_op.stream()],
                 [OutputBegin, OutputDelta, OutputEnd],
             )
-
-    async def test_projects_update_stages_snapshot_for_single_arg_update_project(self) -> None:
-        from types import SimpleNamespace
-
-        from webaiprovider.collections import Page
-        from webaiprovider.resources.common import Origin, ResourceData
-        from webaiprovider.resources.project.types import ProjectData as NativeProject
-
-        class StagingProvider(AsyncProvider):
-            def __init__(self, account: Account) -> None:
-                super().__init__(account)
-                self._gate = asyncio.Lock()
-                self.staged_during_update: list[NativeProject | None] = []
-                self.submitted: list[NativeProject] = []
-                self.get_calls = 0
-                self.editor = SimpleNamespace(
-                    write=AsyncMock(
-                        side_effect=lambda op, *_args, **_kw: (
-                            ResourceData("remote-n1", "n1", "text/plain")
-                            if op == "add_source"
-                            else None
-                        )
-                    )
-                )
-
-            async def prepare(self) -> None:
-                return None
-
-            async def _close_provider(self) -> None:
-                return None
-
-            async def list_projects(self, *, cursor: str | None = None):
-                return Page((await self.get_project("proj-1"),), None)
-
-            async def get_project(self, project_id: str):
-                self.get_calls += 1
-                return NativeProject(
-                    Origin("claude", self.account_id, project_id),
-                    "Original",
-                    "Original instructions",
-                    metadata={"native": {"uuid": project_id}},
-                )
-
-            async def update_project(self, project):
-                entry = self._staged_project_reads.pop(project.origin.remote_id, None)
-                self.staged_during_update.append(entry[1] if entry is not None else None)
-                self.submitted.append(project)
-                return project
-
-        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
-        async with StagingProvider(account) as provider:
-            await provider.projects.refresh()
-            self.assertEqual(provider.get_calls, 1)
-            updated = await provider.projects.update(
-                "proj-1",
-                title="Renamed",
-                instruction="New instructions",
-            )
-            self.assertEqual(len(provider.staged_during_update), 1)
-            self.assertIsNotNone(provider.staged_during_update[0])
-            self.assertEqual(provider.staged_during_update[0].name, "Original")
-            self.assertEqual(provider.submitted[0].name, "Renamed")
-            self.assertEqual(updated.title, "Renamed")
-            self.assertFalse(provider._staged_project_reads)
-
-            added = await updated.resources.add("Body", resource_type="text", name="n1")
-            self.assertEqual(added["id"], "remote-n1")
-            self.assertTrue(await updated.resources.remove("remote-n1"))
-            self.assertEqual(provider.get_calls, 2)
-            self.assertFalse(provider._staged_project_reads)
 
 
 if __name__ == "__main__":

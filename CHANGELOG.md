@@ -16,6 +16,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Replace implicit project snapshot staging and reentrant locks with field-specific `patch_project()` and a single mutation lock owner; preserve unrelated fields and confirm incomplete server replies without replaying writes.
+- Track direct provider I/O during shutdown and reject newly started work once shutdown begins.
+
 - Fix Grok opening deadlocks and make Claude logout drain accepted operations before closing and deleting credentials.
 - Preserve unsent chats and project-chat identities during refresh, and reuse assistant messages already loaded while a send completes.
 - Preserve primary stream errors when iterator cleanup also fails, and isolate ChatGPT continuation size accounting from the generic nested cache estimator.

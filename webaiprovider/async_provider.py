@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from functools import wraps
@@ -168,35 +167,6 @@ _ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = conte
 )
 
 
-class _ReentrantAsyncLock:
-    __slots__ = ("_lock", "_owner", "_depth", "__weakref__")
-
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._owner: asyncio.Task[Any] | None = None
-        self._depth = 0
-
-    async def __aenter__(self) -> _ReentrantAsyncLock:
-        task = asyncio.current_task()
-        if task is None:
-            raise RuntimeError("Project locks require an active asyncio task")
-        if self._owner is task:
-            self._depth += 1
-        else:
-            await self._lock.acquire()
-            self._owner = task
-            self._depth = 1
-        return self
-
-    async def __aexit__(self, *_exc_info: Any) -> None:
-        if self._owner is not asyncio.current_task():
-            raise RuntimeError("Project lock released by a non-owner task")
-        self._depth -= 1
-        if self._depth == 0:
-            self._owner = None
-            self._lock.release()
-
-
 def _has_active_operation(provider_id: int, *, send_lock_id: int | None = None) -> bool:
     return any(
         operation.active
@@ -248,8 +218,7 @@ class AsyncProvider(BaseProvider):
         self._close_task: asyncio.Task[None] | None = None
         self._active_operations = 0
         self._send_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
-        self._project_locks: WeakValueDictionary[str, _ReentrantAsyncLock] = WeakValueDictionary()
-        self._staged_project_reads: dict[str, tuple[float, ProjectData]] = {}
+        self._project_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self.chats = AsyncChatsCollection(self)
         self.projects = self._projects_collection_type(self)
         self.models = AsyncModelsCollection(self._load_models)
@@ -355,10 +324,10 @@ class AsyncProvider(BaseProvider):
             self._send_locks[conversation_id] = lock
         return lock
 
-    def _project_lock(self, project_id: str) -> _ReentrantAsyncLock:
+    def _project_lock(self, project_id: str) -> asyncio.Lock:
         lock = self._project_locks.get(project_id)
         if lock is None:
-            lock = _ReentrantAsyncLock()
+            lock = asyncio.Lock()
             self._project_locks[project_id] = lock
         return lock
 
@@ -376,9 +345,10 @@ class AsyncProvider(BaseProvider):
     async def _activity(self, *, send_lock_id: int | None = None):
         if send_lock_id is not None and _has_active_operation(id(self), send_lock_id=send_lock_id):
             raise ProviderError("A send hook cannot await another send in the same conversation")
+        nested = _has_active_operation(id(self))
         with self._operation_marker(send_lock_id=send_lock_id):
             async with self._lifecycle_lock:
-                if self._closed or (self._closing and not _has_active_operation(id(self))):
+                if self._closed or (self._closing and not nested):
                     raise ProviderError("Provider is closing or is closed")
                 async with self._lifecycle_condition:
                     self._active_operations += 1
@@ -530,38 +500,48 @@ class AsyncProvider(BaseProvider):
     async def forget_session(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "forget_session_not_implemented")
 
+    @_provider_activity
     async def list_chats(self, cursor: str | None = None, limit: int = 28) -> Page[Conversation]:
         raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
+    @_provider_activity
     async def get_chat(self, conversation_id: str) -> Conversation:
         raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
+    @_provider_activity
     async def branch_chat(self, conversation_id: str, message_id: str) -> Conversation:
         raise FeatureUnavailable(Capability.CHAT_BRANCH, "not_implemented")
 
     async def conversation_attachment_count(self, conversation_id: str) -> int | None:
         raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")
 
+    @_provider_activity
     async def rename_chat(self, conversation_id: str, title: str) -> None:
         raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
+    @_provider_activity
     async def delete_chat(self, conversation_id: str) -> None:
         raise FeatureUnavailable(Capability.DELETE, "not_implemented")
 
+    @_provider_activity
     async def upload_file(self, path: Any) -> dict:
         raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")
 
+    @_provider_activity
     async def list_projects(self, cursor: str | None = None) -> Page[ProjectData]:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
+    @_provider_activity
     async def get_project(self, project_id: str) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
+    @_provider_activity
     async def list_project_chats(
         self, project_id: str, cursor: str | None = None
     ) -> Page[Conversation]:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
+    @_provider_activity
     async def create_project(
         self,
         name: str,
@@ -569,12 +549,15 @@ class AsyncProvider(BaseProvider):
     ) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECT_CREATE, "not_implemented")
 
+    @_provider_activity
     async def delete_project(self, project_id: str) -> None:
         raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
 
+    @_provider_activity
     async def move_chat(self, conversation_id: str, project_id: str | None) -> None:
         raise FeatureUnavailable(Capability.PROJECT_MEMBERSHIP, "not_implemented")
 
+    @_provider_activity
     async def resolve_download(
         self, url: str, conversation_id: str | None = None, message_id: str | None = None
     ) -> Any | None:
@@ -595,127 +578,96 @@ class AsyncProvider(BaseProvider):
             "Project change could not be confirmed by the server; sync before retrying"
         )
 
+    @_provider_activity
     async def project_options(self, project_id: str | None = None) -> ProjectOptions:
         host = self
         async with host._gate:
             return await host.editor.options(project_id)
 
-    def _stage_project_read(self, project: ProjectData) -> None:
-        if len(self._staged_project_reads) >= 8:
-            self._staged_project_reads.clear()
-        self._staged_project_reads[project.origin.remote_id] = (time.monotonic(), project)
-
+    @_provider_activity
     async def update_project(self, project: ProjectData) -> ProjectData:
-        host = self
-        if project.origin.provider_id != host.id or project.origin.account_id != host.account_id:
+        if project.origin.provider_id != self.id or project.origin.account_id != self.account_id:
             raise ValueError("Project belongs to a different provider account")
-        remote = project.origin.remote_id
-        if not project.name.strip():
-            raise ValueError("Project name is required")
-        async with host._project_lock(remote):
-            return await host._update_project_locked(project, remote)
-
-    async def _update_project_locked(self, project: ProjectData, remote: str) -> ProjectData:
-        host = self
-        staged = host._staged_project_reads.pop(remote, None)
-        if (
-            staged is not None
-            and staged[1].origin == project.origin
-            and time.monotonic() - staged[0] < 5.0
-        ):
-            current = staged[1]
-        else:
-            current = await host.get_project(remote)
-        changes = {}
-        if current.name != project.name:
-            changes["name"] = project.name
-        if (current.instructions or "") != (project.instructions or ""):
-            changes["instructions"] = project.instructions or ""
-        if not changes:
-            return current
-        async with host._gate:
-            result = await host.editor.write("update", remote, current=current, **changes)
-        if isinstance(result, ProjectData):
-            host._invalidate_project_cache(remote)
-            return result
-        return await host._project_after_write(
-            remote,
-            lambda saved: (
-                saved.name == project.name
-                and (saved.instructions or "") == (project.instructions or "")
-            ),
+        return await self.patch_project(
+            project.origin.remote_id, name=project.name, instructions=project.instructions or ""
         )
 
+    @_provider_activity
+    async def patch_project(
+        self, project_id: str, *, name: str | None = None, instructions: str | None = None
+    ) -> ProjectData:
+        if name is not None and not name.strip():
+            raise ValueError("Project name is required")
+        async with self._project_lock(project_id):
+            current = await self.get_project(project_id)
+            changes = {}
+            if name is not None and current.name != name:
+                changes["name"] = name
+            if instructions is not None and (current.instructions or "") != instructions:
+                changes["instructions"] = instructions
+            if not changes:
+                return current
+            async with self._gate:
+                result = await self.editor.write("update", project_id, current=current, **changes)
+            if isinstance(result, ProjectData):
+                self._invalidate_project_cache(project_id)
+                return result
+            return await self._project_after_write(
+                project_id,
+                lambda saved: all(
+                    (getattr(saved, field) or "") == value for field, value in changes.items()
+                ),
+            )
+
+    @_provider_activity
     async def add_project_resource(self, project_id: str, kind: str, **values: Any) -> ProjectData:
         async with self._project_lock(project_id):
-            return await self._add_project_resource_locked(project_id, kind, **values)
-
-    async def _add_project_resource_locked(
-        self, project_id: str, kind: str, **values: Any
-    ) -> ProjectData:
-        host = self
-        staged = host._staged_project_reads.pop(project_id, None)
-        if staged is not None and time.monotonic() - staged[0] < 5.0:
-            before = staged[1]
-        else:
+            host = self
             before = await host.get_project(project_id)
-        ids = {resource.id for resource in before.resources}
-        async with host._gate:
-            result = await host.editor.write(
-                "add_source",
+            ids = {resource.id for resource in before.resources}
+            async with host._gate:
+                result = await host.editor.write(
+                    "add_source",
+                    project_id,
+                    kind=kind,
+                    existing_resources=before.resources,
+                    **values,
+                )
+            host._invalidate_project_cache(project_id)
+            if isinstance(result, ResourceData):
+                return replace(before, resources=(*before.resources, result))
+            if isinstance(result, ProjectData):
+                return result
+            return await self._project_after_write(
                 project_id,
-                kind=kind,
-                existing_resources=before.resources,
-                **values,
+                lambda project: any(resource.id not in ids for resource in project.resources),
             )
-        host._invalidate_project_cache(project_id)
-        if isinstance(result, ResourceData):
-            return replace(before, resources=(*before.resources, result))
-        if isinstance(result, ProjectData):
-            return result
-        return await self._project_after_write(
-            project_id,
-            lambda project: any(resource.id not in ids for resource in project.resources),
-        )
 
+    @_provider_activity
     async def remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
         async with self._project_lock(project_id):
-            return await self._remove_project_resource_locked(project_id, resource_id)
-
-    async def _remove_project_resource_locked(
-        self, project_id: str, resource_id: str
-    ) -> ProjectData:
-        host = self
-        staged = host._staged_project_reads.pop(project_id, None)
-        if staged is not None and time.monotonic() - staged[0] < 5.0:
-            before = staged[1]
-        else:
-            before = await host.get_project(project_id)
-        source = next(
-            (resource for resource in before.resources if resource.id == resource_id), None
-        )
-        if source is None and staged is not None:
+            host = self
             before = await host.get_project(project_id)
             source = next(
                 (resource for resource in before.resources if resource.id == resource_id), None
             )
-        if source is None:
-            raise ValueError("Project resource was not found")
-        async with host._gate:
-            result = await host.editor.write(
-                "remove_source",
+            if source is None:
+                raise ValueError("Project resource was not found")
+            async with host._gate:
+                result = await host.editor.write(
+                    "remove_source",
+                    project_id,
+                    resource_id=resource_id,
+                    resource_name=source.name,
+                    resource=source,
+                )
+            if isinstance(result, ProjectData):
+                host._invalidate_project_cache(project_id)
+                return result
+            return await host._project_after_write(
                 project_id,
-                resource_id=resource_id,
-                resource_name=source.name,
-                resource=source,
+                lambda project: all(resource.id != resource_id for resource in project.resources),
             )
-        if isinstance(result, ProjectData):
-            host._invalidate_project_cache(project_id)
-            return result
-        return await host._project_after_write(
-            project_id,
-            lambda project: all(resource.id != resource_id for resource in project.resources),
-        )
 
     async def ask(
         self,

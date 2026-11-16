@@ -301,6 +301,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             return remote
 
         provider.editor = SimpleNamespace(write=AsyncMock(side_effect=write))
+        provider.get_project = AsyncMock(side_effect=lambda _: remote)
         try:
             rename = asyncio.create_task(provider.projects.update(project, title="Renamed"))
             await write_started.wait()
@@ -602,3 +603,52 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(
             _default_size_calculator("key", ("record", {"text": "x" * 100000}, 1)), 100000
         )
+
+    async def test_direct_patch_drains_on_close_and_rejects_new_operations(self):
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider.client.prepare = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider.editor.close = AsyncMock()
+        remote = ProjectData(Origin("claude", provider.account_id, "project"), "Before", "Keep")
+        provider.get_project = AsyncMock(return_value=remote)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def write(_action, _remote, *, current, **changes):
+            entered.set()
+            await release.wait()
+            return replace(current, **changes)
+
+        provider.editor.write = AsyncMock(side_effect=write)
+        await provider.open()
+        mutation = asyncio.create_task(provider.patch_project("project", name="After"))
+        await entered.wait()
+        closing = asyncio.create_task(provider.close())
+        while not provider._closing:
+            await asyncio.sleep(0)
+        try:
+            with self.assertRaises(ProviderError):
+                await provider.patch_project("project", instructions="Rejected")
+            self.assertFalse(closing.done())
+        finally:
+            release.set()
+        result = await asyncio.wait_for(mutation, 1)
+        await asyncio.wait_for(closing, 1)
+        self.assertEqual((result.name, result.instructions), ("After", "Keep"))
+        self.assertEqual(provider.editor.write.await_count, 1)
+
+    async def test_project_pages_reuse_general_chat_and_do_not_duplicate_pages(self):
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.chat.types import Conversation
+
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        remote = Conversation(Origin("claude", provider.account_id, "chat"), "Title")
+        provider.list_chats = AsyncMock(return_value=Page((remote,)))
+        provider.list_project_chats = AsyncMock(return_value=Page((remote,)))
+        async with provider:
+            chat = (await provider.chats.refresh())[0]
+            project = provider._project_type(title="Project", remote_id="project", session=provider)
+            self.assertIs((await project.chats.refresh()).items[0], chat)
+            self.assertIs((await project.chats.refresh("next")).items[0], chat)
+            self.assertEqual(len(await project.chats.list()), 1)

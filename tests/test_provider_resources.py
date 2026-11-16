@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 from tests.streaming_support import StreamTestProvider
@@ -72,7 +73,11 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.provider.create_project.return_value = original
         self.provider.get_project.return_value = original
-        self.provider.update_project.side_effect = lambda project: project
+        self.provider.patch_project = AsyncMock(
+            side_effect=lambda project_id, **fields: replace(
+                original, **{key: value for key, value in fields.items() if value is not None}
+            )
+        )
         self.provider.add_project_resource.return_value = NativeProject(
             original.origin,
             original.name,
@@ -95,10 +100,9 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await self.provider.projects.update(
             project, title="Updated", instruction="New instructions"
         )
-        self.provider.update_project.assert_awaited_once()
-        submitted = self.provider.update_project.await_args.args[0]
-        self.assertEqual(submitted.name, "Updated")
-        self.assertEqual(submitted.instructions, "New instructions")
+        self.provider.patch_project.assert_awaited_once_with(
+            "project-1", name="Updated", instructions="New instructions"
+        )
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 

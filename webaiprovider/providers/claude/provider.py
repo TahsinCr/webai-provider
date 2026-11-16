@@ -85,6 +85,7 @@ class AsyncClaudeProvider(AsyncProvider):
     async def prepare(self):
         await self.client.prepare()
 
+    @_provider_activity
     async def upload_file(self, path):
         return await self.client.upload_file(path)
 
@@ -105,6 +106,7 @@ class AsyncClaudeProvider(AsyncProvider):
             state = SessionState.LOGIN_REQUIRED
         return SessionStatus(state, saved)
 
+    @_provider_activity
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
@@ -165,6 +167,7 @@ class AsyncClaudeProvider(AsyncProvider):
     async def _load_model_catalog(self, *, force: bool = False):
         return await self.client.request("models", force=force)
 
+    @_provider_activity
     async def list_chats(self, cursor=None, limit=50):
         values = await self.client.request("chats", cursor=cursor, limit=limit)
         if not isinstance(values, list):
@@ -174,6 +177,7 @@ class AsyncClaudeProvider(AsyncProvider):
             str(int(cursor or 0) + limit) if len(values) == limit else None,
         )
 
+    @_provider_activity
     async def get_chat(self, conversation_id):
         raw = await self.client.request("history", conversation_id=conversation_id)
         return await asyncio.to_thread(
@@ -186,6 +190,7 @@ class AsyncClaudeProvider(AsyncProvider):
         value = await self.client.request("history", conversation_id=conversation_id)
         return conversation_attachment_count(value)
 
+    @_provider_activity
     async def list_projects(self, cursor=None):
         if cursor:
             raise ValueError("Claude project listing does not use a cursor")
@@ -194,9 +199,11 @@ class AsyncClaudeProvider(AsyncProvider):
             raise ClaudeCompatibilityError("Claude project list response changed")
         return Page(tuple(project(x, self.account_id) for x in values))
 
+    @_provider_activity
     async def get_project(self, project_id):
         return project(await self.client.request("project", project_id=project_id), self.account_id)
 
+    @_provider_activity
     async def list_project_chats(self, project_id, cursor=None):
         if cursor:
             raise ValueError("Claude project conversation listing does not use a cursor")
@@ -207,6 +214,7 @@ class AsyncClaudeProvider(AsyncProvider):
             tuple(conversation(dict(x, project_uuid=project_id), self.account_id) for x in values)
         )
 
+    @_provider_activity
     async def create_project(self, name, instructions=""):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Project name must contain 1–200 characters")
@@ -218,6 +226,7 @@ class AsyncClaudeProvider(AsyncProvider):
                 self.account_id,
             )
 
+    @_provider_activity
     async def rename_chat(self, conversation_id, title):
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
             raise ValueError("Chat title must contain 1–200 characters")
@@ -226,13 +235,16 @@ class AsyncClaudeProvider(AsyncProvider):
                 "rename_chat", conversation_id=conversation_id, title=title.strip()
             )
 
+    @_provider_activity
     async def delete_chat(self, conversation_id):
         await self.client.request("delete_chat", conversation_id=conversation_id)
 
+    @_provider_activity
     async def delete_project(self, project_id):
         async with self._gate:
             await self.client.request("delete_project", project_id=project_id)
 
+    @_provider_activity
     async def move_chat(self, conversation_id, project_id):
         async with self._gate:
             await self.client.request(

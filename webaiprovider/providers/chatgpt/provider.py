@@ -381,6 +381,7 @@ class AsyncChatGPTProvider(AsyncProvider):
 
         await asyncio.to_thread(discard)
 
+    @_provider_activity
     async def upload_file(self, path, *, cancel_event=None) -> dict:
         import mimetypes
         import threading
@@ -558,6 +559,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             dict(raw.get("metadata") or {}),
         )
 
+    @_provider_activity
     async def delete_chat(self, conversation_id):
         async with self._gate:
 
@@ -576,6 +578,7 @@ class AsyncChatGPTProvider(AsyncProvider):
 
         await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
+    @_provider_activity
     async def delete_project(self, project_id):
         from urllib.parse import quote
 
@@ -599,6 +602,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             self._read_semaphore = asyncio.Semaphore(2)
         return self._read_semaphore
 
+    @_provider_activity
     async def list_projects(self, cursor: str | None = None) -> Page[ProjectData]:
         def read():
             with self._client_scope() as client:
@@ -609,6 +613,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             raw = await self._to_thread(read)
         return Page(tuple(self._project(item) for item in raw["items"]), raw.get("cursor"))
 
+    @_provider_activity
     async def create_project(
         self,
         name: str,
@@ -626,6 +631,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             return self._project(await self._to_thread(create))
 
+    @_provider_activity
     async def get_project(self, project_id: str) -> ProjectData:
         def read():
             with self._client_scope() as client:
@@ -634,6 +640,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         await self._wait_for_prepare()
         return self._project(await self._to_thread(read))
 
+    @_provider_activity
     async def list_project_chats(
         self, project_id: str, cursor: str | None = None
     ) -> Page[Conversation]:
@@ -763,6 +770,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             metadata=metadata,
         )
 
+    @_provider_activity
     async def list_chats(self, cursor: str | None = None, limit: int = 28) -> Page[Conversation]:
         offset = int(cursor or "0")
         if offset < 0 or not 1 <= limit <= 100:
@@ -798,6 +806,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             str(offset + len(items)) if len(items) == limit else None,
         )
 
+    @_provider_activity
     async def get_chat(self, conversation_id: str) -> Conversation:
         def read():
             with self._client_scope() as client:
@@ -823,6 +832,7 @@ class AsyncChatGPTProvider(AsyncProvider):
                 return temp_snapshot
         return client.get_conversation(conversation_id)
 
+    @_provider_activity
     async def resolve_download(self, url, conversation_id=None, message_id=None):
         from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -944,6 +954,7 @@ class AsyncChatGPTProvider(AsyncProvider):
 
         return await self._to_thread(resolve)
 
+    @_provider_activity
     async def branch_chat(self, conversation_id: str, message_id: str) -> Conversation:
         from urllib.parse import quote
 
@@ -998,6 +1009,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._gate:
             return await self._to_thread(branch)
 
+    @_provider_activity
     async def rename_chat(self, conversation_id: str, title: str) -> None:
         if not title.strip():
             raise ValueError("title must be nonempty")
@@ -1011,6 +1023,7 @@ class AsyncChatGPTProvider(AsyncProvider):
         async with self._rename_gate:
             await self._to_thread(rename)
 
+    @_provider_activity
     async def move_chat(self, conversation_id: str, project_id: str | None) -> None:
         def move():
             with self._client_scope() as client:
