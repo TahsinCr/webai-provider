@@ -652,3 +652,25 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs((await project.chats.refresh()).items[0], chat)
             self.assertIs((await project.chats.refresh("next")).items[0], chat)
             self.assertEqual(len(await project.chats.list()), 1)
+
+    async def test_refresh_keeps_chat_bound_after_remote_snapshot_started(self):
+        from webaiprovider.collections import Page
+
+        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider.prepare = AsyncMock()
+        provider._close_provider = AsyncMock()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def listing():
+            entered.set()
+            await release.wait()
+            return Page(())
+
+        provider.list_chats = listing
+        async with provider:
+            chat = await provider.chats.create("Pending")
+            refreshing = asyncio.create_task(provider.chats.refresh())
+            await entered.wait()
+            chat.remote_id = "just-created"
+            release.set()
+            self.assertEqual(await refreshing, [chat])

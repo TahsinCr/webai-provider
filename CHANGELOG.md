@@ -16,6 +16,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Keep newly bound conversations when an earlier history request finishes before the server lists them.
+
 - Document opt-in send timing, field-specific project updates, and the memory cost of retained stream replay history.
 
 - Replace implicit project snapshot staging and reentrant locks with field-specific `patch_project()` and a single mutation lock owner; preserve unrelated fields and confirm incomplete server replies without replaying writes.

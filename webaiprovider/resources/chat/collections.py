@@ -154,6 +154,7 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
     async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
         async with self.session._activity():
             provider = self.session._require_provider()
+            pending = {id(chat) for chat in self._items if chat.remote_id is None}
 
             def reconcile(chats):
                 existing = {chat.remote_id: chat for chat in self._items if chat.remote_id}
@@ -166,7 +167,13 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
                         cached.temporary = chat.temporary
                         cached.metadata = dict(chat.metadata)
                     result.append(cached or chat)
-                result.extend(chat for chat in self._items if chat.remote_id is None)
+                seen = {chat.remote_id for chat in result if chat.remote_id}
+                result.extend(
+                    chat
+                    for chat in self._items
+                    if chat.remote_id is None
+                    or (id(chat) in pending and chat.remote_id not in seen)
+                )
                 return result
 
             if include_projects and Capability.PROJECTS in self.session.capabilities:
