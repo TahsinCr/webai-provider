@@ -13,7 +13,9 @@ class ProjectApiTests(LiveSyncTestCase):
         capabilities = self.context.session.capabilities
         if Capability.PROJECTS not in capabilities:
             self.skipTest("Provider does not expose projects")
-        projects = self.call_api("projects.list_metadata", self.context.session.projects.refresh)
+        projects = self.call_api(
+            "projects.list_metadata", lambda: self.context.session.projects.list(limit=50)
+        )
         self.assertIsInstance(projects, list)
         required = {Capability.PROJECT_CREATE, Capability.PROJECT_DELETE}
         if not required.issubset(capabilities):
@@ -72,7 +74,7 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
         if Capability.PROJECTS not in capabilities:
             self.skipTest("Provider does not expose projects")
         projects = await self.call_api(
-            "projects.list_metadata", self.context.session.projects.refresh
+            "projects.list_metadata", lambda: self.context.session.projects.list(limit=50)
         )
         self.assertIsInstance(projects, list)
         required = {Capability.PROJECT_CREATE, Capability.PROJECT_DELETE}

@@ -49,7 +49,9 @@ class MessageApiTests(LiveSyncTestCase):
                 self.assertIsInstance(response.timing, TimingMetrics)
                 self.assertIsInstance(response.sources, SourcesCollection)
                 self.assertIsInstance(response.artifacts, ArtifactsCollection)
-            responses = self.call_api("responses.list_temporary_chat", chat.responses.refresh)
+            responses = self.call_api(
+                "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
+            )
             self.assertGreaterEqual(len(responses), 1)
             self.assertTrue(all(isinstance(item, Response) for item in responses))
             self.assertIsNone(responses[-1].timing)
@@ -82,7 +84,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             )
             self.assertTrue(getattr(response, "text", ""), "Temporary chat returned no text")
             chats = await self.call_api(
-                "chats.list_after_temporary", self.context.session.chats.refresh
+                "chats.list_after_temporary", lambda: self.context.session.chats.list(limit=50)
             )
             if chat.remote_id:
                 self.assertNotIn(
@@ -173,7 +175,9 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             )
             self.assertTrue(getattr(followup_response, "text", ""))
 
-            responses = await self.call_api("responses.list_temporary_chat", chat.responses.refresh)
+            responses = await self.call_api(
+                "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
+            )
             self.assertGreaterEqual(len(responses), 1)
             self.assertTrue(all(isinstance(item, Response) for item in responses))
             self.assertIsNone(responses[-1].timing)
@@ -188,7 +192,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 )
                 self.assertTrue(getattr(retried_last, "text", ""))
                 responses = await self.call_api(
-                    "responses.refresh_after_retry_last", chat.responses.refresh
+                    "responses.list_after_retry_last", lambda: chat.responses.list(limit=50)
                 )
             else:
                 self.context.skip("responses.retry: unsupported")
@@ -204,7 +208,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 )
                 self.assertTrue(getattr(edited_last, "text", ""))
                 responses = await self.call_api(
-                    "responses.refresh_after_edit_last", chat.responses.refresh
+                    "responses.list_after_edit_last", lambda: chat.responses.list(limit=50)
                 )
             else:
                 self.context.skip("responses.edit: unsupported")
@@ -218,7 +222,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 )
                 self.assertTrue(getattr(retried_middle, "text", ""))
                 responses = await self.call_api(
-                    "responses.refresh_after_retry_middle", chat.responses.refresh
+                    "responses.list_after_retry_middle", lambda: chat.responses.list(limit=50)
                 )
 
             if Capability.MESSAGE_EDIT in capabilities:
@@ -234,7 +238,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
 
             if Capability.CHAT_BRANCH in capabilities and Capability.RENAME in capabilities:
                 responses = await self.call_api(
-                    "responses.refresh_before_branch", chat.responses.refresh
+                    "responses.list_before_branch", lambda: chat.responses.list(limit=50)
                 )
                 if responses:
                     src_title = f"{marker}-src"

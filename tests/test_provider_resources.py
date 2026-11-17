@@ -128,7 +128,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await project.attachments.remove("resource-2")
         self.provider._remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
         state["project"] = original
-        loaded_projects = await self.provider.projects.refresh()
+        loaded_projects = await self.provider.projects.list(limit=None)
         loaded = loaded_projects[0]
         self.assertEqual(loaded.remote_id, "project-1")
         self.assertEqual(await loaded.instruction.get(), "Be concise")
@@ -160,7 +160,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(provider.close)
 
         project = AsyncProject(title="Research", provider=provider, remote_id="project-1")
-        items = await project.chats.refresh()
+        items = await project.chats.list(limit=None)
         self.assertEqual([item.remote_id for item in items], ["chat-1", "chat-2b"])
         self.assertIs(items[0].provider, provider)
         self.assertIs(items[0].project, project)
@@ -279,7 +279,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.provider._get_chat_data.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
-        responses = await chat.responses.refresh()
+        responses = await chat.responses.list(limit=None)
         self.assertEqual(chat.title, "Loaded Title")
         self.assertEqual(chat.metadata, {"default_model_slug": "sonnet"})
         self.assertEqual(len(responses), 1)
@@ -324,7 +324,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
-        main_page = await provider.chats.refresh()
+        main_page = await provider.chats.list(limit=None)
         self.assertEqual([c.remote_id for c in main_page], ["chat-loose", "chat-shared"])
         self.assertEqual(main_page[0].metadata, {"temporary": False, "source": "list"})
         self.assertTrue(all(c.project is None for c in main_page))
@@ -332,7 +332,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         provider._list_project_chats_data.assert_not_awaited()
         self.assertEqual(await provider.chats.search("Project Only"), [])
 
-        all_page = await provider.chats.refresh(include_projects=True)
+        all_page = await provider.chats.list(limit=None, include_projects=True)
         self.assertEqual(
             [c.remote_id for c in all_page],
             ["chat-loose", "chat-shared", "chat-proj"],

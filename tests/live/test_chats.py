@@ -10,12 +10,11 @@ class ChatApiTests(LiveSyncTestCase):
         if Capability.CHAT not in self.context.session.capabilities:
             self.skipTest("Provider does not expose chats")
         self.assertEqual(self.context.session.chats.list(limit=0), [])
-        limited = self.call_api(
-            "chats.list_limited", lambda: self.context.session.chats.list(limit=2)
+        chats = self.call_api(
+            "chats.list_metadata", lambda: self.context.session.chats.list(limit=2)
         )
-        self.assertLessEqual(len(limited), 2)
-        chats = self.call_api("chats.list_metadata", self.context.session.chats.refresh)
-        self.assertIsInstance(chats, list)
+        self.assertLessEqual(len(chats), 2)
+        self.assertTrue(all(chat.project is None for chat in chats))
 
 
 class AsyncChatApiTests(LiveAsyncTestCase):
@@ -23,26 +22,17 @@ class AsyncChatApiTests(LiveAsyncTestCase):
         if Capability.CHAT not in self.context.session.capabilities:
             self.skipTest("Provider does not expose chats")
         self.assertEqual(await self.context.session.chats.list(limit=0), [])
-        limited = await self.call_api(
-            "chats.list_limited", lambda: self.context.session.chats.list(limit=2)
+        chats = await self.call_api(
+            "chats.list_metadata", lambda: self.context.session.chats.list(limit=2)
         )
-        self.assertLessEqual(len(limited), 2)
-        chats = await self.call_api("chats.list_metadata", self.context.session.chats.refresh)
-        self.assertIsInstance(chats, list)
+        self.assertLessEqual(len(chats), 2)
         self.assertTrue(all(chat.project is None for chat in chats))
 
         if Capability.PROJECTS in self.context.session.capabilities:
             all_chats = await self.call_api(
                 "chats.list_include_projects",
-                lambda: self.context.session.chats.refresh(include_projects=True),
+                lambda: self.context.session.chats.list(limit=2, include_projects=True),
             )
-            self.assertIsInstance(all_chats, list)
-            absent = await self.call_api(
-                "chats.search_include_projects",
-                lambda: self.context.session.chats.search(
-                    "__webai_absent__", include_projects=True
-                ),
-            )
-            self.assertEqual(absent, [])
+            self.assertLessEqual(len(all_chats), 2)
         else:
             self.context.skip("chats.include_projects: unsupported")

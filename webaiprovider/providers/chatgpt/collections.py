@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ...collections import _publish_collection_change
 from ...core.operations import execute_with_hooks
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.project import AsyncProject
@@ -42,6 +43,10 @@ class AsyncChatGPTProjectsCollection(AsyncProjectsCollection):
 
         async def on_success(ctx) -> None:
             project: AsyncProject = ctx.result
+            if project.remote_id:
+                await _publish_collection_change(
+                    runtime, "projects", "create", project, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "project.created",
                 operation_id=ctx.operation_id,

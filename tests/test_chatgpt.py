@@ -1293,7 +1293,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.provider._prepare_session = AsyncMock()
         await self.provider.open()
         try:
-            loaded = await self.provider.projects.refresh()
+            loaded = await self.provider.projects.list(limit=None)
             result = await self.provider.projects.update(loaded[0], title="Updated Name")
             self.assertEqual(result.title, "Updated Name")
             self.assertEqual(get_calls, 1)

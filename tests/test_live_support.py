@@ -1444,7 +1444,7 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
             capabilities={Capability.CHAT, Capability.TEMPORARY},
             chats=SimpleNamespace(
                 create=AsyncMock(return_value=chat),
-                refresh=AsyncMock(return_value=[]),
+                list=AsyncMock(return_value=[]),
             ),
         )
         test = AsyncMessageApiTests("test_incognito_temporary_chat")
@@ -1689,7 +1689,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                             "BR" if cid == "preview-1" else "ROOT",
                             fail_rate=rate_limit_branch if cid == "preview-1" else False,
                         ),
-                        refresh=AsyncMock(return_value=[resp_obj]),
+                        list=AsyncMock(return_value=[resp_obj]),
                     )
                     if rename_hook is not None:
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
@@ -1730,7 +1730,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                                 ),
                             )
                         ),
-                        refresh=AsyncMock(
+                        list=AsyncMock(
                             side_effect=lambda: [
                                 Conversation(cid, "Title")
                                 for cid in (
@@ -1766,7 +1766,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         create=lambda *_a, **_kw: make_op(
                             real, "c_branch_real", "BR", fail_rate=rate_limit_branch
                         ),
-                        refresh=AsyncMock(return_value=[real_resp]),
+                        list=AsyncMock(return_value=[real_resp]),
                     )
                     branched = real
                     return real
@@ -1851,7 +1851,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     Capability.CHAT_BRANCH,
                 },
                 models=SimpleNamespace(refresh=AsyncMock(return_value=[])),
-                chats=SimpleNamespace(create=AsyncMock(), refresh=AsyncMock(return_value=[])),
+                chats=SimpleNamespace(create=AsyncMock(), list=AsyncMock(return_value=[])),
                 list_chats=AsyncMock(return_value=Page((), None)),
                 get_chat=AsyncMock(side_effect=fake_get_chat),
                 delete_chat=AsyncMock(side_effect=fake_delete_chat),
@@ -1897,7 +1897,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             root_chat.responses = SimpleNamespace(
                 create=lambda *_a, **_kw: make_fake_op(root_chat, "c_root", "m-c_root", "ROOT"),
-                refresh=AsyncMock(return_value=[root_turn]),
+                list=AsyncMock(return_value=[root_turn]),
             )
             root_chat.rename = AsyncMock(
                 side_effect=lambda title: setattr(root_chat, "title", title)

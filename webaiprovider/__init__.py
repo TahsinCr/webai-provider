@@ -7,10 +7,12 @@ from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCr
 from .async_provider import AsyncProvider
 from .base import BaseProvider, Capability
 from .collections import (
-    AsyncManageableCollection,
-    AsyncQueryableCollection,
-    ManageableCollection,
-    QueryableCollection,
+    AsyncBaseCollection,
+    AsyncCollection,
+    AsyncRemoteCollection,
+    BaseCollection,
+    Collection,
+    RemoteCollection,
 )
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState, OperationState
@@ -142,10 +144,12 @@ __all__ = [
     "EventEnvelope",
     "EventFilter",
     "LifecycleState",
-    "QueryableCollection",
-    "ManageableCollection",
-    "AsyncQueryableCollection",
-    "AsyncManageableCollection",
+    "BaseCollection",
+    "Collection",
+    "RemoteCollection",
+    "AsyncBaseCollection",
+    "AsyncCollection",
+    "AsyncRemoteCollection",
     "ChatsCollection",
     "AsyncChatsCollection",
     "ProjectsCollection",

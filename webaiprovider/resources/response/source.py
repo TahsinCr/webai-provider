@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from ...collections import ReadOnlyCollection
+from ...collections import Collection
 
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE_COLLECTION_KEYS = (
@@ -156,7 +156,7 @@ class Source:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-class SourcesCollection(ReadOnlyCollection[Source]):
+class SourcesCollection(Collection[Source]):
     """Synchronous read-only local collection of response citations."""
 
     @classmethod

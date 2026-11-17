@@ -107,8 +107,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
             return provider
 
         for refresh in (
-            lambda provider: provider.chats.refresh(),
-            lambda provider: provider.projects.refresh(),
+            lambda provider: provider.chats.list(limit=None),
+            lambda provider: provider.projects.list(limit=None),
             lambda provider: provider.models.refresh(),
         ):
             refresh_started.clear()

@@ -397,24 +397,24 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
         project = ProjectData("project", "Before")
         provider._list_projects_data = AsyncMock(return_value=Page((project,)))
         async with provider:
-            chat = (await provider.chats.refresh())[0]
-            message = (await chat.responses.refresh())[0].message
+            chat = (await provider.chats.list(limit=None))[0]
+            message = (await chat.responses.list(limit=None))[0].message
             pending = chat.responses.create("pending").message
             provider._list_chats_data.return_value = Page((replace(remote, title="After"),))
-            refreshed_chats = await provider.chats.refresh()
+            refreshed_chats = await provider.chats.list(limit=None)
             self.assertEqual(refreshed_chats[0].title, "After")
             provider._get_chat_data.return_value = replace(
                 remote,
                 messages=(replace(remote.messages[0], content=(Content("text", text="new"),)),),
             )
-            responses = await chat.responses.refresh()
+            responses = await chat.responses.list(limit=None)
             self.assertIs(responses[0].message, message)
             self.assertEqual(message.content, "new")
             self.assertIn(pending, [r.message for r in responses])
-            first = (await provider.projects.refresh())[0]
+            first = (await provider.projects.list(limit=None))[0]
             self.assertEqual(first.title, "Before")
             provider._list_projects_data.return_value = Page((replace(project, name="After"),))
-            self.assertEqual((await provider.projects.refresh())[0].title, "After")
+            self.assertEqual((await provider.projects.list(limit=None))[0].title, "After")
 
 
 class CacheSizeTests(unittest.TestCase):
@@ -549,7 +549,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         async with provider:
             await provider.chats.create("Pending")
             for include_projects in (False, True):
-                listed = await provider.chats.refresh(include_projects=include_projects)
+                listed = await provider.chats.list(limit=None, include_projects=include_projects)
                 self.assertEqual([c.remote_id for c in listed], ["remote-1"])
 
     async def test_stream_completion_reuses_assistant_loaded_during_send(self):
@@ -568,12 +568,12 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider import Response
 
         loaded = Response("partial", id="assistant-1", remote_id="assistant-1", chat=chat)
-        chat.responses._items.append(loaded)
+        chat.responses._turns.append(loaded)
         release.set()
         response = await task
         self.assertIs(response, loaded)
         self.assertEqual(loaded.content, "answer")
-        self.assertEqual(len(chat.responses._items), 1)
+        self.assertEqual(len(chat.responses._turns), 1)
 
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
         from webaiprovider.resources.message.operation import _close_async_iterator
@@ -665,7 +665,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider._list_chats_data = listing
         async with provider:
             chat = await provider.chats.create("Pending")
-            refreshing = asyncio.create_task(provider.chats.refresh())
+            refreshing = asyncio.create_task(provider.chats.list(limit=None))
             await entered.wait()
             chat.remote_id = "just-created"
             release.set()

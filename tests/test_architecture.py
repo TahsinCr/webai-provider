@@ -302,7 +302,7 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
             "OperationContext",
             "BaseLocalCollection",
             "ReadOnlyCollection",
-            "AsyncRemoteCollection",
+            "AsyncDerivedCollection",
             "AsyncMutableRemoteCollection",
         }
         self.assertTrue(excluded.isdisjoint(set(webaiprovider.__all__)))
@@ -310,6 +310,12 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
             self.assertFalse(hasattr(webaiprovider, symbol), symbol)
         expected = {
             "Account",
+            "BaseCollection",
+            "AsyncBaseCollection",
+            "Collection",
+            "AsyncCollection",
+            "RemoteCollection",
+            "AsyncRemoteCollection",
             "AmbiguousMatchError",
             "Artifact",
             "ArtifactsCollection",
@@ -395,19 +401,19 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
-    async def test_no_stale_remote_cache_and_refresh_emits_event(self) -> None:
+    async def test_remote_list_publishes_one_batched_read_per_query(self) -> None:
         provider = _ScriptedAsyncProvider(_account())
         provider.seed_paginated(2, page_size=50)
-        refreshed_events: list[EventEnvelope[str]] = []
+        read_events: list[EventEnvelope[str]] = []
 
-        async def record_refreshed(event: EventEnvelope[str]) -> None:
-            refreshed_events.append(event)
+        async def record_read(event: EventEnvelope[str]) -> None:
+            read_events.append(event)
 
         await provider.events.subscribe(
-            record_refreshed,
+            record_read,
             event_filter=EventFilter(
                 event_type=EventEnvelope,
-                predicate=lambda event: event.event == "collection.refreshed",
+                predicate=lambda event: event.event == "collection.read.completed",
             ),
         )
         try:
@@ -420,13 +426,15 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
             second_list = await provider.chats.list(limit=None)
             self.assertEqual(len(second_list), 4)
 
-            refreshed = await provider.chats.refresh(limit=None)
-            self.assertEqual(len(refreshed), 4)
-            self.assertEqual(len(refreshed_events), 1)
+            self.assertEqual(await provider.chats.list(limit=0), [])
+            found = await provider.chats.find("Chat 003", exact=True)
+            self.assertEqual(found.remote_id, "c-3")
+            self.assertEqual(len(read_events), 3)
             self.assertEqual(
-                refreshed_events[0].metadata["payload"],
-                {"collection": "chats", "count": 4},
+                [event.metadata["payload"]["operation"] for event in read_events],
+                ["list", "list", "find"],
             )
+            self.assertEqual(read_events[2].metadata["payload"]["items"], [{"id": "c-3"}])
         finally:
             await provider.close()
 
@@ -573,7 +581,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(provider.get_chat_calls, ["chat"])
                 self.assertIs(responses[0].chat, chat)
                 self.assertEqual(responses[0].message.text, "Question")
-                refreshed = await chat.responses.refresh()
+                refreshed = await chat.responses.list(limit=None)
                 self.assertEqual(provider.get_chat_calls, ["chat", "chat"])
                 self.assertIs(refreshed[0], responses[0])
 
@@ -599,6 +607,18 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                 return Conversation(conversation_id, "History")
 
         async with HistoryProvider(_account()) as provider:
+            reads = []
+
+            async def record(event):
+                reads.append(event)
+
+            await provider.events.subscribe(
+                record,
+                event_filter=EventFilter(
+                    event_type=EventEnvelope,
+                    predicate=lambda event: event.event == "collection.read.completed",
+                ),
+            )
             chat = AsyncChat(provider=provider, remote_id="chat")
             first = asyncio.create_task(chat.responses.list(limit=None))
             await started.wait()
@@ -613,10 +633,14 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, 1)
             self.assertEqual(left, right)
             self.assertIsNot(left, right)
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(reads[0].metadata["resource_id"], "chat")
+            self.assertEqual(reads[0].metadata["payload"]["items"], [])
             await chat.responses.list()
             self.assertEqual(calls, 2)
+            self.assertEqual(len(reads), 2)
 
-    async def test_explicit_refresh_is_independent_and_older_history_cannot_overwrite_it(self):
+    async def test_explicit_fresh_read_is_independent_and_older_history_cannot_overwrite_it(self):
         started = asyncio.Event()
         release = asyncio.Event()
         calls = 0
@@ -636,7 +660,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             read = asyncio.create_task(chat.responses.list())
             await started.wait()
             try:
-                await asyncio.wait_for(chat.responses.refresh(), timeout=2)
+                await asyncio.wait_for(chat.responses.list(limit=None, fresh=True), timeout=2)
             finally:
                 release.set()
                 await read
@@ -796,10 +820,10 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(op.message.id, "u-real-1")
             self.assertEqual(op.message.remote_id, "u-real-1")
 
-            responses = await chat.responses.refresh()
+            responses = await chat.responses.list(limit=None)
             retried = await responses[-1].retry().start()
             self.assertTrue(retried.text.startswith("Reply:"))
-            refreshed = await chat.responses.refresh()
+            refreshed = await chat.responses.list(limit=None)
             self.assertEqual(
                 [r.message.id for r in refreshed if r.message is not None], ["u-real-1"]
             )
@@ -1165,6 +1189,18 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         try:
             project = await provider.projects.create("Files")
             hook_ops: list[str] = []
+            changes = []
+
+            async def record(event):
+                changes.append(event)
+
+            await provider.events.subscribe(
+                record,
+                event_filter=EventFilter(
+                    event_type=EventEnvelope,
+                    predicate=lambda event: event.event == "collection.changed",
+                ),
+            )
 
             async def before(ctx) -> None:
                 hook_ops.append(f"before:{ctx.resource_id}")
@@ -1183,6 +1219,13 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(removed)
 
             target_id = project.remote_id or project.id
+            self.assertEqual(
+                [event.metadata["payload"]["action"] for event in changes], ["create", "delete"]
+            )
+            self.assertEqual([event.metadata["resource_id"] for event in changes], [target_id] * 2)
+            self.assertEqual(
+                [event.metadata["payload"]["items"] for event in changes], [[{"id": att.id}]] * 2
+            )
             self.assertEqual(
                 hook_ops,
                 [
@@ -1237,17 +1280,10 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
             )
-            await chat.responses.refresh()
+            await chat.responses.list(limit=None)
             self.assertNotIn("a-1", chat.responses._known_responses)
         finally:
             await provider.close()
-
-    def test_p2_05_derived_collections_have_no_fake_fetch_page(self) -> None:
-        from webaiprovider.resources.project.collections import AsyncProjectAttachments
-        from webaiprovider.resources.response.collections import AsyncResponsesCollection
-
-        self.assertFalse(hasattr(AsyncResponsesCollection, "_fetch_page"))
-        self.assertFalse(hasattr(AsyncProjectAttachments, "_fetch_page"))
 
     def test_p2_06_provider_type_lives_in_base_without_provider_cycle(self) -> None:
         from webaiprovider.base import ProviderType as BaseProviderType
@@ -1349,6 +1385,20 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
     async def test_async_chat_ask_stream_and_response_branch_retry(self) -> None:
         async_cls, _, branchable_async_cls, _ = self._make_providers()
         provider = async_cls(_account())
+        changes = []
+
+        async def record(event):
+            payload = event.metadata["payload"]
+            if payload["collection"] == "chat.responses":
+                changes.append((event.metadata["resource_id"], payload["action"], payload["items"]))
+
+        await provider.events.subscribe(
+            record,
+            event_filter=EventFilter(
+                event_type=EventEnvelope,
+                predicate=lambda event: event.event == "collection.changed",
+            ),
+        )
         await provider.open()
         try:
             chat = await provider.chats.create("Interactive")
@@ -1372,6 +1422,13 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
 
             retried = await asked.retry().start()
             self.assertEqual(retried.text, "Retried:m-live-1")
+            self.assertEqual(
+                changes,
+                [
+                    ("c-live-1", action, [{"id": "m-live-1"}])
+                    for action in ("create", "create", "update")
+                ],
+            )
         finally:
             await provider.close()
 

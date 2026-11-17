@@ -4,6 +4,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...collections import _publish_collection_change
 from ...core.files import DownloadSource, download_source
 from ...core.operations import execute_with_hooks
 from ...errors import ProviderError, UnsupportedOperationError
@@ -189,6 +190,10 @@ class AsyncBranchableChat(AsyncChat):
 
         async def on_success(ctx) -> None:
             created_chat: AsyncChat = ctx.result
+            if created_chat.remote_id and not created_chat.metadata.get("pending_branch"):
+                await _publish_collection_change(
+                    runtime, "chats", "create", created_chat, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "chat.branched",
                 operation_id=ctx.operation_id,
@@ -236,6 +241,10 @@ class AsyncMovableChat(AsyncChat):
             return self
 
         async def on_success(ctx) -> None:
+            if self.remote_id and not self.temporary:
+                await _publish_collection_change(
+                    runtime, "chats", "update", self, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "chat.moved",
                 operation_id=ctx.operation_id,

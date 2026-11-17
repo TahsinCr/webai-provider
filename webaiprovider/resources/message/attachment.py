@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ...collections import QueryableCollection
+from ...collections import Collection
 
 
 class Attachment:
@@ -151,7 +151,7 @@ class Attachment:
         return b""
 
 
-class Attachments(QueryableCollection[Attachment]):
+class Attachments(Collection[Attachment]):
     """In-memory collection of attachments bound to a message or draft."""
 
     def __init__(self, items: Iterable[Attachment] | None = None) -> None:

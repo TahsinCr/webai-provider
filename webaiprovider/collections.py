@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
+from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .errors import AmbiguousMatchError, ProviderError, RemoteNotFound
@@ -48,7 +51,7 @@ def validate_predicate(predicate: Any) -> None:
         raise TypeError("predicate must be callable or None")
 
 
-class BaseCollection(Generic[T], ABC):
+class _QueryRules(Generic[T]):
     """Shared matching and extraction contract across local and remote collections."""
 
     @staticmethod
@@ -213,7 +216,280 @@ class BaseCollection(Generic[T], ABC):
         return matched[0] if matched else None
 
 
-class BaseLocalCollection(BaseCollection[T]):
+class BaseCollection(_QueryRules[T], ABC):
+    """Contract for synchronous collection queries."""
+
+    @abstractmethod
+    def list(
+        self, predicate: Predicate[T] | None = None, *, limit: int | None = None, **options: Any
+    ) -> list[T]: ...
+
+    @abstractmethod
+    def get(self, item_id: str, /) -> T: ...
+
+    @abstractmethod
+    def first(self, predicate: Predicate[T] | None = None, **options: Any) -> T | None: ...
+
+    @abstractmethod
+    def last(self, predicate: Predicate[T] | None = None, **options: Any) -> T | None: ...
+
+    @abstractmethod
+    def single(self, predicate: Predicate[T] | None = None, **options: Any) -> T | None: ...
+
+    @abstractmethod
+    def find(self, query: str, /, **options: Any) -> T | None: ...
+
+    @abstractmethod
+    def search(self, query: str, /, **options: Any) -> list[T]: ...
+
+
+@dataclass
+class _Read:
+    collection: object
+    started_ns: int | None = None
+    exhausted: bool = False
+
+
+_active_read: ContextVar[_Read | None] = ContextVar("collection_read", default=None)
+
+
+def _event_item(item: object) -> dict[str, Any]:
+    record = {"id": getattr(item, "remote_id", None) or getattr(item, "id", None)}
+    if hasattr(item, "remote_id") and not item.remote_id:
+        record["remote"] = False
+    project = getattr(item, "project", None)
+    if project is not None:
+        record["project_id"] = getattr(project, "remote_id", None)
+    return record
+
+
+def _report_read(method):
+    """Emit once for the outer query, only if the source was read."""
+
+    @wraps(method)
+    async def report(self, *args, **options):
+        provider, scope_id = self._read_context()
+        current = _active_read.get()
+        if provider is None or (current is not None and current.collection is self):
+            return await method(self, *args, **options)
+        read = _Read(self)
+        token = _active_read.set(read)
+        missing = None
+        try:
+            result = await method(self, *args, **options)
+        except RemoteNotFound as error:
+            missing = error
+            result = None
+        finally:
+            _active_read.reset(token)
+        runtime = provider.runtime
+        if read.started_ns is not None and (
+            runtime.events.subscriber_count or runtime.sync_events.subscriber_count
+        ):
+            if isinstance(result, tuple):
+                result_items = [result[0]]
+            elif isinstance(result, list):
+                result_items = result
+            else:
+                result_items = [] if result is None else [result]
+            complete = (
+                read.exhausted
+                and method.__name__ == "list"
+                and "limit" in options
+                and options["limit"] is None
+                and (not args or args[0] is None)
+                and options.get("predicate") is None
+            )
+            await runtime.emit_safe(
+                "collection.read.completed",
+                resource_id=scope_id,
+                payload={
+                    "collection": self._collection_name,
+                    "operation": method.__name__,
+                    "items": [_event_item(item) for item in result_items],
+                    "complete": complete,
+                    "include_projects": bool(options.get("include_projects")),
+                    "started_ns": read.started_ns,
+                },
+            )
+        if missing is not None:
+            raise missing
+        return result
+
+    return report
+
+
+async def _publish_collection_change(
+    runtime, collection, action, item, *, scope_id=None, operation_id=None
+):
+    if item is None:
+        return
+    record = {"id": item} if isinstance(item, str) else _event_item(item)
+    if record["id"]:
+        await runtime.emit_safe(
+            "collection.changed",
+            operation_id=operation_id,
+            resource_id=scope_id,
+            payload={
+                "collection": collection,
+                "action": action,
+                "items": [record],
+                "confirmed_ns": monotonic_ns(),
+            },
+        )
+
+
+class AsyncBaseCollection(_QueryRules[T], ABC):
+    """Contract and selection over asynchronous batches."""
+
+    _collection_name = ""
+
+    def _read_context(self):
+        return None, None
+
+    def _mark_remote_read(self, started_ns: int | None = None) -> None:
+        read = _active_read.get()
+        if read is not None and read.collection is self and read.started_ns is None:
+            read.started_ns = monotonic_ns() if started_ns is None else started_ns
+
+    @abstractmethod
+    def _iter_batches(
+        self, *, limit: int | None = None, **options: Any
+    ) -> AsyncIterator[Sequence[T]]: ...
+
+    async def _fetch_by_id(self, item_id: str) -> T | None:
+        return None
+
+    async def _collect_items(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
+        validate_predicate(predicate)
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        if predicate is None:
+            items: list[T] = []
+            async for batch in self._iter_batches(limit=validated, **options):
+                items.extend(batch)
+            return items
+        matched: list[T] = []
+        async for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate(item):
+                    matched.append(item)
+                    if validated is not None and len(matched) >= validated:
+                        return matched
+        return matched
+
+    @_report_read
+    async def list(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **options: Any,
+    ) -> list[T]:
+        return await self._collect_items(predicate, limit=limit, **options)
+
+    @_report_read
+    async def get(self, item_id: str, /) -> T:
+        direct = await self._fetch_by_id(item_id)
+        if direct is not None:
+            return direct
+        async for batch in self._iter_batches(limit=None):
+            for item in batch:
+                if self._item_matches_exact_id(item, item_id):
+                    return item
+        raise RemoteNotFound(f"Record was not found: {item_id}")
+
+    @_report_read
+    async def first(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        validate_predicate(predicate)
+        page_limit = 1 if predicate is None else None
+        async for batch in self._iter_batches(limit=page_limit, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    return item
+        return None
+
+    @_report_read
+    async def last(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        validate_predicate(predicate)
+        matched: T | None = None
+        async for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    matched = item
+        return matched
+
+    @_report_read
+    async def single(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        validate_predicate(predicate)
+        matches: list[T] = []
+        async for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    matches.append(item)
+                    if len(matches) > 1:
+                        raise self._ambiguous(matches)
+        return matches[0] if matches else None
+
+    @_report_read
+    async def find(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
+        **options: Any,
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return await self.single(pred, **options)
+        if last:
+            return await self.last(pred, **options)
+        return await self.first(pred, **options)
+
+    @_report_read
+    async def search(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return await self.list(pred, limit=limit, **options)
+
+
+class Collection(BaseCollection[T]):
     """Synchronous collection operating over in-memory objects without network I/O."""
 
     def __init__(self, items: Iterable[T] | None = None) -> None:
@@ -289,35 +565,39 @@ class BaseLocalCollection(BaseCollection[T]):
         )
 
 
-class ReadOnlyCollection(BaseLocalCollection[T]):
-    """Read-only synchronous local collection for Sources and Artifacts."""
+class AsyncCollection(AsyncBaseCollection[T]):
+    """Asynchronously query a loaded in-memory collection."""
+
+    def __init__(self, items: Iterable[T] = ()) -> None:
+        self._items: tuple[T, ...] | None = tuple(items)
+
+    async def _load_items(self) -> Sequence[T]:
+        return self._items or ()
+
+    async def _iter_batches(self, *, limit: int | None = None) -> AsyncIterator[Sequence[T]]:
+        items = await self._load_items()
+        yield items if limit is None else items[:limit]
+
+    @_report_read
+    async def list(
+        self, predicate: Predicate[T] | None = None, *, limit: int | None = None
+    ) -> list[T]:
+        return await self._collect_items(predicate, limit=limit)
 
 
-class QueryableCollection(BaseLocalCollection[T], ABC):
-    """Synchronous queryable collection base."""
-
-
-class ManageableCollection(QueryableCollection[T], ABC):
-    """Synchronous collection base with CRUD lifecycle operations."""
-
-    def refresh(self) -> list[T]:
-        return list(self._items)
-
-    @abstractmethod
-    def create(self, *args: Any, **kwargs: Any) -> Any:
-        """Create a new item in the collection."""
-
-    @abstractmethod
-    def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
-        """Delete an item from the collection and its remote backend."""
-
-    @abstractmethod
-    def update(self, target: T | str, /, **fields: Any) -> Any:
-        """Update an existing item in the collection."""
-
-
-class BaseRemoteCollection(BaseCollection[T], ABC):
+class AsyncRemoteCollection(AsyncBaseCollection[T]):
     """Asynchronous remote collection with hidden pagination and unified queries."""
+
+    def _read_context(self):
+        return self._read_provider, self._scope_id
+
+    @property
+    def _read_provider(self):
+        return None
+
+    @property
+    def _scope_id(self) -> str | None:
+        return None
 
     _max_remote_pages = 500
     _default_page_size = 50
@@ -325,23 +605,15 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
     def _item_key(self, item: T) -> str:
         return getattr(item, "remote_id", None) or self._extract_id(item) or str(id(item))
 
-    @abstractmethod
     async def _fetch_page(
         self,
         cursor: str | None,
         page_limit: int | None,
         **options: Any,
     ) -> Page[T]:
-        """Fetch and normalize a single remote page."""
+        raise NotImplementedError("This collection does not use pagination")
 
-    async def _fetch_by_id(self, item_id: str) -> T | None:
-        del item_id
-        return None
-
-    async def _emit_refreshed(self, count: int) -> None:
-        del count
-
-    async def _iter_remote_pages(
+    async def _iter_batches(
         self,
         *,
         limit: int | None = None,
@@ -362,6 +634,7 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
                     if remaining is not None
                     else self._default_page_size
                 )
+                self._mark_remote_read()
                 page = await self._fetch_page(cursor, page_limit, **options)
                 if not isinstance(page, Page):
                     raise ProviderError("Provider returned an invalid pagination page")
@@ -381,6 +654,9 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
                     return
                 next_cursor = page.next_cursor
                 if next_cursor is None:
+                    read = _active_read.get()
+                    if read is not None and read.collection is self:
+                        read.exhausted = True
                     return
                 if (
                     not isinstance(next_cursor, str)
@@ -401,330 +677,11 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
                     pass
             raise
 
-    async def _collect_remote(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        *,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[T]:
-        validate_predicate(predicate)
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        if predicate is None:
-            items: list[T] = []
-            async for batch in self._iter_remote_pages(limit=validated, **options):
-                items.extend(batch)
-            return items
-        matched: list[T] = []
-        async for batch in self._iter_remote_pages(limit=None, **options):
-            for item in batch:
-                if predicate(item):
-                    matched.append(item)
-                    if validated is not None and len(matched) >= validated:
-                        return matched
-        return matched
 
-    async def list(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        *,
-        limit: int | None = 50,
-        **options: Any,
-    ) -> list[T]:
-        return await self._collect_remote(predicate, limit=limit, **options)
-
-    async def get(self, item_id: str, /) -> T:
-        direct = await self._fetch_by_id(item_id)
-        if direct is not None:
-            return direct
-        async for batch in self._iter_remote_pages(limit=None):
-            for item in batch:
-                if self._item_matches_exact_id(item, item_id):
-                    return item
-        raise RemoteNotFound(f"Record was not found: {item_id}")
-
-    async def first(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        validate_predicate(predicate)
-        page_limit = 1 if predicate is None else None
-        async for batch in self._iter_remote_pages(limit=page_limit, **options):
-            for item in batch:
-                if predicate is None or predicate(item):
-                    return item
-        return None
-
-    async def last(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        validate_predicate(predicate)
-        matched: T | None = None
-        async for batch in self._iter_remote_pages(limit=None, **options):
-            for item in batch:
-                if predicate is None or predicate(item):
-                    matched = item
-        return matched
-
-    async def single(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        validate_predicate(predicate)
-        matches: list[T] = []
-        async for batch in self._iter_remote_pages(limit=None, **options):
-            for item in batch:
-                if predicate is None or predicate(item):
-                    matches.append(item)
-                    if len(matches) > 1:
-                        raise self._ambiguous(matches)
-        return matches[0] if matches else None
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        single: bool = False,
-        last: bool = False,
-        **options: Any,
-    ) -> T | None:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        if single:
-            return await self.single(pred, **options)
-        if last:
-            return await self.last(pred, **options)
-        return await self.first(pred, **options)
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[T]:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        return await self.list(pred, limit=limit, **options)
-
-    async def refresh(self, *, limit: int | None = None, **options: Any) -> list[T]:
-        items = await self._collect_remote(limit=limit, **options)
-        await self._emit_refreshed(len(items))
-        return items
-
-
-class AsyncRemoteCollection(BaseRemoteCollection[T], ABC):
-    """Readable remote collection returning materialized lists without caching stale _items."""
-
-
-class AsyncDerivedCollection(BaseCollection[T], ABC):
-    """Derived queryable view over another collection without fake page-fetching."""
-
-    @abstractmethod
-    async def list(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        *,
-        limit: int | None = 50,
-        **options: Any,
-    ) -> list[T]:
-        """Return projected items from the underlying collection."""
-
-    @abstractmethod
-    async def refresh(self, *, limit: int | None = None, **options: Any) -> list[T]:
-        """Refresh the underlying collection and return projected items."""
-
-    async def get(self, item_id: str, /) -> T:
-        return self._get_from(await self.list(limit=None), item_id)
-
-    async def first(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        return items[0] if items else None
-
-    async def last(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        return items[-1] if items else None
-
-    async def single(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        if len(items) > 1:
-            raise self._ambiguous(items[:2])
-        return items[0] if items else None
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        single: bool = False,
-        last: bool = False,
-        **options: Any,
-    ) -> T | None:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        if single:
-            return await self.single(pred, **options)
-        if last:
-            return await self.last(pred, **options)
-        return await self.first(pred, **options)
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[T]:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        return await self.list(pred, limit=limit, **options)
-
-
-class AsyncMutableRemoteCollection(AsyncRemoteCollection[T], ABC):
-    """Mutable remote collection supporting create/update/delete and collection hooks."""
-
-    def __init__(self) -> None:
-        from .core.hooks import OperationHooks
-
-        self.hooks = OperationHooks()
-
-    @abstractmethod
-    async def create(self, *args: Any, **kwargs: Any) -> Any:
-        """Create a resource in the remote backend."""
-
-    @abstractmethod
-    async def update(self, target: T | str, /, **fields: Any) -> Any:
-        """Update an existing remote resource."""
-
-    @abstractmethod
-    async def delete(self, target: T | str, /, *args: Any, **kwargs: Any) -> Any:
-        """Delete an existing remote resource."""
-
-
-class AsyncQueryableCollection(BaseLocalCollection[T], ABC):
-    """Generic asynchronous collection base over local or loaded items."""
-
-    async def list(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        *,
-        limit: int | None = None,
-        **_kwargs: Any,
-    ) -> list[T]:
-        return self._filter_items(self._items, predicate, limit=limit)
-
-    async def get(self, item_id: str, /) -> T:
-        return self._get_from(await self.list(limit=None), item_id)
-
-    async def first(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        return items[0] if items else None
-
-    async def last(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        return items[-1] if items else None
-
-    async def single(
-        self,
-        predicate: Callable[[T], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> T | None:
-        items = await self.list(predicate, limit=None, **options)
-        if len(items) > 1:
-            raise self._ambiguous(items[:2])
-        return items[0] if items else None
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        single: bool = False,
-        last: bool = False,
-        **options: Any,
-    ) -> T | None:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        if single:
-            return await self.single(pred, **options)
-        if last:
-            return await self.last(pred, **options)
-        return await self.first(pred, **options)
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[T]:
-        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
-        return await self.list(pred, limit=limit, **options)
-
-
-class AsyncManageableCollection(AsyncQueryableCollection[T], ABC):
-    """Asynchronous local/loaded collection base with refresh support."""
-
-    async def refresh(self) -> list[T]:
-        return await self.list()
-
-
-class _RemoteCollectionFacade(Generic[T, U]):
+class RemoteCollection(BaseCollection[U], Generic[T, U]):
     """Stateless synchronous facade over an AsyncRemoteCollection via LoopPortal."""
 
-    def __init__(self, owner: Provider, collection: Any) -> None:
+    def __init__(self, owner: Provider, collection: AsyncBaseCollection[T]) -> None:
         self._owner = owner
         self._collection = collection
 
@@ -835,144 +792,3 @@ class _RemoteCollectionFacade(Generic[T, U]):
                 )
             )
         ]
-
-    def refresh(self, *, limit: int | None = None, **options: Any) -> list[U]:
-        return [
-            self._wrap(item)
-            for item in self._owner._call(self._collection.refresh(limit=limit, **options))
-        ]
-
-
-class _MutableRemoteCollectionFacade(_RemoteCollectionFacade[T, U]):
-    """Synchronous mutable collection facade exposing SyncOperationHooks."""
-
-    def __init__(self, owner: Provider, collection: AsyncMutableRemoteCollection[T]) -> None:
-        super().__init__(owner, collection)
-        from .core.hooks import SyncOperationHooks
-
-        self.hooks = SyncOperationHooks(collection.hooks)
-
-
-class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
-    """Synchronous view over an asynchronous queryable collection owned by Provider."""
-
-    def __init__(self, owner: Provider, collection: Any) -> None:
-        super().__init__()
-        self._owner = owner
-        self._collection = collection
-
-    def _wrap(self, item: T) -> U:
-        return item  # type: ignore[return-value]
-
-    def _wrap_optional(self, item: T | None) -> U | None:
-        return self._wrap(item) if item is not None else None
-
-    def _wrap_predicate(self, predicate: Callable[[U], bool] | None) -> Callable[[T], bool] | None:
-        if predicate is None:
-            return None
-        validate_predicate(predicate)
-        return lambda item: bool(predicate(self._wrap(item)))
-
-    def list(
-        self,
-        predicate: Callable[[U], bool] | None = None,
-        *,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[U]:
-        async_pred = self._wrap_predicate(predicate)
-        items = [
-            self._wrap(item)
-            for item in self._owner._call(self._collection.list(async_pred, limit=limit, **options))
-        ]
-        if predicate is None and not options:
-            self._items = items
-        return list(items)
-
-    def get(self, item_id: str, /) -> U:
-        return self._wrap(self._owner._call(self._collection.get(item_id)))
-
-    def first(
-        self,
-        predicate: Callable[[U], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(self._owner._call(self._collection.first(async_pred, **options)))
-
-    def last(
-        self,
-        predicate: Callable[[U], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(self._owner._call(self._collection.last(async_pred, **options)))
-
-    def single(
-        self,
-        predicate: Callable[[U], bool] | None = None,
-        /,
-        **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(
-            self._owner._call(self._collection.single(async_pred, **options))
-        )
-
-    def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        single: bool = False,
-        last: bool = False,
-        **options: Any,
-    ) -> U | None:
-        return self._wrap_optional(
-            self._owner._call(
-                self._collection.find(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
-                    single=single,
-                    last=last,
-                    **options,
-                )
-            )
-        )
-
-    def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        limit: int | None = None,
-        **options: Any,
-    ) -> list[U]:
-        return [
-            self._wrap(item)
-            for item in self._owner._call(
-                self._collection.search(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
-                    limit=limit,
-                    **options,
-                )
-            )
-        ]
-
-    def refresh(self) -> list[U]:
-        items = [self._wrap(item) for item in self._owner._call(self._collection.refresh())]
-        self._items = items
-        return list(items)

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Iterable
 from copy import copy
+from dataclasses import dataclass
+from time import monotonic_ns
 from typing import TYPE_CHECKING, Any
 
 from eventflow import SingleFlight
 
 from ...collections import (
-    AsyncDerivedCollection,
+    AsyncRemoteCollection,
     BaseCollection,
-    _RemoteCollectionFacade,
+    RemoteCollection,
+    _report_read,
     validate_limit,
     validate_predicate,
 )
@@ -108,13 +111,30 @@ def _build_artifacts(item: Any) -> tuple[Artifact, ...]:
     return tuple(artifacts)
 
 
-class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
+@dataclass
+class _HistoryRead:
+    items: list[Response]
+    started_ns: int
+    reported: bool = False
+
+
+class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
     """Conversation turn collection pairing assistant Responses with their triggering user Messages."""
+
+    _collection_name = "chat.responses"
+
+    @property
+    def _read_provider(self):
+        return self.chat.provider
+
+    @property
+    def _scope_id(self):
+        return self.chat.remote_id
 
     def __init__(self, chat: AsyncChat) -> None:
         self.chat = chat
         self.hooks = OperationHooks()
-        self._items: list[Response] = []
+        self._turns: list[Response] = []
         self._known_responses: dict[str, Response] = {}
         self._known_messages: dict[str, AsyncMessage] = {}
         self._history_flight: SingleFlight[str] | None = None
@@ -178,7 +198,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         self._known_messages[message.id] = message
         if message.remote_id:
             self._known_messages[message.remote_id] = message
-        existing = next((r for r in self._items if r.message is message), None)
+        existing = next((r for r in self._turns if r.message is message), None)
         if existing is not None:
             return existing
         pending = message.response or Response(
@@ -191,7 +211,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         )
         message.response = pending
         self._known_responses[pending.id] = pending
-        self._items.append(pending)
+        self._turns.append(pending)
         return pending
 
     def _reconcile_live_response(
@@ -203,7 +223,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         existing = next(
             (
                 item
-                for item in self._items
+                for item in self._turns
                 if target_id and (item.remote_id == target_id or item.id == target_id)
             ),
             None,
@@ -224,13 +244,13 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             return existing
 
         pending_idx = next(
-            (idx for idx, item in enumerate(self._items) if item.message is operation.message),
+            (idx for idx, item in enumerate(self._turns) if item.message is operation.message),
             None,
         )
         if pending_idx is not None:
-            self._items[pending_idx] = response
+            self._turns[pending_idx] = response
         else:
-            self._items.append(response)
+            self._turns.append(response)
         self._index_response(response)
         return response
 
@@ -245,42 +265,42 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             if response.message.remote_id:
                 self._known_messages[response.message.remote_id] = response.message
 
-    async def _load_history(self, *, emit_event: bool = False) -> list[Response]:
+    async def _load_history(self, *, fresh: bool = False) -> list[Response]:
         remote_id = self.chat.remote_id
         if not remote_id:
-            return list(self._items)
+            return list(self._turns)
         provider = self.chat.provider
         if provider is None:
             raise ProviderError("Chat is not attached to an open provider")
         provider._require_provider()
 
-        async def read() -> list[Response]:
+        async def read() -> _HistoryRead:
             # SingleFlight shields its worker from waiter cancellation. Track
             # the worker itself so shutdown cannot close its transport early.
             async with provider.runtime.activity():
                 provider._require_provider()
                 self._history_read += 1
                 read_id = self._history_read
+                started_ns = monotonic_ns()
                 conversation = await provider._get_chat_data(remote_id)
                 if read_id < self._history_applied or self.chat.remote_id != remote_id:
-                    return list(self._items)
+                    return _HistoryRead(list(self._turns), started_ns)
                 responses = self._apply_history(conversation, provider)
                 self._history_applied = read_id
-                return responses
+                return _HistoryRead(responses, started_ns)
 
-        if emit_event:
-            responses = await read()
-            await provider.runtime.emit(
-                "collection.refreshed",
-                resource_id=remote_id,
-                payload={"collection": "responses", "count": len(responses)},
-            )
-            return responses
-        if provider.runtime.closing and not provider.runtime.has_active_operation():
-            raise ProviderError("Provider is closing or is closed")
-        if self._history_flight is None:
-            self._history_flight = SingleFlight()
-        return await self._history_flight.run(remote_id, read)
+        if fresh:
+            result = await read()
+        else:
+            if provider.runtime.closing and not provider.runtime.has_active_operation():
+                raise ProviderError("Provider is closing or is closed")
+            if self._history_flight is None:
+                self._history_flight = SingleFlight()
+            result = await self._history_flight.run(remote_id, read)
+        if not result.reported:
+            self._mark_remote_read(result.started_ns)
+            result.reported = True
+        return result.items
 
     def _apply_history(self, conversation: Conversation, provider: AsyncProvider) -> list[Response]:
         if not isinstance(conversation, Conversation):
@@ -297,7 +317,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
 
         existing_messages = self._known_messages.copy()
         existing_responses = self._known_responses.copy()
-        for item in self._items:
+        for item in self._turns:
             existing_responses[item.remote_id or item.id] = item
             if item.message is not None:
                 existing_messages[item.message.remote_id or item.message.id] = item.message
@@ -387,7 +407,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         if pending_user is not None:
             responses.append(build_unanswered(pending_user))
 
-        for item in self._items:
+        for item in self._turns:
             if item.remote_id is not None or item.id in seen_resp_ids:
                 continue
             msg = item.message
@@ -401,7 +421,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                 continue
             responses.append(item)
 
-        self._items = list(responses)
+        self._turns = list(responses)
         self._known_responses.clear()
         self._known_messages.clear()
         for resp in responses:
@@ -409,32 +429,28 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
 
         return responses
 
+    @_report_read
     async def list(
         self,
         predicate: Callable[[Response], bool] | None = None,
         *,
         limit: int | None = 50,
-        **_options: Any,
+        fresh: bool = False,
     ) -> list[Response]:
         validate_predicate(predicate)
         validated = validate_limit(limit)
         if validated == 0:
             return []
-        responses = await self._load_history(emit_event=False)
+        responses = await self._load_history(fresh=fresh)
         if predicate is not None:
             responses = [item for item in responses if predicate(item)]
         if validated is None:
             return list(responses) if predicate is None else responses
         return responses[-validated:]
 
-    async def refresh(self, *, limit: int | None = None, **_options: Any) -> list[Response]:
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        responses = await self._load_history(emit_event=True)
-        if validated is None:
-            return responses
-        return responses[-validated:]
+    async def _iter_batches(self, *, limit=None, fresh=False, **options):
+        items = await self._load_history(fresh=fresh)
+        yield items if limit is None else items[:limit]
 
     def create(
         self,
@@ -456,7 +472,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             msg = message._resource if isinstance(message, Message) else message
             if msg.chat is not None and msg.chat is not self.chat:
                 raise ValueError("Message belongs to a different chat")
-            if any(item.message is msg for item in self._items):
+            if any(item.message is msg for item in self._turns):
                 raise ValueError("Message is already in this chat")
             msg.chat = self.chat
             if model is not None:
@@ -495,7 +511,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         if found_msg is not None:
             return found_msg
         found_resp = self._known_responses.get(target) or next(
-            (r for r in self._items if self._item_matches_exact_id(r, target)),
+            (r for r in self._turns if self._item_matches_exact_id(r, target)),
             None,
         )
         if found_resp is not None and found_resp.message is not None:
@@ -524,7 +540,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                 return action_id, msg, resp.model or msg.model
             return msg.remote_id or msg.id, msg, msg.model
         found_resp = self._known_responses.get(target) or next(
-            (r for r in self._items if self._item_matches_exact_id(r, target)),
+            (r for r in self._turns if self._item_matches_exact_id(r, target)),
             None,
         )
         if found_resp is not None:
@@ -613,7 +629,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                     "Deleting persisted remote responses is not supported"
                 )
             removed_ids = {target.id}
-            self._items = [item for item in self._items if item.message is not target]
+            self._turns = [item for item in self._turns if item.message is not target]
         elif isinstance(target, Response):
             if target.remote_id or (target.message is not None and target.message.remote_id):
                 raise UnsupportedOperationError(
@@ -622,11 +638,11 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             removed_ids = {target.id}
             if target.message is not None:
                 removed_ids.add(target.message.id)
-            self._items = [item for item in self._items if item is not target]
+            self._turns = [item for item in self._turns if item is not target]
         else:
             target_id = str(target)
             existing_resp = self._known_responses.get(target_id) or next(
-                (item for item in self._items if self._item_matches_exact_id(item, target_id)),
+                (item for item in self._turns if self._item_matches_exact_id(item, target_id)),
                 None,
             )
             existing_msg = self._known_messages.get(target_id)
@@ -643,9 +659,9 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                     removed_ids.add(existing_resp.message.id)
             if existing_msg is not None and existing_msg.response is not None:
                 removed_ids.add(existing_msg.response.id)
-            self._items = [
+            self._turns = [
                 item
-                for item in self._items
+                for item in self._turns
                 if not self._item_matches_exact_id(item, target_id) and item.id not in removed_ids
             ]
         for key in removed_ids:
@@ -653,7 +669,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             self._known_messages.pop(key, None)
 
 
-class ResponsesCollection(_RemoteCollectionFacade[Response, Response]):
+class ResponsesCollection(RemoteCollection[Response, Response]):
     def __init__(self, owner: Provider, chat: AsyncChat) -> None:
         super().__init__(owner, chat.responses)
         self.hooks = SyncOperationHooks(chat.responses.hooks)

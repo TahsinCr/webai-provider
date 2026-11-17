@@ -11,8 +11,8 @@ python run_benchmarks.py --list-cases
 
 | Suite | Workloads |
 | --- | --- |
-| `history` | Blocking and async chat opening with one or two history reads, eight overlapping reads of one chat, and a warm 20,000-message refresh. |
-| `collections` | 100, 1,000, and 10,000 chat records, project fanout, and 10,000 jobs on four workers. |
+| `history` | Blocking and async chat opening with one or two history reads, eight overlapping reads of one chat, and a fresh read of an already opened 20,000-message history. |
+| `collections` | Listings of 100, 1,000, and 10,000 chats, a 1,000-chat listing with an event subscriber, project fanout, and 10,000 jobs on four workers. |
 | `transport` | 16 KiB and 8 MiB buffered reads through sync and async HTTP transports, 4,000 stream chunks through a persistent blocking portal, and split SSE and JSPB frames. |
 
 Each value measures one full operation. Large workloads return their batch
@@ -49,7 +49,7 @@ fingerprint excludes result files.
 ```sh
 python run_benchmarks.py --suite transport --match 'transport.buffer.*.8m' \
   --tracemalloc --fast -o /tmp/webai-python-allocations.json
-python run_benchmarks.py --suite history --match 'history.refresh.*' \
+python run_benchmarks.py --suite history --match 'history.list.fresh.*' \
   --profile /tmp/webai-history.prof --debug-single-value
 ```
 

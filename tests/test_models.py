@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import unittest
 from unittest.mock import AsyncMock, call
@@ -235,12 +236,26 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
-        provider._load_catalog.assert_awaited_once_with(force=False)
+        provider._load_catalog.assert_awaited_once_with(force=True)
         await provider.models.refresh()
         self.assertEqual(
             provider._load_catalog.await_args_list,
-            [call(force=False), call(force=True)],
+            [call(force=True), call(force=True)],
         )
+
+    async def test_closing_session_clears_the_model_catalog(self) -> None:
+        from webaiprovider.resources.model import ModelCatalogState
+        from webaiprovider.resources.model.model import ModelCatalog
+
+        account = Account("account-1", "chatgpt", {"session_token": "test"})
+        provider = AsyncProvider(account)
+        provider._prepare_session = AsyncMock()
+        provider._load_catalog = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
+        async with provider:
+            self.assertEqual(await provider.models.list(), [])
+        with self.assertRaises(ProviderError):
+            await provider.models.list()
+        provider._load_catalog.assert_awaited_once()
 
     async def test_account_catalog_is_cached_and_returns_same_typed_refs(self) -> None:
         loads = 0
@@ -271,6 +286,20 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(selection.effort)
         assert selection.effort is not None
         self.assertEqual(selection.effort.id, "medium")
+
+    async def test_empty_catalog_is_loaded_once_for_overlapping_queries(self) -> None:
+        async def load(_force: bool):
+            await asyncio.sleep(0)
+            return []
+
+        loader = AsyncMock(side_effect=load)
+        catalog = AsyncModelsCollection(loader)
+        self.assertEqual(
+            await asyncio.gather(catalog.list(), catalog.first(), catalog.search("model")),
+            [[], None, []],
+        )
+        self.assertEqual(await catalog.list(), [])
+        loader.assert_awaited_once_with(True)
 
     async def test_failed_refresh_keeps_the_last_valid_catalog(self) -> None:
         loads = 0

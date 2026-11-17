@@ -111,10 +111,13 @@ def _reload_case(*, concurrent: bool, messages: int) -> Case:
             async def overlap():
                 await asyncio.gather(*(chat.responses.list(limit=_RECENT) for _ in range(8)))
 
-            return await time_async(loops, overlap if concurrent else chat.responses.refresh)
+            return await time_async(
+                loops,
+                overlap if concurrent else lambda: chat.responses.list(limit=None, fresh=True),
+            )
 
     return Case(
-        "history.read.concurrent8" if concurrent else "history.refresh.20000",
+        "history.read.concurrent8" if concurrent else "history.list.fresh.20000",
         lambda loops: asyncio.run(run(loops)),
         {"fixture_messages": messages, "concurrent_reads": 8 if concurrent else 1},
     )

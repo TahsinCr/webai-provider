@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import SplitResult, unquote, urlsplit
 
-from ...collections import ReadOnlyCollection
+from ...collections import Collection
 from .source import _clean_text, _has_control_chars
 
 _MEDIA_TYPE_RE = re.compile(r"[\w!#$&^.+-]+/[\w!#$&^.+-]+")
@@ -184,5 +184,5 @@ class Artifact:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-class ArtifactsCollection(ReadOnlyCollection[Artifact]):
+class ArtifactsCollection(Collection[Artifact]):
     """Synchronous read-only local collection of response artifacts."""

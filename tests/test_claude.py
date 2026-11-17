@@ -670,7 +670,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         provider.editor.write = AsyncMock()
         await provider.open()
         try:
-            loaded = await provider.projects.refresh()
+            loaded = await provider.projects.list(limit=None)
             result = await provider.projects.update(loaded[0], title="New Name")
             self.assertEqual(result.title, "New Name")
             self.assertEqual(provider._get_project_data.await_count, 2)

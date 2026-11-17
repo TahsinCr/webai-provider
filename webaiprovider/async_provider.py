@@ -8,6 +8,7 @@ from eventflow import AsyncEventBus, EventEnvelope
 
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability
+from .collections import _publish_collection_change
 from .core.hooks import OperationHooks
 from .core.operations import run_pipeline_unwrapped
 from .core.runtime import ProviderRuntime
@@ -88,7 +89,7 @@ class AsyncProvider(BaseProvider):
         self.telemetry: ProviderTelemetry = self.runtime.telemetry
         self.chats = AsyncChatsCollection(self)
         self.projects = self._projects_collection_type(self)
-        self.models = AsyncModelsCollection(self._load_models)
+        self.models = AsyncModelsCollection(self._load_models, provider=self)
         self._send_pipeline = self.runtime.build_send_pipeline(self.models.resolve)
 
     def _active_transport(self) -> AsyncTransport | None:
@@ -131,6 +132,7 @@ class AsyncProvider(BaseProvider):
         return self
 
     async def _close_session_resources(self) -> None:
+        self.models._clear()
         try:
             await self._close_session()
         finally:
@@ -182,8 +184,22 @@ class AsyncProvider(BaseProvider):
                     operation.chat.remote_id = event.conversation_id
                     self.runtime.bind_send_lock(event.conversation_id, send_lock)
                     chat_metadata = getattr(operation.chat, "metadata", None)
-                    if isinstance(chat_metadata, dict):
-                        chat_metadata.pop("pending_branch", None)
+                    was_pending_branch = (
+                        isinstance(chat_metadata, dict)
+                        and chat_metadata.pop("pending_branch", None) is not None
+                    )
+                    if (
+                        event.conversation_id
+                        and not operation.chat.temporary
+                        and (not had_remote_id or was_pending_branch)
+                    ):
+                        await _publish_collection_change(
+                            self.runtime,
+                            "chats",
+                            "create",
+                            operation.chat,
+                            operation_id=getattr(operation, "operation_id", None),
+                        )
                     if not had_remote_id and event.conversation_id:
                         await self.runtime.emit_safe(
                             "chat.created",
@@ -380,11 +396,13 @@ class AsyncProvider(BaseProvider):
 
     async def update_project(self, project: ProjectData) -> ProjectData:
         async with self.runtime.activity():
-            return await self._patch_project_data(
+            updated = await self._patch_project_data(
                 project.id,
                 name=project.name,
                 instructions=project.instructions or "",
             )
+        await _publish_collection_change(self.runtime, "projects", "update", updated)
+        return updated
 
     async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Any:
         raise FeatureUnavailable(Capability.CHAT, "not_implemented")

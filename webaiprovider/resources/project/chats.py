@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ...collections import AsyncRemoteCollection, Page, _RemoteCollectionFacade
+from ...collections import AsyncRemoteCollection, Page, RemoteCollection
 from ...errors import ProviderError
 from ..chat.chat import AsyncChat, Chat
 from ..chat.collections import _chat_from_conversation
@@ -16,18 +16,18 @@ if TYPE_CHECKING:
 class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
     """Remote collection of conversations scoped to one project."""
 
+    _collection_name = "project.chats"
+
+    @property
+    def _read_provider(self):
+        return self.project.provider
+
+    @property
+    def _scope_id(self):
+        return self.project.remote_id
+
     def __init__(self, project: AsyncProject) -> None:
         self.project = project
-
-    async def _emit_refreshed(self, count: int) -> None:
-        provider = self.project.provider
-        runtime = getattr(provider, "runtime", None) if provider is not None else None
-        if runtime is not None:
-            await runtime.emit(
-                "collection.refreshed",
-                resource_id=self.project.remote_id or self.project.id,
-                payload={"collection": "project.chats", "count": count},
-            )
 
     async def _fetch_page(
         self,
@@ -58,7 +58,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         return Page(tuple(chats), page.next_cursor)
 
 
-class ProjectChatsCollection(_RemoteCollectionFacade[AsyncChat, Chat]):
+class ProjectChatsCollection(RemoteCollection[AsyncChat, Chat]):
     def __init__(self, owner: Provider, project: AsyncProject) -> None:
         super().__init__(owner, project.chats)
 

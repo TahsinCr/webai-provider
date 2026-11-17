@@ -768,10 +768,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
 
     def test_incomplete_collection_cannot_be_instantiated(self) -> None:
-        from webaiprovider.collections import ManageableCollection
+        from webaiprovider.collections import BaseCollection
 
         with self.assertRaises(TypeError):
-            type("IncompleteManageable", (ManageableCollection,), {})()
+            type("IncompleteCollection", (BaseCollection,), {})()
 
     async def test_include_projects_paginates_all_pages_and_bounds_concurrency(self) -> None:
         project_reads_started = asyncio.Event()
@@ -861,7 +861,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         async with PaginatedProvider(account) as provider:
-            chats = await asyncio.wait_for(provider.chats.refresh(include_projects=True), timeout=2)
+            chats = await asyncio.wait_for(
+                provider.chats.list(limit=None, include_projects=True), timeout=2
+            )
 
         self.assertLessEqual(provider.max_active_fetches, 4)
         self.assertEqual(provider.project_page_calls, [None, "projects-page-2"])
@@ -920,7 +922,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         async with RepeatingProvider(account) as provider:
             with self.assertRaisesRegex(ProviderError, "cursor"):
-                await provider.chats.refresh(include_projects=True)
+                await provider.chats.list(limit=None, include_projects=True)
             self.assertTrue(cancelled.is_set())
 
     async def test_include_projects_drains_sibling_when_top_level_listing_fails(self) -> None:
@@ -972,7 +974,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         async with RepeatingProjectProvider(account) as provider:
             with self.assertRaisesRegex(ProviderError, "cursor") as ctx:
-                await provider.projects.refresh()
+                await provider.projects.list(limit=None)
             self.assertEqual(getattr(ctx.exception, "partial_count", None), 0)
             self.assertEqual(provider.project_cursors, [None, "same-page"])
 

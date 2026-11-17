@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from eventflow import StateMachine
 
+from ...collections import _publish_collection_change
 from ...core.hooks import OperationHooks, SyncOperationHooks
 from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
 from ...core.types import HookDispatchResult, OperationContext
@@ -378,6 +379,16 @@ class AsyncMessageOperation:
             if telemetry is not None:
                 telemetry.record_success(duration_s)
             if runtime is not None:
+                if self.chat.remote_id and response.remote_id and not self.chat.temporary:
+                    action = self.message.metadata.get("action")
+                    await _publish_collection_change(
+                        runtime,
+                        "chat.responses",
+                        "update" if action in ("edit", "retry") else "create",
+                        response,
+                        scope_id=self.chat.remote_id,
+                        operation_id=context.operation_id,
+                    )
                 await runtime.emit_safe(
                     "chat.send.completed",
                     operation_id=context.operation_id,

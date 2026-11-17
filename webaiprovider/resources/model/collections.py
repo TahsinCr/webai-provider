@@ -5,10 +5,9 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ...collections import (
-    AsyncQueryableCollection,
-    _CollectionFacade,
-    validate_limit,
-    validate_predicate,
+    AsyncCollection,
+    RemoteCollection,
+    _report_read,
 )
 from ...errors import RemoteNotFound
 from .model import EffortRef, ModelRef, ModelSelection
@@ -16,6 +15,7 @@ from .resolver import SelectionResolver
 from .types import Models, StaticModelCatalog, _model_refs_from_catalog, effort_ref
 
 if TYPE_CHECKING:
+    from ...async_provider import AsyncProvider
     from ...provider import Provider
 
 __all__ = [
@@ -29,41 +29,52 @@ __all__ = [
 ]
 
 
-class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
-    def __init__(self, loader: Callable[[bool], Awaitable[list[ModelRef]]]) -> None:
+class AsyncModelsCollection(AsyncCollection[ModelRef]):
+    _collection_name = "models"
+
+    def __init__(
+        self,
+        loader: Callable[[bool], Awaitable[list[ModelRef]]],
+        *,
+        provider: AsyncProvider | None = None,
+    ) -> None:
         self._loader = loader
-        self._items_tuple: tuple[ModelRef, ...] | None = None
+        self._provider = provider
+        self._items: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
 
-    async def list(
-        self,
-        predicate: Callable[[ModelRef], bool] | None = None,
-        *,
-        refresh: bool = False,
-        limit: int | None = None,
-    ) -> list[ModelRef]:
-        """Load once to prewarm the account cache; refresh forces a provider fetch."""
-        validate_predicate(predicate)
-        validated = validate_limit(limit)
-        if validated == 0 and not refresh:
-            return []
-        async with self._lock:
-            if self._items_tuple is None or refresh:
-                loaded = await self._loader(refresh)
-                self._items_tuple = tuple(loaded)
-            return self._filter_items(list(self._items_tuple), predicate, limit=validated)
+    def _read_context(self):
+        return self._provider, None
 
+    def _clear(self) -> None:
+        self._items = None
+
+    async def _reload(self) -> tuple[ModelRef, ...]:
+        self._mark_remote_read()
+        self._items = tuple(await self._loader(True))
+        return self._items
+
+    async def _load_items(self) -> tuple[ModelRef, ...]:
+        if self._items is None:
+            async with self._lock:
+                if self._items is None:
+                    return await self._reload()
+        return self._items
+
+    @_report_read
     async def refresh(self) -> list[ModelRef]:
-        """Refresh the account catalog and bypass provider-side cache entries."""
-        return await self.list(refresh=True)
+        """Replace the session catalog after a successful provider load."""
+        async with self._lock:
+            return list(await self._reload())
 
+    @_report_read
     async def get(self, model_id: str, /) -> ModelRef:
-        models = await self.list()
-        for model in models:
+        for model in await self._load_items():
             if model.id == model_id:
                 return model
         raise RemoteNotFound(f"Model ID {model_id!r} is not available for this account")
 
+    @_report_read
     async def find(
         self,
         query: str,
@@ -74,10 +85,9 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         endswith: bool = False,
         single: bool = False,
         last: bool = False,
-        refresh: bool = False,
     ) -> ModelRef | None:
         if isinstance(query, Models) and not (exact or startswith or endswith or last):
-            models = await self.list(refresh=refresh)
+            models = await self._load_items()
             result = SelectionResolver.resolve(query, models)
             if not isinstance(result, ModelRef):
                 raise TypeError("Model query did not resolve to a model")
@@ -89,7 +99,6 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
             endswith=endswith,
             single=single,
             last=last,
-            refresh=refresh,
         )
 
     async def resolve(
@@ -104,7 +113,7 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         raise TypeError("Selection did not resolve to a model")
 
 
-class ModelsCollection(_CollectionFacade[ModelRef, ModelRef]):
+class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
     def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.models)
 
@@ -112,18 +121,13 @@ class ModelsCollection(_CollectionFacade[ModelRef, ModelRef]):
         self,
         predicate: Callable[[ModelRef], bool] | None = None,
         *,
-        refresh: bool = False,
         limit: int | None = None,
     ) -> list[ModelRef]:
         async_pred = self._wrap_predicate(predicate)
-        items = self._owner._call(self._collection.list(async_pred, refresh=refresh, limit=limit))
-        if predicate is None:
-            self._items = items
-        return list(items)
+        return self._owner._call(self._collection.list(async_pred, limit=limit))
 
     def refresh(self) -> list[ModelRef]:
-        self._items = self._owner._call(self._collection.refresh())
-        return list(self._items)
+        return self._owner._call(self._collection.refresh())
 
     def resolve(
         self, target: Models | EffortRef | ModelRef | ModelSelection | str

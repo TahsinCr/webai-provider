@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
-    AsyncDerivedCollection,
-    AsyncMutableRemoteCollection,
+    AsyncRemoteCollection,
     Page,
-    _MutableRemoteCollectionFacade,
-    _RemoteCollectionFacade,
-    validate_limit,
-    validate_predicate,
+    RemoteCollection,
+    _publish_collection_change,
 )
 from ...core.files import DownloadSource, download_source
 from ...core.hooks import OperationHooks, SyncOperationHooks
@@ -44,18 +40,16 @@ def _project_from_data(provider: AsyncProvider, item: ProviderProject) -> AsyncP
     return project
 
 
-class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
-    def __init__(self, provider: AsyncProvider) -> None:
-        super().__init__()
-        self.provider = provider
+class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
+    _collection_name = "projects"
 
-    async def _emit_refreshed(self, count: int) -> None:
-        runtime = getattr(self.provider, "runtime", None)
-        if runtime is not None:
-            await runtime.emit(
-                "collection.refreshed",
-                payload={"collection": "projects", "count": count},
-            )
+    @property
+    def _read_provider(self):
+        return self.provider
+
+    def __init__(self, provider: AsyncProvider) -> None:
+        self.provider = provider
+        self.hooks = OperationHooks()
 
     async def _fetch_page(
         self,
@@ -80,6 +74,7 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
         async with self.provider.runtime.activity():
             self.provider._require_provider()
             try:
+                self._mark_remote_read()
                 data = await self.provider._get_project_data(item_id)
             except FeatureUnavailable:
                 return None
@@ -116,6 +111,10 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
 
         async def on_success(ctx) -> None:
             project: AsyncProject = ctx.result
+            if project.remote_id:
+                await _publish_collection_change(
+                    runtime, "projects", "create", project, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "project.created",
                 operation_id=ctx.operation_id,
@@ -159,10 +158,15 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
             if target.remote_id:
                 async with runtime.activity():
                     self.provider._require_provider()
+                    previous = (target.title, target.instruction._text)
                     updated = await self.provider._patch_project_data(
                         target.remote_id, name=new_title, instructions=new_instruction
                     )
                     target._apply_provider_project(updated, replace_resources=False)
+                    ctx.metadata["remote_update"] = previous != (
+                        target.title,
+                        target.instruction._text,
+                    )
             else:
                 if new_title is not None:
                     target.title = new_title
@@ -171,6 +175,10 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
             return target
 
         async def on_success(ctx) -> None:
+            if ctx.metadata.get("remote_update"):
+                await _publish_collection_change(
+                    runtime, "projects", "update", target, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "project.updated",
                 operation_id=ctx.operation_id,
@@ -209,6 +217,10 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
                     await self.provider._delete_project_data(target.remote_id)
 
         async def on_success(ctx) -> None:
+            if target.remote_id:
+                await _publish_collection_change(
+                    runtime, "projects", "delete", target.remote_id, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "project.deleted",
                 operation_id=ctx.operation_id,
@@ -224,9 +236,10 @@ class AsyncProjectsCollection(AsyncMutableRemoteCollection[AsyncProject]):
         )
 
 
-class ProjectsCollection(_MutableRemoteCollectionFacade[AsyncProject, Project]):
+class ProjectsCollection(RemoteCollection[AsyncProject, Project]):
     def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.projects)
+        self.hooks = SyncOperationHooks(self._collection.hooks)
 
     def _wrap(self, item: AsyncProject) -> Project:
         return self._owner._wrap_project(item)
@@ -287,8 +300,18 @@ def _merge_attachment(prev: Attachment | None, remote: Attachment) -> Attachment
     )
 
 
-class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
+class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
     """Unified file and text attachment collection for a project."""
+
+    _collection_name = "project.attachments"
+
+    @property
+    def _read_provider(self):
+        return self.project.provider
+
+    @property
+    def _scope_id(self):
+        return self.project.remote_id
 
     def __init__(self, project: AsyncProject) -> None:
         super().__init__()
@@ -300,43 +323,21 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
         existing = {att.id: att for att in self._items}
         self._items = [_merge_attachment(existing.get(att.id), att) for att in resources]
 
-    async def _load_attachments(self, *, emit_event: bool = False) -> list[Attachment]:
+    async def _load_attachments(self) -> list[Attachment]:
         provider = self.project.provider
         if self.project.remote_id and provider is not None and provider.runtime.opened:
             async with provider.runtime.activity():
                 provider._require_provider()
+                self._mark_remote_read()
                 remote = await provider._get_project_data(self.project.remote_id)
             if not isinstance(remote, ProviderProject):
                 raise ProviderError("Provider returned an invalid project")
             self.project._apply_provider_project(remote, replace_resources=True)
-        if emit_event and provider is not None:
-            await provider.runtime.emit(
-                "collection.refreshed",
-                resource_id=self.project.remote_id or self.project.id,
-                payload={"collection": "project.attachments", "count": len(self._items)},
-            )
         return list(self._items)
 
-    async def list(
-        self,
-        predicate: Callable[[Attachment], bool] | None = None,
-        *,
-        limit: int | None = 50,
-        **_options: Any,
-    ) -> list[Attachment]:
-        validate_predicate(predicate)
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        attachments = await self._load_attachments(emit_event=False)
-        return self._filter_items(attachments, predicate, limit=validated)
-
-    async def refresh(self, *, limit: int | None = None, **_options: Any) -> list[Attachment]:
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        attachments = await self._load_attachments(emit_event=True)
-        return attachments if validated is None else attachments[:validated]
+    async def _iter_batches(self, *, limit=None, **options):
+        items = await self._load_attachments()
+        yield items if limit is None else items[:limit]
 
     def _coerce_add_input(
         self,
@@ -487,6 +488,15 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
 
         async def on_success(ctx) -> None:
             added_att: Attachment = ctx.result
+            if self.project.remote_id:
+                await _publish_collection_change(
+                    runtime,
+                    "project.attachments",
+                    "create",
+                    added_att,
+                    scope_id=self.project.remote_id,
+                    operation_id=ctx.operation_id,
+                )
             await runtime.emit(
                 "project.attachment.added",
                 operation_id=ctx.operation_id,
@@ -507,7 +517,7 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
 
     async def remove(self, attachment: Attachment | str) -> bool:
         file_id = attachment.id if isinstance(attachment, Attachment) else str(attachment)
-        await self._load_attachments(emit_event=False)
+        await self._load_attachments()
         provider = self.project.provider
         runtime = provider.runtime if provider is not None else None
         if not any(att.id == file_id for att in self._items):
@@ -551,6 +561,15 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
 
         async def on_success(ctx) -> None:
             if ctx.result:
+                if self.project.remote_id:
+                    await _publish_collection_change(
+                        runtime,
+                        "project.attachments",
+                        "delete",
+                        file_id,
+                        scope_id=self.project.remote_id,
+                        operation_id=ctx.operation_id,
+                    )
                 await runtime.emit(
                     "project.attachment.removed",
                     operation_id=ctx.operation_id,
@@ -616,7 +635,7 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
         return b""
 
 
-class ProjectAttachments(_RemoteCollectionFacade[Attachment, Attachment]):
+class ProjectAttachments(RemoteCollection[Attachment, Attachment]):
     def __init__(self, owner: Provider, project: AsyncProject) -> None:
         super().__init__(owner, project.attachments)
         self.hooks = SyncOperationHooks(project.attachments.hooks)

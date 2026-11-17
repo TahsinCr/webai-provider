@@ -20,7 +20,7 @@ from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProjectEditorMixin, confirm_deleted
-from ...collections import Page
+from ...collections import Page, _publish_collection_change
 from ...core.files import DownloadSource
 from ...core.operations import execute_with_hooks
 from ...core.timing import current_send_timing
@@ -1184,6 +1184,10 @@ class AsyncChatGPTProvider(ProjectEditorMixin, AsyncProvider):
             return target_chat
 
         async def on_success(ctx) -> None:
+            if target_chat.remote_id and not target_chat.temporary:
+                await _publish_collection_change(
+                    runtime, "chats", "update", target_chat, operation_id=ctx.operation_id
+                )
             await runtime.emit(
                 "chat.moved",
                 operation_id=ctx.operation_id,
