@@ -187,11 +187,19 @@ class AsyncProvider(BaseProvider):
         try:
             async for event in stream:
                 if isinstance(event, ConversationBound):
+                    had_remote_id = bool(operation.chat.remote_id)
                     operation.chat.remote_id = event.conversation_id
                     self.runtime.bind_send_lock(event.conversation_id, send_lock)
                     chat_metadata = getattr(operation.chat, "metadata", None)
                     if isinstance(chat_metadata, dict):
                         chat_metadata.pop("pending_branch", None)
+                    if not had_remote_id and event.conversation_id:
+                        await self.runtime.emit_safe(
+                            "chat.created",
+                            operation_id=getattr(operation, "operation_id", None),
+                            resource_id=event.conversation_id,
+                            payload={"title": operation.chat.title, "local_id": operation.chat.id},
+                        )
                 elif isinstance(event, ThoughtDelta) or (
                     isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
                 ):

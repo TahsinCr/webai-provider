@@ -326,7 +326,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         async def on_success(ctx) -> None:
             chat: AsyncChat = ctx.result
             await runtime.emit(
-                "chat.created",
+                "chat.prepared",
                 operation_id=ctx.operation_id,
                 resource_id=chat.id,
                 payload={"title": chat.title},
