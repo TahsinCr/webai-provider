@@ -86,13 +86,49 @@ class EffortSet:
         return result
 
     @classmethod
-    def search(cls, query: str) -> list[EffortRef]:
-        query = query.casefold()
-        return [
-            effort
-            for effort in cls.list()
-            if query in effort.id.casefold() or query in effort.name.casefold()
-        ]
+    def first(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> EffortRef:
+        from ...collections import BaseCollection
+
+        return BaseCollection._first_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
+
+    @classmethod
+    def last(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> EffortRef:
+        from ...collections import BaseCollection
+
+        return BaseCollection._last_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
+
+    @classmethod
+    def search(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> list[EffortRef]:
+        from ...collections import BaseCollection
+
+        return BaseCollection._search_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
 
 
 E = TypeVar("E", bound=EffortSet)

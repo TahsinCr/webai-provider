@@ -6,7 +6,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ...collections import AsyncQueryableCollection, QueryableCollection, _CollectionFacade
+from ...collections import (
+    AsyncQueryableCollection,
+    BaseCollection,
+    _CollectionFacade,
+    validate_limit,
+    validate_match_flags,
+)
 from ...errors import AmbiguousMatchError, ProviderError, RemoteNotFound
 from .model import EffortRef, EffortSet, ModelCatalog, ModelRef, ModelSelection
 
@@ -77,8 +83,12 @@ class StaticModelCatalog:
     provider: str = ""
 
     @classmethod
-    def list(cls) -> list[ModelRef]:
-        return [v for v in cls.__dict__.values() if isinstance(v, ModelRef)]
+    def list(cls, *, limit: int | None = None) -> list[ModelRef]:
+        validated = validate_limit(limit)
+        items = [v for v in cls.__dict__.values() if isinstance(v, ModelRef)]
+        if validated is None:
+            return items
+        return items[:validated]
 
     @classmethod
     def get(cls, model_id: str) -> ModelRef:
@@ -88,16 +98,62 @@ class StaticModelCatalog:
         raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} was not found in the catalog")
 
     @classmethod
-    def find(cls, query: str) -> ModelRef:
-        result = SelectionResolver.resolve(query, cls.list())
-        if not isinstance(result, ModelRef):
-            raise TypeError("Model query did not resolve to a model")
-        return result
+    def find(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
+        if not (exact or startswith or endswith):
+            result = SelectionResolver.resolve(query, cls.list())
+            if not isinstance(result, ModelRef):
+                raise TypeError("Model query did not resolve to a model")
+            return result
+        return BaseCollection._find_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
 
     @classmethod
-    def search(cls, query: str) -> list[ModelRef]:
-        q = query.lower()
-        return [m for m in cls.list() if q in m.id.lower() or q in m.name.lower()]
+    def first(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        return BaseCollection._first_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
+
+    @classmethod
+    def last(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        return BaseCollection._last_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
+
+    @classmethod
+    def search(
+        cls,
+        query: str,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> list[ModelRef]:
+        return BaseCollection._search_in(
+            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        )
 
     @classmethod
     def contains(cls, item: str | EffortRef | ModelRef | ModelSelection) -> bool:
@@ -285,13 +341,17 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         self._items_tuple: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
 
-    async def list(self, *, refresh: bool = False) -> list[ModelRef]:
+    async def list(self, *, refresh: bool = False, limit: int | None = None) -> list[ModelRef]:
         """Load once to prewarm the account cache; refresh forces a provider fetch."""
+        validated = validate_limit(limit)
+        if validated == 0 and not refresh:
+            return []
         async with self._lock:
             if self._items_tuple is None or refresh:
                 loaded = await self._loader(refresh)
                 self._items_tuple = tuple(loaded)
-            return list(self._items_tuple)
+            items = list(self._items_tuple)
+            return items if validated is None else items[:validated]
 
     async def refresh(self) -> list[ModelRef]:
         """Refresh the account catalog and bypass provider-side cache entries."""
@@ -313,14 +373,49 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         startswith: bool = False,
         endswith: bool = False,
     ) -> ModelRef:
+        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
         models = await self.list()
         if not (startswith or endswith or exact):
             result = SelectionResolver.resolve(query, models)
             if not isinstance(result, ModelRef):
                 raise TypeError("Model query did not resolve to a model")
             return result
-        return QueryableCollection._find_in(
+        return BaseCollection._find_in(
             models,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def first(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        return BaseCollection._first_in(
+            await self.list(),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def last(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+    ) -> ModelRef:
+        return BaseCollection._last_in(
+            await self.list(),
             query,
             exact=exact,
             startswith=startswith,
@@ -343,8 +438,8 @@ class ModelsCollection(_CollectionFacade[ModelRef, ModelRef]):
     def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.models)
 
-    def list(self, *, refresh: bool = False) -> list[ModelRef]:
-        self._items = self._owner._call(self._collection.list(refresh=refresh))
+    def list(self, *, refresh: bool = False, limit: int | None = None) -> list[ModelRef]:
+        self._items = self._owner._call(self._collection.list(refresh=refresh, limit=limit))
         return list(self._items)
 
     def refresh(self) -> list[ModelRef]:

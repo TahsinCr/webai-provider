@@ -4,9 +4,10 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...core.operations import execute_with_hooks
 from ...errors import ProviderError, UnsupportedOperationError
 from ...utils.files import DownloadSource, download_source
-from ..message.response import Artifact
+from ..artifact import Artifact
 from ..project.types import ProjectData
 from .types import Conversation
 
@@ -29,18 +30,7 @@ def _resolve_project_arg(
         if project.session is not session:
             raise ValueError("Project and chat must belong to the same provider session")
         return project
-    identifier = str(project)
-    existing = next(
-        (
-            item
-            for item in session.projects._items
-            if item.remote_id == identifier or item.id == identifier
-        ),
-        None,
-    )
-    if existing is not None:
-        return existing
-    return session._project_type(remote_id=identifier, session=session)
+    return session._project_type(remote_id=str(project), session=session)
 
 
 def _project_from_data(
@@ -52,11 +42,6 @@ def _project_from_data(
         return None
     remote_id = data.origin.remote_id
     existing = projects.get(remote_id) if projects is not None else None
-    if existing is None:
-        existing = next(
-            (item for item in session.projects._items if item.remote_id == remote_id),
-            None,
-        )
     if existing is not None:
         if data.name and not existing.title:
             existing.title = data.name
@@ -73,6 +58,7 @@ def _project_from_data(
 
 class AsyncChat:
     _messages_collection_type = None
+    _responses_collection_type = None
 
     def __init__(
         self,
@@ -93,9 +79,10 @@ class AsyncChat:
         self.temporary: bool = bool(temporary)
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
 
-        from ..message.collections import AsyncMessagesCollection
+        from ..message.collections import AsyncMessagesCollection, AsyncResponsesCollection
 
         self.messages = (self._messages_collection_type or AsyncMessagesCollection)(self)
+        self.responses = (self._responses_collection_type or AsyncResponsesCollection)(self)
 
     async def get(self, message_id: str) -> AsyncMessage:
         return await self.messages.get(message_id)
@@ -107,7 +94,7 @@ class AsyncChat:
             url = target.download_url if isinstance(target, Artifact) else target
             if not url:
                 raise ValueError("Artifact has no download URL")
-            source: DownloadSource | None = await self.session._require_provider().resolve_download(
+            source: DownloadSource | None = await self.session._resolve_download_data(
                 url,
                 conversation_id=self.remote_id,
             )
@@ -138,20 +125,46 @@ class AsyncBranchableChat(AsyncChat):
             )
         if self.session is None:
             raise ProviderError("Chat is not attached to an open provider")
-        branched = await self.session._require_provider().branch_chat(self.remote_id, message_id)
-        if not isinstance(branched, Conversation):
-            raise ProviderError("Provider returned an invalid branched conversation")
-        project = (
-            _project_from_data(self.session, branched.project)
-            if branched.project is not None
-            else self.project
+        session = self.session
+        runtime = session.runtime
+        context = runtime.new_context(
+            "chat.branch",
+            resource_id=self.remote_id,
+            parameters={"message_id": message_id, "title": title},
         )
-        return type(self)(
-            title=title or branched.title,
-            remote_id=branched.origin.remote_id,
-            project=project,
-            metadata=branched.metadata,
-            session=self.session,
+
+        async def work(ctx) -> AsyncChat:
+            branched = await session._branch_chat_data(self.remote_id, ctx.parameters["message_id"])
+            if not isinstance(branched, Conversation):
+                raise ProviderError("Provider returned an invalid branched conversation")
+            project = (
+                _project_from_data(session, branched.project)
+                if branched.project is not None
+                else self.project
+            )
+            return type(self)(
+                title=ctx.parameters["title"] or branched.title,
+                remote_id=branched.origin.remote_id,
+                project=project,
+                metadata=branched.metadata,
+                session=session,
+            )
+
+        async def on_success(ctx) -> None:
+            created_chat: AsyncChat = ctx.result
+            await runtime.emit(
+                "chat.branched",
+                operation_id=ctx.operation_id,
+                resource_id=created_chat.remote_id,
+                payload={"source_chat_id": self.remote_id, "title": created_chat.title},
+            )
+
+        return await execute_with_hooks(
+            operation_name="chat.branch",
+            context=context,
+            hooks_chain=(runtime.hooks, session.chats.hooks),
+            work=work,
+            on_success_event=on_success,
         )
 
 
@@ -170,11 +183,36 @@ class AsyncMovableChat(AsyncChat):
             raise UnsupportedOperationError(
                 "A remote chat cannot be moved into a project that is not persisted remotely"
             )
+        session = self.session
+        runtime = session.runtime
         target_id = target.remote_id or target.id
-        if self.remote_id:
-            await self.session._require_provider().move_chat(self.remote_id, target_id)
-        self.project = target
-        return self
+        context = runtime.new_context(
+            "chat.move",
+            resource_id=self.remote_id or self.id,
+            parameters={"project_id": target_id},
+        )
+
+        async def work(ctx) -> AsyncChat:
+            if self.remote_id:
+                await session._move_chat_data(self.remote_id, ctx.parameters["project_id"])
+            self.project = target
+            return self
+
+        async def on_success(ctx) -> None:
+            await runtime.emit(
+                "chat.moved",
+                operation_id=ctx.operation_id,
+                resource_id=self.remote_id or self.id,
+                payload={"project_id": target_id},
+            )
+
+        return await execute_with_hooks(
+            operation_name="chat.move",
+            context=context,
+            hooks_chain=(runtime.hooks, session.chats.hooks),
+            work=work,
+            on_success_event=on_success,
+        )
 
 
 class _ChatCapability:
@@ -202,13 +240,15 @@ class MovableChat(_ChatCapability):
 
 class Chat:
     messages_collection_type = None
+    responses_collection_type = None
 
     def __init__(self, owner: Provider, resource: AsyncChat) -> None:
         self._owner = owner
         self._resource = resource
-        from ..message.collections import MessagesCollection
+        from ..message.collections import MessagesCollection, ResponsesCollection
 
         self.messages = (self.messages_collection_type or MessagesCollection)(owner, resource)
+        self.responses = (self.responses_collection_type or ResponsesCollection)(owner, resource)
 
     @property
     def id(self) -> str:

@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
+from ..artifact import ArtifactsCollection
 from ..attachment import Attachment
 from ..chat.chat import AsyncChat, Chat
 from ..model.collections import Models
@@ -13,7 +14,9 @@ from ..model.model import (
     ModelRef,
     ModelSelection,
 )
+from ..source import SourcesCollection
 from .attachments import Attachments
+from .response import Response
 
 if TYPE_CHECKING:
     from ...provider import Provider
@@ -32,6 +35,7 @@ class AsyncMessage:
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         chat: AsyncChat | None = None,
+        response: Response | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
         self.role = role
@@ -40,6 +44,7 @@ class AsyncMessage:
         self.model = model
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
         self.chat = chat
+        self._response: Response | None = response
 
         if isinstance(attachments, Attachments):
             self.attachments = attachments
@@ -52,6 +57,26 @@ class AsyncMessage:
     def text(self) -> str:
         return self.content
 
+    @property
+    def response(self) -> Response | None:
+        return self._response
+
+    @response.setter
+    def response(self, value: Response | None) -> None:
+        self._response = value
+
+    @property
+    def sources(self) -> SourcesCollection:
+        if self._response is not None:
+            return self._response.sources
+        return SourcesCollection()
+
+    @property
+    def artifacts(self) -> ArtifactsCollection:
+        if self._response is not None:
+            return self._response.artifacts
+        return ArtifactsCollection()
+
     def edit(
         self,
         new_content: str,
@@ -62,8 +87,7 @@ class AsyncMessage:
             raise UnsupportedOperationError(
                 "Cannot edit a message that does not belong to a conversation"
             )
-        if self not in self.chat.messages._items:
-            self.chat.messages._items.append(self)
+        self.chat.messages._track_local_message(self)
         return self.chat.messages.edit(
             self.id,
             new_content,
@@ -79,8 +103,7 @@ class AsyncMessage:
             raise UnsupportedOperationError(
                 "Cannot retry a message that does not belong to a conversation"
             )
-        if self not in self.chat.messages._items:
-            self.chat.messages._items.append(self)
+        self.chat.messages._track_local_message(self)
         return self.chat.messages.retry(
             self.id,
             model=model if model is not None else self.model,
@@ -186,6 +209,30 @@ class Message:
     @property
     def attachments(self) -> Attachments:
         return self._resource.attachments
+
+    @property
+    def response(self) -> Response | None:
+        raw = self._resource.response
+        if raw is None:
+            return None
+        msg = raw.message
+        if self._owner is not None and isinstance(msg, AsyncMessage):
+            msg = Message._from_async(self._owner, msg)
+        return Response(
+            msg,
+            sources=raw.sources,
+            artifacts=raw.artifacts,
+            metadata=raw.metadata,
+            timing=raw.timing,
+        )
+
+    @property
+    def sources(self) -> SourcesCollection:
+        return self._resource.sources
+
+    @property
+    def artifacts(self) -> ArtifactsCollection:
+        return self._resource.artifacts
 
     @property
     def chat(self) -> Chat | AsyncChat | None:

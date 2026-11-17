@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-import logging
+import contextlib
 import sys
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ...core.state import OperationState, OperationStateMachine
+from eventflow import StateMachine
+
+from ...core.hooks import OperationHooks, SyncOperationHooks
+from ...core.operations import run_pipeline_unwrapped
+from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
+from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
 from .message import AsyncMessage, Message
 from .response import Artifact, Response, Source, TimingMetrics
@@ -101,51 +105,6 @@ class TerminalStatus(StreamEvent):
     event: str = field(init=False, default="status.terminal")
 
 
-HandlerType = Callable[[StreamEvent], Any | Coroutine[Any, Any, Any]]
-
-
-class OperationHooks:
-    def __init__(self) -> None:
-        self._handlers: dict[str, list[HandlerType]] = {}
-
-    def on(
-        self,
-        event_name: str,
-        handler: HandlerType | None = None,
-    ) -> Any:
-        def register(fn: HandlerType) -> HandlerType:
-            self._handlers.setdefault(event_name, []).append(fn)
-            return fn
-
-        if handler is not None:
-            return register(handler)
-        return register
-
-    def add(
-        self,
-        event_name: str,
-        handler: HandlerType | None = None,
-    ) -> Any:
-        return self.on(event_name, handler)
-
-    async def emit(self, event: StreamEvent) -> None:
-        handlers = self._handlers.get(event.event, [])
-        wildcards = self._handlers.get("*", [])
-        all_handlers = handlers + wildcards
-
-        for fn in all_handlers:
-            try:
-                res = fn(event)
-                if inspect.isawaitable(res):
-                    await res
-            except Exception as error:
-                logging.getLogger(__name__).warning(
-                    "Operation hook failed: event=%s error_type=%s",
-                    event.event,
-                    type(error).__name__,
-                )
-
-
 class AsyncMessageOperation:
     def __init__(
         self,
@@ -160,21 +119,42 @@ class AsyncMessageOperation:
         self._executor = executor
         self._response: Response | None = None
         self._assistant_message_id: str | None = None
-        self._state_machine = OperationStateMachine()
+        self._state_machine = StateMachine(
+            initial=OperationState.PENDING,
+            transitions=_OPERATION_TRANSITIONS,
+            terminal=_OPERATION_TERMINAL_STATES,
+        )
         self._completed = False
         self._cancelled = False
         self._events: list[StreamEvent] = []
         self._stream_task: asyncio.Task[Response] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._condition = asyncio.Condition()
+        self._hook_results: dict[str, HookDispatchResult] = {}
 
     @property
     def state(self) -> OperationState:
-        return OperationState(self._state_machine.state)
+        return self._state_machine.state
+
+    @property
+    def hook_results(self) -> dict[str, HookDispatchResult]:
+        return dict(self._hook_results)
 
     def _transition_to(self, target: OperationState) -> None:
         if self._state_machine.can_transition(target):
             self._state_machine.transition(target)
+
+    def _runtime_and_hooks(self) -> tuple[Any, tuple[OperationHooks, ...]]:
+        session = getattr(self.chat, "session", None)
+        runtime = getattr(session, "runtime", None) if session is not None else None
+        chain: list[OperationHooks] = []
+        if session is not None and isinstance(getattr(session, "hooks", None), OperationHooks):
+            chain.append(session.hooks)
+        messages = getattr(self.chat, "messages", None)
+        if messages is not None and isinstance(getattr(messages, "hooks", None), OperationHooks):
+            chain.append(messages.hooks)
+        chain.append(self.hooks)
+        return runtime, tuple(chain)
 
     def cancel(self) -> None:
         loop = self._loop
@@ -294,15 +274,45 @@ class AsyncMessageOperation:
         stream: AsyncIterator[StreamEvent] | None = None
         first_token_at: float | None = None
         collected_text: list[str] = []
-        collected_sources: list[Any] = []
-        collected_artifacts: list[Any] = []
-        telemetry = getattr(getattr(self.chat, "session", None), "telemetry", None)
+        collected_sources: list[Source] = []
+        collected_artifacts: list[Artifact] = []
+        session = getattr(self.chat, "session", None)
+        runtime, hooks_chain = self._runtime_and_hooks()
+        telemetry = getattr(session, "telemetry", None)
         if telemetry is not None:
             telemetry.record_call()
 
+        op_id = runtime.new_operation_id() if runtime is not None else self.message.id
+        context = OperationContext(
+            name="chat.send",
+            operation_id=op_id,
+            provider_id=getattr(session, "id", ""),
+            account_id=getattr(session, "account_id", ""),
+            resource_id=self.chat.remote_id or self.chat.id,
+            operation=self,
+            prompt=self.message.content,
+            model=self.message.model,
+            attachments=tuple(self.message.attachments),
+            parameters={"chat": self.chat, "message": self.message},
+        )
+        cancelled = False
+
         try:
             assert self._executor is not None
+            context = await OperationHooks.run_before(hooks_chain, "chat.send", context)
+            if context.prompt is not None and context.prompt != self.message.content:
+                self.message.content = context.prompt
+            if context.model is not None and context.model is not self.message.model:
+                self.message.model = context.model
+
             self._transition_to(OperationState.SENDING)
+            if runtime is not None:
+                await runtime.emit(
+                    "chat.send.started",
+                    operation_id=context.operation_id,
+                    resource_id=self.chat.remote_id or self.chat.id,
+                )
+
             stream = self._executor(self)
             async for event in stream:
                 if self._cancelled:
@@ -343,8 +353,6 @@ class AsyncMessageOperation:
                 duration_ms=duration_s * 1000.0,
             )
 
-            from .message import AsyncMessage
-
             full_text = "".join(collected_text)
             response_message = AsyncMessage(
                 content=full_text,
@@ -355,59 +363,100 @@ class AsyncMessageOperation:
             )
             response_message.remote_id = self._assistant_message_id
             if self.chat is not None and hasattr(self.chat, "messages"):
-                existing = next(
-                    (
-                        item
-                        for item in self.chat.messages._items
-                        if self._assistant_message_id
-                        and (
-                            item.remote_id == self._assistant_message_id
-                            or item.id == self._assistant_message_id
-                        )
-                    ),
-                    None,
-                )
-                if existing is None:
-                    self.chat.messages._items.append(response_message)
-                else:
-                    existing.content = full_text
-                    existing.model = self.message.model
-                    existing.remote_id = self._assistant_message_id
-                    response_message = existing
-            self._response = Response(
+                response_message = self.chat.messages._reconcile_assistant_message(response_message)
+            response = Response(
                 response_message,
                 sources=collected_sources,
                 artifacts=collected_artifacts,
                 timing=timing,
             )
+            if runtime is not None:
+                context.resource_id = self.chat.remote_id or self.chat.id
+                context.result = response
+                context = await run_pipeline_unwrapped(runtime.result_pipeline, context)
+                response = context.result
+            response_message.response = response
+            self._response = response
+
             self._transition_to(OperationState.COMPLETED)
             if telemetry is not None:
                 telemetry.record_success(duration_s)
+            if runtime is not None:
+                await runtime.emit(
+                    "chat.send.completed",
+                    operation_id=context.operation_id,
+                    resource_id=self.chat.remote_id or self.chat.id,
+                    payload={"message_id": response.message.id},
+                )
+            res_success = await OperationHooks.run_lifecycle(
+                hooks_chain, "on_success", "chat.send", context
+            )
+            self._hook_results["on_success"] = res_success
             await self._finish(TerminalStatus("completed"))
             return self._response
 
         except (asyncio.CancelledError, OperationCancelledError) as exc:
+            cancelled = True
             error = (
                 exc
                 if isinstance(exc, OperationCancelledError)
                 else OperationCancelledError("Operation cancelled")
             )
+            context.cancelled = True
+            context.error = error
             self._cancelled = True
             self._transition_to(OperationState.CANCELLED)
             if telemetry is not None:
                 telemetry.record_cancelled()
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(
+                        runtime.emit(
+                            "chat.send.cancelled",
+                            operation_id=context.operation_id,
+                            resource_id=self.chat.remote_id or self.chat.id,
+                        )
+                    )
+            res_cancel = await asyncio.shield(
+                OperationHooks.run_lifecycle(hooks_chain, "on_cancelled", "chat.send", context)
+            )
+            self._hook_results["on_cancelled"] = res_cancel
             await self._finish(TerminalStatus("cancelled", error))
             raise error from None
         except Exception as exc:
+            context.error = exc
             self._transition_to(OperationState.FAILED)
             if telemetry is not None:
                 telemetry.record_failure(time.perf_counter() - started_at)
+            if runtime is not None:
+                with contextlib.suppress(Exception):
+                    await runtime.emit(
+                        "chat.send.failed",
+                        operation_id=context.operation_id,
+                        resource_id=self.chat.remote_id or self.chat.id,
+                        payload={"error_type": type(exc).__name__},
+                    )
+            res_error = await OperationHooks.run_lifecycle(
+                hooks_chain, "on_error", "chat.send", context
+            )
+            self._hook_results["on_error"] = res_error
             await self._finish(TerminalStatus("failed", exc))
             raise
         finally:
             try:
                 await _close_async_iterator(stream)
             finally:
+                if cancelled:
+                    res_fin = await asyncio.shield(
+                        OperationHooks.run_lifecycle(
+                            hooks_chain, "on_finally", "chat.send", context
+                        )
+                    )
+                else:
+                    res_fin = await OperationHooks.run_lifecycle(
+                        hooks_chain, "on_finally", "chat.send", context
+                    )
+                self._hook_results["on_finally"] = res_fin
                 self._completed = True
                 async with self._condition:
                     self._condition.notify_all()
@@ -426,7 +475,7 @@ class MessageOperation:
     def __init__(self, owner: Provider, operation: AsyncMessageOperation) -> None:
         self._owner = owner
         self._operation = operation
-        self.hooks = operation.hooks
+        self.hooks = SyncOperationHooks(operation.hooks)
 
     @property
     def message(self) -> Message:
@@ -456,6 +505,10 @@ class MessageOperation:
     @property
     def state(self) -> OperationState:
         return self._operation.state
+
+    @property
+    def hook_results(self) -> dict[str, HookDispatchResult]:
+        return self._operation.hook_results
 
     def on(self, event_name: str, handler: Any = None) -> Any:
         return self.hooks.on(event_name, handler)

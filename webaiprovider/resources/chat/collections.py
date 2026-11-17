@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, Any
 
 from ...base import Capability
 from ...collections import (
-    AsyncManageableCollection,
-    ManageableCollection,
+    AsyncMutableRemoteCollection,
     Page,
-    QueryableCollection,
-    _CollectionFacade,
+    _MutableRemoteCollectionFacade,
+    validate_limit,
 )
-from ...errors import ProviderError, RemoteNotFound
+from ...core.operations import execute_with_hooks
+from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat, _project_from_data, _resolve_project_arg
 from .types import Conversation
@@ -72,30 +72,38 @@ def _merge_chat_lists(
     return [by_key[key] for key in order]
 
 
-class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
+class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
     def __init__(self, session: AsyncProvider) -> None:
         super().__init__()
         self.session = session
-        self._projects_loaded = False
 
-    async def create(
+    async def _emit_refreshed(self, count: int) -> None:
+        runtime = getattr(self.session, "runtime", None)
+        if runtime is not None:
+            await runtime.emit(
+                "collection.refreshed",
+                payload={"collection": "chats", "count": count},
+            )
+
+    async def _fetch_page(
         self,
-        title: str = "Yeni Sohbet",
-        *,
-        project: AsyncProject | str | None = None,
-        temporary: bool = False,
-    ) -> AsyncChat:
-        resolved_project = (
-            _resolve_project_arg(self.session, project) if project is not None else None
-        )
-        chat = self.session._chat_type(
-            title=title,
-            session=self.session,
-            project=resolved_project,
-            temporary=temporary,
-        )
-        self._items.insert(0, chat)
-        return chat
+        cursor: str | None,
+        page_limit: int | None,
+        **options: Any,
+    ) -> Page[AsyncChat]:
+        include_projects = bool(options.get("include_projects", False))
+        session = self.session
+        async with session.runtime.activity():
+            session._require_provider()
+            limit_arg = page_limit or self._default_page_size
+            raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
+            page = _require_conversation_page(raw_page)
+            chats: list[AsyncChat] = []
+            for item in page.items:
+                chat = _chat_from_conversation(item, session)
+                if include_projects or chat.project is None:
+                    chats.append(chat)
+            return Page(tuple(chats), page.next_cursor)
 
     async def _fetch_project_chats(
         self, projects: list[AsyncProject]
@@ -103,7 +111,7 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         project_map = {p.remote_id: p for p in projects if p.remote_id}
         if not project_map:
             return project_map, []
-        provider = self.session._require_provider()
+        session = self.session
         semaphore = asyncio.Semaphore(_PROJECT_CHAT_CONCURRENCY)
 
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
@@ -113,14 +121,12 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
             seen_cursors: set[str] = set()
             async with semaphore:
                 for _ in range(_MAX_PROJECT_CHAT_PAGES):
-                    raw_page = (
-                        await provider.list_project_chats(project.remote_id)
-                        if cursor is None
-                        else await provider.list_project_chats(project.remote_id, cursor=cursor)
+                    raw_page = await session._list_project_chats_data(
+                        project.remote_id, cursor=cursor
                     )
                     page = _require_conversation_page(raw_page, label="project conversation")
                     for item in page.items:
-                        chat = _chat_from_conversation(item, self.session, project_map)
+                        chat = _chat_from_conversation(item, session, project_map)
                         if chat.project is None:
                             chat.project = project
                         chats.append(chat)
@@ -151,96 +157,75 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
             raise
         return project_map, [chat for batch in batches for chat in batch]
 
-    async def refresh(self, *, include_projects: bool = False) -> list[AsyncChat]:
-        async with self.session._activity():
-            provider = self.session._require_provider()
-            pending = {id(chat) for chat in self._items if chat.remote_id is None}
+    async def _collect_with_projects(self, *, limit: int | None) -> list[AsyncChat]:
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        session = self.session
+        async with session.runtime.activity():
+            session._require_provider()
+            normal_coro = super()._collect_remote(limit=None, _normal_only=True)
+            projects_coro = session.projects.list(limit=None)
+            normal_chats, projects = await asyncio.gather(normal_coro, projects_coro)
+            _, project_chats = await self._fetch_project_chats(projects)
+            merged = _merge_chat_lists(normal_chats, project_chats)
+            return merged if validated is None else merged[:validated]
 
-            def reconcile(chats):
-                existing = {chat.remote_id: chat for chat in self._items if chat.remote_id}
-                result = []
-                for chat in chats:
-                    cached = existing.get(chat.remote_id)
-                    if cached is not None:
-                        cached.title = chat.title
-                        cached.project = chat.project
-                        cached.temporary = chat.temporary
-                        cached.metadata = dict(chat.metadata)
-                    result.append(cached or chat)
-                seen = {chat.remote_id for chat in result if chat.remote_id}
-                result.extend(
-                    chat
-                    for chat in self._items
-                    if chat.remote_id is None
-                    or (id(chat) in pending and chat.remote_id not in seen)
-                )
-                return result
-
-            if include_projects and Capability.PROJECTS in self.session.capabilities:
-                raw_page, projects = await asyncio.gather(
-                    provider.list_chats(),
-                    self.session.projects.refresh(),
-                )
-                page = _require_conversation_page(raw_page)
-                project_map, project_chats = await self._fetch_project_chats(projects)
-                normal_chats = [
-                    _chat_from_conversation(item, self.session, project_map) for item in page.items
-                ]
-                self._items = reconcile(_merge_chat_lists(normal_chats, project_chats))
-                self._projects_loaded = True
-                return list(self._items)
-
-            page = _require_conversation_page(await provider.list_chats())
-            project_map = {p.remote_id: p for p in self.session.projects._items if p.remote_id}
-            self._items = reconcile(
-                [_chat_from_conversation(item, self.session, project_map) for item in page.items]
-            )
-            self._projects_loaded = (
-                include_projects and Capability.PROJECTS not in self.session.capabilities
-            )
-            if include_projects:
-                return list(self._items)
-            return [chat for chat in self._items if chat.project is None]
-
-    async def list(self, *, include_projects: bool = False) -> list[AsyncChat]:
+    async def _iter_remote_pages(self, *, limit: int | None = None, **options: Any):
+        include_projects = bool(options.get("include_projects", False))
         if (
             include_projects
-            and not self._projects_loaded
-            and getattr(self.session, "_opened", False)
+            and not options.get("_normal_only")
             and Capability.PROJECTS in self.session.capabilities
         ):
-            async with self.session._activity():
-                if not self._items:
-                    return await self.refresh(include_projects=True)
-                projects = (
-                    list(self.session.projects._items) or await self.session.projects.refresh()
-                )
-                _, project_chats = await self._fetch_project_chats(projects)
-                self._items = _merge_chat_lists(self._items, project_chats)
-                self._projects_loaded = True
-        if include_projects:
-            return list(self._items)
-        return [chat for chat in self._items if chat.project is None]
+            items = await self._collect_with_projects(limit=limit)
+            if items:
+                yield items
+            return
+        async for batch in super()._iter_remote_pages(limit=limit, **options):
+            yield batch
+
+    async def list(
+        self,
+        *,
+        limit: int | None = 50,
+        include_projects: bool = False,
+    ) -> list[AsyncChat]:
+        return await self._collect_remote(limit=limit, include_projects=include_projects)
+
+    async def refresh(
+        self,
+        *,
+        limit: int | None = None,
+        include_projects: bool = False,
+    ) -> list[AsyncChat]:
+        items = await self._collect_remote(limit=limit, include_projects=include_projects)
+        await self._emit_refreshed(len(items))
+        return items
+
+    async def _fetch_by_id(self, item_id: str) -> AsyncChat | None:
+        session = self.session
+        async with session.runtime.activity():
+            session._require_provider()
+            try:
+                conv = await session._get_chat_data(item_id)
+            except FeatureUnavailable:
+                return None
+            if not isinstance(conv, Conversation):
+                return None
+            return _chat_from_conversation(conv, session)
 
     async def get(self, item_id: str, /, *, include_projects: bool = False) -> AsyncChat:
-        for item in self._items:
-            if (QueryableCollection._extract_id(item) == item_id or item.remote_id == item_id) and (
-                include_projects or item.project is None
-            ):
-                return item
-        return QueryableCollection._get_from(
-            await self.list(include_projects=include_projects), item_id
-        )
-
-    def _get_cached_or_fetch(self, chat: AsyncChat | str):
-        if isinstance(chat, AsyncChat):
-            if chat.session is not self.session:
-                raise ValueError("Chat belongs to a different provider session")
-            return chat
-        try:
-            return QueryableCollection._get_from(self._items, chat)
-        except RemoteNotFound:
-            return None
+        direct = await self._fetch_by_id(item_id)
+        if direct is not None:
+            if not include_projects and direct.project is not None:
+                raise RemoteNotFound(f"Record was not found: {item_id}")
+            return direct
+        async for batch in self._iter_remote_pages(limit=None, include_projects=include_projects):
+            for item in batch:
+                if self._item_matches_exact_id(item, item_id):
+                    return item
+        raise RemoteNotFound(f"Record was not found: {item_id}")
 
     async def find(
         self,
@@ -252,12 +237,48 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         endswith: bool = False,
         include_projects: bool = False,
     ) -> AsyncChat:
-        return QueryableCollection._find_in(
-            await self.list(include_projects=include_projects),
+        return await super().find(
             query,
             exact=exact,
             startswith=startswith,
             endswith=endswith,
+            include_projects=include_projects,
+        )
+
+    async def first(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        include_projects: bool = False,
+    ) -> AsyncChat:
+        return await super().first(
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+            include_projects=include_projects,
+        )
+
+    async def last(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        include_projects: bool = False,
+    ) -> AsyncChat:
+        return await super().last(
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+            include_projects=include_projects,
         )
 
     async def search(
@@ -270,12 +291,53 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         endswith: bool = False,
         include_projects: bool = False,
     ) -> list[AsyncChat]:
-        return QueryableCollection._search_in(
-            await self.list(include_projects=include_projects),
+        return await super().search(
             query,
             exact=exact,
             startswith=startswith,
             endswith=endswith,
+            include_projects=include_projects,
+        )
+
+    async def create(
+        self,
+        title: str = "Yeni Sohbet",
+        *,
+        project: AsyncProject | str | None = None,
+        temporary: bool = False,
+    ) -> AsyncChat:
+        resolved_project = (
+            _resolve_project_arg(self.session, project) if project is not None else None
+        )
+        runtime = self.session.runtime
+        context = runtime.new_context(
+            "chat.create",
+            parameters={"title": title, "project": resolved_project, "temporary": temporary},
+        )
+
+        async def work(ctx) -> AsyncChat:
+            return self.session._chat_type(
+                title=ctx.parameters["title"],
+                session=self.session,
+                project=ctx.parameters["project"],
+                temporary=ctx.parameters["temporary"],
+            )
+
+        async def on_success(ctx) -> None:
+            chat: AsyncChat = ctx.result
+            await runtime.emit(
+                "chat.created",
+                operation_id=ctx.operation_id,
+                resource_id=chat.id,
+                payload={"title": chat.title},
+            )
+
+        return await execute_with_hooks(
+            operation_name="chat.create",
+            context=context,
+            hooks_chain=(runtime.hooks, self.hooks),
+            work=work,
+            on_success_event=on_success,
         )
 
     async def update(
@@ -284,47 +346,106 @@ class AsyncChatsCollection(AsyncManageableCollection[AsyncChat]):
         *,
         title: str | None = None,
     ) -> AsyncChat:
-        target = self._get_cached_or_fetch(chat)
-        if target is None:
+        if isinstance(chat, AsyncChat):
+            if chat.session is not self.session:
+                raise ValueError("Chat belongs to a different provider session")
+            target = chat
+        else:
             target = await self.get(str(chat), include_projects=True)
-        if title is not None and title != target.title:
-            if target.remote_id:
-                async with self.session._activity():
-                    await self.session._require_provider().rename_chat(target.remote_id, title)
-            target.title = title
-        return target
+
+        runtime = self.session.runtime
+        context = runtime.new_context(
+            "chat.update",
+            resource_id=target.remote_id or target.id,
+            parameters={"target": target, "title": title},
+        )
+
+        async def work(ctx) -> AsyncChat:
+            new_title = ctx.parameters["title"]
+            if new_title is not None and new_title != target.title:
+                if target.remote_id:
+                    async with runtime.activity():
+                        self.session._require_provider()
+                        await self.session._rename_chat_data(target.remote_id, new_title)
+                target.title = new_title
+            return target
+
+        async def on_success(ctx) -> None:
+            await runtime.emit(
+                "chat.updated",
+                operation_id=ctx.operation_id,
+                resource_id=target.remote_id or target.id,
+                payload={"title": target.title},
+            )
+
+        return await execute_with_hooks(
+            operation_name="chat.update",
+            context=context,
+            hooks_chain=(runtime.hooks, self.hooks),
+            work=work,
+            on_success_event=on_success,
+        )
 
     async def delete(self, chat: AsyncChat | str) -> None:
-        target = self._get_cached_or_fetch(chat)
-        if target is None:
+        if isinstance(chat, AsyncChat):
+            if chat.session is not self.session:
+                raise ValueError("Chat belongs to a different provider session")
+            target = chat
+        else:
             target = await self.get(str(chat), include_projects=True)
-        if target.remote_id:
-            async with self.session._activity():
-                await self.session._require_provider().delete_chat(target.remote_id)
-        self._items = [c for c in self._items if c.id != target.id]
+
+        runtime = self.session.runtime
+        rid = target.remote_id or target.id
+        context = runtime.new_context(
+            "chat.delete",
+            resource_id=rid,
+            parameters={"target": target},
+        )
+
+        async def work(_ctx) -> None:
+            if target.remote_id:
+                async with runtime.activity():
+                    self.session._require_provider()
+                    await self.session._delete_chat_data(target.remote_id)
+
+        async def on_success(ctx) -> None:
+            await runtime.emit(
+                "chat.deleted",
+                operation_id=ctx.operation_id,
+                resource_id=rid,
+            )
+
+        await execute_with_hooks(
+            operation_name="chat.delete",
+            context=context,
+            hooks_chain=(runtime.hooks, self.hooks),
+            work=work,
+            on_success_event=on_success,
+        )
 
 
-class ChatsCollection(_CollectionFacade[AsyncChat, Chat], ManageableCollection[Chat]):
+class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
     def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.chats)
 
     def _wrap(self, item: AsyncChat) -> Chat:
         return self._owner._wrap_chat(item)
 
-    def refresh(self, *, include_projects: bool = False) -> list[Chat]:
+    def list(self, *, limit: int | None = 50, include_projects: bool = False) -> list[Chat]:
         return [
             self._wrap(item)
             for item in self._owner._call(
-                self._collection.refresh(include_projects=include_projects)
+                self._collection.list(limit=limit, include_projects=include_projects)
             )
         ]
 
-    def list(self, *, include_projects: bool = False) -> list[Chat]:
-        self._items = [
+    def refresh(self, *, limit: int | None = None, include_projects: bool = False) -> list[Chat]:
+        return [
             self._wrap(item)
-            for item in self._owner._call(self._collection.list(include_projects=include_projects))
+            for item in self._owner._call(
+                self._collection.refresh(limit=limit, include_projects=include_projects)
+            )
         ]
-        return list(self._items)
 
     def get(self, item_id: str, /, *, include_projects: bool = False) -> Chat:
         return self._wrap(
@@ -344,6 +465,50 @@ class ChatsCollection(_CollectionFacade[AsyncChat, Chat], ManageableCollection[C
         return self._wrap(
             self._owner._call(
                 self._collection.find(
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    include_projects=include_projects,
+                )
+            )
+        )
+
+    def first(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        include_projects: bool = False,
+    ) -> Chat:
+        return self._wrap(
+            self._owner._call(
+                self._collection.first(
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    include_projects=include_projects,
+                )
+            )
+        )
+
+    def last(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        include_projects: bool = False,
+    ) -> Chat:
+        return self._wrap(
+            self._owner._call(
+                self._collection.last(
                     query,
                     exact=exact,
                     startswith=startswith,
