@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
@@ -8,6 +8,7 @@ from ...collections import (
     BaseCollection,
     _RemoteCollectionFacade,
     validate_limit,
+    validate_predicate,
 )
 from .artifact import Artifact
 from .response import Response
@@ -141,12 +142,21 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                 responses.append(message.response)
         return responses
 
-    async def list(self, *, limit: int | None = 50, **_options: Any) -> list[Response]:
+    async def list(
+        self,
+        predicate: Callable[[Response], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **_options: Any,
+    ) -> list[Response]:
+        validate_predicate(predicate)
         validated = validate_limit(limit)
         if validated == 0:
             return []
         messages = await self.chat.messages._load_history(emit_event=False)
         responses = self._responses_from_messages(messages)
+        if predicate is not None:
+            responses = [item for item in responses if predicate(item)]
         if validated is None:
             return responses
         return responses[-validated:]

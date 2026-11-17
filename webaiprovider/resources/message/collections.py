@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from copy import copy
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +10,7 @@ from ...collections import (
     ManageableCollection,
     _CollectionFacade,
     validate_limit,
+    validate_predicate,
 )
 from ...core.hooks import OperationHooks, SyncOperationHooks
 from ...errors import ProviderError, UnsupportedOperationError
@@ -151,11 +152,19 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
                 )
         return list(messages)
 
-    async def list(self, *, limit: int | None = 50) -> list[AsyncMessage]:
+    async def list(
+        self,
+        predicate: Callable[[AsyncMessage], bool] | None = None,
+        *,
+        limit: int | None = 50,
+    ) -> list[AsyncMessage]:
+        validate_predicate(predicate)
         validated = validate_limit(limit)
         if validated == 0:
             return []
         messages = await self._load_history(emit_event=False)
+        if predicate is not None:
+            messages = [item for item in messages if predicate(item)]
         if validated is None:
             return messages
         return messages[-validated:]
@@ -171,74 +180,6 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
 
     async def get(self, item_id: str, /) -> AsyncMessage:
         return BaseCollection._get_from(await self.list(limit=None), item_id)
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> AsyncMessage:
-        return BaseCollection._find_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> AsyncMessage:
-        return BaseCollection._first_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> AsyncMessage:
-        return BaseCollection._last_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> list[AsyncMessage]:
-        return BaseCollection._search_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
 
     def create(
         self,
@@ -384,9 +325,19 @@ class MessagesCollection(_CollectionFacade[AsyncMessage, Message], ManageableCol
     def _wrap(self, item: AsyncMessage) -> Message:
         return Message._from_async(self._owner, item)
 
-    def list(self, *, limit: int | None = 50) -> list[Message]:
-        items = [self._wrap(item) for item in self._owner._call(self._collection.list(limit=limit))]
-        self._items = items
+    def list(
+        self,
+        predicate: Callable[[Message], bool] | None = None,
+        *,
+        limit: int | None = 50,
+    ) -> list[Message]:
+        async_pred = self._wrap_predicate(predicate)
+        items = [
+            self._wrap(item)
+            for item in self._owner._call(self._collection.list(async_pred, limit=limit))
+        ]
+        if predicate is None:
+            self._items = items
         return list(items)
 
     def refresh(self, *, limit: int | None = None) -> list[Message]:

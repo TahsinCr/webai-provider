@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -12,11 +12,12 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 U = TypeVar("U")
+Predicate = Callable[[T], bool]
 
 
 @dataclass(frozen=True)
 class Page(Generic[T]):
-    """Internal adapter pagination container; not part of the public user API."""
+    """Internal pagination container; not part of the public user API."""
 
     items: tuple[T, ...]
     next_cursor: str | None = None
@@ -40,6 +41,11 @@ def validate_match_flags(
 ) -> None:
     if sum((bool(exact), bool(startswith), bool(endswith))) > 1:
         raise ValueError("Specify at most one of exact, startswith, or endswith")
+
+
+def validate_predicate(predicate: Any) -> None:
+    if predicate is not None and not callable(predicate):
+        raise TypeError("predicate must be callable or None")
 
 
 class BaseCollection(Generic[T], ABC):
@@ -119,29 +125,6 @@ class BaseCollection(Generic[T], ABC):
         raise RemoteNotFound(f"Record was not found: {item_id}")
 
     @classmethod
-    def _find_in(
-        cls,
-        items: Sequence[T],
-        query: str,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        """Return the only candidate matching the strategy, never an implicit best match."""
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        matches = [
-            it
-            for it in items
-            if cls._item_matches(it, query, exact=exact, startswith=startswith, endswith=endswith)
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if matches:
-            raise cls._ambiguous(matches)
-        raise RemoteNotFound(f"No records matched the search query: {query}")
-
-    @classmethod
     def _ambiguous(cls, matches: Sequence[Any]) -> AmbiguousMatchError:
         ids = [cls._extract_id(it) for it in matches]
         return AmbiguousMatchError(
@@ -149,53 +132,85 @@ class BaseCollection(Generic[T], ABC):
         )
 
     @classmethod
-    def _first_in(
+    def _query_predicate(
         cls,
-        items: Sequence[T],
         query: str,
         *,
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> T:
+    ) -> Callable[[Any], bool]:
         validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        for it in items:
-            if cls._item_matches(it, query, exact=exact, startswith=startswith, endswith=endswith):
-                return it
-        raise RemoteNotFound(f"No records matched the search query: {query}")
+        if not isinstance(query, str):
+            raise TypeError("query must be a string")
+        return lambda item: cls._item_matches(
+            item,
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
     @classmethod
-    def _last_in(
+    def _filter_items(
         cls,
         items: Sequence[T],
-        query: str,
+        predicate: Callable[[T], bool] | None = None,
         *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        for it in reversed(items):
-            if cls._item_matches(it, query, exact=exact, startswith=startswith, endswith=endswith):
-                return it
-        raise RemoteNotFound(f"No records matched the search query: {query}")
-
-    @classmethod
-    def _search_in(
-        cls,
-        items: Sequence[T],
-        query: str,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
+        limit: int | None = None,
     ) -> list[T]:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        return [
-            it
-            for it in items
-            if cls._item_matches(it, query, exact=exact, startswith=startswith, endswith=endswith)
-        ]
+        validate_predicate(predicate)
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        if predicate is None:
+            return list(items) if validated is None else list(items[:validated])
+        matched: list[T] = []
+        for it in items:
+            if predicate(it):
+                matched.append(it)
+                if validated is not None and len(matched) >= validated:
+                    break
+        return matched
+
+    @classmethod
+    def _first_matching(
+        cls,
+        items: Sequence[T],
+        predicate: Callable[[T], bool] | None = None,
+    ) -> T | None:
+        validate_predicate(predicate)
+        for it in items:
+            if predicate is None or predicate(it):
+                return it
+        return None
+
+    @classmethod
+    def _last_matching(
+        cls,
+        items: Sequence[T],
+        predicate: Callable[[T], bool] | None = None,
+    ) -> T | None:
+        validate_predicate(predicate)
+        for it in reversed(items):
+            if predicate is None or predicate(it):
+                return it
+        return None
+
+    @classmethod
+    def _single_matching(
+        cls,
+        items: Sequence[T],
+        predicate: Callable[[T], bool] | None = None,
+    ) -> T | None:
+        validate_predicate(predicate)
+        matched: list[T] = []
+        for it in items:
+            if predicate is None or predicate(it):
+                matched.append(it)
+                if len(matched) > 1:
+                    raise cls._ambiguous(matched)
+        return matched[0] if matched else None
 
 
 class BaseLocalCollection(BaseCollection[T]):
@@ -204,16 +219,25 @@ class BaseLocalCollection(BaseCollection[T]):
     def __init__(self, items: Iterable[T] | None = None) -> None:
         self._items: list[T] = list(items) if items is not None else []
 
-    def list(self, *, limit: int | None = None) -> list[T]:
-        validated = validate_limit(limit)
-        if validated is None:
-            return list(self._items)
-        if validated == 0:
-            return []
-        return list(self._items[:validated])
+    def list(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[T]:
+        return self._filter_items(self._items, predicate, limit=limit)
 
     def get(self, item_id: str, /) -> T:
         return self._get_from(self._items, item_id)
+
+    def first(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+        return self._first_matching(self._items, predicate)
+
+    def last(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+        return self._last_matching(self._items, predicate)
+
+    def single(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+        return self._single_matching(self._items, predicate)
 
     def find(
         self,
@@ -223,48 +247,15 @@ class BaseLocalCollection(BaseCollection[T]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> T:
-        return self._find_in(
-            self._items,
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        return self._first_in(
-            self._items,
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        return self._last_in(
-            self._items,
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        single: bool = False,
+        last: bool = False,
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return self.single(pred)
+        if last:
+            return self.last(pred)
+        return self.first(pred)
 
     def search(
         self,
@@ -274,14 +265,10 @@ class BaseLocalCollection(BaseCollection[T]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
     ) -> list[T]:
-        return self._search_in(
-            self._items,
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return self.list(pred, limit=limit)
 
     def __len__(self) -> int:
         return len(self._items)
@@ -414,14 +401,39 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
                     pass
             raise
 
-    async def _collect_remote(self, *, limit: int | None = None, **options: Any) -> list[T]:
-        items: list[T] = []
-        async for batch in self._iter_remote_pages(limit=limit, **options):
-            items.extend(batch)
-        return items
+    async def _collect_remote(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
+        validate_predicate(predicate)
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        if predicate is None:
+            items: list[T] = []
+            async for batch in self._iter_remote_pages(limit=validated, **options):
+                items.extend(batch)
+            return items
+        matched: list[T] = []
+        async for batch in self._iter_remote_pages(limit=None, **options):
+            for item in batch:
+                if predicate(item):
+                    matched.append(item)
+                    if validated is not None and len(matched) >= validated:
+                        return matched
+        return matched
 
-    async def list(self, *, limit: int | None = 50, **options: Any) -> list[T]:
-        return await self._collect_remote(limit=limit, **options)
+    async def list(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **options: Any,
+    ) -> list[T]:
+        return await self._collect_remote(predicate, limit=limit, **options)
 
     async def get(self, item_id: str, /) -> T:
         direct = await self._fetch_by_id(item_id)
@@ -433,66 +445,49 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
                     return item
         raise RemoteNotFound(f"Record was not found: {item_id}")
 
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **options: Any,
-    ) -> list[T]:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        matches: list[T] = []
-        async for batch in self._iter_remote_pages(limit=None, **options):
-            for item in batch:
-                if self._item_matches(
-                    item, query, exact=exact, startswith=startswith, endswith=endswith
-                ):
-                    matches.append(item)
-        return matches
-
     async def first(
         self,
-        query: str,
+        predicate: Callable[[T], bool] | None = None,
         /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
         **options: Any,
-    ) -> T:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        async for batch in self._iter_remote_pages(limit=None, **options):
+    ) -> T | None:
+        validate_predicate(predicate)
+        page_limit = 1 if predicate is None else None
+        async for batch in self._iter_remote_pages(limit=page_limit, **options):
             for item in batch:
-                if self._item_matches(
-                    item, query, exact=exact, startswith=startswith, endswith=endswith
-                ):
+                if predicate is None or predicate(item):
                     return item
-        raise RemoteNotFound(f"No records matched the search query: {query}")
+        return None
 
     async def last(
         self,
-        query: str,
+        predicate: Callable[[T], bool] | None = None,
         /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
         **options: Any,
-    ) -> T:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
+    ) -> T | None:
+        validate_predicate(predicate)
         matched: T | None = None
         async for batch in self._iter_remote_pages(limit=None, **options):
             for item in batch:
-                if self._item_matches(
-                    item, query, exact=exact, startswith=startswith, endswith=endswith
-                ):
+                if predicate is None or predicate(item):
                     matched = item
-        if matched is None:
-            raise RemoteNotFound(f"No records matched the search query: {query}")
         return matched
+
+    async def single(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        validate_predicate(predicate)
+        matches: list[T] = []
+        async for batch in self._iter_remote_pages(limit=None, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    matches.append(item)
+                    if len(matches) > 1:
+                        raise self._ambiguous(matches)
+        return matches[0] if matches else None
 
     async def find(
         self,
@@ -502,21 +497,30 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
         **options: Any,
-    ) -> T:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        matches: list[T] = []
-        async for batch in self._iter_remote_pages(limit=None, **options):
-            for item in batch:
-                if self._item_matches(
-                    item, query, exact=exact, startswith=startswith, endswith=endswith
-                ):
-                    matches.append(item)
-                    if len(matches) > 1:
-                        raise self._ambiguous(matches)
-        if not matches:
-            raise RemoteNotFound(f"No records matched the search query: {query}")
-        return matches[0]
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return await self.single(pred, **options)
+        if last:
+            return await self.last(pred, **options)
+        return await self.first(pred, **options)
+
+    async def search(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return await self.list(pred, limit=limit, **options)
 
     async def refresh(self, *, limit: int | None = None, **options: Any) -> list[T]:
         items = await self._collect_remote(limit=limit, **options)
@@ -532,7 +536,13 @@ class AsyncDerivedCollection(BaseCollection[T], ABC):
     """Derived queryable view over another collection without fake page-fetching."""
 
     @abstractmethod
-    async def list(self, *, limit: int | None = 50, **options: Any) -> list[T]:
+    async def list(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **options: Any,
+    ) -> list[T]:
         """Return projected items from the underlying collection."""
 
     @abstractmethod
@@ -542,23 +552,34 @@ class AsyncDerivedCollection(BaseCollection[T], ABC):
     async def get(self, item_id: str, /) -> T:
         return self._get_from(await self.list(limit=None), item_id)
 
-    async def search(
+    async def first(
         self,
-        query: str,
+        predicate: Callable[[T], bool] | None = None,
         /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> list[T]:
-        return self._search_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        return items[0] if items else None
+
+    async def last(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        return items[-1] if items else None
+
+    async def single(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        if len(items) > 1:
+            raise self._ambiguous(items[:2])
+        return items[0] if items else None
 
     async def find(
         self,
@@ -568,17 +589,18 @@ class AsyncDerivedCollection(BaseCollection[T], ABC):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-        **_options: Any,
-    ) -> T:
-        return self._find_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        single: bool = False,
+        last: bool = False,
+        **options: Any,
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return await self.single(pred, **options)
+        if last:
+            return await self.last(pred, **options)
+        return await self.first(pred, **options)
 
-    async def first(
+    async def search(
         self,
         query: str,
         /,
@@ -586,33 +608,11 @@ class AsyncDerivedCollection(BaseCollection[T], ABC):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-        **_options: Any,
-    ) -> T:
-        return self._first_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> T:
-        return self._last_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return await self.list(pred, limit=limit, **options)
 
 
 class AsyncMutableRemoteCollection(AsyncRemoteCollection[T], ABC):
@@ -639,11 +639,46 @@ class AsyncMutableRemoteCollection(AsyncRemoteCollection[T], ABC):
 class AsyncQueryableCollection(BaseLocalCollection[T], ABC):
     """Generic asynchronous collection base over local or loaded items."""
 
-    async def list(self, *, limit: int | None = None, **_kwargs: Any) -> list[T]:
-        return super().list(limit=limit)
+    async def list(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = None,
+        **_kwargs: Any,
+    ) -> list[T]:
+        return self._filter_items(self._items, predicate, limit=limit)
 
     async def get(self, item_id: str, /) -> T:
-        return BaseCollection._get_from(await self.list(), item_id)
+        return self._get_from(await self.list(limit=None), item_id)
+
+    async def first(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        return items[0] if items else None
+
+    async def last(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        return items[-1] if items else None
+
+    async def single(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> T | None:
+        items = await self.list(predicate, limit=None, **options)
+        if len(items) > 1:
+            raise self._ambiguous(items[:2])
+        return items[0] if items else None
 
     async def find(
         self,
@@ -653,48 +688,16 @@ class AsyncQueryableCollection(BaseLocalCollection[T], ABC):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> T:
-        return BaseCollection._find_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        return BaseCollection._first_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> T:
-        return BaseCollection._last_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        single: bool = False,
+        last: bool = False,
+        **options: Any,
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return await self.single(pred, **options)
+        if last:
+            return await self.last(pred, **options)
+        return await self.first(pred, **options)
 
     async def search(
         self,
@@ -704,14 +707,11 @@ class AsyncQueryableCollection(BaseLocalCollection[T], ABC):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
+        **options: Any,
     ) -> list[T]:
-        return BaseCollection._search_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return await self.list(pred, limit=limit, **options)
 
 
 class AsyncManageableCollection(AsyncQueryableCollection[T], ABC):
@@ -731,14 +731,59 @@ class _RemoteCollectionFacade(Generic[T, U]):
     def _wrap(self, item: T) -> U:
         return item  # type: ignore[return-value]
 
-    def list(self, *, limit: int | None = 50, **options: Any) -> list[U]:
+    def _wrap_optional(self, item: T | None) -> U | None:
+        return self._wrap(item) if item is not None else None
+
+    def _wrap_predicate(self, predicate: Callable[[U], bool] | None) -> Callable[[T], bool] | None:
+        if predicate is None:
+            return None
+        validate_predicate(predicate)
+        return lambda item: bool(predicate(self._wrap(item)))
+
+    def list(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **options: Any,
+    ) -> list[U]:
+        async_pred = self._wrap_predicate(predicate)
         return [
             self._wrap(item)
-            for item in self._owner._call(self._collection.list(limit=limit, **options))
+            for item in self._owner._call(self._collection.list(async_pred, limit=limit, **options))
         ]
 
     def get(self, item_id: str, /) -> U:
         return self._wrap(self._owner._call(self._collection.get(item_id)))
+
+    def first(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(self._owner._call(self._collection.first(async_pred, **options)))
+
+    def last(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(self._owner._call(self._collection.last(async_pred, **options)))
+
+    def single(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(
+            self._owner._call(self._collection.single(async_pred, **options))
+        )
 
     def find(
         self,
@@ -748,48 +793,20 @@ class _RemoteCollectionFacade(Generic[T, U]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
         **options: Any,
-    ) -> U:
-        return self._wrap(
+    ) -> U | None:
+        return self._wrap_optional(
             self._owner._call(
                 self._collection.find(
-                    query, exact=exact, startswith=startswith, endswith=endswith, **options
-                )
-            )
-        )
-
-    def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **options: Any,
-    ) -> U:
-        return self._wrap(
-            self._owner._call(
-                self._collection.first(
-                    query, exact=exact, startswith=startswith, endswith=endswith, **options
-                )
-            )
-        )
-
-    def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **options: Any,
-    ) -> U:
-        return self._wrap(
-            self._owner._call(
-                self._collection.last(
-                    query, exact=exact, startswith=startswith, endswith=endswith, **options
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    single=single,
+                    last=last,
+                    **options,
                 )
             )
         )
@@ -802,13 +819,19 @@ class _RemoteCollectionFacade(Generic[T, U]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
         **options: Any,
     ) -> list[U]:
         return [
             self._wrap(item)
             for item in self._owner._call(
                 self._collection.search(
-                    query, exact=exact, startswith=startswith, endswith=endswith, **options
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    limit=limit,
+                    **options,
                 )
             )
         ]
@@ -841,13 +864,62 @@ class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
     def _wrap(self, item: T) -> U:
         return item  # type: ignore[return-value]
 
-    def list(self, *, limit: int | None = None) -> list[U]:
-        items = [self._wrap(item) for item in self._owner._call(self._collection.list(limit=limit))]
-        self._items = items
+    def _wrap_optional(self, item: T | None) -> U | None:
+        return self._wrap(item) if item is not None else None
+
+    def _wrap_predicate(self, predicate: Callable[[U], bool] | None) -> Callable[[T], bool] | None:
+        if predicate is None:
+            return None
+        validate_predicate(predicate)
+        return lambda item: bool(predicate(self._wrap(item)))
+
+    def list(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        *,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[U]:
+        async_pred = self._wrap_predicate(predicate)
+        items = [
+            self._wrap(item)
+            for item in self._owner._call(self._collection.list(async_pred, limit=limit, **options))
+        ]
+        if predicate is None and not options:
+            self._items = items
         return list(items)
 
     def get(self, item_id: str, /) -> U:
         return self._wrap(self._owner._call(self._collection.get(item_id)))
+
+    def first(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(self._owner._call(self._collection.first(async_pred, **options)))
+
+    def last(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(self._owner._call(self._collection.last(async_pred, **options)))
+
+    def single(
+        self,
+        predicate: Callable[[U], bool] | None = None,
+        /,
+        **options: Any,
+    ) -> U | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(
+            self._owner._call(self._collection.single(async_pred, **options))
+        )
 
     def find(
         self,
@@ -857,40 +929,21 @@ class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> U:
-        return self._wrap(
+        single: bool = False,
+        last: bool = False,
+        **options: Any,
+    ) -> U | None:
+        return self._wrap_optional(
             self._owner._call(
-                self._collection.find(query, exact=exact, startswith=startswith, endswith=endswith)
-            )
-        )
-
-    def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> U:
-        return self._wrap(
-            self._owner._call(
-                self._collection.first(query, exact=exact, startswith=startswith, endswith=endswith)
-            )
-        )
-
-    def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> U:
-        return self._wrap(
-            self._owner._call(
-                self._collection.last(query, exact=exact, startswith=startswith, endswith=endswith)
+                self._collection.find(
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    single=single,
+                    last=last,
+                    **options,
+                )
             )
         )
 
@@ -902,12 +955,19 @@ class _CollectionFacade(QueryableCollection[U], Generic[T, U]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
+        **options: Any,
     ) -> list[U]:
         return [
             self._wrap(item)
             for item in self._owner._call(
                 self._collection.search(
-                    query, exact=exact, startswith=startswith, endswith=endswith
+                    query,
+                    exact=exact,
+                    startswith=startswith,
+                    endswith=endswith,
+                    limit=limit,
+                    **options,
                 )
             )
         ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,7 @@ from ...collections import (
     _MutableRemoteCollectionFacade,
     _RemoteCollectionFacade,
     validate_limit,
+    validate_predicate,
 )
 from ...core.files import DownloadSource, download_source
 from ...core.hooks import OperationHooks, SyncOperationHooks
@@ -315,12 +317,19 @@ class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
             )
         return list(self._items)
 
-    async def list(self, *, limit: int | None = 50, **_options: Any) -> list[Attachment]:
+    async def list(
+        self,
+        predicate: Callable[[Attachment], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        **_options: Any,
+    ) -> list[Attachment]:
+        validate_predicate(predicate)
         validated = validate_limit(limit)
         if validated == 0:
             return []
         attachments = await self._load_attachments(emit_event=False)
-        return attachments if validated is None else attachments[:validated]
+        return self._filter_items(attachments, predicate, limit=validated)
 
     async def refresh(self, *, limit: int | None = None, **_options: Any) -> list[Attachment]:
         validated = validate_limit(limit)

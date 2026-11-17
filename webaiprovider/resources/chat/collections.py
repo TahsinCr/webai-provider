@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...base import Capability
@@ -187,11 +187,16 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
 
     async def list(
         self,
+        predicate: Callable[[AsyncChat], bool] | None = None,
         *,
         limit: int | None = 50,
         include_projects: bool = False,
     ) -> list[AsyncChat]:
-        return await self._collect_remote(limit=limit, include_projects=include_projects)
+        return await self._collect_remote(
+            predicate,
+            limit=limit,
+            include_projects=include_projects,
+        )
 
     async def refresh(
         self,
@@ -227,6 +232,33 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
                     return item
         raise RemoteNotFound(f"Record was not found: {item_id}")
 
+    async def first(
+        self,
+        predicate: Callable[[AsyncChat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> AsyncChat | None:
+        return await super().first(predicate, include_projects=include_projects)
+
+    async def last(
+        self,
+        predicate: Callable[[AsyncChat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> AsyncChat | None:
+        return await super().last(predicate, include_projects=include_projects)
+
+    async def single(
+        self,
+        predicate: Callable[[AsyncChat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> AsyncChat | None:
+        return await super().single(predicate, include_projects=include_projects)
+
     async def find(
         self,
         query: str,
@@ -235,49 +267,17 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
         include_projects: bool = False,
-    ) -> AsyncChat:
+    ) -> AsyncChat | None:
         return await super().find(
             query,
             exact=exact,
             startswith=startswith,
             endswith=endswith,
-            include_projects=include_projects,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        include_projects: bool = False,
-    ) -> AsyncChat:
-        return await super().first(
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-            include_projects=include_projects,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        include_projects: bool = False,
-    ) -> AsyncChat:
-        return await super().last(
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
+            single=single,
+            last=last,
             include_projects=include_projects,
         )
 
@@ -289,6 +289,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
         include_projects: bool = False,
     ) -> list[AsyncChat]:
         return await super().search(
@@ -296,6 +297,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
             exact=exact,
             startswith=startswith,
             endswith=endswith,
+            limit=limit,
             include_projects=include_projects,
         )
 
@@ -431,11 +433,18 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
     def _wrap(self, item: AsyncChat) -> Chat:
         return self._owner._wrap_chat(item)
 
-    def list(self, *, limit: int | None = 50, include_projects: bool = False) -> list[Chat]:
+    def list(
+        self,
+        predicate: Callable[[Chat], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        include_projects: bool = False,
+    ) -> list[Chat]:
+        async_pred = self._wrap_predicate(predicate)
         return [
             self._wrap(item)
             for item in self._owner._call(
-                self._collection.list(limit=limit, include_projects=include_projects)
+                self._collection.list(async_pred, limit=limit, include_projects=include_projects)
             )
         ]
 
@@ -452,6 +461,44 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
             self._owner._call(self._collection.get(item_id, include_projects=include_projects))
         )
 
+    def first(
+        self,
+        predicate: Callable[[Chat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> Chat | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(
+            self._owner._call(self._collection.first(async_pred, include_projects=include_projects))
+        )
+
+    def last(
+        self,
+        predicate: Callable[[Chat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> Chat | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(
+            self._owner._call(self._collection.last(async_pred, include_projects=include_projects))
+        )
+
+    def single(
+        self,
+        predicate: Callable[[Chat], bool] | None = None,
+        /,
+        *,
+        include_projects: bool = False,
+    ) -> Chat | None:
+        async_pred = self._wrap_predicate(predicate)
+        return self._wrap_optional(
+            self._owner._call(
+                self._collection.single(async_pred, include_projects=include_projects)
+            )
+        )
+
     def find(
         self,
         query: str,
@@ -460,59 +507,19 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
         include_projects: bool = False,
-    ) -> Chat:
-        return self._wrap(
+    ) -> Chat | None:
+        return self._wrap_optional(
             self._owner._call(
                 self._collection.find(
                     query,
                     exact=exact,
                     startswith=startswith,
                     endswith=endswith,
-                    include_projects=include_projects,
-                )
-            )
-        )
-
-    def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        include_projects: bool = False,
-    ) -> Chat:
-        return self._wrap(
-            self._owner._call(
-                self._collection.first(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
-                    include_projects=include_projects,
-                )
-            )
-        )
-
-    def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        include_projects: bool = False,
-    ) -> Chat:
-        return self._wrap(
-            self._owner._call(
-                self._collection.last(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
+                    single=single,
+                    last=last,
                     include_projects=include_projects,
                 )
             )
@@ -526,6 +533,7 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
         include_projects: bool = False,
     ) -> list[Chat]:
         return [
@@ -536,6 +544,7 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
                     exact=exact,
                     startswith=startswith,
                     endswith=endswith,
+                    limit=limit,
                     include_projects=include_projects,
                 )
             )

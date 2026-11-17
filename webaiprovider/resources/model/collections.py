@@ -6,10 +6,9 @@ from typing import TYPE_CHECKING
 
 from ...collections import (
     AsyncQueryableCollection,
-    BaseCollection,
     _CollectionFacade,
     validate_limit,
-    validate_match_flags,
+    validate_predicate,
 )
 from ...errors import RemoteNotFound
 from .model import EffortRef, ModelRef, ModelSelection
@@ -36,8 +35,15 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         self._items_tuple: tuple[ModelRef, ...] | None = None
         self._lock = asyncio.Lock()
 
-    async def list(self, *, refresh: bool = False, limit: int | None = None) -> list[ModelRef]:
+    async def list(
+        self,
+        predicate: Callable[[ModelRef], bool] | None = None,
+        *,
+        refresh: bool = False,
+        limit: int | None = None,
+    ) -> list[ModelRef]:
         """Load once to prewarm the account cache; refresh forces a provider fetch."""
+        validate_predicate(predicate)
         validated = validate_limit(limit)
         if validated == 0 and not refresh:
             return []
@@ -45,8 +51,7 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
             if self._items_tuple is None or refresh:
                 loaded = await self._loader(refresh)
                 self._items_tuple = tuple(loaded)
-            items = list(self._items_tuple)
-            return items if validated is None else items[:validated]
+            return self._filter_items(list(self._items_tuple), predicate, limit=validated)
 
     async def refresh(self) -> list[ModelRef]:
         """Refresh the account catalog and bypass provider-side cache entries."""
@@ -67,54 +72,24 @@ class AsyncModelsCollection(AsyncQueryableCollection[ModelRef]):
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> ModelRef:
-        validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        models = await self.list()
-        if not (startswith or endswith or exact):
+        single: bool = False,
+        last: bool = False,
+        refresh: bool = False,
+    ) -> ModelRef | None:
+        if isinstance(query, Models) and not (exact or startswith or endswith or last):
+            models = await self.list(refresh=refresh)
             result = SelectionResolver.resolve(query, models)
             if not isinstance(result, ModelRef):
                 raise TypeError("Model query did not resolve to a model")
             return result
-        return BaseCollection._find_in(
-            models,
+        return await super().find(
             query,
             exact=exact,
             startswith=startswith,
             endswith=endswith,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> ModelRef:
-        return BaseCollection._first_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> ModelRef:
-        return BaseCollection._last_in(
-            await self.list(),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
+            single=single,
+            last=last,
+            refresh=refresh,
         )
 
     async def resolve(
@@ -133,9 +108,18 @@ class ModelsCollection(_CollectionFacade[ModelRef, ModelRef]):
     def __init__(self, owner: Provider) -> None:
         super().__init__(owner, owner._provider.models)
 
-    def list(self, *, refresh: bool = False, limit: int | None = None) -> list[ModelRef]:
-        self._items = self._owner._call(self._collection.list(refresh=refresh, limit=limit))
-        return list(self._items)
+    def list(
+        self,
+        predicate: Callable[[ModelRef], bool] | None = None,
+        *,
+        refresh: bool = False,
+        limit: int | None = None,
+    ) -> list[ModelRef]:
+        async_pred = self._wrap_predicate(predicate)
+        items = self._owner._call(self._collection.list(async_pred, refresh=refresh, limit=limit))
+        if predicate is None:
+            self._items = items
+        return list(items)
 
     def refresh(self) -> list[ModelRef]:
         self._items = self._owner._call(self._collection.refresh())

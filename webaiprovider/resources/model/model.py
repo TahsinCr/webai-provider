@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
+from ...collections import BaseCollection
 from .types import EffortOption, ModelCatalogState, Models
 
 if TYPE_CHECKING:
@@ -25,8 +26,16 @@ class EffortSet:
     DEFAULT_EFFORT_ID: ClassVar[str | None] = None
 
     @classmethod
-    def list(cls) -> tuple[EffortRef, ...]:
-        return tuple(value for value in vars(cls).values() if isinstance(value, EffortRef))
+    def list(
+        cls,
+        predicate: Callable[[EffortRef], bool] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> tuple[EffortRef, ...]:
+        items = tuple(value for value in vars(cls).values() if isinstance(value, EffortRef))
+        if predicate is None and limit is None:
+            return items
+        return tuple(BaseCollection._filter_items(items, predicate, limit=limit))
 
     @classmethod
     def from_refs(
@@ -66,62 +75,60 @@ class EffortSet:
         raise RemoteNotFound(f"Effort ID {effort_id!r} is not available")
 
     @classmethod
-    def find(cls, query: str) -> EffortRef:
-        from .resolver import SelectionResolver
-
-        result = SelectionResolver.resolve(
-            query,
-            cls.list(),
-            default_id=cls.DEFAULT_EFFORT_ID,
-        )
-        if not isinstance(result, EffortRef):
-            raise TypeError("Effort query did not resolve to an effort")
-        return result
+    def first(cls, predicate: Callable[[EffortRef], bool] | None = None) -> EffortRef | None:
+        return BaseCollection._first_matching(cls.list(), predicate)
 
     @classmethod
-    def first(
+    def last(cls, predicate: Callable[[EffortRef], bool] | None = None) -> EffortRef | None:
+        return BaseCollection._last_matching(cls.list(), predicate)
+
+    @classmethod
+    def single(cls, predicate: Callable[[EffortRef], bool] | None = None) -> EffortRef | None:
+        return BaseCollection._single_matching(cls.list(), predicate)
+
+    @classmethod
+    def find(
         cls,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
-    ) -> EffortRef:
-        from ...collections import BaseCollection
+        single: bool = False,
+        last: bool = False,
+    ) -> EffortRef | None:
+        if isinstance(query, Models) and not (exact or startswith or endswith or last):
+            from .resolver import SelectionResolver
 
-        return BaseCollection._first_in(
-            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+            result = SelectionResolver.resolve(query, cls.list(), default_id=cls.DEFAULT_EFFORT_ID)
+            if not isinstance(result, EffortRef):
+                raise TypeError("Effort query did not resolve to an effort")
+            return result
+        pred = BaseCollection._query_predicate(
+            query, exact=exact, startswith=startswith, endswith=endswith
         )
-
-    @classmethod
-    def last(
-        cls,
-        query: str,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-    ) -> EffortRef:
-        from ...collections import BaseCollection
-
-        return BaseCollection._last_in(
-            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
-        )
+        if single:
+            return cls.single(pred)
+        if last:
+            return cls.last(pred)
+        return cls.first(pred)
 
     @classmethod
     def search(
         cls,
         query: str,
+        /,
         *,
         exact: bool = False,
         startswith: bool = False,
         endswith: bool = False,
+        limit: int | None = None,
     ) -> list[EffortRef]:
-        from ...collections import BaseCollection
-
-        return BaseCollection._search_in(
-            cls.list(), query, exact=exact, startswith=startswith, endswith=endswith
+        pred = BaseCollection._query_predicate(
+            query, exact=exact, startswith=startswith, endswith=endswith
         )
+        return BaseCollection._filter_items(cls.list(), pred, limit=limit)
 
 
 E = TypeVar("E", bound=EffortSet)

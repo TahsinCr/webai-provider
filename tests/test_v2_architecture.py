@@ -486,40 +486,106 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
         try:
             await provider.open()
 
-            # first() stops immediately on page 1
+            # find() defaults to first() and stops immediately on page 1
             paged.fetch_calls.clear()
-            first = await provider.chats.first("alpha", startswith=True)
+            first = await provider.chats.find("alpha", startswith=True)
             self.assertEqual(first.remote_id, "1")
             self.assertEqual(len(paged.fetch_calls), 1)
-
-            # last() scans every page (all 3 pages)
             paged.fetch_calls.clear()
-            last = await provider.chats.last("alpha", startswith=True)
+            self.assertEqual((await provider.chats.first()).remote_id, "1")
+            self.assertEqual(len(paged.fetch_calls), 1)
+
+            # find(last=True) / last() scans every page (all 3 pages)
+            paged.fetch_calls.clear()
+            last = await provider.chats.find("alpha", startswith=True, last=True)
             self.assertEqual(last.remote_id, "5")
             self.assertEqual(len(paged.fetch_calls), 3)
+            paged.fetch_calls.clear()
+            last_pred = await provider.chats.last(lambda c: c.title.startswith("alpha"))
+            self.assertEqual(last_pred.remote_id, "5")
+            self.assertEqual(len(paged.fetch_calls), 3)
 
-            # find() with match flag aborts as soon as 2nd match appears (page 2, does not fetch page 3)
+            # single=True (and single()) aborts as soon as 2nd match appears (page 2, does not fetch page 3)
+            # and single=True overrides last=True automatically
             paged.fetch_calls.clear()
             with self.assertRaises(AmbiguousMatchError):
-                await provider.chats.find("alpha", startswith=True)
+                await provider.chats.find("alpha", startswith=True, single=True, last=True)
+            self.assertEqual(len(paged.fetch_calls), 2)
+            paged.fetch_calls.clear()
+            with self.assertRaises(AmbiguousMatchError):
+                await provider.chats.single(lambda c: c.title.startswith("alpha"))
             self.assertEqual(len(paged.fetch_calls), 2)
 
-            # find() unique match succeeds, search() returns all 3 matches
-            unique = await provider.chats.find("gamma-exact", exact=True)
+            # Predicate list() exits early as soon as limit matching items are found
+            paged.fetch_calls.clear()
+            limited = await provider.chats.list(lambda c: c.title.startswith("alpha"), limit=2)
+            self.assertEqual([c.remote_id for c in limited], ["1", "3"])
+            self.assertEqual(len(paged.fetch_calls), 2)
+
+            # find() unique match succeeds, search() returns all 3 matches (with optional limit)
+            unique = await provider.chats.find("gamma-exact", exact=True, single=True)
             self.assertEqual(unique.remote_id, "4")
             all_alpha = await provider.chats.search("alpha", startswith=True)
             self.assertEqual([c.remote_id for c in all_alpha], ["1", "3", "5"])
+            two_alpha = await provider.chats.search("alpha", startswith=True, limit=2)
+            self.assertEqual([c.remote_id for c in two_alpha], ["1", "3"])
 
-            with self.assertRaises(RemoteNotFound):
-                await provider.chats.find("non-existent", exact=True)
+            self.assertIsNone(await provider.chats.find("non-existent", exact=True))
+            self.assertIsNone(await provider.chats.single(lambda c: c.title == "non-existent"))
 
-            # Conflicting search flags rejected
+            # Conflicting search flags & non-callable predicates rejected
             with self.assertRaises(ValueError):
                 await provider.chats.search("alpha", exact=True, startswith=True)
             with self.assertRaises(ValueError):
-                await provider.chats.first("alpha", startswith=True, endswith=True)
+                await provider.chats.find("alpha", startswith=True, endswith=True)
+            with self.assertRaises(TypeError):
+                await provider.chats.first("alpha")  # type: ignore[arg-type]
         finally:
             await provider.close()
+
+    def test_predicate_and_sync_facade_queries(self) -> None:
+        from webaiprovider import Chat, Provider, Source, SourcesCollection
+
+        sources = SourcesCollection(
+            [
+                Source(id="s1", url="https://a.example", title="Alpha Paper"),
+                Source(id="s2", url="https://b.example", title="Beta Paper"),
+                Source(id="s3", url="https://c.example", title="Alpha Spec"),
+            ]
+        )
+        self.assertEqual(
+            [s.id for s in sources.list(lambda s: "Alpha" in s.title, limit=1)], ["s1"]
+        )
+        self.assertEqual(sources.first(lambda s: "Alpha" in s.title).id, "s1")
+        self.assertEqual(sources.last(lambda s: "Alpha" in s.title).id, "s3")
+        self.assertEqual(sources.single(lambda s: "Beta" in s.title).id, "s2")
+        self.assertIsNone(sources.single(lambda s: "Missing" in s.title))
+        with self.assertRaises(AmbiguousMatchError):
+            sources.find("Alpha", single=True, last=True)
+        self.assertEqual(sources.find("Alpha", last=True).id, "s3")
+
+        acc = _account()
+        chat_adapter = _PagedRecordsChatAdapter(
+            [
+                [Conversation(id="c1", title="Sync One"), Conversation(id="c2", title="Other")],
+                [Conversation(id="c3", title="Sync Two")],
+            ]
+        )
+        sync_provider = Provider(acc, adapter=_build_adapter(acc, chat_adapter=chat_adapter))
+        sync_provider.open()
+        try:
+            seen_sync: list[bool] = []
+
+            def match_sync(chat: Chat) -> bool:
+                seen_sync.append(isinstance(chat, Chat))
+                return chat.title.startswith("Sync")
+
+            matched = sync_provider.chats.list(match_sync, limit=1)
+            self.assertEqual([c.remote_id for c in matched], ["c1"])
+            self.assertEqual(seen_sync, [True])
+            self.assertEqual(sync_provider.chats.find("Sync", last=True).remote_id, "c3")
+        finally:
+            sync_provider.close()
 
 
 class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
@@ -584,7 +650,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(hist_resp.sources.find("Paper A", exact=True).id, "s-1")
             self.assertIsInstance(hist_resp.artifacts, ArtifactsCollection)
             self.assertEqual(len(hist_resp.artifacts), 1)
-            self.assertEqual(hist_resp.artifacts.first("report.pdf").id, "art-1")
+            self.assertEqual(hist_resp.artifacts.find("report.pdf").id, "art-1")
 
             # Assistant Message links back to same response/sources/artifacts
             msgs = await chat.messages.list()
@@ -600,9 +666,9 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(live_resp.timing, TimingMetrics)
             self.assertEqual(live_resp.text, "Echo: Follow up")
             self.assertIsInstance(live_resp.sources, SourcesCollection)
-            self.assertEqual(live_resp.sources.first("Live Source").url, "https://example.com/live")
+            self.assertEqual(live_resp.sources.find("Live Source").url, "https://example.com/live")
             self.assertIsInstance(live_resp.artifacts, ArtifactsCollection)
-            self.assertEqual(live_resp.artifacts.first("output.txt").name, "output.txt")
+            self.assertEqual(live_resp.artifacts.find("output.txt").name, "output.txt")
         finally:
             await provider.close()
 
@@ -702,10 +768,14 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([type(a) for a in atts], [Attachment, Attachment])
             self.assertEqual([a.id for a in atts], ["r-file-1", "r-file-2"])
 
-            self.assertEqual((await project.attachments.first("alpha")).id, "r-file-1")
-            self.assertEqual((await project.attachments.last("alpha")).id, "r-file-2")
+            self.assertEqual((await project.attachments.find("alpha")).id, "r-file-1")
+            self.assertEqual((await project.attachments.find("alpha", last=True)).id, "r-file-2")
             with self.assertRaises(AmbiguousMatchError):
-                await project.attachments.find("alpha", startswith=True)
+                await project.attachments.find("alpha", startswith=True, single=True)
+            self.assertEqual(
+                (await project.attachments.first(lambda a: a.name.endswith("notes.md"))).id,
+                "r-file-2",
+            )
             self.assertEqual((await project.attachments.get("r-file-2")).name, "alpha-notes.md")
 
             with tempfile.TemporaryDirectory() as tmp:
@@ -890,7 +960,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         try:
             with self.assertRaises(AmbiguousMatchError):
-                await provider.chats.find("Python")
+                await provider.chats.find("Python", single=True)
             exact = await provider.chats.find("Python", exact=True)
             self.assertEqual(exact.remote_id, "c-exact")
         finally:
