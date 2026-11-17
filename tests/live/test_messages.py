@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 
+from webaiprovider import ArtifactsCollection, Response, SourcesCollection, TimingMetrics
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.resources.attachment import Attachment
@@ -44,9 +45,20 @@ class MessageApiTests(LiveSyncTestCase):
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")
             self.assertTrue(getattr(response.message, "content", ""), "Message returned no text")
+            if isinstance(response, Response):
+                self.assertIsInstance(response.timing, TimingMetrics)
+                self.assertIsInstance(response.sources, SourcesCollection)
+                self.assertIsInstance(response.artifacts, ArtifactsCollection)
             messages = self.call_api("messages.list_temporary_chat", chat.messages.refresh)
             roles = {getattr(message.role, "value", message.role) for message in messages}
             self.assertTrue({"user", "assistant"}.issubset(roles))
+            if isinstance(response, Response):
+                responses = self.call_api(
+                    "responses.list_temporary_chat", lambda: chat.responses.list(limit=1)
+                )
+                self.assertEqual(len(responses), 1)
+                self.assertIsInstance(responses[0], Response)
+                self.assertIsNone(responses[0].timing)
 
             if Capability.RENAME in capabilities:
                 renamed = f"{marker}-renamed"
@@ -144,6 +156,10 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")
             self.assertTrue(getattr(response.message, "content", ""), "Message returned no text")
+            if isinstance(response, Response):
+                self.assertIsInstance(response.timing, TimingMetrics)
+                self.assertIsInstance(response.sources, SourcesCollection)
+                self.assertIsInstance(response.artifacts, ArtifactsCollection)
 
             web_op = chat.messages.create(
                 f"{marker} Search the web for the official Python website URL and include the link.",
@@ -168,6 +184,13 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             messages = await self.call_api("messages.list_temporary_chat", chat.messages.refresh)
             roles = {getattr(message.role, "value", message.role) for message in messages}
             self.assertTrue({"user", "assistant"}.issubset(roles))
+            if isinstance(response, Response):
+                responses = await self.call_api(
+                    "responses.list_temporary_chat", lambda: chat.responses.list(limit=1)
+                )
+                self.assertEqual(len(responses), 1)
+                self.assertIsInstance(responses[0], Response)
+                self.assertIsNone(responses[0].timing)
 
             if Capability.MESSAGE_RETRY in capabilities:
                 assistant_messages = [

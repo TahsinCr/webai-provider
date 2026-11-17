@@ -51,6 +51,10 @@ class ProjectApiTests(LiveSyncTestCase):
                 )
                 resource_id = resource.get("id") if isinstance(resource, dict) else None
                 self.assertTrue(resource_id, "Created project resource has no verifiable ID")
+                attachments = self.call_api(
+                    "projects.attachments.list", lambda: project.attachments.list(limit=None)
+                )
+                self.assertIsInstance(attachments, list)
                 removed = self.call_api(
                     "projects.resources.remove",
                     lambda: project.resources.remove(str(resource_id)),
@@ -81,8 +85,10 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
         entry["attempted"] = True
         self.context.save()
         try:
-            project = await self.call_api(
-                "projects.create", lambda: self.context.session.projects.create(marker)
+            project = await self.call_or_skip_rate_limit(
+                "projects.create",
+                lambda: self.context.session.projects.create(marker),
+                entry=entry,
             )
             self.assertTrue(project.remote_id, "Created project has no verifiable remote ID")
             entry["remote_id"] = str(project.remote_id)
@@ -107,6 +113,10 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                 )
                 resource_id = resource.get("id") if isinstance(resource, dict) else None
                 self.assertTrue(resource_id, "Created project resource has no verifiable ID")
+                attachments = await self.call_api(
+                    "projects.attachments.list", lambda: project.attachments.list(limit=None)
+                )
+                self.assertIsInstance(attachments, list)
                 removed = await self.call_api(
                     "projects.resources.remove",
                     lambda: project.resources.remove(str(resource_id)),
@@ -128,7 +138,9 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                     chat_entry["attempted"] = True
                     self.context.save()
 
-                    loose_chat = await self.context.session.chats.create(title=loose_title)
+                    loose_chat = await self.context.session.chats.create(
+                        title=f"{loose_title}-draft"
+                    )
                     self.context.record_chat_id(chat_entry, loose_chat)
                     self.assertIsNone(loose_chat.project)
                     op = loose_chat.messages.create(f"{loose_title} Say OK.", model=Models.LOW)
@@ -139,6 +151,12 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                         chat=loose_chat,
                     )
                     self.context.record_chat_id(chat_entry, loose_chat)
+
+                    if Capability.RENAME in capabilities:
+                        await self.call_api(
+                            "projects.chat.rename_loose",
+                            lambda: loose_chat.rename(loose_title),
+                        )
 
                     await self.call_api(
                         "projects.chat.move_to", lambda: loose_chat.move_to(project)
@@ -174,9 +192,10 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                         second_project_entry = self.context.new_remote("project", second_marker)
                         second_project_entry["attempted"] = True
                         self.context.save()
-                        project2 = await self.call_api(
+                        project2 = await self.call_or_skip_rate_limit(
                             "projects.create_second",
                             lambda: self.context.session.projects.create(second_marker),
+                            entry=second_project_entry,
                         )
                         second_project_entry["remote_id"] = str(project2.remote_id)
                         self.context.save()

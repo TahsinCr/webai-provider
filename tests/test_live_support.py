@@ -567,10 +567,11 @@ class SyncCleanupTests(unittest.TestCase):
         )
         marker = f"{context.marker}-p"
         origin = Origin("chatgpt", "personal", "temporary-id")
-        native.get_project = AsyncMock(
+        native.adapter.projects.get_project = AsyncMock(
             side_effect=(ProjectData(origin, marker), RemoteNotFound("missing"))
         )
-        native.delete_project = AsyncMock()
+        native.adapter.projects.delete_project = AsyncMock()
+        native.adapter.projects.list_projects = AsyncMock(return_value=Page((), None))
         with tempfile.TemporaryDirectory() as temporary:
             journal = Path(temporary) / "cleanup.json"
             with (
@@ -582,8 +583,8 @@ class SyncCleanupTests(unittest.TestCase):
                 context.cleanup_entry(entry)
                 context.cleanup_pending()
                 self.assertFalse(journal.exists())
-        native.delete_project.assert_awaited_once_with(origin.remote_id)
-        self.assertEqual(native.get_project.await_count, 2)
+        native.adapter.projects.delete_project.assert_awaited_once_with(origin.remote_id)
+        self.assertEqual(native.adapter.projects.get_project.await_count, 2)
         self.assertEqual(context.state["resources"], [])
 
 
@@ -1690,6 +1691,15 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
                     return chat_obj
 
+                from webaiprovider.base import BaseProviderAdapter
+                from webaiprovider.core.hooks import OperationHooks
+                from webaiprovider.core.runtime import ProviderRuntime
+
+                runtime = ProviderRuntime(
+                    provider_id="chatgpt",
+                    account_id="personal",
+                    adapter=BaseProviderAdapter(provider_id="chatgpt", account_id="personal"),
+                )
                 session = SimpleNamespace(
                     capabilities={
                         Capability.MODELS,
@@ -1699,10 +1709,15 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         Capability.RENAME,
                         Capability.CHAT_BRANCH,
                     },
+                    runtime=runtime,
                     _require_provider=lambda: provider_impl,
                     _chat_type=AsyncChatGPTChat,
+                    _branch_chat_data=provider_impl.branch_chat,
+                    _get_chat_data=fake_get_chat,
+                    _delete_chat_data=fake_delete_chat,
                     models=SimpleNamespace(refresh=AsyncMock(return_value=[])),
                     chats=SimpleNamespace(
+                        hooks=OperationHooks(),
                         create=AsyncMock(),
                         get=AsyncMock(
                             side_effect=lambda cid: Conversation(

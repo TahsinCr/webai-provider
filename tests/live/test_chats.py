@@ -9,6 +9,11 @@ class ChatApiTests(LiveSyncTestCase):
     def test_chat_metadata_can_be_listed_without_loading_histories(self) -> None:
         if Capability.CHAT not in self.context.session.capabilities:
             self.skipTest("Provider does not expose chats")
+        self.assertEqual(self.context.session.chats.list(limit=0), [])
+        limited = self.call_api(
+            "chats.list_limited", lambda: self.context.session.chats.list(limit=2)
+        )
+        self.assertLessEqual(len(limited), 2)
         chats = self.call_api("chats.list_metadata", self.context.session.chats.refresh)
         self.assertIsInstance(chats, list)
 
@@ -17,6 +22,11 @@ class AsyncChatApiTests(LiveAsyncTestCase):
     async def test_chat_metadata_can_be_listed_without_loading_histories(self) -> None:
         if Capability.CHAT not in self.context.session.capabilities:
             self.skipTest("Provider does not expose chats")
+        self.assertEqual(await self.context.session.chats.list(limit=0), [])
+        limited = await self.call_api(
+            "chats.list_limited", lambda: self.context.session.chats.list(limit=2)
+        )
+        self.assertLessEqual(len(limited), 2)
         chats = await self.call_api("chats.list_metadata", self.context.session.chats.refresh)
         self.assertIsInstance(chats, list)
         self.assertTrue(all(chat.project is None for chat in chats))
