@@ -552,6 +552,25 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingTransportTests(unittest.TestCase):
+    def test_all_blocking_provider_facades_use_the_injected_async_transport(self):
+        for provider_type, origin in (
+            ("chatgpt", "https://chatgpt.com"),
+            ("claude", "https://claude.ai"),
+            ("gemini", "https://gemini.google.com"),
+            ("grok", "https://grok.com"),
+        ):
+            with self.subTest(provider=provider_type):
+                request = AsyncMock(return_value=FakeHTTPResponse(200, json={"ok": True}))
+                transport = AsyncHTTPTransport(
+                    origin, client_getter=lambda: SimpleNamespace(request=request)
+                )
+                provider = Provider(Account.from_cookies(provider_type, {}), transport=transport)
+                provider._provider._prepare_session = AsyncMock()
+                provider._provider._close_session = AsyncMock()
+                with provider:
+                    self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
+                request.assert_awaited_once()
+
     def test_chatgpt_native_and_public_transport_share_headers_without_refreshing_with_old_token(
         self,
     ):

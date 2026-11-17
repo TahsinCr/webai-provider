@@ -161,15 +161,16 @@ class PortalTransport(Transport):
                 async def next_chunk():
                     nonlocal active_task, task_loop
                     loop = asyncio.get_running_loop()
-                    task = asyncio.create_task(anext(iterator))
+                    task = asyncio.current_task()
                     with state_lock:
                         if closed:
-                            task.cancel()
-                        else:
-                            active_task = task
-                            task_loop = loop
+                            raise StopAsyncIteration
+                        if active_task is not None:
+                            raise RuntimeError("Concurrent reads from one stream are unsupported")
+                        active_task = task
+                        task_loop = loop
                     try:
-                        return await task
+                        return await anext(iterator)
                     finally:
                         with state_lock:
                             if active_task is task:
