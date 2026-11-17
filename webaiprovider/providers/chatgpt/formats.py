@@ -1,9 +1,35 @@
 import json
+import re
 from collections.abc import Iterable
 from itertools import chain, islice
 from typing import Any
 
-from ...normalizers import files_from
+from ...normalizers import FileTargetRule, files_from, register_file_target_rule
+
+_FILE_SERVICE_RE = re.compile(r"file[-_][A-Za-z0-9_-]+")
+_CHATGPT_SANDBOX_RE = re.compile(r"\[([^\]\n]{1,200})\]\(((?:sandbox:)?/mnt/data/[^\s)]+)\)")
+
+register_file_target_rule(
+    FileTargetRule(
+        name="chatgpt",
+        parse_target=lambda _target, parsed: (
+            (
+                parsed.scheme == "file-service"
+                and _FILE_SERVICE_RE.fullmatch(parsed.netloc) is not None
+                and not parsed.path
+            )
+            or (
+                parsed.scheme in ("", "sandbox")
+                and parsed.path.startswith("/mnt/data/")
+                and not parsed.netloc
+            )
+        ),
+        matches_identity=lambda identity, target: (
+            not target and identity.startswith("sandbox:/mnt/")
+        ),
+        markdown_link_re=_CHATGPT_SANDBOX_RE,
+    )
+)
 
 
 def message_files(*messages):

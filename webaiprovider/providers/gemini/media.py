@@ -3,7 +3,27 @@
 import re
 from urllib.parse import urlsplit
 
+from ...normalizers import FileTargetRule, register_file_target_rule
+
 PLACEHOLDER = re.compile(r"https?://googleusercontent\.com/image_generation_content/[^\s)\]<>]+")
+_GEMINI_IDENTITY_PREFIXES = (
+    "gemini-media:",
+    "http://googleusercontent.com/image_generation_content/",
+    "https://googleusercontent.com/image_generation_content/",
+)
+
+register_file_target_rule(
+    FileTargetRule(
+        name="gemini",
+        parse_target=lambda target, parsed: (
+            parsed.scheme == "gemini-media"
+            and bool(parsed.path)
+            and not parsed.netloc
+            and len(target) <= 512
+        ),
+        matches_identity=lambda identity, _target: identity.startswith(_GEMINI_IDENTITY_PREFIXES),
+    )
+)
 
 
 def valid_media_url(url):

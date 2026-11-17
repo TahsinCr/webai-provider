@@ -1730,10 +1730,9 @@ class ChatGPTClient:
             else:
                 content = data
 
-            response = self._upload_request(
+            self._upload_request(
                 upload_url, content=content, headers=headers, timeout=(30.0, 270.0)
             )
-            response.raise_for_status()
             ensure_active()
             verify_unchanged()
             if project_id:
@@ -1792,13 +1791,12 @@ class ChatGPTClient:
         headers = {"content-type": mime_type, "x-ms-blob-type": "BlockBlob"}
         if not is_bytes:
             headers["content-length"] = str(byte_size)
-        upload = self._upload_request(
+        self._upload_request(
             upload_url,
             content=data,
             headers=headers,
             timeout=(30.0, 120.0),
         )
-        upload.raise_for_status()
         if ensure_active is not None:
             ensure_active()
         finalized = self.request(

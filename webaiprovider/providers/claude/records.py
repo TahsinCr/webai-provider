@@ -1,6 +1,8 @@
 """Lossless Claude records mapped to the shared provider contract."""
 
-from ...normalizers import files_from, sources_from
+import re
+
+from ...normalizers import FileTargetRule, files_from, register_file_target_rule, sources_from
 from ...resources.chat.types import Conversation
 from ...resources.common import (
     Origin,
@@ -13,6 +15,25 @@ from ...resources.message.types import (
 )
 from ...resources.project.types import ProjectData
 from .errors import ClaudeCompatibilityError
+
+_CLAUDE_SANDBOX_RE = re.compile(
+    r"\[([^\]\n]{1,200})\]\(((?:sandbox:|computer:)?/mnt/user-data/[^\s)]+)\)"
+)
+
+register_file_target_rule(
+    FileTargetRule(
+        name="claude",
+        parse_target=lambda _target, parsed: (
+            parsed.scheme in ("", "sandbox", "computer")
+            and parsed.path.startswith("/mnt/user-data/")
+            and not parsed.netloc
+        ),
+        matches_identity=lambda identity, target: (
+            not target and identity.startswith("/mnt/user-data/")
+        ),
+        markdown_link_re=_CLAUDE_SANDBOX_RE,
+    )
+)
 
 
 def presented_files(block):

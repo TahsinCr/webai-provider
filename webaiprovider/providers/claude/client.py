@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from ...accounts import read_session_async
-from ...async_provider import confirm_deleted
+from ...base import confirm_deleted
 from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
 from ...errors import AccountPaused, ProviderError
 from ...frames import SSEFrameDecoder
