@@ -27,6 +27,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Serialize sends within a conversation and coordinate project mutations. Apply only changed project fields and confirm incomplete server replies through readback without replaying the mutation.
+- Cancel and drain the sibling listing when either top-level chat or project listing fails during `include_projects=True` queries.
 - Keep accepted provider work tracked during shutdown, close nested streams and upload workers during cancellation, and preserve the original stream error if cleanup also fails. Async providers retain the cleanup scope after a failed close so callers can retry.
 - Preserve local drafts during history refresh, reconcile sent messages with their remote IDs, and exclude internal retry and edit records from refreshed history.
 - Resolve exact model and effort IDs before display-name matches. Normalize provider stream errors and rate-limit responses, and retain per-account cooldowns when the provider supplies a retry delay.

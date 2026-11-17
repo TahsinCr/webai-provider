@@ -916,6 +916,34 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 await provider.chats.refresh(include_projects=True)
             self.assertTrue(cancelled.is_set())
 
+    async def test_include_projects_drains_sibling_when_top_level_listing_fails(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class FailingProvider(AsyncChatGPTProvider):
+            async def _prepare_session(self):
+                return None
+
+            async def _close_session(self):
+                return None
+
+            async def _list_chats_data(self, **options):
+                await started.wait()
+                raise ProviderError("conversation listing failed")
+
+            async def _list_projects_data(self, **options):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        async with FailingProvider(account) as provider:
+            with self.assertRaisesRegex(ProviderError, "conversation listing failed"):
+                await asyncio.wait_for(provider.chats.list(include_projects=True), timeout=2)
+            self.assertTrue(cancelled.is_set())
+
     async def test_project_refresh_rejects_repeated_cursor_cleanly(self) -> None:
         from webaiprovider.collections import Page
 

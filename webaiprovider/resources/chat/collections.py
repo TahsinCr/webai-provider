@@ -11,6 +11,7 @@ from ...collections import (
     _MutableRemoteCollectionFacade,
     validate_limit,
 )
+from ...core.concurrency import gather_bounded
 from ...core.operations import execute_with_hooks
 from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from ..project.project import AsyncProject, Project
@@ -105,57 +106,44 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
                     chats.append(chat)
             return Page(tuple(chats), page.next_cursor)
 
-    async def _fetch_project_chats(
-        self, projects: list[AsyncProject]
-    ) -> tuple[dict[str, AsyncProject], list[AsyncChat]]:
+    async def _fetch_project_chats(self, projects: list[AsyncProject]) -> list[AsyncChat]:
         project_map = {p.remote_id: p for p in projects if p.remote_id}
-        if not project_map:
-            return project_map, []
         session = self.provider
-        semaphore = asyncio.Semaphore(_PROJECT_CHAT_CONCURRENCY)
 
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
             assert project.remote_id is not None
             chats: list[AsyncChat] = []
             cursor: str | None = None
             seen_cursors: set[str] = set()
-            async with semaphore:
-                for _ in range(_MAX_PROJECT_CHAT_PAGES):
-                    raw_page = await session._list_project_chats_data(
-                        project.remote_id, cursor=cursor
+            for _ in range(_MAX_PROJECT_CHAT_PAGES):
+                raw_page = await session._list_project_chats_data(project.remote_id, cursor=cursor)
+                page = _require_conversation_page(raw_page, label="project conversation")
+                for item in page.items:
+                    chat = _chat_from_conversation(item, session, project_map)
+                    if chat.project is None:
+                        chat.project = project
+                    chats.append(chat)
+                next_cursor = page.next_cursor
+                if next_cursor is None:
+                    return chats
+                if (
+                    not isinstance(next_cursor, str)
+                    or not next_cursor
+                    or next_cursor in seen_cursors
+                ):
+                    raise ProviderError(
+                        "Provider project chat pagination returned an invalid or repeating cursor"
                     )
-                    page = _require_conversation_page(raw_page, label="project conversation")
-                    for item in page.items:
-                        chat = _chat_from_conversation(item, session, project_map)
-                        if chat.project is None:
-                            chat.project = project
-                        chats.append(chat)
-                    next_cursor = page.next_cursor
-                    if next_cursor is None:
-                        return chats
-                    if (
-                        not isinstance(next_cursor, str)
-                        or not next_cursor
-                        or next_cursor in seen_cursors
-                    ):
-                        raise ProviderError(
-                            "Provider project chat pagination returned an invalid or repeating cursor"
-                        )
-                    seen_cursors.add(next_cursor)
-                    cursor = next_cursor
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
             raise ProviderError(
                 f"Provider project chat pagination exceeded {_MAX_PROJECT_CHAT_PAGES} pages"
             )
 
-        tasks = [asyncio.create_task(fetch_one(project)) for project in project_map.values()]
-        try:
-            batches = await asyncio.gather(*tasks)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        return project_map, [chat for batch in batches for chat in batch]
+        batches = await gather_bounded(
+            tuple(project_map.values()), fetch_one, limit=_PROJECT_CHAT_CONCURRENCY
+        )
+        return [chat for batch in batches for chat in batch]
 
     async def _collect_with_projects(self, *, limit: int | None) -> list[AsyncChat]:
         validated = validate_limit(limit)
@@ -164,20 +152,22 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         session = self.provider
         async with session.runtime.activity():
             session._require_provider()
-            normal_coro = super()._collect_remote(limit=None, _normal_only=True)
-            projects_coro = session.projects.list(limit=None)
-            normal_chats, projects = await asyncio.gather(normal_coro, projects_coro)
-            _, project_chats = await self._fetch_project_chats(projects)
+            normal_task = asyncio.create_task(super()._collect_remote(limit=None))
+            projects_task = asyncio.create_task(session.projects.list(limit=None))
+            try:
+                normal_chats, projects = await asyncio.gather(normal_task, projects_task)
+            except BaseException:
+                normal_task.cancel()
+                projects_task.cancel()
+                await asyncio.gather(normal_task, projects_task, return_exceptions=True)
+                raise
+            project_chats = await self._fetch_project_chats(projects)
             merged = _merge_chat_lists(normal_chats, project_chats)
             return merged if validated is None else merged[:validated]
 
     async def _iter_remote_pages(self, *, limit: int | None = None, **options: Any):
         include_projects = bool(options.get("include_projects", False))
-        if (
-            include_projects
-            and not options.get("_normal_only")
-            and Capability.PROJECTS in self.provider.capabilities
-        ):
+        if include_projects and Capability.PROJECTS in self.provider.capabilities:
             items = await self._collect_with_projects(limit=limit)
             if items:
                 yield items
