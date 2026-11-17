@@ -5,8 +5,6 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
-from ..artifact import ArtifactsCollection
-from ..attachment import Attachment
 from ..chat.chat import AsyncChat, Chat
 from ..model.collections import Models
 from ..model.model import (
@@ -14,8 +12,9 @@ from ..model.model import (
     ModelRef,
     ModelSelection,
 )
-from ..source import SourcesCollection
-from .attachments import Attachments
+from ..response.artifact import ArtifactsCollection
+from ..response.source import SourcesCollection
+from .attachment import Attachment, Attachments
 from .response import Response
 
 if TYPE_CHECKING:

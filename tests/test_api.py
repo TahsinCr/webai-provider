@@ -299,7 +299,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_chat_lifecycle_methods(self) -> None:
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.message.types import Content
         from webaiprovider.resources.message.types import MessageData as NativeMessage
 
@@ -310,7 +309,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         def current_conv() -> Conversation:
             return Conversation(
-                Origin(acc.provider, acc.id, "chat-123"),
+                "chat-123",
                 state["title"],
                 state["messages"],
             )
@@ -358,10 +357,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_project_lifecycle_methods(self) -> None:
         from dataclasses import replace
 
-        from webaiprovider.resources.common import (
-            Origin,
-            ResourceData,
-        )
+        from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
@@ -369,7 +365,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         projects_adapter = session.adapter.projects
         remote = [
             NativeProject(
-                Origin(acc.provider, acc.id, "proj-abc"),
+                "proj-abc",
                 "Test Project",
                 "Always be concise",
             )
@@ -392,7 +388,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             return remote[0]
 
         async def add_resource(_project_id, kind, **options):
-            resource = ResourceData(
+            resource = Attachment(
                 f"remote-{options['name']}",
                 options["name"],
                 "text/plain",
@@ -456,7 +452,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_message_branch_retry_edit(self) -> None:
         from webaiprovider.resources.chat.types import Conversation
-        from webaiprovider.resources.common import Origin
 
         acc = Account.from_cookies("chatgpt", {"session_token": "token"})
         session = await self.open_provider(acc, AsyncChatGPTProvider(acc))
@@ -484,7 +479,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             "pending_branch": {"conversation_id": "remote-chat-id", "message_id": "msg-orig-1"}
         }
         session.adapter.chats.branch_chat.return_value = Conversation(
-            Origin(acc.provider, acc.id, "branch-chat-id"),
+            "branch-chat-id",
             "Branch chat",
             metadata=branch_meta,
         )
@@ -551,7 +546,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider.adapter.session.close.assert_awaited_once_with()
 
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
@@ -559,7 +553,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
         provider.adapter.projects.create_project = AsyncMock(
-            return_value=NativeProject(Origin("chatgpt", account.id, "project-1"), "Private notes")
+            return_value=NativeProject("project-1", "Private notes")
         )
         await provider.open()
         project = await provider.projects.create("Private notes", memory_share=False)
@@ -698,10 +692,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await p.close()
 
     async def test_model_resolution_from_string_and_policy(self) -> None:
-        from webaiprovider.resources.common import Choice
         from webaiprovider.resources.model import ModelCatalogState
+        from webaiprovider.resources.model.model import EffortOption, ModelCatalog
         from webaiprovider.resources.model.model import Model as CatalogModel
-        from webaiprovider.resources.model.model import ModelCatalog
 
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
         provider = StreamTestProvider(account.provider, account.id, (TextDelta("hi"),))
@@ -714,7 +707,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     CatalogModel(
                         "gpt-6-thinking",
                         "GPT-6 Thinking",
-                        (Choice("standard", "Standard"), Choice("extended", "Extended")),
+                        (
+                            EffortOption("standard", "Standard"),
+                            EffortOption("extended", "Extended"),
+                        ),
                     ),
                 ),
                 default_model="gpt-6-instant",
@@ -775,7 +771,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class PaginatedChats(BaseChatAdapter):
@@ -786,8 +781,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 del cursor, limit
                 return Page(
                     (
-                        Conversation(Origin("chatgpt", self.account_id, "c-loose"), "Loose"),
-                        Conversation(Origin("chatgpt", self.account_id, "c-shared"), "Shared"),
+                        Conversation("c-loose", "Loose"),
+                        Conversation("c-shared", "Shared"),
                     ),
                     None,
                 )
@@ -802,10 +797,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
             async def list_projects(self, *, cursor: str | None = None):
                 self.project_page_calls.append(cursor)
-                projects = tuple(
-                    NativeProject(Origin("chatgpt", self.account_id, f"p-{idx}"), f"Project {idx}")
-                    for idx in range(1, 7)
-                )
+                projects = tuple(NativeProject(f"p-{idx}", f"Project {idx}") for idx in range(1, 7))
                 return (
                     Page(projects[:3], "projects-page-2") if cursor is None else Page(projects[3:])
                 )
@@ -819,68 +811,36 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 finally:
                     self.active_fetches -= 1
 
-                p1 = NativeProject(Origin("chatgpt", self.account_id, "p-1"), "Project 1")
-                p2 = NativeProject(Origin("chatgpt", self.account_id, "p-2"), "Project 2")
+                p1 = NativeProject("p-1", "Project 1")
+                p2 = NativeProject("p-2", "Project 2")
                 if project_id == "p-1":
                     if cursor is None:
                         return Page(
-                            (
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-shared"),
-                                    "Shared",
-                                    project=p1,
-                                ),
-                            ),
+                            (Conversation("c-shared", "Shared", project=p1),),
                             "p1-page-2",
                         )
                     if cursor == "p1-page-2":
                         return Page(
-                            (
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-p1-2"),
-                                    "P1 Two",
-                                    project=p1,
-                                ),
-                            ),
+                            (Conversation("c-p1-2", "P1 Two", project=p1),),
                             None,
                         )
                 if project_id == "p-2":
                     if cursor is None:
                         return Page(
-                            (
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-p2-1"),
-                                    "P2 One",
-                                    project=p2,
-                                ),
-                            ),
+                            (Conversation("c-p2-1", "P2 One", project=p2),),
                             "p2-page-2",
                         )
                     if cursor == "p2-page-2":
                         return Page(
                             (
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-p2-1"),
-                                    "P2 One Dup",
-                                    project=p2,
-                                ),
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-p2-2"),
-                                    "P2 Two",
-                                    project=p2,
-                                ),
+                                Conversation("c-p2-1", "P2 One Dup", project=p2),
+                                Conversation("c-p2-2", "P2 Two", project=p2),
                             ),
                             "p2-page-3",
                         )
                     if cursor == "p2-page-3":
                         return Page(
-                            (
-                                Conversation(
-                                    Origin("chatgpt", self.account_id, "c-p2-3"),
-                                    "P2 Three",
-                                    project=p2,
-                                ),
-                            ),
+                            (Conversation("c-p2-3", "P2 Three", project=p2),),
                             None,
                         )
                 return Page((), None)
@@ -921,7 +881,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         cancelled = asyncio.Event()
@@ -933,7 +892,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             async def list_chats(self, *, cursor: str | None = None, limit: int = 50):
                 del cursor, limit
                 return Page(
-                    (Conversation(Origin("chatgpt", self.account_id, "c-loose"), "Loose"),),
+                    (Conversation("c-loose", "Loose"),),
                     None,
                 )
 
@@ -945,8 +904,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 del cursor
                 return Page(
                     (
-                        NativeProject(Origin("chatgpt", self.account_id, "p-1"), "Alpha"),
-                        NativeProject(Origin("chatgpt", self.account_id, "p-2"), "Beta"),
+                        NativeProject("p-1", "Alpha"),
+                        NativeProject("p-2", "Beta"),
                     ),
                     None,
                 )
@@ -1017,7 +976,6 @@ class TestSyncApi(unittest.TestCase):
             BaseProviderAdapter,
             BaseSessionAdapter,
         )
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
@@ -1041,7 +999,7 @@ class TestSyncApi(unittest.TestCase):
                         owner.thread_ids.append(threading.get_ident())
                         owner.memory_share = opts.get("memory_share", True)
                         return NativeProject(
-                            Origin("chatgpt", owner.account_id, "project-1"),
+                            "project-1",
                             name,
                             instructions,
                         )
@@ -1091,7 +1049,6 @@ class TestSyncApi(unittest.TestCase):
         from webaiprovider.collections import Page
         from webaiprovider.errors import FeatureUnavailable, UnsupportedOperationError
         from webaiprovider.resources.chat.types import Conversation
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
@@ -1107,8 +1064,8 @@ class TestSyncApi(unittest.TestCase):
                         del cursor
                         return Page(
                             (
-                                NativeProject(Origin("chatgpt", owner.account_id, "p-1"), "Alpha"),
-                                NativeProject(Origin("chatgpt", owner.account_id, "p-2"), "Beta"),
+                                NativeProject("p-1", "Alpha"),
+                                NativeProject("p-2", "Beta"),
                             ),
                             None,
                         )
@@ -1121,11 +1078,9 @@ class TestSyncApi(unittest.TestCase):
                             return Page(
                                 (
                                     Conversation(
-                                        Origin("chatgpt", owner.account_id, "c-proj"),
+                                        "c-proj",
                                         "Proj Chat",
-                                        project=NativeProject(
-                                            Origin("chatgpt", owner.account_id, "p-1"), "Alpha"
-                                        ),
+                                        project=NativeProject("p-1", "Alpha"),
                                     ),
                                 ),
                                 None,
@@ -1136,11 +1091,7 @@ class TestSyncApi(unittest.TestCase):
                     async def list_chats(self, *, cursor: str | None = None, limit: int = 50):
                         del cursor, limit
                         return Page(
-                            (
-                                Conversation(
-                                    Origin("chatgpt", owner.account_id, "c-loose"), "Loose"
-                                ),
-                            ),
+                            (Conversation("c-loose", "Loose"),),
                             None,
                         )
 
@@ -1212,17 +1163,18 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             BaseSessionAdapter,
             EditorProjectAdapter,
         )
-        from webaiprovider.resources.common import Origin, ResourceData
+        from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class ConfirmingProjects(EditorProjectAdapter):
             def __init__(self, account_id: str) -> None:
+                del account_id
                 self._gate = asyncio.Lock()
                 self.project = NativeProject(
-                    Origin("claude", account_id, "project-1"),
+                    "project-1",
                     "Research",
                     "Old instructions",
-                    (ResourceData("resource-1", "Source", "text/plain"),),
+                    (Attachment("resource-1", "Source", "text/plain"),),
                     metadata={"confirmed": "initial"},
                 )
                 self.get_calls = 0
@@ -1290,15 +1242,13 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             BaseSessionAdapter,
             EditorProjectAdapter,
         )
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class ConcurrentProjects(EditorProjectAdapter):
             def __init__(self, account_id: str) -> None:
+                del account_id
                 self._gate = asyncio.Lock()
-                self.remote = NativeProject(
-                    Origin("claude", account_id, "project-1"), "Research", "Instructions"
-                )
+                self.remote = NativeProject("project-1", "Research", "Instructions")
                 self.active_writes = 0
                 self.max_active_writes = 0
                 self.first_write_started = asyncio.Event()
@@ -1338,7 +1288,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         async with AsyncProvider(account, adapter=adapter) as provider:
             project = provider._project_type(
                 title=proj_adapter.remote.name,
-                remote_id=proj_adapter.remote.origin.remote_id,
+                remote_id=proj_adapter.remote.id,
                 session=provider,
             )
             project._apply_provider_project(proj_adapter.remote)

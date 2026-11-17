@@ -3,7 +3,7 @@
 import re
 from urllib.parse import urlsplit
 
-from ...normalizers import FileTargetRule, register_file_target_rule
+from ...resources.response.artifact import FileTargetRule, register_file_target_rule
 
 PLACEHOLDER = re.compile(r"https?://googleusercontent\.com/image_generation_content/[^\s)\]<>]+")
 _GEMINI_IDENTITY_PREFIXES = (

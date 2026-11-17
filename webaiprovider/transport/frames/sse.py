@@ -4,7 +4,7 @@ import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import NamedTuple
 
-from ..errors import FrameDecodeError
+from ...errors import FrameDecodeError
 
 _LINE_END = re.compile(rb"\r\n|\r|\n")
 

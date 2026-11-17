@@ -32,7 +32,6 @@ from webaiprovider import Account, Provider
 from webaiprovider.collections import Page
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.resources.chat.types import Conversation
-from webaiprovider.resources.common import Origin
 from webaiprovider.resources.message.types import Content, MessageData
 from webaiprovider.resources.project.types import ProjectData
 
@@ -444,17 +443,17 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
             "async",
             gate=ActionGate(interval=0),
         )
-        self.origin = Origin("chatgpt", "personal", "temporary-id")
+        self.remote_id = "temporary-id"
 
     def track(self, kind="project"):
         marker = f"{self.context.marker}-p" if kind == "project" else f"{self.context.marker}-chat"
         remote = (
-            ProjectData(self.origin, marker)
+            ProjectData(self.remote_id, marker)
             if kind == "project"
-            else Conversation(self.origin, marker)
+            else Conversation(self.remote_id, marker)
         )
         entry = self.context.new_remote(kind, marker)
-        entry.update(attempted=True, remote_id=self.origin.remote_id)
+        entry.update(attempted=True, remote_id=self.remote_id)
         self.context.save()
         return entry, remote
 
@@ -462,8 +461,8 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         entry, tracked = self.track()
         self.provider.delete_project = AsyncMock()
         for remote in (
-            ProjectData(self.origin, "Unrelated"),
-            ProjectData(Origin("chatgpt", "personal", "another-id"), tracked.name),
+            ProjectData(self.remote_id, "Unrelated"),
+            ProjectData("another-id", tracked.name),
         ):
             with self.subTest(remote=remote):
                 self.provider.get_project = AsyncMock(return_value=remote)
@@ -479,7 +478,7 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.provider.delete_project = AsyncMock(side_effect=ProviderError("uncertain"))
         self.provider.list_projects = AsyncMock(return_value=Page(()))
         await self.context.cleanup_entry_async(entry)
-        self.provider.delete_project.assert_awaited_once_with(self.origin.remote_id)
+        self.provider.delete_project.assert_awaited_once_with(self.remote_id)
         self.assertEqual(self.context.state["resources"], [])
         self.assertFalse(self.journal.exists())
 
@@ -495,7 +494,7 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.provider.list_projects.await_args_list, [call(None), call("next-page")]
         )
-        self.provider.delete_project.assert_awaited_once_with(self.origin.remote_id)
+        self.provider.delete_project.assert_awaited_once_with(self.remote_id)
         self.assertFalse(self.journal.exists())
 
     async def test_later_pages_prevent_false_deletion_confirmation(self) -> None:
@@ -514,7 +513,7 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
                 setattr(self.provider, "list_chats" if kind == "chat" else "list_projects", listing)
                 with self.assertRaisesRegex(CleanupError, "did not confirm deletion"):
                     await self.context.cleanup_entry_async(entry)
-                delete.assert_awaited_once_with(self.origin.remote_id)
+                delete.assert_awaited_once_with(self.remote_id)
                 self.assertEqual(listing.await_args_list, [call(None), call("next-page")])
                 self.assertEqual(self.context.state["resources"], [entry])
                 self.assertTrue(self.journal.exists())
@@ -546,14 +545,14 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
         entry, remote = self.track("chat")
         remote = Conversation(
-            self.origin,
+            self.remote_id,
             "Automatic title",
             (MessageData("user-id", "user", (Content("text", entry["markers"][0]),)),),
         )
         self.provider.get_chat = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
         self.provider.delete_chat = AsyncMock()
         await self.context.cleanup_entry_async(entry)
-        self.provider.delete_chat.assert_awaited_once_with(self.origin.remote_id)
+        self.provider.delete_chat.assert_awaited_once_with(self.remote_id)
         self.assertFalse(self.journal.exists())
 
 
@@ -566,9 +565,8 @@ class SyncCleanupTests(unittest.TestCase):
             provider, LiveAccount("personal", "chatgpt", {}), "sync", gate=ActionGate(interval=0)
         )
         marker = f"{context.marker}-p"
-        origin = Origin("chatgpt", "personal", "temporary-id")
         native.adapter.projects.get_project = AsyncMock(
-            side_effect=(ProjectData(origin, marker), RemoteNotFound("missing"))
+            side_effect=(ProjectData("temporary-id", marker), RemoteNotFound("missing"))
         )
         native.adapter.projects.delete_project = AsyncMock()
         native.adapter.projects.list_projects = AsyncMock(return_value=Page((), None))
@@ -579,11 +577,11 @@ class SyncCleanupTests(unittest.TestCase):
                 patch("tests.live.support.journal.CLEANUP_FILE", journal),
             ):
                 entry = context.new_remote("project", marker)
-                entry.update(attempted=True, remote_id=origin.remote_id)
+                entry.update(attempted=True, remote_id="temporary-id")
                 context.cleanup_entry(entry)
                 context.cleanup_pending()
                 self.assertFalse(journal.exists())
-        native.adapter.projects.delete_project.assert_awaited_once_with(origin.remote_id)
+        native.adapter.projects.delete_project.assert_awaited_once_with("temporary-id")
         self.assertEqual(native.adapter.projects.get_project.await_count, 2)
         self.assertEqual(context.state["resources"], [])
 
@@ -923,11 +921,9 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_lost_branch_response_recovers_by_marker_without_deleting_parent(self) -> None:
-        parent_origin = Origin("gemini", "personal", "c_parent")
-        branch_origin = Origin("gemini", "personal", "c_branch")
         marker = f"{self.context.marker}-branch"
-        parent_chat = Conversation(parent_origin, f"{self.context.marker}-src")
-        branch_chat = Conversation(branch_origin, f"{self.context.marker}-src")
+        parent_chat = Conversation("c_parent", f"{self.context.marker}-src")
+        branch_chat = Conversation("c_branch", f"{self.context.marker}-src")
 
         entry = self.context.new_remote("chat", marker, exclude_ids=("c_parent",))
         entry["markers"].append(f"{self.context.marker}-src")
@@ -946,11 +942,9 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_lost_branch_response_refuses_guessing_when_zero_or_multiple_matches(
         self,
     ) -> None:
-        parent_chat = Conversation(
-            Origin("gemini", "personal", "c_parent"), f"{self.context.marker}-src"
-        )
-        b1 = Conversation(Origin("gemini", "personal", "c_b1"), f"{self.context.marker}-src")
-        b2 = Conversation(Origin("gemini", "personal", "c_b2"), f"{self.context.marker}-src")
+        parent_chat = Conversation("c_parent", f"{self.context.marker}-src")
+        b1 = Conversation("c_b1", f"{self.context.marker}-src")
+        b2 = Conversation("c_b2", f"{self.context.marker}-src")
 
         for listed in ((parent_chat,), (parent_chat, b1, b2)):
             with self.subTest(listed_count=len(listed)):
@@ -971,9 +965,7 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(self.journal.exists())
 
     async def test_branch_entry_never_deletes_excluded_parent_id(self) -> None:
-        parent_chat = Conversation(
-            Origin("gemini", "personal", "c_parent"), f"{self.context.marker}-src"
-        )
+        parent_chat = Conversation("c_parent", f"{self.context.marker}-src")
         entry = self.context.new_remote(
             "chat", f"{self.context.marker}-src", exclude_ids=("c_parent",)
         )
@@ -1098,9 +1090,7 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
 
                     self.assertTrue(entry["attempted"])
                     self.assertTrue(journal.exists())
-                    remote = Conversation(
-                        Origin("gemini", "personal", "c_orphan"), f"{context.marker}-chat"
-                    )
+                    remote = Conversation("c_orphan", f"{context.marker}-chat")
                     provider.list_chats = AsyncMock(return_value=Page((remote,), None))
                     provider.get_chat = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
                     provider.delete_chat = AsyncMock()
@@ -1238,10 +1228,7 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 provider = SimpleNamespace(
                     get_chat=AsyncMock(
                         side_effect=(
-                            Conversation(
-                                Origin("gemini", "personal", "c_gem"),
-                                f"{gemini_run}-chat",
-                            ),
+                            Conversation("c_gem", f"{gemini_run}-chat"),
                             RemoteNotFound("missing"),
                         )
                     ),
@@ -1580,7 +1567,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                                 sources=(),
                                 artifacts=(),
                                 message=MessageData(
-                                    Origin("chatgpt", "personal", f"m-{chat_id}"),
+                                    f"m-{chat_id}",
                                     "assistant",
                                     (Content("text", text=text),),
                                     actions=("retry", "branch"),
@@ -1625,17 +1612,17 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         if cid != "c_root" or cid in deleted_ids:
                             raise RemoteNotFound("gone")
                     title = branched.title if cid == "c_branch_real" else root_chat.title
-                    return Conversation(Origin("chatgpt", "personal", cid), title)
+                    return Conversation(cid, title)
 
                 root_msgs_data = [
                     MessageData(
-                        Origin("chatgpt", "personal", "u-1"),
+                        "u-1",
                         "user",
                         (Content("text", text="u1"),),
                         actions=("edit",),
                     ),
                     MessageData(
-                        Origin("chatgpt", "personal", "m-c_root"),
+                        "m-c_root",
                         "assistant",
                         (Content("text", text="ROOT"),),
                         actions=("retry", "branch"),
@@ -1643,13 +1630,13 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 branched_msgs_data = [
                     MessageData(
-                        Origin("chatgpt", "personal", "u-1"),
+                        "u-1",
                         "user",
                         (Content("text", text="u1"),),
                         actions=("edit",),
                     ),
                     MessageData(
-                        Origin("chatgpt", "personal", "m-c_branch_real"),
+                        "m-c_branch_real",
                         "assistant",
                         (Content("text", text="BR"),),
                         actions=("retry", "branch"),
@@ -1661,7 +1648,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         side_effect=lambda cid, mid: (
                             events_order.append(("branch", "preview-1")),
                             Conversation(
-                                Origin("chatgpt", "personal", "preview-1"),
+                                "preview-1",
                                 "Branched preview",
                                 metadata={
                                     "pending_branch": {
@@ -1721,7 +1708,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         create=AsyncMock(),
                         get=AsyncMock(
                             side_effect=lambda cid: Conversation(
-                                Origin("chatgpt", "personal", cid),
+                                cid,
                                 branched.title if cid == "c_branch_real" else root_chat.title,
                                 messages=tuple(
                                     root_msgs_data if cid == "c_root" else branched_msgs_data
@@ -1730,7 +1717,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         ),
                         refresh=AsyncMock(
                             side_effect=lambda: [
-                                Conversation(Origin("chatgpt", "personal", cid), "Title")
+                                Conversation(cid, "Title")
                                 for cid in (
                                     ["c_root"] + ([] if rate_limit_branch else ["c_branch_real"])
                                 )
@@ -1828,13 +1815,13 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 if cid in deleted_ids or cid == "c_root":
                     if cid in deleted_ids:
                         raise RemoteNotFound("gone")
-                    return Conversation(Origin("chatgpt", "personal", cid), root_chat.title)
+                    return Conversation(cid, root_chat.title)
                 raise RemoteNotFound("gone")
 
             root_msgs_data = [
-                MessageData(Origin("chatgpt", "personal", "u-1"), "user", (Content("text", "u1"),)),
+                MessageData("u-1", "user", (Content("text", "u1"),)),
                 MessageData(
-                    Origin("chatgpt", "personal", "m-c_root"),
+                    "m-c_root",
                     "assistant",
                     (Content("text", "ROOT"),),
                     actions=("branch",),
@@ -1860,7 +1847,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
             def make_fake_op(target_chat, cid: str, msg_id: str, text: str):
                 result = SimpleNamespace(
                     message=MessageData(
-                        Origin("chatgpt", "personal", msg_id),
+                        msg_id,
                         "assistant",
                         (Content("text", text),),
                     ),

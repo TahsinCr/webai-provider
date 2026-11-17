@@ -23,7 +23,7 @@ from webaiprovider.providers.grok.client import (
     _iter_bounded_lines,
 )
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
-from webaiprovider.resources.common import ResourceData
+from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.protocol import (
     MessageMetadata,
     ProviderRequest,
@@ -631,7 +631,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         record = SimpleNamespace(
-            origin=None,
+            id="chat",
             title="Chat",
             messages=(),
             project=None,
@@ -981,7 +981,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "remove_source",
                 "workspace",
                 resource_id=resource_id,
-                resource=ResourceData(resource_id, source["name"], metadata=source),
+                resource=Attachment(resource_id, source["name"], metadata=source),
             )
 
             self.assertEqual(result, {"deleted": True})
@@ -1492,7 +1492,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 ]
             )
             chat = await provider.adapter.chats.get_chat("c-grok")
-            self.assertEqual(chat.origin.remote_id, "c-grok")
+            self.assertEqual(chat.id, "c-grok")
             self.assertEqual(provider.adapter._continuations.get("c-grok"), "a1")
         finally:
             await provider.close()

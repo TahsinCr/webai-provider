@@ -2,15 +2,15 @@
 
 import re
 
-from ...normalizers import sources_from
 from ...resources.chat.types import Conversation
-from ...resources.common import ResourceData
+from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
     Content,
     MessageData,
     actions_for,
 )
 from ...resources.project.types import ProjectData
+from ...resources.response.source import sources_from
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 
@@ -97,7 +97,8 @@ def published_thoughts(candidate, steps=None, previous=""):
     return "\n".join(parts) or previous
 
 
-def conversations(pages, origin):
+def conversations(pages, origin=None):
+    del origin
     result = {}
     for page in pages:
         if page == []:
@@ -113,10 +114,10 @@ def conversations(pages, origin):
                 continue
             pid = nested(row, 7)
             result[cid] = Conversation(
-                origin(cid),
+                cid,
                 title or "Gemini sohbeti",
                 project=(
-                    ProjectData(origin(pid), "")
+                    ProjectData(pid, "")
                     if isinstance(pid, str) and pid.startswith("notebooks/")
                     else None
                 ),
@@ -129,7 +130,9 @@ def conversations(pages, origin):
     return tuple(result.values())
 
 
-def history(data, origin, cid):
+def history(data, origin_or_cid, cid=None):
+    if cid is None:
+        cid = origin_or_cid
     turns = nested(data, 0)
     if not isinstance(turns, list):
         raise GeminiError("Gemini history is temporarily unavailable; saved history was preserved")
@@ -179,7 +182,7 @@ def history(data, origin, cid):
                     + tuple(
                         Content(
                             "resource",
-                            resource=ResourceData(
+                            resource=Attachment(
                                 image["alias"], image["name"], image.get("media_type"), image["url"]
                             ),
                         )
@@ -204,7 +207,7 @@ def history(data, origin, cid):
                 )
             )
     return Conversation(
-        origin(cid),
+        cid,
         "Gemini sohbeti",
         tuple(messages),
         metadata={"history_partial": len(turns) >= 1000, "title_unavailable": True},

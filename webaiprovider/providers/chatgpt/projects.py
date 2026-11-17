@@ -5,8 +5,9 @@ import mimetypes
 import time
 from urllib.parse import quote
 
-from ...resources.common import Choice, ResourceData
+from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
+    ProjectOption,
     ProjectOptions,
     source_file,
 )
@@ -26,10 +27,10 @@ class ChatGPTProjectEditor:
             if not project_id:
                 return ProjectOptions(
                     fields=("name",),
-                    visibility=(Choice("private", "Özel"),),
+                    visibility=(ProjectOption("private", "Özel"),),
                     memory=(
-                        Choice("default", "Varsayılan"),
-                        Choice("project_only", "Yalnızca proje"),
+                        ProjectOption("default", "Varsayılan"),
+                        ProjectOption("project_only", "Yalnızca proje"),
                     ),
                 )
             with self.client_scope() as client:
@@ -154,7 +155,7 @@ class ChatGPTProjectEditor:
                             **file_payload,
                         }
                     )
-                    return ResourceData(
+                    return Attachment(
                         str(
                             attached_item.get("file_id")
                             or attached_item.get("id")

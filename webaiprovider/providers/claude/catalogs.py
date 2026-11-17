@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...resources.common import Choice
 from ...resources.model.collections import (
     StaticModelCatalog,
     effort_ref,
 )
 from ...resources.model.model import (
+    EffortOption,
     EffortRef,
     EffortSet,
     Model,
@@ -187,7 +187,7 @@ def parse_model_catalog(data) -> ModelCatalog:
         efforts = [x for x in thinking.get("effort_options", []) if not x.get("disabled")]
         modes = [x for x in thinking.get("mode_options", []) if not x.get("disabled")]
         selections: dict[str, dict[str, str]] = {}
-        choices: list[Choice] = []
+        choices: list[EffortOption] = []
         default_choice: str | None = None
         selected = states.get(entry["id"], {})
         effort_ids = {x["id"] for x in efforts}
@@ -216,7 +216,7 @@ def parse_model_catalog(data) -> ModelCatalog:
                 if mid:
                     payload["thinking_mode"] = mid
                 selections[identity] = payload
-                choices.append(Choice(identity, title))
+                choices.append(EffortOption(identity, title))
                 if (
                     default_choice is None
                     and (eid == default_effort or not effort)

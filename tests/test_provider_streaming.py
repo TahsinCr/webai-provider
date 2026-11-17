@@ -30,7 +30,6 @@ from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
 from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
 from webaiprovider.providers.grok.provider import AsyncGrokProvider
-from webaiprovider.resources.common import Choice
 from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -43,8 +42,8 @@ from webaiprovider.resources.message.operation import (
 )
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model import ModelCatalogState
+from webaiprovider.resources.model.model import EffortOption, ModelCatalog
 from webaiprovider.resources.model.model import Model as CatalogModel
-from webaiprovider.resources.model.model import ModelCatalog
 
 
 def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:
@@ -54,7 +53,7 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
         CatalogModel(
             "default-model",
             "Default Model",
-            (Choice("standard", "Standard"), Choice("high", "High")),
+            (EffortOption("standard", "Standard"), EffortOption("high", "High")),
             default_effort="standard",
         )
     ]
@@ -97,7 +96,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
                 model = CatalogModel(
                     "default-model",
                     "Default Model",
-                    (Choice("standard", "Standard"),),
+                    (EffortOption("standard", "Standard"),),
                     default_effort="standard",
                 )
                 return ModelCatalog(ModelCatalogState.AVAILABLE, (model,), model.id)

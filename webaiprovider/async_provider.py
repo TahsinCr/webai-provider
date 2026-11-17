@@ -15,11 +15,9 @@ from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
 from .errors import ProviderError
 from .provider import ProviderType, _construct_provider
-from .resources.artifact import Artifact
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
-from .resources.common import Origin
 from .resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -51,7 +49,8 @@ from .resources.model.model import EffortRef, ModelRef, ModelSelection
 from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
-from .resources.source import Source
+from .resources.response.artifact import Artifact
+from .resources.response.source import Source
 from .transport import AsyncTransport
 
 if TYPE_CHECKING:
@@ -291,13 +290,10 @@ class AsyncProvider(BaseProvider):
             await _close_async_iterator(stream)
 
     def attachment_policy(self) -> dict | None:
-        from .utils.attachments import policy_for
+        from .resources.message.attachment import policy_for
 
         policy = policy_for(getattr(self, "id", ""))
         return policy.as_dict() if policy else None
-
-    def _origin(self, remote: str) -> Origin:
-        return Origin(getattr(self, "id", ""), getattr(self, "account_id", "default"), remote)
 
     async def authenticate(self) -> SessionStatus:
         async with self.runtime.activity():
@@ -324,11 +320,9 @@ class AsyncProvider(BaseProvider):
             return await self.adapter.projects.project_options(project_id)
 
     async def update_project(self, project: ProjectData) -> ProjectData:
-        if project.origin.provider_id != self.id or project.origin.account_id != self.account_id:
-            raise ValueError("Project belongs to a different provider account")
         async with self.runtime.activity():
             return await self._patch_project_data(
-                project.origin.remote_id,
+                project.id,
                 name=project.name,
                 instructions=project.instructions or "",
             )

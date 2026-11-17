@@ -3,14 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..common import Origin
 from ..message.types import MessageData
 from ..project.types import ProjectData
 
 
 @dataclass(frozen=True)
 class Conversation:
-    origin: Origin
+    id: str
     title: str
     messages: tuple[MessageData, ...] = ()
     project: ProjectData | None = None

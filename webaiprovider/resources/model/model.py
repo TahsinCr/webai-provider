@@ -6,8 +6,6 @@ from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
-from ..common import Choice
-
 if TYPE_CHECKING:
     from .collections import Models
 
@@ -202,10 +200,16 @@ class ModelSelection:
 
 
 @dataclass(frozen=True)
+class EffortOption:
+    id: str
+    title: str
+
+
+@dataclass(frozen=True)
 class Model:
     id: str
     title: str
-    efforts: tuple[Choice, ...] = ()
+    efforts: tuple[EffortOption, ...] = ()
     default_effort: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
     chat_selectable: bool = True

@@ -33,7 +33,7 @@ def _chat_from_conversation(
     project = _project_from_data(session, item.project, projects)
     return session._chat_type(
         title=item.title,
-        remote_id=item.origin.remote_id,
+        remote_id=item.id,
         project=project,
         temporary=bool(item.metadata.get("temporary", False)),
         metadata=item.metadata,

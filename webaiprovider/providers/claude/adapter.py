@@ -21,8 +21,11 @@ from ...base import (
 )
 from ...collections import Page
 from ...core import gather_bounded
+from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
+from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.types import Conversation
+from ...resources.message.attachment import CLAUDE_ATTACHMENTS
 from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -35,9 +38,6 @@ from ...resources.message.protocol import (
 from ...resources.model.model import ModelCatalog
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
-from ...utils.attachments import CLAUDE_ATTACHMENTS
-from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
-from ...utils.timing import current_send_timing
 from .client import ClaudeClient, ClaudeProjectEditor, remote_id, validate_upload_candidate
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project

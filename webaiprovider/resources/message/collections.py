@@ -15,8 +15,6 @@ from ...collections import (
 )
 from ...core.hooks import OperationHooks, SyncOperationHooks
 from ...errors import ProviderError, UnsupportedOperationError
-from ..artifact import Artifact
-from ..attachment import Attachment
 from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
 from ..model.collections import Models
@@ -25,8 +23,9 @@ from ..model.model import (
     ModelRef,
     ModelSelection,
 )
-from ..source import Source
-from .attachments import Attachments
+from ..response.artifact import Artifact
+from ..response.source import Source
+from .attachment import Attachment, Attachments
 from .message import AsyncMessage, Message
 from .operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
 from .response import Response

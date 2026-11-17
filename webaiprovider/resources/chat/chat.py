@@ -4,11 +4,11 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...core.files import DownloadSource, download_source
 from ...core.operations import execute_with_hooks
 from ...errors import ProviderError, UnsupportedOperationError
-from ...utils.files import DownloadSource, download_source
-from ..artifact import Artifact
 from ..project.types import ProjectData
+from ..response.artifact import Artifact
 from .types import Conversation
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ def _project_from_data(
 ) -> AsyncProject | None:
     if data is None:
         return None
-    remote_id = data.origin.remote_id
+    remote_id = data.id
     existing = projects.get(remote_id) if projects is not None else None
     if existing is not None:
         if data.name and not existing.title:
@@ -144,7 +144,7 @@ class AsyncBranchableChat(AsyncChat):
             )
             return type(self)(
                 title=ctx.parameters["title"] or branched.title,
-                remote_id=branched.origin.remote_id,
+                remote_id=branched.id,
                 project=project,
                 metadata=branched.metadata,
                 session=session,

@@ -1,8 +1,8 @@
 from typing import Any, ClassVar
 
-from ...resources.common import Choice
 from ...resources.model.collections import StaticModelCatalog
 from ...resources.model.model import (
+    EffortOption,
     EffortRef,
     EffortSet,
     Model,
@@ -84,7 +84,7 @@ def parse_model_catalog(raw: Any) -> ModelCatalog:
             or entry.get("disabled") is True
         ):
             continue
-        efforts: dict[str, Choice] = {}
+        efforts: dict[str, EffortOption] = {}
         values = entry.get("thinking_efforts", [])
         if not isinstance(values, list):
             raise ChatGPTError(f"Effort catalog response changed for {slug}")
@@ -102,7 +102,9 @@ def parse_model_catalog(raw: Any) -> ModelCatalog:
                 or item.get("short_label")
                 or item.get("name")
             )
-            efforts[effort] = Choice(effort, title if isinstance(title, str) and title else effort)
+            efforts[effort] = EffortOption(
+                effort, title if isinstance(title, str) and title else effort
+            )
             if item.get("is_default") is True or item.get("default") is True:
                 default_effort = effort
         visible = not slug.casefold().endswith("-wm")

@@ -275,7 +275,7 @@ class EditorProjectAdapter(BaseProjectAdapter):
         kind: str,
         **values: Any,
     ) -> ProjectData:
-        from .resources.common import ResourceData
+        from .resources.message.attachment import Attachment
         from .resources.project.types import ProjectData
 
         before = await self.get_project(project_id)
@@ -290,7 +290,7 @@ class EditorProjectAdapter(BaseProjectAdapter):
                 **values,
             )
         self.invalidate_cache(project_id)
-        if isinstance(result, ResourceData):
+        if isinstance(result, Attachment):
             return replace(before, resources=(*before.resources, result))
         if isinstance(result, ProjectData):
             return result

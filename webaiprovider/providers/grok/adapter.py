@@ -22,8 +22,8 @@ from ...base import (
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
-from ...normalizers import sources_from
 from ...resources.chat.types import Conversation
+from ...resources.message.attachment import GROK_ATTACHMENTS
 from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -36,8 +36,8 @@ from ...resources.message.protocol import (
 from ...resources.message.types import MessageAction
 from ...resources.model.model import ModelCatalog
 from ...resources.project.types import ProjectData
+from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
-from ...utils.attachments import GROK_ATTACHMENTS
 from .catalogs import parse_model_catalog
 from .client import GrokClient, GrokProjectEditor, remote_id, validate_upload_candidate
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
@@ -299,7 +299,7 @@ class GrokChatAdapter(BaseChatAdapter):
         inflight = history.get("inflightResponses") if isinstance(history, dict) else None
         if isinstance(inflight, list) and inflight:
             return Conversation(
-                chat.origin,
+                chat.id,
                 chat.title,
                 chat.messages,
                 chat.project,
@@ -332,7 +332,7 @@ class GrokChatAdapter(BaseChatAdapter):
     async def move_chat(self, conversation_id: str, project_id: str | None) -> None:
         metadata = await self._conversation_metadata(conversation_id)
         chat = conversation(metadata, self._owner.account_id)
-        old_project = chat.project.origin.remote_id if chat.project is not None else None
+        old_project = chat.project.id if chat.project is not None else None
         if old_project == project_id:
             return
         conversation_path = "/conversations/" + remote_id(conversation_id)
@@ -363,9 +363,7 @@ class GrokChatAdapter(BaseChatAdapter):
         for _ in range(5):
             metadata = await self._conversation_metadata(conversation_id)
             updated = conversation(metadata, self._owner.account_id)
-            updated_project = (
-                updated.project.origin.remote_id if updated.project is not None else None
-            )
+            updated_project = updated.project.id if updated.project is not None else None
             if updated_project == project_id:
                 return
             await asyncio.sleep(0.2)

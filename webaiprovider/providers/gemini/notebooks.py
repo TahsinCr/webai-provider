@@ -7,10 +7,7 @@ from urllib.parse import urlparse
 
 from ...collections import Page
 from ...resources.chat.types import Conversation
-from ...resources.common import (
-    Origin,
-    ResourceData,
-)
+from ...resources.message.attachment import Attachment
 from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError, GeminiError, GeminiNotFoundError
 from .history import timestamp
@@ -51,14 +48,14 @@ def project_from_native(row, account_id):
         name = field(source, 2)
         if isinstance(resource_id, str) and isinstance(name, str):
             resources.append(
-                ResourceData(
+                Attachment(
                     resource_id, name, metadata={"native": source, "source_type": field(source, 1)}
                 )
             )
     settings = field(detail, 12, []) or []
     instructions = field(field(row, 2, []), 0)
     return ProjectData(
-        Origin("gemini", account_id, remote),
+        remote,
         detail[0],
         instructions if isinstance(instructions, str) else None,
         tuple(resources),
@@ -107,9 +104,9 @@ class Notebooks:
                 raise GeminiCompatibilityError("Gemini notebook conversation mapping has changed")
             conversations.append(
                 Conversation(
-                    Origin("gemini", self.account_id, row[0]),
+                    row[0],
                     row[1],
-                    project=ProjectData(Origin("gemini", self.account_id, remote), ""),
+                    project=ProjectData(remote, ""),
                     metadata={"native": row},
                 )
             )

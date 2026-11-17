@@ -41,7 +41,6 @@ from webaiprovider.base import (
 from webaiprovider.collections import Page
 from webaiprovider.core.operations import OperationCancelledError, OperationContext
 from webaiprovider.resources.chat.types import Conversation
-from webaiprovider.resources.common import Origin
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -52,7 +51,7 @@ from webaiprovider.resources.message.protocol import (
 )
 from webaiprovider.resources.message.types import Content, MessageData
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
-from webaiprovider.resources.project.types import ProjectData, ResourceData
+from webaiprovider.resources.project.types import ProjectData
 
 
 def _account(name: str = "v2-test") -> Account:
@@ -92,15 +91,10 @@ class _ScriptedChatAdapter(BaseChatAdapter):
         self.loop_threads: set[int] = set()
         self.page_error_at: int | None = None
 
-    def _origin(self, cid: str) -> Origin:
-        return Origin(self.provider_id, self.account_id, cid)
-
     def seed_paginated(self, count: int, *, page_size: int = 50, overlap: bool = False) -> None:
-        items = [
-            Conversation(origin=self._origin(f"c-{i}"), title=f"Chat {i:03d}") for i in range(count)
-        ]
+        items = [Conversation(id=f"c-{i}", title=f"Chat {i:03d}") for i in range(count)]
         for conv in items:
-            self.conversations[conv.origin.remote_id] = conv
+            self.conversations[conv.id] = conv
         self.pages.clear()
         for start in range(0, count, page_size):
             end = min(start + page_size, count)
@@ -121,7 +115,7 @@ class _ScriptedChatAdapter(BaseChatAdapter):
             return Page((), None)
         # Match seeded page starting at cursor, slicing to limit if smaller than seeded page
         for chunk, next_cursor in self.pages:
-            chunk_ids = [c.origin.remote_id for c in chunk]
+            chunk_ids = [c.id for c in chunk]
             target_id = f"c-{start}"
             if target_id in chunk_ids or (cursor is None and chunk is self.pages[0][0]):
                 return Page(tuple(chunk[:limit]), next_cursor)
@@ -174,11 +168,11 @@ class _ScriptedProjectAdapter(BaseProjectAdapter):
         project_id: str,
         name: str,
         *,
-        resources: tuple[ResourceData, ...] = (),
+        resources: tuple[Attachment, ...] = (),
         chats: list[Conversation] | None = None,
     ) -> ProjectData:
         data = ProjectData(
-            origin=Origin(self.provider_id, self.account_id, project_id),
+            id=project_id,
             name=name,
             resources=resources,
         )
@@ -210,7 +204,7 @@ class _ScriptedProjectAdapter(BaseProjectAdapter):
         del options
         pid = f"p-{len(self.projects) + 1}"
         data = ProjectData(
-            origin=Origin(self.provider_id, self.account_id, pid),
+            id=pid,
             name=name,
             instructions=instructions or None,
         )
@@ -224,7 +218,7 @@ class _ScriptedProjectAdapter(BaseProjectAdapter):
         path = Path(str(values["path"]))
         self.upload_calls.append((project_id, path))
         proj = self.projects[project_id]
-        res = ResourceData(
+        res = Attachment(
             id=f"res-{len(proj.resources) + 1}",
             name=path.name,
             media_type="text/plain",
@@ -257,7 +251,7 @@ class _ScriptedMessageAdapter(BaseMessageAdapter):
         cid = request.conversation_id or f"c-live-{len(self.received_requests)}"
         if cid not in self.chat_adapter.conversations:
             self.chat_adapter.conversations[cid] = Conversation(
-                origin=self.chat_adapter._origin(cid),
+                id=cid,
                 title="Live Chat",
             )
             yield ConversationBound(cid)
@@ -479,7 +473,7 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
         acc = _account()
 
         def conv(cid: str, title: str) -> Conversation:
-            return Conversation(origin=Origin(acc.provider, acc.id, cid), title=title)
+            return Conversation(id=cid, title=title)
 
         paged = _PagedRecordsChatAdapter(
             [
@@ -536,7 +530,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
         chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
         cid = "c-history-1"
         chat_adapter.conversations[cid] = Conversation(
-            origin=chat_adapter._origin(cid),
+            id=cid,
             title="Research",
             messages=(
                 MessageData(
@@ -551,7 +545,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                         Content(kind="text", text="Here is the summary."),
                         Content(
                             kind="file",
-                            resource=ResourceData(
+                            resource=Attachment(
                                 id="art-1",
                                 name="report.pdf",
                                 media_type="application/pdf",
@@ -639,7 +633,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             chat = await provider.chats.create("Carrier check")
             chat.remote_id = cid
             chat_adapter.conversations[cid] = Conversation(
-                origin=chat_adapter._origin(cid),
+                id=cid,
                 title="Carrier check",
                 messages=(
                     MessageData(
@@ -678,26 +672,26 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
             "p-1",
             "Workspace",
             resources=(
-                ResourceData(
+                Attachment(
                     id="r-file-1",
                     name="alpha.md",
                     media_type="text/markdown",
                     metadata={"type": "file"},
                 ),
-                ResourceData(
+                Attachment(
                     id="r-mem-1",
                     name="pin",
                     media_type="application/json",
                     metadata={"kind": "memory"},
                 ),
-                ResourceData(
+                Attachment(
                     id="r-file-2",
                     name="alpha-notes.md",
                     media_type="text/markdown",
                     metadata={"type": "file"},
                 ),
             ),
-            chats=[Conversation(origin=Origin(acc.provider, acc.id, "c-p1"), title="In Project")],
+            chats=[Conversation(id="c-p1", title="In Project")],
         )
         provider, _ = _build_runtime_provider(account=acc, project_adapter=project_adapter)
         try:
@@ -891,14 +885,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_p1_01_find_raises_ambiguous_when_exact_and_partial_match(self) -> None:
         acc = _account()
         chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        c_exact = Conversation(
-            origin=Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-exact"),
-            title="Python",
-        )
-        c_partial = Conversation(
-            origin=Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-partial"),
-            title="Python Eğitimi",
-        )
+        c_exact = Conversation(id="c-exact", title="Python")
+        c_partial = Conversation(id="c-partial", title="Python Eğitimi")
         chat_adapter.pages = [([c_exact, c_partial], None)]
         chat_adapter.conversations = {"c-exact": c_exact, "c-partial": c_partial}
         provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
@@ -1078,9 +1066,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_p2_03_and_p2_04_messages_search_prune_and_remote_delete_guard(self) -> None:
         acc = _account()
         chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        origin = Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-hist")
         chat_adapter.conversations["c-hist"] = Conversation(
-            origin=origin,
+            id="c-hist",
             title="Hist",
             messages=(
                 MessageData(
@@ -1110,7 +1097,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(local_msg.id, chat.messages._known_by_id)
 
             chat_adapter.conversations["c-hist"] = Conversation(
-                origin=origin,
+                id="c-hist",
                 title="Hist",
                 messages=(
                     MessageData(

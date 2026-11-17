@@ -13,18 +13,18 @@ from urllib.parse import quote
 from ...accounts import read_session_async
 from ...base import confirm_deleted
 from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
+from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError
-from ...frames import SSEFrameDecoder
-from ...normalizers import files_from, sources_from
-from ...resources.common import ResourceData
+from ...resources.message.attachment import CLAUDE_ATTACHMENTS, Attachment
 from ...resources.message.types import MessageAction, target_message
 from ...resources.project.types import (
     ProjectOptions,
     source_file,
 )
+from ...resources.response.artifact import files_from
+from ...resources.response.source import sources_from
 from ...transport import HttpSession
-from ...utils.attachments import CLAUDE_ATTACHMENTS
-from ...utils.timing import current_send_timing
+from ...transport.frames import SSEFrameDecoder
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
 from .records import conversation, presented_files
@@ -705,7 +705,7 @@ class ClaudeProjectEditor:
                     "POST", path + "/docs", json={"file_name": v["name"], "content": v["text"]}
                 )
                 if isinstance(result, dict) and (result.get("uuid") or result.get("id")):
-                    return ResourceData(
+                    return Attachment(
                         str(result.get("uuid") or result.get("id") or ""),
                         result.get("file_name") or result.get("name") or v["name"],
                         metadata={"native": result},
@@ -727,7 +727,7 @@ class ClaudeProjectEditor:
                 and (result.get("uuid") or result.get("id"))
                 and result.get("file_uuid")
             ):
-                return ResourceData(
+                return Attachment(
                     str(result.get("uuid") or result.get("id") or ""),
                     result.get("file_name") or result.get("name") or file.name,
                     metadata={"native": result},

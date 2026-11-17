@@ -17,7 +17,6 @@ from webaiprovider import (
 )
 from webaiprovider.core.telemetry import ProviderTelemetry
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
-from webaiprovider.resources.common import Origin
 from webaiprovider.resources.message.operation import ThinkingEnd, ThinkingReplace
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
 from webaiprovider.resources.project.types import ProjectData
@@ -270,13 +269,13 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
         provider.adapter.session.close = AsyncMock()
         await provider.open()
         remote = ProjectData(
-            Origin("claude", provider.account_id, "project-1"),
+            "project-1",
             "Initial",
             "Original instructions",
         )
         project = provider._project_type(
             title=remote.name,
-            remote_id=remote.origin.remote_id,
+            remote_id=remote.id,
             session=provider,
         )
         project._apply_provider_project(remote)
@@ -390,13 +389,12 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
-        origin = Origin("claude", provider.account_id, "chat")
         remote = Conversation(
-            origin, "Before", (MessageData("message", "user", (Content("text", text="old"),)),)
+            "chat", "Before", (MessageData("message", "user", (Content("text", text="old"),)),)
         )
         provider.adapter.chats.list_chats = AsyncMock(return_value=Page((remote,)))
         provider.adapter.chats.get_chat = AsyncMock(return_value=remote)
-        project = ProjectData(Origin("claude", provider.account_id, "project"), "Before")
+        project = ProjectData("project", "Before")
         provider.adapter.projects.list_projects = AsyncMock(return_value=Page((project,)))
         async with provider:
             chat = (await provider.chats.refresh())[0]
@@ -547,7 +545,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
-        remote = Conversation(Origin("claude", provider.account_id, "remote-1"), "Remote")
+        remote = Conversation("remote-1", "Remote")
         provider.adapter.chats.list_chats = AsyncMock(return_value=Page((remote,)))
         provider.adapter.projects.list_projects = AsyncMock(return_value=Page(()))
         async with provider:
@@ -606,7 +604,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider.adapter.client.prepare = AsyncMock()
         provider.adapter.client.close = AsyncMock()
         provider.adapter.editor.close = AsyncMock()
-        remote = ProjectData(Origin("claude", provider.account_id, "project"), "Before", "Keep")
+        remote = ProjectData("project", "Before", "Keep")
         provider.adapter.projects.get_project = AsyncMock(return_value=remote)
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -641,7 +639,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
-        remote = Conversation(Origin("claude", provider.account_id, "chat"), "Title")
+        remote = Conversation("chat", "Title")
         provider.adapter.projects.list_project_chats = AsyncMock(
             side_effect=[Page((remote,), "next"), Page((remote,), None)]
         )

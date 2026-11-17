@@ -57,10 +57,10 @@ class ClaudeRecordsTests(unittest.TestCase):
             ],
         }
         value = conversation(data, "account")
-        self.assertEqual(value.origin.provider_id, "claude")
+        self.assertEqual(value.id, CHAT)
         self.assertIsNotNone(value.project)
         assert value.project is not None
-        self.assertEqual(value.project.origin.remote_id, PROJECT)
+        self.assertEqual(value.project.id, PROJECT)
         self.assertEqual(value.messages[-2].channel, "analysis")
         self.assertEqual(value.messages[-1].content[0].text, "Answer")
         self.assertEqual(value.messages[1].content[0].resource.name, "reference.pdf")
@@ -285,7 +285,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         result = await self.adapter.projects.list_project_chats(PROJECT)
         self.assertIsNotNone(result.items[0].project)
         assert result.items[0].project is not None
-        self.assertEqual(result.items[0].project.origin.remote_id, PROJECT)
+        self.assertEqual(result.items[0].project.id, PROJECT)
         self.adapter.client.request.assert_awaited_once_with("project_chats", project_id=PROJECT)
 
     async def test_chatgpt_project_option_is_not_exposed_by_claude(self):
@@ -606,7 +606,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_project_editor_remove_source_with_resource_skips_project_get(self):
         from webaiprovider.providers.claude.client import ClaudeProjectEditor
-        from webaiprovider.resources.common import ResourceData
+        from webaiprovider.resources.message.attachment import Attachment
 
         transport = SimpleNamespace(
             base=AsyncMock(return_value="/api/organizations/org"),
@@ -619,7 +619,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             "remove_source",
             PROJECT,
             resource_id="f-1",
-            resource=ResourceData(
+            resource=Attachment(
                 "f-1", "file.txt", metadata={"native": {"uuid": "f-1", "file_uuid": "fu-1"}}
             ),
         )
@@ -635,7 +635,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             "remove_source",
             PROJECT,
             resource_id="d-1",
-            resource=ResourceData("d-1", "doc.txt", metadata={"native": {"uuid": "d-1"}}),
+            resource=Attachment("d-1", "doc.txt", metadata={"native": {"uuid": "d-1"}}),
         )
         transport.http.request.assert_awaited_once_with(
             "DELETE", f"/api/organizations/org/projects/{PROJECT}/docs/d-1"
@@ -648,7 +648,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "remove_source",
                 PROJECT,
                 resource_id="foreign-id",
-                resource=ResourceData(
+                resource=Attachment(
                     "d-1", "doc.txt", metadata={"native": {"uuid": "d-1", "file_uuid": "fu-1"}}
                 ),
             )
@@ -656,13 +656,11 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_projects_patch_reads_current_snapshot_and_confirms_remote_state(self):
         from webaiprovider.collections import Page
-        from webaiprovider.resources.common import Origin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
-        origin = Origin("claude", provider.account_id, PROJECT)
-        initial = NativeProject(origin, "Old Name", "Keep brief", metadata={"native": {}})
-        updated = NativeProject(origin, "New Name", "Keep brief", metadata={"native": {}})
+        initial = NativeProject(PROJECT, "Old Name", "Keep brief", metadata={"native": {}})
+        updated = NativeProject(PROJECT, "New Name", "Keep brief", metadata={"native": {}})
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.projects.list_projects = AsyncMock(return_value=Page((initial,), None))
         provider.adapter.projects.get_project = AsyncMock(side_effect=[initial, updated])

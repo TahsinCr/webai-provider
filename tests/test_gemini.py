@@ -18,10 +18,9 @@ from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_ca
 from webaiprovider.providers.gemini.generation import generation_request, upload_files
 from webaiprovider.providers.gemini.notebooks import Notebooks, project_from_native
 from webaiprovider.providers.gemini.session import GeminiSession
-from webaiprovider.resources.common import Choice
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
-from webaiprovider.resources.model.model import Model
+from webaiprovider.resources.model.model import EffortOption, Model
 from webaiprovider.transport import AsyncRequestTransport
 
 
@@ -283,7 +282,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         model = Model(
             "dynamic",
             "Dynamic",
-            (Choice("extended", "Remote title"),),
+            (EffortOption("extended", "Remote title"),),
             default_effort="extended",
             metadata={
                 "model_id": "remote",
@@ -388,7 +387,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         (refreshed,) = await session.discover_models()
-        self.assertEqual(refreshed.efforts, (Choice("standard", "standard"),))
+        self.assertEqual(refreshed.efforts, (EffortOption("standard", "standard"),))
         self.assertEqual(refreshed.default_effort, "standard")
         policy["modeConfig"]["isDisabled"] = True
         session.http.get.return_value.text = json.dumps(
@@ -600,7 +599,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 Model(
                     "flash",
                     "Flash",
-                    (Choice("standard", "Low"),),
+                    (EffortOption("standard", "Low"),),
                     "standard",
                     {
                         "model_id": "remote",
@@ -638,8 +637,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
+        from webaiprovider.core.timing import SendTiming, use_send_timing
         from webaiprovider.providers.gemini.generation import generate
-        from webaiprovider.utils.timing import SendTiming, use_send_timing
 
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[8] = "rcid", ["answer"], [2]
@@ -1554,7 +1553,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         provider.adapter.rpc.call = AsyncMock(side_effect=fake_rpc_call)
         try:
             chat = await provider.adapter.chats.get_chat("c_warm")
-            self.assertEqual(chat.origin.remote_id, "c_warm")
+            self.assertEqual(chat.id, "c_warm")
             self.assertEqual(
                 provider.adapter._chat_metadata.get("c_warm")[:3], ["c_warm", "r_warm", "rc_warm"]
             )
@@ -1709,8 +1708,7 @@ class NotebookTests(unittest.IsolatedAsyncioTestCase):
         service.read = AsyncMock(return_value=[[None, None, [notebook()]]])
         page = await service.list()
         project = page.items[0]
-        self.assertEqual(project.origin.provider_id, "gemini")
-        self.assertEqual(project.origin.account_id, "account")
+        self.assertEqual(project.id, "notebooks/abcdef")
         self.assertEqual(project.name, "My notebook")
         self.assertEqual(project.instructions, "Use citations")
         self.assertEqual(project.metadata["description"], "Notebook description")

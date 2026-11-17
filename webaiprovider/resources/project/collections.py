@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 def _project_from_data(session: AsyncProvider, item: ProviderProject) -> AsyncProject:
     project = session._project_type(
         title=item.name,
-        remote_id=item.origin.remote_id,
+        remote_id=item.id,
         session=session,
     )
     project._apply_provider_project(item)

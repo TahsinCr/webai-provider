@@ -64,8 +64,6 @@ from .providers.gemini.resources import AsyncGeminiChat
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import AsyncGrokProvider, GrokProvider
 from .providers.grok.resources import AsyncGrokChat
-from .resources.artifact import Artifact, ArtifactsCollection
-from .resources.attachment import Attachment
 from .resources.chat.chat import (
     AsyncBranchableChat,
     AsyncChat,
@@ -75,7 +73,7 @@ from .resources.chat.chat import (
     MovableChat,
 )
 from .resources.chat.collections import AsyncChatsCollection, ChatsCollection
-from .resources.message.attachments import Attachments
+from .resources.message.attachment import Attachment, Attachments
 from .resources.message.collections import (
     AsyncMessagesCollection,
     AsyncResponsesCollection,
@@ -129,7 +127,8 @@ from .resources.project.project import (
     ProjectInstruction,
     ProjectResources,
 )
-from .resources.source import Source, SourcesCollection
+from .resources.response.artifact import Artifact, ArtifactsCollection
+from .resources.response.source import Source, SourcesCollection
 
 __version__ = "1.3.0b0"
 

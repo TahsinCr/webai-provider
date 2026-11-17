@@ -1,6 +1,6 @@
 """Incremental wire frame decoders, independent of provider sessions."""
 
-from ..errors import FrameDecodeError
+from ...errors import FrameDecodeError
 from .jspb import JSPBFrameDecoder
 from .sse import SSEFrame, SSEFrameDecoder
 

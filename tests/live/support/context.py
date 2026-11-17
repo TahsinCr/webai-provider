@@ -273,9 +273,7 @@ class LiveContext:
 
     @staticmethod
     def _remote_id(value: Any) -> Any:
-        return getattr(value, "remote_id", None) or getattr(
-            getattr(value, "origin", None), "remote_id", None
-        )
+        return getattr(value, "remote_id", None) or getattr(value, "id", None)
 
     async def _all_records(self, kind: str) -> list[Any]:
         provider = self.session if self.asynchronous else self.session._provider

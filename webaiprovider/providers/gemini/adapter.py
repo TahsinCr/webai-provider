@@ -24,10 +24,10 @@ from ...base import (
 )
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
+from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
+from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
-from ...normalizers import files_from, sources_from
 from ...resources.chat.types import Conversation
-from ...resources.common import Origin
 from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -41,9 +41,9 @@ from ...resources.message.types import MessageAction, target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.types import ProjectData
+from ...resources.response.artifact import files_from
+from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
-from ...utils.files import DownloadSource, NativeDownloadClient, cookie_header
-from ...utils.timing import current_send_timing
 from . import generation
 from .errors import GeminiCompatibilityError, GeminiStreamError
 from .history import conversations as parse_conversations
@@ -125,7 +125,7 @@ class GeminiChatAdapter(BaseChatAdapter):
         parts = await self._owner.rpc.call(
             "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
         )
-        chats = parse_conversations(parts, self._owner._origin)
+        chats = parse_conversations(parts)
         return Page(
             chats[offset : offset + limit],
             str(offset + limit) if len(chats) > offset + limit else None,
@@ -137,9 +137,7 @@ class GeminiChatAdapter(BaseChatAdapter):
         )
         if len(parts) != 1:
             raise GeminiCompatibilityError("Gemini history response format changed")
-        chat = await asyncio.to_thread(
-            parse_history, parts[0], self._owner._origin, conversation_id
-        )
+        chat = await asyncio.to_thread(parse_history, parts[0], conversation_id)
         turns = nested(parts[0], 0, default=[])
         turn = turns[0] if turns else None
         metadata = [
@@ -482,7 +480,7 @@ class GeminiMessageAdapter(BaseMessageAdapter):
         if request.action:
             if request.message_id is None:
                 raise ValueError("message action requires a message ID")
-            current = parse_history(parts[0], self._owner._origin, request.conversation_id)
+            current = parse_history(parts[0], request.conversation_id)
             role = "user" if request.action == MessageAction.EDIT else "assistant"
             _, target = target_message(current.messages, request.message_id, role)
             if request.action.value not in target.actions:
@@ -582,11 +580,12 @@ class GeminiAdapter(BaseProviderAdapter):
         *,
         account: Account,
         capabilities: frozenset[Capability],
-        origin_fn: Callable[[str], Origin] | None = None,
+        origin_fn: Callable[[str], Any] | None = None,
         transport: AsyncTransport | None = None,
         client_factory: Any = None,
         notebooks: Notebooks | None = None,
     ) -> None:
+        del origin_fn
         if transport is not None and transport.origin != "https://gemini.google.com":
             raise ValueError("Gemini transport must use the Gemini origin")
         self.account = account
@@ -614,7 +613,6 @@ class GeminiAdapter(BaseProviderAdapter):
                 clock=lambda: time.monotonic(),
             )
         )
-        self._origin = origin_fn or (lambda remote: Origin("gemini", account.id, remote))
         self.rpc: NotebookRPC = NotebookRPC(self._connect)
         self.notebooks: Notebooks = notebooks or Notebooks(account.id)
         self.notebooks.reader = self.rpc.read

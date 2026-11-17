@@ -2,18 +2,16 @@
 
 import re
 
-from ...normalizers import FileTargetRule, files_from, register_file_target_rule, sources_from
 from ...resources.chat.types import Conversation
-from ...resources.common import (
-    Origin,
-    ResourceData,
-)
+from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
     Content,
     MessageData,
     actions_for,
 )
 from ...resources.project.types import ProjectData
+from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
+from ...resources.response.source import sources_from
 from .errors import ClaudeCompatibilityError
 
 _CLAUDE_SANDBOX_RE = re.compile(
@@ -91,12 +89,13 @@ def _linearize_turns(turns: list[dict], leaf: str | None) -> list[dict]:
 
 
 def _project_data(value: dict, account_id: str) -> ProjectData | None:
+    del account_id
     raw_project = value.get("project") if isinstance(value.get("project"), dict) else {}
     pid = value.get("project_uuid") or raw_project.get("uuid")
     if not pid:
         return None
     pname = raw_project.get("name") or value.get("project_name") or ""
-    return ProjectData(Origin("claude", account_id, pid), str(pname))
+    return ProjectData(pid, str(pname))
 
 
 def conversation(value, account_id):
@@ -212,7 +211,7 @@ def conversation(value, account_id):
                     (
                         Content(
                             "resource",
-                            resource=ResourceData(
+                            resource=Attachment(
                                 str(resource.get("uuid") or resource.get("id") or ""),
                                 resource.get("file_name") or resource.get("name") or "File",
                                 metadata={"native": resource},
@@ -226,7 +225,7 @@ def conversation(value, account_id):
             pending_sources = ()
     flush_files()
     return Conversation(
-        Origin("claude", account_id, value["uuid"]),
+        value["uuid"],
         value.get("name") or "Claude sohbeti",
         tuple(messages),
         _project_data(value, account_id),
@@ -235,10 +234,11 @@ def conversation(value, account_id):
 
 
 def project(value, account_id):
+    del account_id
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude project response contract changed")
     resources = tuple(
-        ResourceData(
+        Attachment(
             str(x.get("uuid") or x.get("id") or ""),
             x.get("file_name") or x.get("name") or "Resource",
             metadata={"native": x},
@@ -246,7 +246,7 @@ def project(value, account_id):
         for x in (value.get("docs") or []) + (value.get("files") or [])
     )
     return ProjectData(
-        Origin("claude", account_id, value["uuid"]),
+        value["uuid"],
         value.get("name") or "Claude projesi",
         value.get("prompt_template") or value.get("instructions"),
         resources,

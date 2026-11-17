@@ -10,14 +10,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from ...errors import AccountPaused, ProviderError
-from ...frames import SSEFrameDecoder
-from ...resources.common import ResourceData
+from ...resources.message.attachment import GROK_ATTACHMENTS, Attachment
 from ...resources.project.types import (
     ProjectOptions,
     source_file,
 )
 from ...transport import HttpSession
-from ...utils.attachments import GROK_ATTACHMENTS
+from ...transport.frames import SSEFrameDecoder
 
 ORIGIN = "https://grok.com"
 _MAX_LINE_BYTES = 1_048_576
@@ -318,7 +317,7 @@ class GrokProjectEditor:
                 else result
             )
             if isinstance(item, dict) and (item.get("path") or item.get("assetId")):
-                return ResourceData(
+                return Attachment(
                     str(item.get("path") or item.get("assetId")),
                     str(item.get("name") or name),
                     item.get("mimeType") or mime_type,

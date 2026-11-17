@@ -10,10 +10,10 @@ import uuid
 from pathlib import Path
 
 from ...core import gather_bounded
-from ...frames import JSPBFrameDecoder
+from ...core.timing import current_send_timing
+from ...resources.message.attachment import GEMINI_ATTACHMENTS
 from ...resources.message.types import MessageAction
-from ...utils.attachments import GEMINI_ATTACHMENTS
-from ...utils.timing import current_send_timing
+from ...transport.frames import JSPBFrameDecoder
 from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
 from .history import candidate_metadata, published_activity, published_thoughts
 from .media import candidate_files

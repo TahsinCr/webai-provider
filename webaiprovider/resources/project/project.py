@@ -13,12 +13,11 @@ from ...collections import (
     _RemoteCollectionFacade,
     validate_limit,
 )
+from ...core.files import DownloadSource, download_source
 from ...core.hooks import OperationHooks, SyncOperationHooks
 from ...core.operations import execute_with_hooks
 from ...errors import ProviderError, RemoteNotFound, UnsupportedOperationError
-from ...utils.files import DownloadSource, download_source
-from ..attachment import Attachment
-from ..common import ResourceData as ProviderResource
+from ..message.attachment import Attachment
 from .types import ProjectData as ProviderProject
 
 if TYPE_CHECKING:
@@ -26,7 +25,7 @@ if TYPE_CHECKING:
     from ...provider import Provider
 
 
-def _resource_record(resource: ProviderResource) -> dict[str, Any]:
+def _resource_record(resource: Attachment) -> dict[str, Any]:
     return {
         "id": resource.id,
         "type": resource.metadata.get("kind", "file"),
@@ -415,7 +414,7 @@ class AsyncProject:
             self._provider_project = project
         else:
             self._provider_project = replace(project, resources=self._provider_project.resources)
-        self.remote_id = project.origin.remote_id
+        self.remote_id = project.id
         self.title = project.name
         self.instruction._text = project.instructions or ""
         if replace_resources:

@@ -5,7 +5,7 @@ from contextlib import suppress
 from webaiprovider import ArtifactsCollection, Response, SourcesCollection, TimingMetrics
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
-from webaiprovider.resources.attachment import Attachment
+from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.model.collections import Models
 
 from .support.case import LiveAsyncTestCase, LiveSyncTestCase

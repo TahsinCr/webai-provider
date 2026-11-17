@@ -4,12 +4,12 @@ import re
 from typing import ClassVar
 
 from ...errors import AccountPaused, ProviderError
-from ...resources.common import Choice
 from ...resources.model.collections import (
     StaticModelCatalog,
     effort_ref,
 )
 from ...resources.model.model import (
+    EffortOption,
     EffortRef,
     EffortSet,
     Model,
@@ -145,7 +145,7 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
                 raise GeminiCompatibilityError("Gemini returned an unknown thinking protocol.")
             identifier = level.removeprefix("THINKING_LEVEL_").lower()
             if identifier not in values:
-                efforts.append(Choice(identifier, identifier))
+                efforts.append(EffortOption(identifier, identifier))
                 values[identifier] = THINKING_VALUES[level]
         implicit = item.get("implicitThinkingLevel") or ""
         default = implicit.removeprefix("THINKING_LEVEL_").lower()

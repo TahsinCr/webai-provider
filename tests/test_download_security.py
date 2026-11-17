@@ -7,18 +7,18 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import Mock, patch
 
-from webaiprovider.errors import ProviderError, UnsupportedOperationError
-from webaiprovider.utils.files import (
+from webaiprovider.core.files import (
     DownloadSource,
     NativeDownloadClient,
     cookie_header,
     download_source,
     validate_network_address,
 )
+from webaiprovider.errors import ProviderError, UnsupportedOperationError
 
 
 class DownloadAddressTests(unittest.TestCase):
-    @patch("webaiprovider.utils.files.socket.getaddrinfo")
+    @patch("webaiprovider.core.files.socket.getaddrinfo")
     def test_hostname_resolution_rejects_private_and_pins_public_ip(self, getaddrinfo):
         getaddrinfo.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
@@ -54,7 +54,7 @@ class DownloadAddressTests(unittest.TestCase):
         download.client = Session()
         with (
             patch(
-                "webaiprovider.utils.files.validate_network_address",
+                "webaiprovider.core.files.validate_network_address",
                 return_value="93.184.216.34",
             ),
             download.stream("GET", "https://cdn.example/file", headers={}) as response,
@@ -116,7 +116,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         import socket
         from unittest.mock import patch
 
-        from webaiprovider.utils.files import validate_network_address
+        from webaiprovider.core.files import validate_network_address
 
         seen_families = []
 
@@ -125,13 +125,13 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
         with (
-            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("webaiprovider.core.files._has_ipv6_connectivity", return_value=False),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
         ):
             validate_network_address("https://files.example/asset.png")
 
         with (
-            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=True),
+            patch("webaiprovider.core.files._has_ipv6_connectivity", return_value=True),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
         ):
             validate_network_address("https://files.example/asset.png")
@@ -165,10 +165,10 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("curl_cffi.requests.Session", return_value=oversized_session),
             patch(
-                "webaiprovider.utils.files.validate_network_address",
+                "webaiprovider.core.files.validate_network_address",
                 return_value="93.184.216.34",
             ),
-            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("webaiprovider.core.files._has_ipv6_connectivity", return_value=False),
         ):
             oversized = DownloadSource("https://files.example/huge.bin?sig=secret")
             with self.assertRaisesRegex(ProviderError, "exceeds size limit") as ctx:
@@ -181,10 +181,10 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("curl_cffi.requests.Session", return_value=failing_session),
             patch(
-                "webaiprovider.utils.files.validate_network_address",
+                "webaiprovider.core.files.validate_network_address",
                 return_value="93.184.216.34",
             ),
-            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("webaiprovider.core.files._has_ipv6_connectivity", return_value=False),
         ):
             failing = DownloadSource("https://files.example/blob?sig=topsecret")
             with self.assertRaisesRegex(ProviderError, "File transfer failed") as ctx:
@@ -228,7 +228,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
                     (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 443)),
                 ],
             ),
-            patch("webaiprovider.utils.files._has_ipv6_connectivity", return_value=False),
+            patch("webaiprovider.core.files._has_ipv6_connectivity", return_value=False),
             patch("curl_cffi.requests.Session", return_value=client_obj),
         ):
             with (

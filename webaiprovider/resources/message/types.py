@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 
 from ...base import Capability
-from ..common import ResourceData
+from .attachment import Attachment
 
 
 class MessageAction(str, Enum):
@@ -54,7 +54,7 @@ def target_message(
 class Content:
     kind: str
     text: str | None = None
-    resource: ResourceData | None = None
+    resource: Attachment | None = None
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
 
 

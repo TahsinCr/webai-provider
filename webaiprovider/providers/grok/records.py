@@ -3,18 +3,15 @@
 import re
 
 from ...errors import ProviderError
-from ...normalizers import sources_from
 from ...resources.chat.types import Conversation
-from ...resources.common import (
-    Origin,
-    ResourceData,
-)
+from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
     Content,
     MessageAction,
     MessageData,
 )
 from ...resources.project.types import ProjectData
+from ...resources.response.source import sources_from
 
 
 def _text(value):
@@ -182,7 +179,7 @@ def _messages(history, temporary=False):
             resources = tuple(
                 Content(
                     "resource",
-                    resource=ResourceData(
+                    resource=Attachment(
                         str(
                             item.get("assetId")
                             or item.get("fileMetadataId")
@@ -249,12 +246,10 @@ def conversation(value, account_id, history=None):
     project_name = first_ws.get("name") or value.get("workspaceName") or ""
     is_temporary = bool(value.get("temporary"))
     return Conversation(
-        Origin("grok", account_id, identifier),
+        identifier,
         value.get("title") or "Grok conversation",
         _messages(history, temporary=is_temporary) if history is not None else (),
-        ProjectData(Origin("grok", account_id, project_id), str(project_name))
-        if project_id
-        else None,
+        ProjectData(project_id, str(project_name)) if project_id else None,
         {
             "temporary": is_temporary,
             "created_at": value.get("createTime"),
@@ -264,6 +259,7 @@ def conversation(value, account_id, history=None):
 
 
 def project(value, account_id, files=()):
+    del account_id
     if not isinstance(value, dict):
         raise ProviderError("Grok workspace response contract changed")
     identifier = value.get("workspaceId") or value.get("id")
@@ -271,7 +267,7 @@ def project(value, account_id, files=()):
         raise ProviderError("Grok workspace response contract changed")
     files = files or ()
     resources = tuple(
-        ResourceData(
+        Attachment(
             str(item.get("path") or item.get("assetId")),
             str(item.get("name") or item.get("path") or "Source"),
             item.get("mimeType"),
@@ -287,7 +283,7 @@ def project(value, account_id, files=()):
         and (item.get("assetId") or item.get("path"))
     )
     return ProjectData(
-        Origin("grok", account_id, identifier),
+        identifier,
         str(value.get("name") or "Grok project"),
         value.get("customPersonality"),
         resources,

@@ -60,7 +60,6 @@ class AsyncGeminiProvider(AsyncProvider):
         return GeminiAdapter(
             account=self.account,
             capabilities=self.capabilities,
-            origin_fn=self._origin,
             transport=self._transport,
             client_factory=self._client_factory,
             notebooks=self._initial_notebooks,

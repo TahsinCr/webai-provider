@@ -4,7 +4,7 @@ import json
 import unittest
 
 from webaiprovider.errors import FrameDecodeError
-from webaiprovider.frames import JSPBFrameDecoder, SSEFrameDecoder
+from webaiprovider.transport.frames import JSPBFrameDecoder, SSEFrameDecoder
 
 
 def sse_data(chunks, **limits):

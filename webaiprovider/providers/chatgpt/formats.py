@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from itertools import chain, islice
 from typing import Any
 
-from ...normalizers import FileTargetRule, files_from, register_file_target_rule
+from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
 
 _FILE_SERVICE_RE = re.compile(r"file[-_][A-Za-z0-9_-]+")
 _CHATGPT_SANDBOX_RE = re.compile(r"\[([^\]\n]{1,200})\]\(((?:sandbox:)?/mnt/data/[^\s)]+)\)")

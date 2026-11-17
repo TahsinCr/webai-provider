@@ -22,6 +22,7 @@ from tests.fixtures import CATALOG
 from tests.provider_fakes import provider_account
 from webaiprovider.accounts.status import SessionState
 from webaiprovider.base import Capability
+from webaiprovider.core.timing import SendTiming, use_send_timing
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import (
     AsyncChatGPTProvider,
@@ -45,7 +46,7 @@ from webaiprovider.providers.chatgpt.sentinel import (
     _xor_strings,
     generate_enforcement_proof,
 )
-from webaiprovider.resources.common import Choice
+from webaiprovider.resources.message.attachment import policy_for
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
     ProviderRequest,
@@ -54,9 +55,7 @@ from webaiprovider.resources.message.protocol import (
     TextReplacement,
 )
 from webaiprovider.resources.model import ModelCatalogState
-from webaiprovider.resources.model.model import Model, ModelCatalog
-from webaiprovider.utils.attachments import policy_for
-from webaiprovider.utils.timing import SendTiming, use_send_timing
+from webaiprovider.resources.model.model import EffortOption, Model, ModelCatalog
 
 
 # Connection reuse and cancellation
@@ -317,7 +316,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(detail.instructions, "Use concise answers.")
         self.assertIsNotNone(chats.items[0].project)
         assert chats.items[0].project is not None
-        self.assertEqual(chats.items[0].project.origin.remote_id, "g-p-work")
+        self.assertEqual(chats.items[0].project.id, "g-p-work")
         self.assertEqual(chats.next_cursor, "next-chat")
 
     def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):
@@ -753,8 +752,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         page = await self.provider.adapter.chats.list_chats(limit=1)
         self.assertEqual(page.next_cursor, "1")
         chat = page.items[0]
-        self.assertEqual(chat.origin.provider_id, "chatgpt")
-        self.assertEqual(chat.origin.remote_id, "remote")
+        self.assertEqual(chat.id, "remote")
         self.assertEqual(chat.messages[0].channel, "analysis")
         self.assertEqual(chat.messages[0].content[0].text, "Visible summary")
         self.assertEqual(
@@ -875,7 +873,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.assertFalse(history.done())
         release.set()
         await warmup
-        self.assertEqual((await history).origin.remote_id, "remote")
+        self.assertEqual((await history).id, "remote")
 
     async def test_default_http_client_is_reused_after_startup_warmup(self):
         from curl_cffi.requests import Session as CurlSession
@@ -1142,9 +1140,16 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         catalog = ModelCatalog(
             ModelCatalogState.AVAILABLE,
             (
-                Model("a", "A", (Choice("low", "Low"), Choice("medium", "Medium")), "low"),
-                Model("b", "B", (Choice("auto", "Automatic"),), "auto"),
-                Model("c", "C", (Choice("standard", "Standard"), Choice("medium", "Medium")), None),
+                Model(
+                    "a", "A", (EffortOption("low", "Low"), EffortOption("medium", "Medium")), "low"
+                ),
+                Model("b", "B", (EffortOption("auto", "Automatic"),), "auto"),
+                Model(
+                    "c",
+                    "C",
+                    (EffortOption("standard", "Standard"), EffortOption("medium", "Medium")),
+                    None,
+                ),
             ),
         )
         self.assertEqual(catalog.effort("a"), "medium")
@@ -1190,7 +1195,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             )
         self.assertEqual(max_active, 2)
         self.assertEqual(
-            [page.items[0].origin.remote_id for page in pages],
+            [page.items[0].id for page in pages],
             ["c-p-0", "c-p-1", "c-p-2", "c-p-3"],
         )
 
@@ -1220,7 +1225,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         from unittest.mock import Mock
 
         from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
-        from webaiprovider.resources.common import Origin, ResourceData
+        from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         mock_client = Mock()
@@ -1232,7 +1237,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             client_scope=lambda: nullcontext(mock_client),
         )
         current = NativeProject(
-            Origin("chatgpt", "acc", "p-1"),
+            "p-1",
             "Old Name",
             "Old inst",
             metadata={
@@ -1247,7 +1252,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             "remove_source",
             "p-1",
             resource_id="file-1",
-            resource=ResourceData("file-1", "doc.txt", "file"),
+            resource=Attachment("file-1", "doc.txt", "file"),
         )
         self.assertEqual(mock_client.get_project.call_count, 0)
         mock_client.get_project = Mock(return_value={"resources": []})
@@ -1256,7 +1261,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 "remove_source",
                 "p-1",
                 resource_id="foreign-id",
-                resource=ResourceData("file-1", "doc.txt", "file"),
+                resource=Attachment("file-1", "doc.txt", "file"),
             )
         self.assertEqual(mock_client.get_project.call_count, 1)
         self.assertEqual(mock_client.request.call_args_list[0].args[0], "PATCH")
@@ -1327,10 +1332,10 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await asyncio.wait_for(self.provider.adapter.chats.rename_chat("c-0", "New Title"), 1.0)
             await asyncio.wait_for(self.provider.adapter.chats.move_chat("c-0", None), 1.0)
 
-        self.assertEqual(page1.items[0].origin.remote_id, "c-0")
-        self.assertEqual(page2.items[0].origin.remote_id, "c-1")
-        self.assertEqual(chat.origin.remote_id, "c-0")
-        self.assertEqual(proj.origin.remote_id, "g-p-1")
+        self.assertEqual(page1.items[0].id, "c-0")
+        self.assertEqual(page2.items[0].id, "c-1")
+        self.assertEqual(chat.id, "c-0")
+        self.assertEqual(proj.id, "g-p-1")
         self.assertEqual(catalog.state, ModelCatalogState.AVAILABLE)
 
     async def test_aux_client_reused_across_renames_and_project_uploads(self):
@@ -2661,9 +2666,8 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             _solve_pow(["a"] * 10, seed, "xyz")
 
     def test_temporary_turn_triggers_sentinel_prewarm(self):
-        from webaiprovider.resources.common import Choice
         from webaiprovider.resources.model import ModelCatalogState
-        from webaiprovider.resources.model.model import Model, ModelCatalog
+        from webaiprovider.resources.model.model import EffortOption, Model, ModelCatalog
 
         client = make_client()
         self.addCleanup(client.close)
@@ -2671,7 +2675,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             time.monotonic(),
             ModelCatalog(
                 ModelCatalogState.AVAILABLE,
-                (Model("gpt-5", "GPT-5", (Choice("standard", "Standard"),), "standard"),),
+                (Model("gpt-5", "GPT-5", (EffortOption("standard", "Standard"),), "standard"),),
             ),
         )
         client.send_prompt_direct = Mock(

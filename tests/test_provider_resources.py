@@ -10,10 +10,7 @@ from webaiprovider.collections import Page
 from webaiprovider.core.operations import run_pipeline_unwrapped
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
-from webaiprovider.resources.common import (
-    Origin,
-    ResourceData,
-)
+from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -64,10 +61,10 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_public_project_actions_use_shared_provider_api(self) -> None:
         original = NativeProject(
-            Origin(self.account.provider, self.account.id, "project-1"),
+            "project-1",
             "Research",
             "Be concise",
-            (ResourceData("resource-1", "Source", "text/plain"),),
+            (Attachment("resource-1", "Source", "text/plain"),),
         )
         state = {"project": original}
         projects_adapter = self.provider.adapter.projects
@@ -84,10 +81,10 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         projects_adapter.patch_project = AsyncMock(side_effect=do_patch)
         with_resource = NativeProject(
-            original.origin,
+            original.id,
             original.name,
             original.instructions,
-            (*original.resources, ResourceData("resource-2", "Notes", "text/plain")),
+            (*original.resources, Attachment("resource-2", "Notes", "text/plain")),
         )
 
         async def do_add(*_args, **_kwargs):
@@ -141,14 +138,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
         chat1 = Conversation(
-            Origin(account.provider, account.id, "chat-1"),
+            "chat-1",
             "Project chat 1",
-            project=NativeProject(Origin(account.provider, account.id, "project-1"), "Research"),
+            project=NativeProject("project-1", "Research"),
         )
         chat2 = Conversation(
-            Origin(account.provider, account.id, "chat-2b"),
+            "chat-2b",
             "Project chat 2",
-            project=NativeProject(Origin(account.provider, account.id, "project-1"), "Research"),
+            project=NativeProject("project-1", "Research"),
         )
         provider.adapter.projects.list_project_chats = AsyncMock(
             side_effect=[Page((chat1,), "cursor-2"), Page((chat2,), None)]
@@ -243,7 +240,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "Final output")
         self.assertEqual(response.message.response, response)
         self.provider.adapter.chats.get_chat.return_value = Conversation(
-            Origin(self.account.provider, self.account.id, "conversation-2"),
+            "conversation-2",
             "Solved",
             messages=(
                 NativeMessage("msg-user-99", "user", (Content("text", "solve"),)),
@@ -263,9 +260,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(isinstance(event, OutputReplace) for event in events))
 
     async def test_chat_messages_refresh_loads_remote_history(self) -> None:
-        origin = Origin(self.account.provider, self.account.id, "conv-remote-1")
         remote_conv = Conversation(
-            origin,
+            "conv-remote-1",
             "Loaded Title",
             messages=(
                 NativeMessage("u-1", "user", (Content("text", "Hello"),)),
@@ -294,22 +290,20 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncProvider(account)
         provider.adapter.session.prepare = AsyncMock()
         provider.adapter.session.close = AsyncMock()
-        project_alpha = NativeProject(Origin(account.provider, account.id, "proj-1"), "Alpha")
+        project_alpha = NativeProject("proj-1", "Alpha")
         loose_conv = Conversation(
-            Origin(account.provider, account.id, "chat-loose"),
+            "chat-loose",
             "Loose",
             metadata={"temporary": False, "source": "list"},
         )
-        shared_conv = Conversation(
-            Origin(account.provider, account.id, "chat-shared"), "Shared In Main"
-        )
+        shared_conv = Conversation("chat-shared", "Shared In Main")
         project_shared_conv = Conversation(
-            Origin(account.provider, account.id, "chat-shared"),
+            "chat-shared",
             "Shared In Project",
             project=project_alpha,
         )
         project_only_conv = Conversation(
-            Origin(account.provider, account.id, "chat-proj"),
+            "chat-proj",
             "Project Only",
             project=project_alpha,
         )

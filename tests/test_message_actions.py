@@ -9,15 +9,15 @@ from unittest.mock import AsyncMock, Mock
 
 from tests.fakes import FakeHTTPClient, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
-from webaiprovider.normalizers import files_from, sources_from
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import history
-from webaiprovider.resources.common import Origin
 from webaiprovider.resources.message.protocol import ProviderRequest
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import Model
+from webaiprovider.resources.response.artifact import files_from
+from webaiprovider.resources.response.source import sources_from
 from webaiprovider.transport import HTTPTransport
 
 
@@ -286,7 +286,7 @@ class GeminiActionsTests(unittest.TestCase):
         candidate[0], candidate[1] = "rc_media", [""]
         candidate[12] = [{"60": [[[[body]]]], "87": [[None, audio]]}]
         turn = [[None, "r_media"], None, [["Make media"]], [[candidate]]]
-        value = history([[turn]], lambda cid: Origin("gemini", "account", cid), "c_chat")
+        value = history([[turn]], "c_chat")
         answer = value.messages[-1]
         self.assertEqual(answer.content[0].text, "")
         self.assertEqual(
@@ -343,7 +343,7 @@ class GeminiActionsTests(unittest.TestCase):
             rich[43] = [[[" [cite: 1]"], [entry]]]
             candidate[12] = rich
             turns.append([[None, f"r_{number}"], None, [["Question"]], [[candidate]]])
-        result = history([turns], lambda cid: Origin("gemini", "account", cid), "c_fixture")
+        result = history([turns], "c_fixture")
         final = [
             message
             for message in result.messages
@@ -372,7 +372,7 @@ class GeminiActionsTests(unittest.TestCase):
         candidate[37] = [[""], [activity]]
         turn = [[None, "r_activity"], None, [["Question"]], [[candidate]]]
 
-        result = history([[turn]], lambda cid: Origin("gemini", "account", cid), "c_fixture")
+        result = history([[turn]], "c_fixture")
 
         thought = next(message for message in result.messages if message.channel == "analysis")
         answer = next(

@@ -22,12 +22,12 @@ from curl_cffi.requests import Session as CurlSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core import MultiDimensionBoundedCache
+from ...core.timing import SendTiming, current_send_timing
 from ...errors import RateLimited
-from ...frames import SSEFrameDecoder
 from ...transport import HTTPTransport, Transport, TransportConfig
+from ...transport.frames import SSEFrameDecoder
 from ...transport.http import _is_ip_literal
 from ...transport.retry import parse_retry_after
-from ...utils.timing import SendTiming, current_send_timing
 from .catalogs import parse_model_catalog
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (

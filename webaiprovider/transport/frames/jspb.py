@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
-from ..errors import FrameDecodeError
+from ...errors import FrameDecodeError
 
 
 class JSPBFrameDecoder:

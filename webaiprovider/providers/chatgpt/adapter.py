@@ -31,10 +31,11 @@ from ...base import (
     confirm_deleted,
 )
 from ...collections import Page
+from ...core.files import DownloadSource
+from ...core.timing import current_send_timing
 from ...errors import FeatureUnavailable, ProviderError, RateLimited
-from ...normalizers import sources_from
 from ...resources.chat.types import Conversation
-from ...resources.common import Origin, ResourceData
+from ...resources.message.attachment import Attachment
 from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -47,6 +48,7 @@ from ...resources.message.protocol import (
 from ...resources.message.types import Content, MessageData, actions_for, target_message
 from ...resources.model.model import ModelCatalog
 from ...resources.project.types import ProjectData
+from ...resources.response.source import sources_from
 from ...transport import (
     AsyncHTTPTransport,
     AsyncTransport,
@@ -54,8 +56,6 @@ from ...transport import (
     ThreadedTransport,
     TransportConfig,
 )
-from ...utils.files import DownloadSource
-from ...utils.timing import current_send_timing
 from .client import ChatGPTClient
 from .discovery import project_id
 from .errors import ChatGPTAuthenticationError, ChatGPTError
@@ -1013,11 +1013,11 @@ class ChatGPTAdapter(BaseProviderAdapter):
 
     def _project(self, raw: dict[str, Any]) -> ProjectData:
         return ProjectData(
-            Origin(self.provider_id, self.account_id, raw["id"]),
+            raw["id"],
             raw["name"],
             raw.get("instructions"),
             tuple(
-                ResourceData(
+                Attachment(
                     str(item.get("file_id") or item.get("id") or ""),
                     str(item.get("name") or ""),
                     item.get("type"),
@@ -1136,11 +1136,9 @@ class ChatGPTAdapter(BaseProviderAdapter):
             metadata["generation"] = generation
         pid = project_id(raw)
         return Conversation(
-            Origin(self.provider_id, self.account_id, remote_id),
+            remote_id,
             raw.get("title") or "Untitled",
             tuple(messages),
-            project=ProjectData(Origin(self.provider_id, self.account_id, pid), "")
-            if pid
-            else None,
+            project=ProjectData(pid, "") if pid else None,
             metadata=metadata,
         )
