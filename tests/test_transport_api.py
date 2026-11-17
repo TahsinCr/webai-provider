@@ -14,9 +14,6 @@ from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 from webaiprovider import (
     Account,
     AsyncProvider,
-    BaseMessageAdapter,
-    BaseProviderAdapter,
-    BaseSessionAdapter,
     Provider,
     ProviderType,
 )
@@ -96,28 +93,15 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         await transport.close()
 
     async def test_custom_implementation_uses_public_events_and_the_shared_operation_pipeline(self):
-        class CustomMessages(BaseMessageAdapter):
-            def __init__(self, provider: AsyncProvider) -> None:
-                self._provider = provider
+        class CustomProvider(AsyncProvider):
+            provider_type = ProviderType.GROK
 
-            async def stream(self, request: ProviderRequest):
-                payload = await self._provider.transport.request(
+            async def _stream_provider_events(self, request: ProviderRequest):
+                payload = await self.transport.request(
                     "POST", "/fixture", json={"text": request.prompt}
                 )
                 event: ProviderStreamEvent = TextDelta(payload["answer"])
                 yield event
-
-        class CustomProvider(AsyncProvider):
-            provider_type = ProviderType.GROK
-
-            def _create_adapter(self) -> BaseProviderAdapter:
-                return BaseProviderAdapter(
-                    provider_id=self.id,
-                    account_id=self.account_id,
-                    session=BaseSessionAdapter(),
-                    messages=CustomMessages(self),
-                    transport=self._transport,
-                )
 
         client = SimpleNamespace(
             request=AsyncMock(return_value=FakeHTTPResponse(200, json={"answer": "reply"})),
@@ -430,8 +414,8 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(provider=provider_type):
                 transport, client = self.transport(origin)
                 provider = cls(Account.from_cookies(provider_type, {}), transport=transport)
-                provider.adapter.session.prepare = AsyncMock()
-                provider.adapter.session.close = AsyncMock()
+                provider._prepare_session = AsyncMock()
+                provider._close_session = AsyncMock()
                 async with provider:
                     self.assertIs(provider.transport, transport)
                     await provider.transport.request("GET", "/fixture")

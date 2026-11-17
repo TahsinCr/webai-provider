@@ -52,33 +52,39 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider: AsyncProvider | None = None,
     ) -> AsyncProvider:
         provider = provider or AsyncProvider(account)
-        for name in ("prepare", "close", "authenticate", "session_status", "forget_session"):
-            setattr(provider.adapter.session, name, AsyncMock())
-        provider.adapter.models.load_catalog = AsyncMock()
         for name in (
-            "list_chats",
-            "get_chat",
-            "branch_chat",
-            "conversation_attachment_count",
-            "rename_chat",
-            "delete_chat",
-            "move_chat",
+            "_prepare_session",
+            "_close_session",
+            "_authenticate",
+            "_session_status",
+            "_forget_session",
         ):
-            setattr(provider.adapter.chats, name, AsyncMock())
+            setattr(provider, name, AsyncMock())
+        provider._load_catalog = AsyncMock()
         for name in (
-            "list_projects",
-            "get_project",
-            "list_project_chats",
-            "create_project",
-            "patch_project",
-            "project_options",
-            "add_project_resource",
-            "remove_project_resource",
-            "delete_project",
+            "_list_chats_data",
+            "_get_chat_data",
+            "_branch_chat_data",
+            "_conversation_attachment_count",
+            "_rename_chat_data",
+            "_delete_chat_data",
+            "_move_chat_data",
         ):
-            setattr(provider.adapter.projects, name, AsyncMock())
-        provider.adapter.attachments.upload_file = AsyncMock()
-        provider.adapter.attachments.resolve_download = AsyncMock()
+            setattr(provider, name, AsyncMock())
+        for name in (
+            "_list_projects_data",
+            "_get_project_data",
+            "_list_project_chats_data",
+            "_create_project_data",
+            "_patch_project",
+            "_project_options",
+            "_add_project_resource",
+            "_remove_project_resource",
+            "_delete_project_data",
+        ):
+            setattr(provider, name, AsyncMock())
+        provider._upload_file = AsyncMock()
+        provider._resolve_download = AsyncMock()
         await provider.open()
         self.addAsyncCleanup(provider.close)
         return provider
@@ -311,7 +317,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
-        chats_adapter = session.adapter.chats
         state = {"title": "My Claude Chat", "messages": ()}
 
         def current_conv() -> Conversation:
@@ -324,15 +329,15 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def rename_chat(_cid: str, title: str) -> None:
             state["title"] = title
 
-        chats_adapter.rename_chat = AsyncMock(side_effect=rename_chat)
-        chats_adapter.list_chats = AsyncMock(side_effect=lambda **_kw: Page((current_conv(),)))
-        chats_adapter.get_chat = AsyncMock(side_effect=lambda _cid: current_conv())
+        session._rename_chat_data = AsyncMock(side_effect=rename_chat)
+        session._list_chats_data = AsyncMock(side_effect=lambda **_kw: Page((current_conv(),)))
+        session._get_chat_data = AsyncMock(side_effect=lambda _cid: current_conv())
 
         chat = await session.chats.create(title="My Claude Chat")
         chat.remote_id = "chat-123"
 
         await chat.rename("Renamed Chat")
-        chats_adapter.rename_chat.assert_awaited_once_with("chat-123", "Renamed Chat")
+        session._rename_chat_data.assert_awaited_once_with("chat-123", "Renamed Chat")
         self.assertEqual(chat.title, "Renamed Chat")
 
         await session.chats.update(chat, title="Updated Via Collection")
@@ -348,7 +353,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             AsyncMock(return_value=b"file-bytes"),
         ):
             dl = await chat.download("https://example.com/test.png")
-        session.adapter.attachments.resolve_download.assert_awaited_once_with(
+        session._resolve_download.assert_awaited_once_with(
             "https://example.com/test.png", conversation_id="chat-123", message_id=None
         )
         self.assertEqual(dl, b"file-bytes")
@@ -359,7 +364,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((await chat.get(op.message.id)).message.content, "Hello test")
         await chat.delete()
-        chats_adapter.delete_chat.assert_awaited_once_with("chat-123")
+        session._delete_chat_data.assert_awaited_once_with("chat-123")
 
     async def test_project_lifecycle_methods(self) -> None:
         from dataclasses import replace
@@ -369,7 +374,6 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
-        projects_adapter = session.adapter.projects
         remote = [
             NativeProject(
                 "proj-abc",
@@ -411,11 +415,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             )
             return remote[0]
 
-        projects_adapter.create_project.side_effect = create_project
-        projects_adapter.get_project.side_effect = get_project
-        projects_adapter.patch_project.side_effect = patch_project
-        projects_adapter.add_project_resource.side_effect = add_resource
-        projects_adapter.remove_project_resource.side_effect = remove_resource
+        session._create_project_data.side_effect = create_project
+        session._get_project_data.side_effect = get_project
+        session._patch_project.side_effect = patch_project
+        session._add_project_resource.side_effect = add_resource
+        session._remove_project_resource.side_effect = remove_resource
 
         project = await session.projects.create(
             title="Test Project", instruction="Always be concise"
@@ -431,7 +435,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         added = await project.attachments.add("Doc", resource_type="text", name="res-1")
         self.assertEqual(added.id, "remote-res-1")
-        projects_adapter.add_project_resource.assert_awaited_once_with(
+        session._add_project_resource.assert_awaited_once_with(
             "proj-abc", "text", name="res-1", text="Doc"
         )
         self.assertEqual(await project.attachments.download(added.id), "Doc")
@@ -441,7 +445,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
-        projects_adapter.patch_project.assert_awaited_with(
+        session._patch_project.assert_awaited_with(
             "proj-abc", name="Updated Project", instructions="Updated Instruction"
         )
         self.assertEqual(project.title, "Updated Project")
@@ -453,9 +457,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         await project.attachments.delete(created_res.id)
         await project.attachments.remove(added.id)
-        self.assertEqual(projects_adapter.remove_project_resource.await_count, 2)
+        self.assertEqual(session._remove_project_resource.await_count, 2)
         await project.delete()
-        projects_adapter.delete_project.assert_awaited_once_with("proj-abc")
+        session._delete_project_data.assert_awaited_once_with("proj-abc")
 
     async def test_message_branch_retry_edit(self) -> None:
         from webaiprovider.resources.chat.types import Conversation
@@ -487,13 +491,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         branch_meta = {
             "pending_branch": {"conversation_id": "remote-chat-id", "message_id": "resp-orig-1"}
         }
-        session.adapter.chats.branch_chat.return_value = Conversation(
+        session._branch_chat_data.return_value = Conversation(
             "branch-chat-id",
             "Branch chat",
             metadata=branch_meta,
         )
         branched_chat = await resp.branch(title="Branch chat")
-        session.adapter.chats.branch_chat.assert_awaited_once_with("remote-chat-id", "resp-orig-1")
+        session._branch_chat_data.assert_awaited_once_with("remote-chat-id", "resp-orig-1")
         self.assertEqual(branched_chat.remote_id, "branch-chat-id")
         self.assertEqual(branched_chat.metadata, branch_meta)
         branched_chat.metadata["local_only"] = True
@@ -546,30 +550,28 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_provider_open_is_idempotent_and_closes_provider_resources(self) -> None:
         account = Account.from_cookies("gemini", {"cookie": "test"})
         provider = AsyncProvider(account, type=ProviderType.GEMINI)
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         self.assertIs(await provider.open(), provider)
         self.assertIs(await provider.open(), provider)
-        provider.adapter.session.prepare.assert_awaited_once_with()
+        provider._prepare_session.assert_awaited_once_with()
         await provider.close()
-        provider.adapter.session.close.assert_awaited_once_with()
+        provider._close_session.assert_awaited_once_with()
 
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         provider = AsyncChatGPTProvider(account)
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
-        provider.adapter.projects.create_project = AsyncMock(
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
+        provider._create_project_data = AsyncMock(
             return_value=NativeProject("project-1", "Private notes")
         )
         await provider.open()
         project = await provider.projects.create("Private notes", memory_share=False)
         self.assertEqual(project.title, "Private notes")
-        self.assertEqual(
-            provider.adapter.projects.create_project.await_args.kwargs["memory_share"], False
-        )
+        self.assertEqual(provider._create_project_data.await_args.kwargs["memory_share"], False)
         await provider.close()
 
     async def test_sync_provider_rejects_blocking_inside_running_loop(self) -> None:
@@ -632,14 +634,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.errors import RateLimited
 
         provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
 
         async def fail_stream(_request):
             raise RateLimited(retry_after=42.0)
             yield TextDelta("unreachable")
 
-        provider.adapter.messages.stream = fail_stream
+        provider._stream_provider_events = fail_stream
         await provider.open()
         chat = await provider.chats.create()
         operation = chat.responses.create("Hello")
@@ -651,7 +653,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             raise ValueError("invalid effort level")
             yield TextDelta("unreachable")
 
-        provider.adapter.messages.stream = fail_validation
+        provider._stream_provider_events = fail_validation
         with self.assertRaisesRegex(ValueError, "invalid effort level"):
             await chat.responses.create("Hello").start()
         self.assertTrue(repr(provider).startswith("<AsyncGrokProvider "))
@@ -661,8 +663,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.core.operations import run_pipeline_unwrapped
 
         provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         await provider.open()
         try:
             chat = await provider.chats.create()
@@ -687,13 +689,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_ask_convenience_method(self) -> None:
         p = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
-        p.adapter.session.prepare = AsyncMock()
-        p.adapter.session.close = AsyncMock()
+        p._prepare_session = AsyncMock()
+        p._close_session = AsyncMock()
 
         async def fake_stream(_op):
             yield TextDelta("Direct answer")
 
-        p.adapter.messages.stream = fake_stream
+        p._stream_provider_events = fake_stream
         await p.open()
         res = await p.ask("What is 2+2?")
         self.assertEqual(res.text, "Direct answer")
@@ -708,7 +710,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
         provider = StreamTestProvider(account.provider, account.id, (TextDelta("hi"),))
         provider = await self.open_provider(account, provider)
-        provider.adapter.models.load_catalog = AsyncMock(
+        provider._load_catalog = AsyncMock(
             return_value=ModelCatalog(
                 ModelCatalogState.AVAILABLE,
                 (
@@ -753,7 +755,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 await chat.responses.create("test", model=GeminiModels.HYDROGEN).start()
 
             resolve_spy.assert_not_awaited()
-            provider.adapter.models.load_catalog.assert_not_awaited()
+            provider._load_catalog.assert_not_awaited()
 
         operation = chat.responses.create("test", model="gpt-6-instant")
         await operation.start()
@@ -772,21 +774,25 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             type("IncompleteManageable", (ManageableCollection,), {})()
 
     async def test_include_projects_paginates_all_pages_and_bounds_concurrency(self) -> None:
-        from webaiprovider.base import (
-            BaseChatAdapter,
-            BaseProjectAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-        )
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class PaginatedChats(BaseChatAdapter):
-            def __init__(self, account_id: str) -> None:
-                self.account_id = account_id
+        class PaginatedProvider(AsyncChatGPTProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
+                self.active_fetches = 0
+                self.max_active_fetches = 0
+                self.page_calls: list[tuple[str, str | None]] = []
+                self.project_page_calls: list[str | None] = []
 
-            async def list_chats(self, *, cursor: str | None = None, limit: int = 50):
+            async def _prepare_session(self) -> None:
+                return None
+
+            async def _close_session(self) -> None:
+                return None
+
+            async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
                 del cursor, limit
                 return Page(
                     (
@@ -796,22 +802,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     None,
                 )
 
-        class PaginatedProjects(BaseProjectAdapter):
-            def __init__(self, account_id: str) -> None:
-                self.account_id = account_id
-                self.active_fetches = 0
-                self.max_active_fetches = 0
-                self.page_calls: list[tuple[str, str | None]] = []
-                self.project_page_calls: list[str | None] = []
-
-            async def list_projects(self, *, cursor: str | None = None):
+            async def _list_projects_data(self, *, cursor: str | None = None):
                 self.project_page_calls.append(cursor)
                 projects = tuple(NativeProject(f"p-{idx}", f"Project {idx}") for idx in range(1, 7))
                 return (
                     Page(projects[:3], "projects-page-2") if cursor is None else Page(projects[3:])
                 )
 
-            async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
                 self.page_calls.append((project_id, cursor))
                 self.active_fetches += 1
                 self.max_active_fetches = max(self.max_active_fetches, self.active_fetches)
@@ -855,25 +853,16 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 return Page((), None)
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        projects_adapter = PaginatedProjects(account.id)
-        adapter = BaseProviderAdapter(
-            provider_id="chatgpt",
-            account_id=account.id,
-            capabilities=AsyncChatGPTProvider.capabilities,
-            session=BaseSessionAdapter(),
-            chats=PaginatedChats(account.id),
-            projects=projects_adapter,
-        )
-        async with AsyncChatGPTProvider(account, adapter=adapter) as provider:
+        async with PaginatedProvider(account) as provider:
             chats = await provider.chats.refresh(include_projects=True)
 
-        self.assertLessEqual(projects_adapter.max_active_fetches, 4)
-        self.assertEqual(projects_adapter.project_page_calls, [None, "projects-page-2"])
-        self.assertIn(("p-1", None), projects_adapter.page_calls)
-        self.assertIn(("p-1", "p1-page-2"), projects_adapter.page_calls)
-        self.assertIn(("p-2", None), projects_adapter.page_calls)
-        self.assertIn(("p-2", "p2-page-2"), projects_adapter.page_calls)
-        self.assertIn(("p-2", "p2-page-3"), projects_adapter.page_calls)
+        self.assertLessEqual(provider.max_active_fetches, 4)
+        self.assertEqual(provider.project_page_calls, [None, "projects-page-2"])
+        self.assertIn(("p-1", None), provider.page_calls)
+        self.assertIn(("p-1", "p1-page-2"), provider.page_calls)
+        self.assertIn(("p-2", None), provider.page_calls)
+        self.assertIn(("p-2", "p2-page-2"), provider.page_calls)
+        self.assertIn(("p-2", "p2-page-3"), provider.page_calls)
         ids = [chat.remote_id for chat in chats]
         self.assertEqual(ids, ["c-loose", "c-shared", "c-p1-2", "c-p2-1", "c-p2-2", "c-p2-3"])
         shared = next(chat for chat in chats if chat.remote_id == "c-shared")
@@ -882,34 +871,24 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared.project.remote_id, "p-1")
 
     async def test_include_projects_rejects_repeated_cursor_and_cancels_siblings(self) -> None:
-        from webaiprovider.base import (
-            BaseChatAdapter,
-            BaseProjectAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-        )
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         cancelled = asyncio.Event()
 
-        class RepeatingChats(BaseChatAdapter):
-            def __init__(self, account_id: str) -> None:
-                self.account_id = account_id
+        class RepeatingProvider(AsyncChatGPTProvider):
+            async def _prepare_session(self) -> None:
+                return None
 
-            async def list_chats(self, *, cursor: str | None = None, limit: int = 50):
+            async def _close_session(self) -> None:
+                return None
+
+            async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
                 del cursor, limit
-                return Page(
-                    (Conversation("c-loose", "Loose"),),
-                    None,
-                )
+                return Page((Conversation("c-loose", "Loose"),), None)
 
-        class RepeatingProjects(BaseProjectAdapter):
-            def __init__(self, account_id: str) -> None:
-                self.account_id = account_id
-
-            async def list_projects(self, *, cursor: str | None = None):
+            async def _list_projects_data(self, *, cursor: str | None = None):
                 del cursor
                 return Page(
                     (
@@ -919,7 +898,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     None,
                 )
 
-            async def list_project_chats(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
                 del cursor
                 if project_id == "p-1":
                     try:
@@ -932,59 +911,39 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 return Page((), None)
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        adapter = BaseProviderAdapter(
-            provider_id="chatgpt",
-            account_id=account.id,
-            capabilities=AsyncChatGPTProvider.capabilities,
-            session=BaseSessionAdapter(),
-            chats=RepeatingChats(account.id),
-            projects=RepeatingProjects(account.id),
-        )
-        async with AsyncChatGPTProvider(account, adapter=adapter) as provider:
+        async with RepeatingProvider(account) as provider:
             with self.assertRaisesRegex(ProviderError, "cursor"):
                 await provider.chats.refresh(include_projects=True)
             self.assertTrue(cancelled.is_set())
 
     async def test_project_refresh_rejects_repeated_cursor_cleanly(self) -> None:
-        from webaiprovider.base import (
-            BaseProjectAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-        )
         from webaiprovider.collections import Page
 
-        class RepeatingProjectAdapter(BaseProjectAdapter):
-            def __init__(self) -> None:
+        class RepeatingProjectProvider(AsyncChatGPTProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
                 self.project_cursors: list[str | None] = []
 
-            async def list_projects(self, *, cursor: str | None = None):
+            async def _prepare_session(self) -> None:
+                return None
+
+            async def _close_session(self) -> None:
+                return None
+
+            async def _list_projects_data(self, *, cursor: str | None = None):
                 self.project_cursors.append(cursor)
                 return Page((), "same-page")
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        projects_adapter = RepeatingProjectAdapter()
-        adapter = BaseProviderAdapter(
-            provider_id="chatgpt",
-            account_id=account.id,
-            capabilities=AsyncChatGPTProvider.capabilities,
-            session=BaseSessionAdapter(),
-            projects=projects_adapter,
-        )
-        async with AsyncChatGPTProvider(account, adapter=adapter) as provider:
+        async with RepeatingProjectProvider(account) as provider:
             with self.assertRaisesRegex(ProviderError, "cursor") as ctx:
                 await provider.projects.refresh()
             self.assertEqual(getattr(ctx.exception, "partial_count", None), 0)
-            self.assertEqual(projects_adapter.project_cursors, [None, "same-page"])
+            self.assertEqual(provider.project_cursors, [None, "same-page"])
 
 
 class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
-        from webaiprovider.base import (
-            BaseMessageAdapter,
-            BaseProjectAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-        )
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
@@ -993,39 +952,20 @@ class TestSyncApi(unittest.TestCase):
                 self.memory_share = None
                 super().__init__(account, **options)
 
-            def _create_adapter(self) -> BaseProviderAdapter:
-                owner = self
+            async def _prepare_session(self) -> None:
+                self.thread_ids.append(threading.get_ident())
 
-                class SessionAdp(BaseSessionAdapter):
-                    async def prepare(self) -> None:
-                        owner.thread_ids.append(threading.get_ident())
+            async def _close_session(self) -> None:
+                self.thread_ids.append(threading.get_ident())
 
-                    async def close(self) -> None:
-                        owner.thread_ids.append(threading.get_ident())
+            async def _create_project_data(self, name, instructions="", **opts):
+                self.thread_ids.append(threading.get_ident())
+                self.memory_share = opts.get("memory_share", True)
+                return NativeProject("project-1", name, instructions)
 
-                class ProjectAdp(BaseProjectAdapter):
-                    async def create_project(self, name, instructions="", **opts):
-                        owner.thread_ids.append(threading.get_ident())
-                        owner.memory_share = opts.get("memory_share", True)
-                        return NativeProject(
-                            "project-1",
-                            name,
-                            instructions,
-                        )
-
-                class MsgAdp(BaseMessageAdapter):
-                    async def stream(self, _request):
-                        owner.thread_ids.append(threading.get_ident())
-                        yield TextDelta("done")
-
-                return BaseProviderAdapter(
-                    provider_id="chatgpt",
-                    account_id=self.account_id,
-                    capabilities=self.capabilities,
-                    session=SessionAdp(),
-                    projects=ProjectAdp(),
-                    messages=MsgAdp(),
-                )
+            async def _stream_provider_events(self, _request):
+                self.thread_ids.append(threading.get_ident())
+                yield TextDelta("done")
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
@@ -1048,13 +988,7 @@ class TestSyncApi(unittest.TestCase):
         self.assertEqual(len(set(provider._provider.thread_ids)), 1)
 
     def test_sync_include_projects_and_chatgpt_move_project_chat(self) -> None:
-        from webaiprovider.base import (
-            BaseChatAdapter,
-            BaseProjectAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-            Capability,
-        )
+        from webaiprovider.base import Capability
         from webaiprovider.collections import Page
         from webaiprovider.errors import FeatureUnavailable, UnsupportedOperationError
         from webaiprovider.resources.chat.types import Conversation
@@ -1065,60 +999,54 @@ class TestSyncApi(unittest.TestCase):
                 self.moved: list[tuple[str, str | None]] = []
                 super().__init__(account, **options)
 
-            def _create_adapter(self) -> BaseProviderAdapter:
-                owner = self
+            async def _prepare_session(self) -> None:
+                return None
 
-                class ProjectAdp(BaseProjectAdapter):
-                    async def list_projects(self, *, cursor: str | None = None):
-                        del cursor
-                        return Page(
-                            (
-                                NativeProject("p-1", "Alpha"),
-                                NativeProject("p-2", "Beta"),
-                            ),
-                            None,
-                        )
+            async def _close_session(self) -> None:
+                return None
 
-                    async def list_project_chats(
-                        self, project_id: str, *, cursor: str | None = None
-                    ):
-                        del cursor
-                        if project_id == "p-1":
-                            return Page(
-                                (
-                                    Conversation(
-                                        "c-proj",
-                                        "Proj Chat",
-                                        project=NativeProject("p-1", "Alpha"),
-                                    ),
-                                ),
-                                None,
-                            )
-                        return Page((), None)
-
-                class ChatAdp(BaseChatAdapter):
-                    async def list_chats(self, *, cursor: str | None = None, limit: int = 50):
-                        del cursor, limit
-                        return Page(
-                            (Conversation("c-loose", "Loose"),),
-                            None,
-                        )
-
-                    async def get_chat(self, conversation_id: str):
-                        del conversation_id
-                        raise FeatureUnavailable(Capability.CHAT)
-
-                    async def move_chat(self, conversation_id: str, project_id: str | None) -> None:
-                        owner.moved.append((conversation_id, project_id))
-
-                return BaseProviderAdapter(
-                    provider_id="chatgpt",
-                    account_id=self.account_id,
-                    capabilities=self.capabilities,
-                    session=BaseSessionAdapter(),
-                    chats=ChatAdp(),
-                    projects=ProjectAdp(),
+            async def _list_projects_data(self, *, cursor: str | None = None):
+                del cursor
+                return Page(
+                    (
+                        NativeProject("p-1", "Alpha"),
+                        NativeProject("p-2", "Beta"),
+                    ),
+                    None,
                 )
+
+            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+                del cursor
+                if project_id == "p-1":
+                    return Page(
+                        (
+                            Conversation(
+                                "c-proj",
+                                "Proj Chat",
+                                project=NativeProject("p-1", "Alpha"),
+                            ),
+                        ),
+                        None,
+                    )
+                return Page((), None)
+
+            async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
+                del cursor, limit
+                return Page(
+                    (Conversation("c-loose", "Loose"),),
+                    None,
+                )
+
+            async def _get_chat_data(self, conversation_id: str):
+                del conversation_id
+                raise FeatureUnavailable(Capability.CHAT)
+
+            async def _get_project_data(self, project_id: str):
+                del project_id
+                raise FeatureUnavailable(Capability.PROJECTS)
+
+            async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
+                self.moved.append((conversation_id, project_id))
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
@@ -1167,17 +1095,13 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import (
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-            EditorProjectAdapter,
-        )
+        from webaiprovider.base import ProjectEditorMixin
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConfirmingProjects(EditorProjectAdapter):
-            def __init__(self, account_id: str) -> None:
-                del account_id
+        class ConfirmingProvider(ProjectEditorMixin, AsyncProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
                 self._gate = asyncio.Lock()
                 self.project = NativeProject(
                     "project-1",
@@ -1190,13 +1114,13 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 self.writes: list[str] = []
                 self.editor = SimpleNamespace(write=self.write)
 
-            def _get_editor(self):
+            def _get_project_editor(self):
                 return self.editor
 
-            def _get_gate(self):
+            def _get_project_gate(self):
                 return self._gate
 
-            async def get_project(self, _project_id: str) -> NativeProject:
+            async def _get_project_data(self, _project_id: str) -> NativeProject:
                 self.get_calls += 1
                 return self.project
 
@@ -1221,16 +1145,9 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 return None
 
         account = Account.from_cookies("claude", {"sessionKey": "fixture"})
-        proj_adapter = ConfirmingProjects(account.id)
-        adapter = BaseProviderAdapter(
-            provider_id="claude",
-            account_id=account.id,
-            session=BaseSessionAdapter(),
-            projects=proj_adapter,
-        )
-        async with AsyncProvider(account, adapter=adapter) as provider:
+        async with ConfirmingProvider(account) as provider:
             updated = await provider.update_project(
-                replace(proj_adapter.project, name="Updated", instructions="New instructions")
+                replace(provider.project, name="Updated", instructions="New instructions")
             )
             self.assertEqual(updated.name, "Updated")
             self.assertEqual(updated.metadata["confirmed"], "update")
@@ -1239,23 +1156,19 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(removed.resources, ())
             self.assertEqual(removed.metadata["confirmed"], "remove")
 
-        self.assertEqual(proj_adapter.writes, ["update", "remove_source"])
-        self.assertEqual(proj_adapter.get_calls, 4)
+        self.assertEqual(provider.writes, ["update", "remove_source"])
+        self.assertEqual(provider.get_calls, 4)
 
     async def test_direct_project_update_serializes_with_collection_update(self) -> None:
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import (
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-            EditorProjectAdapter,
-        )
+        from webaiprovider.base import ProjectEditorMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConcurrentProjects(EditorProjectAdapter):
-            def __init__(self, account_id: str) -> None:
-                del account_id
+        class ConcurrentProvider(ProjectEditorMixin, AsyncProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
                 self._gate = asyncio.Lock()
                 self.remote = NativeProject("project-1", "Research", "Instructions")
                 self.active_writes = 0
@@ -1265,13 +1178,13 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 self.overlap_detected = asyncio.Event()
                 self.editor = SimpleNamespace(write=self.write)
 
-            def _get_editor(self):
+            def _get_project_editor(self):
                 return self.editor
 
-            def _get_gate(self):
+            def _get_project_gate(self):
                 return self._gate
 
-            async def get_project(self, _project_id: str) -> NativeProject:
+            async def _get_project_data(self, _project_id: str) -> NativeProject:
                 return self.remote
 
             async def write(self, _action: str, _project_id: str, *, current, **changes):
@@ -1287,25 +1200,18 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 return result
 
         account = Account.from_cookies("claude", {"sessionKey": "fixture"})
-        proj_adapter = ConcurrentProjects(account.id)
-        adapter = BaseProviderAdapter(
-            provider_id="claude",
-            account_id=account.id,
-            session=BaseSessionAdapter(),
-            projects=proj_adapter,
-        )
-        async with AsyncProvider(account, adapter=adapter) as provider:
+        async with ConcurrentProvider(account) as provider:
             project = provider._project_type(
-                title=proj_adapter.remote.name,
-                remote_id=proj_adapter.remote.id,
+                title=provider.remote.name,
+                remote_id=provider.remote.id,
                 provider=provider,
             )
-            project._apply_provider_project(proj_adapter.remote)
+            project._apply_provider_project(provider.remote)
 
             direct = asyncio.create_task(
-                provider.update_project(replace(proj_adapter.remote, name="Direct update"))
+                provider.update_project(replace(provider.remote, name="Direct update"))
             )
-            await proj_adapter.first_write_started.wait()
+            await provider.first_write_started.wait()
             collection_started = asyncio.Event()
 
             async def update_collection() -> None:
@@ -1314,40 +1220,31 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
             collection = asyncio.create_task(update_collection())
             await collection_started.wait()
-            self.assertFalse(proj_adapter.overlap_detected.is_set())
-            proj_adapter.release_first_write.set()
+            self.assertFalse(provider.overlap_detected.is_set())
+            provider.release_first_write.set()
             await asyncio.gather(direct, collection)
 
-            self.assertEqual(proj_adapter.max_active_writes, 1)
-            self.assertFalse(proj_adapter.overlap_detected.is_set())
+            self.assertEqual(provider.max_active_writes, 1)
+            self.assertFalse(provider.overlap_detected.is_set())
 
     def test_sync_stream_batches_buffered_events_and_propagates_errors(self) -> None:
-        from webaiprovider.base import (
-            BaseMessageAdapter,
-            BaseProviderAdapter,
-            BaseSessionAdapter,
-        )
         from webaiprovider.resources.message.operation import MessageOperation
         from webaiprovider.resources.message.protocol import ConversationBound, ResponseComplete
 
         deltas = [TextDelta(f"t{i}") for i in range(12)]
 
-        class BufferedMessages(BaseMessageAdapter):
-            async def stream(self, _request):
+        class BufferedStreamProvider(AsyncChatGPTProvider):
+            async def _prepare_session(self) -> None:
+                return None
+
+            async def _close_session(self) -> None:
+                return None
+
+            async def _stream_provider_events(self, _request):
                 yield ConversationBound("chat-1")
                 for d in deltas:
                     yield d
                 yield ResponseComplete()
-
-        class BufferedStreamProvider(AsyncChatGPTProvider):
-            def _create_adapter(self) -> BaseProviderAdapter:
-                return BaseProviderAdapter(
-                    provider_id="chatgpt",
-                    account_id=self.account_id,
-                    capabilities=self.capabilities,
-                    session=BaseSessionAdapter(),
-                    messages=BufferedMessages(),
-                )
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
@@ -1365,22 +1262,12 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(events[-1], OutputEnd)
         self.assertLessEqual(call_count, 5)
 
-        class FailingMessages(BaseMessageAdapter):
-            async def stream(self, _request):
+        class FailingBufferedProvider(BufferedStreamProvider):
+            async def _stream_provider_events(self, _request):
                 yield TextDelta("d0")
                 yield TextDelta("d1")
                 yield TextDelta("d2")
                 raise ProviderError("stream aborted")
-
-        class FailingBufferedProvider(BufferedStreamProvider):
-            def _create_adapter(self) -> BaseProviderAdapter:
-                return BaseProviderAdapter(
-                    provider_id="chatgpt",
-                    account_id=self.account_id,
-                    capabilities=self.capabilities,
-                    session=BaseSessionAdapter(),
-                    messages=FailingMessages(),
-                )
 
         with (
             patch.object(ChatGPTProvider, "async_provider_type", FailingBufferedProvider),

@@ -1,4 +1,4 @@
-"""Normalized request and low-level provider events emitted by adapters."""
+"""Normalized request and low-level provider events emitted during streaming."""
 
 from __future__ import annotations
 

@@ -215,7 +215,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_continuation_cache_skips_history_and_retry_keeps_user_parent(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
 
         async def send(prompt="Question", *, action=None, message_id=None, model="fast"):
             request = ProviderRequest(
@@ -225,14 +225,14 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 action=action,
                 message_id=message_id,
             )
-            return [event async for event in provider.adapter.messages.stream(request)]
+            return [event async for event in provider._stream_provider_events(request)]
 
         try:
             first = await send()
             second = await send("Follow-up")
             retried = await send(action=MessageAction.RETRY, message_id="answer-2")
             transport.response_node_payload = {}
-            provider.adapter._continuations.clear()
+            provider._continuations.clear()
             with self.assertRaises(ProviderError):
                 await send("Do not send without a valid parent list")
         finally:
@@ -266,7 +266,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         self.assertIn(Capability.MESSAGE_EDIT, provider.capabilities)
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
 
         async def send(prompt="Hello", action=None, message_id=None):
             request = ProviderRequest(
@@ -275,7 +275,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 action=action,
                 message_id=message_id,
             )
-            return [event async for event in provider.adapter.messages.stream(request)]
+            return [event async for event in provider._stream_provider_events(request)]
 
         try:
             await send("First")
@@ -310,9 +310,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_catalog_only_exposes_account_available_modes(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         try:
-            catalog = await provider.adapter.models.load_catalog()
+            catalog = await provider._load_catalog()
         finally:
             await provider.close()
 
@@ -331,7 +331,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(catalog.chat_model("build"))
         self.assertIsNone(catalog.chat_model("grok-paid"))
         before = len(transport.requests)
-        self.assertIs(await provider.adapter.models.load_catalog(), catalog)
+        self.assertIs(await provider._load_catalog(), catalog)
         self.assertEqual(len(transport.requests), before)
 
     async def test_catalog_keeps_paid_modes_dynamic_without_guessing_ambiguous_models(self):
@@ -353,7 +353,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(details=details):
                 provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-                provider.adapter.client.request = AsyncMock(
+                provider.client.request = AsyncMock(
                     side_effect=lambda _, path, details=details, description=description, **kw: (
                         {"models": details}
                         if path == "/rest/models"
@@ -371,7 +371,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 try:
-                    catalog = await provider.adapter.models.load_catalog()
+                    catalog = await provider._load_catalog()
                     model = catalog.chat_model("expert")
                     self.assertEqual((model.chat_title, model.metadata.get("modelName")), expected)
                     self.assertEqual(catalog.default_model, "expert")
@@ -381,7 +381,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_server_defined_models_route_without_a_hardcoded_model_list(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         transport.request = AsyncMock(
             side_effect=lambda _, path, **kw: (
                 {
@@ -407,11 +407,11 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         try:
-            catalog = await provider.adapter.models.load_catalog()
+            catalog = await provider._load_catalog()
             self.assertEqual(catalog.default_chat_model.chat_title, "Grok Future")
             [
                 event
-                async for event in provider.adapter.messages.stream(
+                async for event in provider._stream_provider_events(
                     ProviderRequest(
                         prompt="Question",
                         model="grok-future",
@@ -428,7 +428,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_catalog_matches_dotted_mode_ids_to_normalized_model_details(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         transport.request = AsyncMock(
             side_effect=lambda _, path, **kw: (
                 {
@@ -454,7 +454,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         try:
-            catalog = await provider.adapter.models.load_catalog()
+            catalog = await provider._load_catalog()
             model = catalog.chat_model("grok-4.20")
             self.assertIsNotNone(model)
             self.assertEqual(model.metadata.get("modelMode"), "MODEL_MODE_GROK_420")
@@ -465,7 +465,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_cleans_provider_markup_and_initial_whitespace(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
 
         async def events(_path, _body):
             yield {
@@ -512,7 +512,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             model="fast",
         )
         try:
-            stream = [event async for event in provider.adapter.messages.stream(request)]
+            stream = [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -542,7 +542,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_reconciles_late_final_snapshots_and_completes_once(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
 
         async def events(_path, _body):
             yield {"result": {"conversationId": "chat", "response": {"token": "Draft"}}}
@@ -564,7 +564,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         try:
             received = [
                 event
-                async for event in provider.adapter.messages.stream(
+                async for event in provider._stream_provider_events(
                     ProviderRequest(
                         prompt="Question",
                     )
@@ -588,7 +588,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(code=code):
                 provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
                 transport = GrokClientFixture()
-                provider.adapter.client = transport
+                provider.client = transport
 
                 async def events(_path, body, transport=transport, code=code):
                     transport.bodies.append(body)
@@ -606,13 +606,13 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(error):
                         [
                             event
-                            async for event in provider.adapter.messages.stream(
+                            async for event in provider._stream_provider_events(
                                 ProviderRequest(
                                     prompt="Question",
                                 )
                             )
                         ]
-                    self.assertEqual(provider.adapter._continuations.stats().entries, 0)
+                    self.assertEqual(provider._continuations.stats().entries, 0)
                     self.assertEqual(len(transport.bodies), 1)
                     self.assertEqual(transport.session.authenticated, error is not AccountPaused)
                 finally:
@@ -620,11 +620,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_exposes_only_the_remote_generation_state(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.adapter.client = GrokClientFixture()
-        provider.adapter.chats._conversation_metadata = AsyncMock(
-            return_value={"conversationId": "chat"}
-        )
-        provider.adapter.chats._history = AsyncMock(
+        provider.client = GrokClientFixture()
+        provider._conversation_metadata = AsyncMock(return_value={"conversationId": "chat"})
+        provider._history = AsyncMock(
             side_effect=[
                 {"responses": [], "inflightResponses": [{"responseId": "private-id"}]},
                 {"responses": [], "inflightResponses": []},
@@ -639,9 +637,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         try:
-            with patch("webaiprovider.providers.grok.adapter.conversation", return_value=record):
-                active = await provider.adapter.chats.get_chat("chat")
-                idle = await provider.adapter.chats.get_chat("chat")
+            with patch("webaiprovider.providers.grok.provider.conversation", return_value=record):
+                active = await provider._get_chat_data("chat")
+                idle = await provider._get_chat_data("chat")
         finally:
             await provider.close()
         self.assertEqual(active.metadata["generation"], {"active": True})
@@ -651,7 +649,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_model_refreshes_catalog_and_fails_before_send(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         request = ProviderRequest(
             prompt="Question",
             conversation_id="chat",
@@ -659,7 +657,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with self.assertRaisesRegex(ProviderError, "unavailable"):
-                [event async for event in provider.adapter.messages.stream(request)]
+                [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -726,7 +724,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_send_forwards_uploaded_metadata_as_file_attachments(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         metadata = {
             "assetId": "asset-1",
             "name": "brief.pdf",
@@ -739,7 +737,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             attachments=({"id": "asset-1", "size_bytes": 13, "grok_file": metadata},),
         )
         try:
-            [event async for event in provider.adapter.messages.stream(request)]
+            [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -759,7 +757,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "grok_file": metadata,
             }
         )
-        provider.adapter.client = transport
+        provider.client = transport
         request = ProviderRequest(
             prompt="Read this note",
             conversation_id="chat",
@@ -767,7 +765,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
         )
         try:
-            [event async for event in provider.adapter.messages.stream(request)]
+            [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -798,7 +796,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
         transport.upload_file = AsyncMock(return_value=uploaded)
-        provider.adapter.client = transport
+        provider.client = transport
         request = ProviderRequest(
             prompt="Read this note",
             conversation_id="chat",
@@ -806,7 +804,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
         )
         try:
-            [event async for event in provider.adapter.messages.stream(request)]
+            [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -816,7 +814,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
         transport.upload_file = AsyncMock()
-        provider.adapter.client = transport
+        provider.client = transport
         chunk = b"x" * (3 * 1024 * 1024)
         request = ProviderRequest(
             prompt="Too large",
@@ -828,7 +826,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with self.assertRaisesRegex(ValueError, "total size limit"):
-                [event async for event in provider.adapter.messages.stream(request)]
+                [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -906,13 +904,13 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 return None
             raise AssertionError((method, target))
 
-        provider.adapter.client.request = AsyncMock(side_effect=request)
+        provider.client.request = AsyncMock(side_effect=request)
         try:
-            current = await provider.adapter.projects.get_project("workspace")
-            provider.adapter.client.request.reset_mock()
+            current = await provider._get_project_data("workspace")
+            provider.client.request.reset_mock()
             updated = await provider.update_project(replace(current, instructions="New"))
             self.assertEqual(updated.instructions, "New")
-            self.assertEqual(provider.adapter.client.request.await_count, 5)
+            self.assertEqual(provider.client.request.await_count, 5)
             self.assertEqual(workspace["preferredModel"], "keep")
             self.assertFalse(workspace["isPublic"])
 
@@ -924,10 +922,10 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 await provider._add_project_resource_data(
                     "workspace", "text", name="notes.txt", text="Overwrite"
                 )
-            provider.adapter.client.request.reset_mock()
+            provider.client.request.reset_mock()
             removed = await provider._remove_project_resource_data("workspace", "/notes.txt")
             self.assertEqual(removed.resources, ())
-            self.assertEqual(provider.adapter.client.request.await_count, 5)
+            self.assertEqual(provider.client.request.await_count, 5)
         finally:
             await provider.close()
 
@@ -992,7 +990,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_project_create_delete_and_chat_move_use_workspace_contracts(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.adapter.client.request = AsyncMock(
+        provider.client.request = AsyncMock(
             side_effect=[
                 {"workspaceId": "new", "name": "Project", "customPersonality": "Instructions"},
                 None,
@@ -1004,14 +1002,14 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         try:
-            project = await provider.adapter.projects.create_project(" Project ", "Instructions")
-            await provider.adapter.projects.delete_project("new")
-            await provider.adapter.chats.move_chat("chat", "new")
+            project = await provider._create_project_data(" Project ", "Instructions")
+            await provider._delete_project_data("new")
+            await provider._move_chat_data("chat", "new")
         finally:
             await provider.close()
 
         self.assertEqual((project.name, project.instructions), ("Project", "Instructions"))
-        calls = provider.adapter.client.request.await_args_list
+        calls = provider.client.request.await_args_list
         self.assertEqual(calls[0].args, ("POST", "/rest/workspaces"))
         self.assertEqual(
             calls[0].kwargs["json"],
@@ -1042,19 +1040,19 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(target=target):
                 provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-                provider.adapter.client.request = AsyncMock(side_effect=replies)
+                provider.client.request = AsyncMock(side_effect=replies)
                 try:
                     if target == "new":
                         with self.assertRaisesRegex(ProviderError, "remove failed"):
-                            await provider.adapter.chats.move_chat("chat", target)
-                        rollback = provider.adapter.client.request.await_args
+                            await provider._move_chat_data("chat", target)
+                        rollback = provider.client.request.await_args
                         self.assertEqual(
                             rollback.args, ("DELETE", "/rest/workspaces/new/conversations/chat")
                         )
                     else:
-                        await provider.adapter.chats.move_chat("chat", target)
+                        await provider._move_chat_data("chat", target)
                     self.assertEqual(
-                        [call.args[0] for call in provider.adapter.client.request.await_args_list],
+                        [call.args[0] for call in provider.client.request.await_args_list],
                         expected,
                     )
                 finally:
@@ -1062,7 +1060,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_project_rejects_invalid_file_listing_before_confirming_mutations(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.adapter.client.request = AsyncMock(
+        provider.client.request = AsyncMock(
             side_effect=[
                 {"workspaceId": "workspace", "name": "Project"},
                 {"files": "invalid"},
@@ -1072,10 +1070,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ProviderError, "file response"):
                 await provider._remove_project_resource_data("workspace", "source")
             self.assertTrue(
-                all(
-                    call.args[0] == "GET"
-                    for call in provider.adapter.client.request.await_args_list
-                )
+                all(call.args[0] == "GET" for call in provider.client.request.await_args_list)
             )
         finally:
             await provider.close()
@@ -1177,7 +1172,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_allows_concurrent_models_lookup_without_gate_contention(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         started_event = asyncio.Event()
         finish_event = asyncio.Event()
 
@@ -1209,12 +1204,12 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def run_stream():
-            return [e async for e in provider.adapter.messages.stream(request)]
+            return [e async for e in provider._stream_provider_events(request)]
 
         stream_task = asyncio.create_task(run_stream())
         try:
             await started_event.wait()
-            catalog = await provider.adapter.models.load_catalog(force=True)
+            catalog = await provider._load_catalog(force=True)
             self.assertIsNotNone(catalog)
             self.assertEqual(catalog.default_model, "fast")
         finally:
@@ -1237,9 +1232,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 return {}
             return {}
 
-        provider.adapter.client.request = AsyncMock(side_effect=request)
+        provider.client.request = AsyncMock(side_effect=request)
         try:
-            await provider.adapter.chats.move_chat("chat", "ws-2")
+            await provider._move_chat_data("chat", "ws-2")
             self.assertEqual(calls, 2)
         finally:
             await provider.close()
@@ -1247,7 +1242,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_send_routes_images_to_image_attachments(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
         img_meta = {
             "assetId": "asset-img",
             "name": "photo.png",
@@ -1278,7 +1273,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         try:
-            [event async for event in provider.adapter.messages.stream(request)]
+            [event async for event in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -1287,14 +1282,14 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_project_handles_null_files_listing(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.adapter.client.request = AsyncMock(
+        provider.client.request = AsyncMock(
             side_effect=[
                 {"workspaceId": "ws-empty", "name": "Empty WS"},
                 {"files": None},
             ]
         )
         try:
-            proj = await provider.adapter.projects.get_project("ws-empty")
+            proj = await provider._get_project_data("ws-empty")
             self.assertEqual(proj.name, "Empty WS")
             self.assertEqual(proj.resources, ())
         finally:
@@ -1336,7 +1331,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_maps_rate_limit_error_to_rate_limited(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()
-        provider.adapter.client = transport
+        provider.client = transport
 
         async def events(_path, _body):
             yield {
@@ -1358,7 +1353,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with self.assertRaises(RateLimited) as ctx:
-                [e async for e in provider.adapter.messages.stream(request)]
+                [e async for e in provider._stream_provider_events(request)]
             self.assertEqual(ctx.exception.retry_after, 15.0)
         finally:
             await provider.close()
@@ -1378,7 +1373,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             },
             {"responseId": "a0", "sender": "assistant", "parentResponseId": "u0"},
         ]
-        provider.adapter.client = transport
+        provider.client = transport
 
         request = ProviderRequest(
             conversation_id="conv-1",
@@ -1388,7 +1383,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             model="fast",
         )
         try:
-            [e async for e in provider.adapter.messages.stream(request)]
+            [e async for e in provider._stream_provider_events(request)]
         finally:
             await provider.close()
 
@@ -1452,7 +1447,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 active -= 1
 
-        provider.adapter.client.upload_file = fake_upload
+        provider.client.upload_file = fake_upload
         pending = [
             (i, {"bytes": b"data", "name": f"f{i}.txt", "mime_type": "text/plain"})
             for i in range(4)
@@ -1461,7 +1456,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             (
                 file_attachments,
                 image_attachments,
-            ) = await provider.adapter.messages._prepare_attachments([None] * 4, pending)
+            ) = await provider._prepare_attachments([None] * 4, pending)
             self.assertEqual(max_active, 2)
             self.assertEqual(image_attachments, [])
             self.assertEqual(
@@ -1473,14 +1468,14 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prepare_warms_models_and_get_chat_warms_continuation(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        provider.adapter.client.authenticate = AsyncMock()
-        provider.adapter.models.load_catalog = AsyncMock()
+        provider.client.authenticate = AsyncMock()
+        provider._load_catalog = AsyncMock()
         try:
-            await provider.adapter.session.prepare()
-            provider.adapter.client.authenticate.assert_awaited_once_with()
-            provider.adapter.models.load_catalog.assert_awaited_once_with()
+            await provider._prepare_session()
+            provider.client.authenticate.assert_awaited_once_with()
+            provider._load_catalog.assert_awaited_once_with()
 
-            provider.adapter.client.request = AsyncMock(
+            provider.client.request = AsyncMock(
                 side_effect=[
                     {"conversationId": "c-grok", "title": "Chat"},
                     {
@@ -1491,8 +1486,8 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                     },
                 ]
             )
-            chat = await provider.adapter.chats.get_chat("c-grok")
+            chat = await provider._get_chat_data("c-grok")
             self.assertEqual(chat.id, "c-grok")
-            self.assertEqual(provider.adapter._continuations.get("c-grok"), "a1")
+            self.assertEqual(provider._continuations.get("c-grok"), "a1")
         finally:
             await provider.close()

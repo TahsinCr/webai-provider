@@ -81,27 +81,27 @@ class PersistentClient:
 class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_reuses_prepared_client_and_discards_it_after_cancel(self):
         PersistentClient.instances.clear()
-        with patch("webaiprovider.providers.chatgpt.adapter.ChatGPTClient", PersistentClient):
+        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentClient):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"), session=object(), client_factory=PersistentClient
             )
 
-        with provider.adapter._client_scope() as prepared_client:
+        with provider._client_scope() as prepared_client:
             pass
         self.assertEqual(len(PersistentClient.instances), 1)
 
         request = ProviderRequest("hello", temporary=True)
-        events = [event async for event in provider.adapter.messages.stream(request)]
+        events = [event async for event in provider._stream_provider_events(request)]
         self.assertTrue(any(isinstance(event, ConversationBound) for event in events))
-        self.assertIs(provider.adapter._http_client, prepared_client)
+        self.assertIs(provider._http_client, prepared_client)
         self.assertFalse(prepared_client.closed.is_set())
 
-        cancelled = provider.adapter.messages.stream(ProviderRequest("cancel me", temporary=True))
+        cancelled = provider._stream_provider_events(ProviderRequest("cancel me", temporary=True))
         first = await asyncio.wait_for(anext(cancelled), timeout=1)
         self.assertIsInstance(first, TextDelta)
         await asyncio.wait_for(cancelled.aclose(), timeout=2)
         self.assertTrue(prepared_client.closed.is_set())
-        self.assertIsNone(provider.adapter._http_client)
+        self.assertIsNone(provider._http_client)
         self.assertEqual(len(PersistentClient.instances), 1)
         await provider.close()
 
@@ -133,7 +133,7 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
             session=object(),
             client_factory=lambda _session: nullcontext(client),
         )
-        stream = provider.adapter.messages.stream(ProviderRequest("cancel me", temporary=True))
+        stream = provider._stream_provider_events(ProviderRequest("cancel me", temporary=True))
 
         async def consume():
             return [event async for event in stream]
@@ -145,12 +145,12 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         await asyncio.sleep(0)
         self.assertFalse(task.done())
-        self.assertTrue(provider.adapter._gate.locked())
+        self.assertTrue(provider._gate.locked())
 
         client.release_close.set()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)
-        self.assertFalse(provider.adapter._gate.locked())
+        self.assertFalse(provider._gate.locked())
         self.assertTrue(client.closed.is_set())
         await provider.close()
 
@@ -306,10 +306,10 @@ class DiscoveryTests(unittest.TestCase):
         provider = AsyncChatGPTProvider(
             provider_account("chatgpt"), session=self.session, client_factory=factory
         )
-        catalog = asyncio.run(provider.adapter.models.load_catalog())
-        projects = asyncio.run(provider.adapter.projects.list_projects())
-        detail = asyncio.run(provider.adapter.projects.get_project("g-p-work"))
-        chats = asyncio.run(provider.adapter.projects.list_project_chats("g-p-work"))
+        catalog = asyncio.run(provider._load_catalog())
+        projects = asyncio.run(provider._list_projects_data())
+        detail = asyncio.run(provider._get_project_data("g-p-work"))
+        chats = asyncio.run(provider._list_project_chats_data("g-p-work"))
         self.assertEqual(catalog.default_model, "account-thinking")
         self.assertEqual(projects.next_cursor, "next")
         self.assertEqual(detail.resources[0].id, "file-ref")
@@ -669,11 +669,9 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
 
         with (
             patch.object(provider.session, "import_cookies") as import_cookies,
-            patch.object(
-                provider.adapter.models, "load_catalog", new_callable=AsyncMock
-            ) as load_catalog,
+            patch.object(provider, "_load_catalog", new_callable=AsyncMock) as load_catalog,
         ):
-            asyncio.run(provider.adapter.session.prepare())
+            asyncio.run(provider._prepare_session())
 
         import_cookies.assert_called_once_with(cookies)
         load_catalog.assert_awaited_once_with()
@@ -731,7 +729,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
                 },
             },
         ]
-        chat = await self.provider.adapter.chats.get_chat("remote")
+        chat = await self.provider._get_chat_data("remote")
         self.assertEqual([m.content[0].text for m in chat.messages], ["Thinking", "Spoken answer"])
 
     async def test_session_snapshot_is_not_mistaken_for_verified_authentication(self):
@@ -749,7 +747,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.assertTrue(self.session.paths.profile.exists())
 
     async def test_history_keeps_provenance_thinking_channel_sources_and_native_fields(self):
-        page = await self.provider.adapter.chats.list_chats(limit=1)
+        page = await self.provider._list_chats_data(limit=1)
         self.assertEqual(page.next_cursor, "1")
         chat = page.items[0]
         self.assertEqual(chat.id, "remote")
@@ -796,7 +794,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             },
         }
 
-        chat = await self.provider.adapter.chats.get_chat("remote")
+        chat = await self.provider._get_chat_data("remote")
 
         self.assertEqual([message.id for message in chat.messages], ["user", "answer"])
         self.assertNotIn("mapping", chat.metadata)
@@ -806,17 +804,15 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.assertIn(Capability.PROJECTS, self.provider.capabilities)
         self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
         self.client.list_projects = lambda cursor: {"items": [], "cursor": None}
-        self.assertEqual(
-            (await self.provider.adapter.models.load_catalog()).state, ModelCatalogState.AVAILABLE
-        )
-        self.assertEqual((await self.provider.adapter.projects.list_projects()).items, ())
+        self.assertEqual((await self.provider._load_catalog()).state, ModelCatalogState.AVAILABLE)
+        self.assertEqual((await self.provider._list_projects_data()).items, ())
         self.client.create_project = lambda name, instructions, **options: {
             "id": "g-p-created",
             "name": name,
             "instructions": instructions,
             "metadata": options,
         }
-        created = await self.provider.adapter.projects.create_project("New project")
+        created = await self.provider._create_project_data("New project")
         self.assertEqual(created.name, "New project")
         project_reads = iter([{"id": "g-p-created", "name": "Fixture"}, RemoteNotFound("deleted")])
 
@@ -828,7 +824,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
         self.client.get_project = get_project
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser:
-            await self.provider.adapter.projects.delete_project("g-p-created")
+            await self.provider._delete_project_data("g-p-created")
             browser.assert_not_awaited()
             self.assertEqual(
                 self.client.deleted,
@@ -849,10 +845,10 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
         self.client.create_project = create_project
 
-        await self.provider.adapter.projects.create_project("Shared")
-        await self.provider.adapter.projects.create_project("Private", memory_share=False)
+        await self.provider._create_project_data("Shared")
+        await self.provider._create_project_data("Private", memory_share=False)
         with self.assertRaises(TypeError):
-            await self.provider.adapter.projects.create_project("Invalid", memory_share=1)
+            await self.provider._create_project_data("Invalid", memory_share=1)
 
         self.assertEqual(memory_values, [True, False])
 
@@ -866,9 +862,9 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             return ModelCatalog(ModelCatalogState.AVAILABLE)
 
         self.client.model_catalog = prepare_catalog
-        warmup = asyncio.create_task(self.provider.adapter.session.prepare())
+        warmup = asyncio.create_task(self.provider._prepare_session())
         self.assertTrue(await asyncio.to_thread(ready.wait, 2))
-        history = asyncio.create_task(self.provider.adapter.chats.get_chat("remote"))
+        history = asyncio.create_task(self.provider._get_chat_data("remote"))
         await asyncio.sleep(0.02)
         self.assertFalse(history.done())
         release.set()
@@ -885,7 +881,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.session.load = lambda: ("https://chatgpt.com/", {"authorization": "Bearer test"})
         with (
             patch(
-                "webaiprovider.providers.chatgpt.adapter.AsyncHTTPTransport",
+                "webaiprovider.providers.chatgpt.provider.AsyncHTTPTransport",
                 wraps=AsyncHTTPTransport,
             ) as transports,
             patch(
@@ -900,26 +896,26 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         ):
             provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
             try:
-                await provider.adapter.session.prepare()
+                await provider._prepare_session()
                 prewarm.assert_called_once_with()
-                await provider.adapter.models.load_catalog()
-                await provider.adapter.models.load_catalog(force=True)
-                await provider.adapter.chats.list_chats(limit=1)
-                await provider.adapter.chats.get_chat("remote")
+                await provider._load_catalog()
+                await provider._load_catalog(force=True)
+                await provider._list_chats_data(limit=1)
+                await provider._get_chat_data("remote")
                 await provider.project_options("project")
                 self.assertEqual(transports.call_count, 1)
                 self.assertEqual(sync_sessions.call_count, 0)
-                self.assertIsNotNone(provider.adapter._http_client)
-                self.assertIsNotNone(provider.adapter._owned_transport)
+                self.assertIsNotNone(provider._http_client)
+                self.assertIsNotNone(provider._owned_transport)
                 self.assertIs(
-                    provider.adapter._http_client.temporary_conversations,
-                    provider.adapter._temporary_conversations,
+                    provider._http_client.temporary_conversations,
+                    provider._temporary_conversations,
                 )
                 model_catalog.assert_called_with(refresh=True)
             finally:
                 await provider.close()
             await provider.close()
-            self.assertIsNone(provider.adapter._http_client)
+            self.assertIsNone(provider._http_client)
 
     async def test_project_file_source_is_streamed_using_a_dedicated_client(self):
         from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
@@ -949,7 +945,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             "thoughts": [{"summary": "Published summary"}],
         }
         events = [
-            event async for event in self.provider.adapter.messages.stream(ProviderRequest("hello"))
+            event async for event in self.provider._stream_provider_events(ProviderRequest("hello"))
         ]
         self.assertIn(TextReplacement("Published summary", "analysis"), events)
 
@@ -972,7 +968,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             },
         ]
         events = [
-            event async for event in self.provider.adapter.messages.stream(ProviderRequest("hello"))
+            event async for event in self.provider._stream_provider_events(ProviderRequest("hello"))
         ]
         self.assertFalse(
             any(
@@ -988,17 +984,17 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             with use_send_timing(timing):
                 return [
                     event
-                    async for event in self.provider.adapter.messages.stream(
+                    async for event in self.provider._stream_provider_events(
                         ProviderRequest("hello")
                     )
                 ]
 
         timing = SendTiming()
-        await self.provider.adapter._gate.acquire()
+        await self.provider._gate.acquire()
         stream = asyncio.create_task(collect())
         await asyncio.sleep(0.02)
         self.assertFalse(stream.done())
-        self.provider.adapter._gate.release()
+        self.provider._gate.release()
         events = await stream
         self.assertEqual(events[0], TextDelta("partial"))
         self.assertEqual(events[-1].conversation_id, "remote")
@@ -1023,7 +1019,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             "read",
             attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
         )
-        _ = [event async for event in self.provider.adapter.messages.stream(request)]
+        _ = [event async for event in self.provider._stream_provider_events(request)]
         self.assertEqual(len(uploaded), 1)
         self.assertEqual(uploaded[0][:3], ("note.txt", "text/plain", b"hello"))
         self.assertEqual(sent[0]["attachments"][0]["id"], "chatgpt-file-1")
@@ -1053,7 +1049,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             "read",
             attachments=({"bytes": b"hello", "name": "note.txt", "mime_type": "text/plain"},),
         )
-        stream = self.provider.adapter.messages.stream(request)
+        stream = self.provider._stream_provider_events(request)
         task = asyncio.create_task(anext(stream))
         await asyncio.to_thread(started.wait, 1)
         task.cancel()
@@ -1093,7 +1089,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         )
         cancel_event = threading.Event()
         task = asyncio.create_task(
-            provider.adapter.attachments.upload_file(
+            provider._upload_file(
                 Path(self.directory.name) / "cancel.txt", cancel_event=cancel_event
             )
         )
@@ -1109,7 +1105,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.client.closed.set()
         self.client.failure = RateLimited(30)
         with self.assertRaises(RateLimited) as raised:
-            async for _ in self.provider.adapter.messages.stream(ProviderRequest("hello")):
+            async for _ in self.provider._stream_provider_events(ProviderRequest("hello")):
                 pass
         self.assertEqual(raised.exception.retry_after, 30)
 
@@ -1118,7 +1114,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.client.failure = ValueError("secret transport detail")
 
         with self.assertRaises(ProviderError) as raised:
-            async for _ in self.provider.adapter.messages.stream(ProviderRequest("hello")):
+            async for _ in self.provider._stream_provider_events(ProviderRequest("hello")):
                 pass
 
         self.assertEqual(raised.exception.code, "chatgpt_error")
@@ -1130,7 +1126,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         failure = SentinelCompatibilityError("private signer detail")
         self.client.failure = failure
         with self.assertRaises(SentinelCompatibilityError) as raised:
-            async for _ in self.provider.adapter.messages.stream(ProviderRequest("hello")):
+            async for _ in self.provider._stream_provider_events(ProviderRequest("hello")):
                 pass
         self.assertIs(raised.exception, failure)
         self.assertEqual(raised.exception.code, "chatgpt_sentinel_incompatible")
@@ -1189,9 +1185,9 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                     active -= 1
 
         self.client.list_project_chats = fake_list_project_chats
-        async with self.provider.adapter._gate:
+        async with self.provider._gate:
             pages = await asyncio.gather(
-                *(self.provider.adapter.projects.list_project_chats(f"p-{i}") for i in range(4))
+                *(self.provider._list_project_chats_data(f"p-{i}") for i in range(4))
             )
         self.assertEqual(max_active, 2)
         self.assertEqual(
@@ -1209,14 +1205,14 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await asyncio.wait_for(release_confirm.wait(), 1.0)
 
         with patch(
-            "webaiprovider.providers.chatgpt.adapter.confirm_deleted",
+            "webaiprovider.providers.chatgpt.provider.confirm_deleted",
             side_effect=blocked_confirm,
         ):
-            task = asyncio.create_task(self.provider.adapter.chats.delete_chat("cid-1"))
+            task = asyncio.create_task(self.provider._delete_chat_data("cid-1"))
             await asyncio.wait_for(confirm_started.wait(), 1.0)
-            self.assertFalse(self.provider.adapter._gate.locked())
-            async with self.provider.adapter._gate:
-                self.assertTrue(self.provider.adapter._gate.locked())
+            self.assertFalse(self.provider._gate.locked())
+            async with self.provider._gate:
+                self.assertTrue(self.provider._gate.locked())
             release_confirm.set()
             await task
 
@@ -1294,7 +1290,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
 
         self.client.get_project = fake_get_project
         self.client.request = Mock(return_value={})
-        self.provider.adapter.session.prepare = AsyncMock()
+        self.provider._prepare_session = AsyncMock()
         await self.provider.open()
         try:
             loaded = await self.provider.projects.refresh()
@@ -1320,17 +1316,17 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.rename_conversation = lambda *_args: None
         self.client.move_conversation = lambda *_args: {"project_id": None}
 
-        async with self.provider.adapter._gate:
+        async with self.provider._gate:
             with patch("asyncio.sleep", side_effect=AssertionError("unexpected idle sleep")):
-                page1 = await asyncio.wait_for(self.provider.adapter.chats.list_chats(limit=1), 1.0)
+                page1 = await asyncio.wait_for(self.provider._list_chats_data(limit=1), 1.0)
                 page2 = await asyncio.wait_for(
-                    self.provider.adapter.chats.list_chats(cursor="1", limit=1), 1.0
+                    self.provider._list_chats_data(cursor="1", limit=1), 1.0
                 )
-            chat = await asyncio.wait_for(self.provider.adapter.chats.get_chat("c-0"), 1.0)
-            proj = await asyncio.wait_for(self.provider.adapter.projects.get_project("g-p-1"), 1.0)
-            catalog = await asyncio.wait_for(self.provider.adapter.models.load_catalog(), 1.0)
-            await asyncio.wait_for(self.provider.adapter.chats.rename_chat("c-0", "New Title"), 1.0)
-            await asyncio.wait_for(self.provider.adapter.chats.move_chat("c-0", None), 1.0)
+            chat = await asyncio.wait_for(self.provider._get_chat_data("c-0"), 1.0)
+            proj = await asyncio.wait_for(self.provider._get_project_data("g-p-1"), 1.0)
+            catalog = await asyncio.wait_for(self.provider._load_catalog(), 1.0)
+            await asyncio.wait_for(self.provider._rename_chat_data("c-0", "New Title"), 1.0)
+            await asyncio.wait_for(self.provider._move_chat_data("c-0", None), 1.0)
 
         self.assertEqual(page1.items[0].id, "c-0")
         self.assertEqual(page2.items[0].id, "c-1")
@@ -1367,26 +1363,26 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             def close(self):
                 self.closed.set()
 
-        with patch("webaiprovider.providers.chatgpt.adapter.ChatGPTClient", PersistentAuxClient):
+        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentAuxClient):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
                 session=self.session,
                 client_factory=PersistentAuxClient,
             )
         try:
-            await provider.adapter.chats.rename_chat("c-1", "One")
-            await provider.adapter.chats.rename_chat("c-2", "Two")
-            await provider.adapter.editor.write(
+            await provider._rename_chat_data("c-1", "One")
+            await provider._rename_chat_data("c-2", "Two")
+            await provider.editor.write(
                 "add_source", "g-p-1", kind="text", name="note", text="hello"
             )
             self.assertEqual(len(created), 1)
-            self.assertIs(provider.adapter._aux_http_client, created[0])
-            await provider.adapter._discard_http_client()
+            self.assertIs(provider._aux_http_client, created[0])
+            await provider._discard_http_client()
             self.assertFalse(created[0].closed.is_set())
         finally:
             await provider.close()
         self.assertTrue(created[0].closed.is_set())
-        self.assertIsNone(provider.adapter._aux_http_client)
+        self.assertIsNone(provider._aux_http_client)
 
     async def test_resolve_download_reuses_cached_snapshot_and_falls_back_on_miss(self):
         from unittest.mock import Mock
@@ -1418,20 +1414,20 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 Mock(json=lambda: {"download_url": "https://cdn.example/r"}),
             ]
         )
-        source_cached = await self.provider.adapter.attachments.resolve_download(
+        source_cached = await self.provider._resolve_download(
             "file-service://file-cached", "chat-1"
         )
         self.assertEqual(source_cached.filename, "a.txt")
         self.client.get_conversation.assert_not_called()
 
-        source_miss = await self.provider.adapter.attachments.resolve_download(
+        source_miss = await self.provider._resolve_download(
             "sandbox:/mnt/data/report.csv", "chat-1"
         )
         self.assertEqual(source_miss.url, "https://cdn.example/r")
         self.client.get_conversation.assert_called_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
-        from webaiprovider.providers.chatgpt.adapter import _prepare_chatgpt_attachments
+        from webaiprovider.providers.chatgpt.provider import _prepare_chatgpt_attachments
 
         barrier = threading.Barrier(2, timeout=1.0)
         self.client.upload_file = lambda name, mime, data, **_kwargs: (
@@ -1469,9 +1465,9 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             )
 
         self.client.send_prompt = fake_send_prompt
-        self.provider.adapter.session.prepare = AsyncMock()
+        self.provider._prepare_session = AsyncMock()
         events = [
-            event async for event in self.provider.adapter.messages.stream(ProviderRequest("Hi"))
+            event async for event in self.provider._stream_provider_events(ProviderRequest("Hi"))
         ]
         self.assertEqual(len(seen_callbacks), 1)
         self.assertEqual(
@@ -1611,7 +1607,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             session=self.session,
             client_factory=make_client,
         )
-        provider.adapter.session.prepare = AsyncMock()
+        provider._prepare_session = AsyncMock()
         provider._catalog = catalog
         await provider.open()
         try:

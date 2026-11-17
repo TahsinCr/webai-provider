@@ -37,22 +37,28 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.account = Account.from_cookies("claude", {"sessionKey": "session"})
         self.provider = AsyncProvider(self.account)
-        for name in ("prepare", "close"):
-            setattr(self.provider.adapter.session, name, AsyncMock())
+        for name in ("_prepare_session", "_close_session"):
+            setattr(self.provider, name, AsyncMock())
         for name in (
-            "create_project",
-            "get_project",
-            "patch_project",
-            "add_project_resource",
-            "remove_project_resource",
-            "list_projects",
-            "delete_project",
-            "list_project_chats",
+            "_create_project_data",
+            "_get_project_data",
+            "_patch_project",
+            "_add_project_resource",
+            "_remove_project_resource",
+            "_list_projects_data",
+            "_delete_project_data",
+            "_list_project_chats_data",
         ):
-            setattr(self.provider.adapter.projects, name, AsyncMock())
-        for name in ("get_chat", "list_chats", "rename_chat", "delete_chat", "move_chat"):
-            setattr(self.provider.adapter.chats, name, AsyncMock())
-        self.provider.adapter.attachments.resolve_download = AsyncMock()
+            setattr(self.provider, name, AsyncMock())
+        for name in (
+            "_get_chat_data",
+            "_list_chats_data",
+            "_rename_chat_data",
+            "_delete_chat_data",
+            "_move_chat_data",
+        ):
+            setattr(self.provider, name, AsyncMock())
+        self.provider._resolve_download = AsyncMock()
         await self.provider.open()
         self.addAsyncCleanup(self.provider.close)
 
@@ -67,9 +73,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             (Attachment("resource-1", "Source", "text/plain"),),
         )
         state = {"project": original}
-        projects_adapter = self.provider.adapter.projects
-        projects_adapter.create_project.return_value = original
-        projects_adapter.get_project.side_effect = lambda _pid: state["project"]
+        self.provider._create_project_data.return_value = original
+        self.provider._get_project_data.side_effect = lambda _pid: state["project"]
 
         async def do_patch(project_id, **fields):
             del project_id
@@ -79,7 +84,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             )
             return state["project"]
 
-        projects_adapter.patch_project = AsyncMock(side_effect=do_patch)
+        self.provider._patch_project = AsyncMock(side_effect=do_patch)
         with_resource = NativeProject(
             original.id,
             original.name,
@@ -95,18 +100,18 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             state["project"] = original
             return state["project"]
 
-        projects_adapter.add_project_resource.side_effect = do_add
-        projects_adapter.remove_project_resource.side_effect = do_remove
-        projects_adapter.list_projects.return_value = Page((original,))
+        self.provider._add_project_resource.side_effect = do_add
+        self.provider._remove_project_resource.side_effect = do_remove
+        self.provider._list_projects_data.return_value = Page((original,))
 
         project = await self.provider.projects.create("Research", instruction="Be concise")
-        projects_adapter.create_project.assert_awaited_once_with(
+        self.provider._create_project_data.assert_awaited_once_with(
             "Research", instructions="Be concise"
         )
         self.assertEqual(project.remote_id, "project-1")
         self.assertEqual(await project.instruction.get(), "Be concise")
         added = await project.attachments.add("A note", resource_type="text", name="Notes")
-        projects_adapter.add_project_resource.assert_awaited_once_with(
+        self.provider._add_project_resource.assert_awaited_once_with(
             "project-1", "text", name="Notes", text="A note"
         )
         self.assertEqual(added.id, "resource-2")
@@ -114,14 +119,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await self.provider.projects.update(
             project, title="Updated", instruction="New instructions"
         )
-        projects_adapter.patch_project.assert_awaited_once_with(
+        self.provider._patch_project.assert_awaited_once_with(
             "project-1", name="Updated", instructions="New instructions"
         )
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
         await project.attachments.remove("resource-2")
-        projects_adapter.remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
+        self.provider._remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
         state["project"] = original
         loaded_projects = await self.provider.projects.refresh()
         loaded = loaded_projects[0]
@@ -135,8 +140,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("grok", {"sso": "session"})
         provider = AsyncProvider(account)
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         chat1 = Conversation(
             "chat-1",
             "Project chat 1",
@@ -147,10 +152,10 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             "Project chat 2",
             project=NativeProject("project-1", "Research"),
         )
-        provider.adapter.projects.list_project_chats = AsyncMock(
+        provider._list_project_chats_data = AsyncMock(
             side_effect=[Page((chat1,), "cursor-2"), Page((chat2,), None)]
         )
-        provider.adapter.chats.move_chat = AsyncMock()
+        provider._move_chat_data = AsyncMock()
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
@@ -163,7 +168,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         chat = AsyncGrokChat(title="Loose chat", provider=provider, remote_id="chat-2")
         self.assertIsNone(chat.project)
         await chat.move_to(project)
-        provider.adapter.chats.move_chat.assert_awaited_once_with("chat-2", "project-1")
+        provider._move_chat_data.assert_awaited_once_with("chat-2", "project-1")
         self.assertIsNotNone(chat.project)
         assert chat.project is not None
         self.assertEqual(chat.project.remote_id, "project-1")
@@ -185,7 +190,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 ResponseComplete(),
             ),
         )
-        self.provider.adapter.messages = stream_provider.adapter.messages
+        self.provider._stream_provider_events = stream_provider._stream_provider_events
         chat = await self.provider.chats.create()
         operation = chat.responses.create("prompt")
         events = [event async for event in operation.stream()]
@@ -201,12 +206,12 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(artifact.id, "file-1")
 
     async def test_download_rejects_unresolved_user_url(self) -> None:
-        self.provider.adapter.attachments.resolve_download.return_value = None
+        self.provider._resolve_download.return_value = None
         chat = await self.provider.chats.create()
         chat.remote_id = "conversation-1"
         with self.assertRaises(UnsupportedOperationError):
             await chat.download("https://example.test/file")
-        self.provider.adapter.attachments.resolve_download.assert_awaited_once_with(
+        self.provider._resolve_download.assert_awaited_once_with(
             "https://example.test/file", conversation_id="conversation-1", message_id=None
         )
 
@@ -227,7 +232,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 ResponseComplete(),
             ),
         )
-        self.provider.adapter.messages = stream_provider.adapter.messages
+        self.provider._stream_provider_events = stream_provider._stream_provider_events
         chat = await self.provider.chats.create()
         operation = chat.responses.create("solve")
         self.assertEqual(operation.state, OperationState.PENDING)
@@ -240,7 +245,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "Final output")
         self.assertIs(response.message, operation.message)
         self.assertEqual(response.message.response, response)
-        self.provider.adapter.chats.get_chat.return_value = Conversation(
+        self.provider._get_chat_data.return_value = Conversation(
             "conversation-2",
             "Solved",
             messages=(
@@ -271,7 +276,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             ),
             metadata={"default_model_slug": "sonnet"},
         )
-        self.provider.adapter.chats.get_chat.return_value = remote_conv
+        self.provider._get_chat_data.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
         responses = await chat.responses.refresh()
@@ -288,8 +293,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
     async def test_chats_include_projects_and_temporary_flag(self) -> None:
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
         provider = AsyncProvider(account)
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         project_alpha = NativeProject("proj-1", "Alpha")
         loose_conv = Conversation(
             "chat-loose",
@@ -310,14 +315,10 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.base import Capability
         from webaiprovider.errors import FeatureUnavailable
 
-        provider.adapter.chats.get_chat = AsyncMock(side_effect=FeatureUnavailable(Capability.CHAT))
-        provider.adapter.chats.list_chats = AsyncMock(
-            return_value=Page((loose_conv, shared_conv), None)
-        )
-        provider.adapter.projects.list_projects = AsyncMock(
-            return_value=Page((project_alpha,), None)
-        )
-        provider.adapter.projects.list_project_chats = AsyncMock(
+        provider._get_chat_data = AsyncMock(side_effect=FeatureUnavailable(Capability.CHAT))
+        provider._list_chats_data = AsyncMock(return_value=Page((loose_conv, shared_conv), None))
+        provider._list_projects_data = AsyncMock(return_value=Page((project_alpha,), None))
+        provider._list_project_chats_data = AsyncMock(
             return_value=Page((project_shared_conv, project_only_conv), None)
         )
         await provider.open()
@@ -327,8 +328,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c.remote_id for c in main_page], ["chat-loose", "chat-shared"])
         self.assertEqual(main_page[0].metadata, {"temporary": False, "source": "list"})
         self.assertTrue(all(c.project is None for c in main_page))
-        provider.adapter.projects.list_projects.assert_not_awaited()
-        provider.adapter.projects.list_project_chats.assert_not_awaited()
+        provider._list_projects_data.assert_not_awaited()
+        provider._list_project_chats_data.assert_not_awaited()
         self.assertEqual(await provider.chats.search("Project Only"), [])
 
         all_page = await provider.chats.refresh(include_projects=True)
@@ -336,8 +337,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             [c.remote_id for c in all_page],
             ["chat-loose", "chat-shared", "chat-proj"],
         )
-        provider.adapter.projects.list_projects.assert_awaited()
-        provider.adapter.projects.list_project_chats.assert_awaited_with("proj-1", cursor=None)
+        provider._list_projects_data.assert_awaited()
+        provider._list_project_chats_data.assert_awaited_with("proj-1", cursor=None)
         shared = await provider.chats.get("chat-shared", include_projects=True)
         self.assertEqual(shared.title, "Shared In Project")
         self.assertIsNotNone(shared.project)

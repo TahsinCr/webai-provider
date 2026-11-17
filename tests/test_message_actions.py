@@ -435,10 +435,8 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
             "file_name": "output.png",
         }
         client.headers = {"Authorization": "private"}
-        provider.adapter._client_scope = lambda: nullcontext(client)
-        source = await provider.adapter.attachments.resolve_download(
-            "file-service://file-output", "chat", "answer"
-        )
+        provider._client_scope = lambda: nullcontext(client)
+        source = await provider._resolve_download("file-service://file-output", "chat", "answer")
         self.assertEqual(source.url, "https://cdn.example.com/fresh")
         self.assertEqual(source.filename, "output.png")
         self.assertEqual(source.headers, {})
@@ -449,9 +447,7 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
         )
         client.request.reset_mock()
         with self.assertRaises(ValueError):
-            await provider.adapter.attachments.resolve_download(
-                "file-service://file-foreign", "chat", "answer"
-            )
+            await provider._resolve_download("file-service://file-foreign", "chat", "answer")
         client.request.assert_not_called()
 
 

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from eventflow import AsyncEventBus, EventEnvelope
 
-from .accounts.status import SessionStatus
-from .base import BaseProvider, BaseProviderAdapter, BaseSessionAdapter, Capability
+from .accounts.status import SessionState, SessionStatus
+from .base import BaseProvider, Capability
 from .core.hooks import OperationHooks
 from .core.operations import run_pipeline_unwrapped
 from .core.runtime import ProviderRuntime
 from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
-from .errors import ProviderError
+from .errors import FeatureUnavailable, ProviderError
 from .provider import ProviderType, _construct_provider
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
@@ -55,10 +55,12 @@ from .transport import AsyncTransport
 
 if TYPE_CHECKING:
     from .accounts.account import Account
+    from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
+    from .resources.model.model import ModelCatalog
 
 
 class AsyncProvider(BaseProvider):
-    """Asynchronous provider session backed by one ProviderRuntime and one BaseProviderAdapter."""
+    """Asynchronous provider session backed by one ProviderRuntime."""
 
     def __new__(cls, *args: Any, **options: Any):
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
@@ -74,19 +76,12 @@ class AsyncProvider(BaseProvider):
         *,
         type: ProviderType | str | None = None,
         transport: AsyncTransport | None = None,
-        adapter: BaseProviderAdapter | None = None,
     ) -> None:
         super().__init__(account, type=type)
         self._transport = transport
-        self.adapter: BaseProviderAdapter = (
-            adapter if adapter is not None else self._create_adapter()
-        )
-        if adapter is not None and adapter.capabilities and not self.__class__.capabilities:
-            self.capabilities = adapter.capabilities
         self.runtime = ProviderRuntime(
             provider_id=self.id,
             account_id=self.account_id,
-            adapter=self.adapter,
         )
         self.events: AsyncEventBus[EventEnvelope[str]] = self.runtime.events
         self.hooks: OperationHooks = self.runtime.hooks
@@ -96,18 +91,15 @@ class AsyncProvider(BaseProvider):
         self.models = AsyncModelsCollection(self._load_models)
         self._send_pipeline = self.runtime.build_send_pipeline(self.models.resolve)
 
-    def _create_adapter(self) -> BaseProviderAdapter:
-        return BaseProviderAdapter(
-            provider_id=self.id,
-            account_id=self.account_id,
-            capabilities=self.capabilities,
-            transport=self._transport,
-        )
+    def _active_transport(self) -> AsyncTransport | None:
+        return None
 
     @property
     def transport(self) -> AsyncTransport:
         self._require_provider()
-        active = self.adapter.transport if self.adapter.transport is not None else self._transport
+        active = self._active_transport()
+        if active is None:
+            active = self._transport
         if active is None:
             raise ProviderError("This provider has no configured transport")
         return active
@@ -126,11 +118,11 @@ class AsyncProvider(BaseProvider):
 
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
         async with self.runtime.activity():
-            catalog = await self.adapter.models.load_catalog(force=refresh)
+            catalog = await self._load_catalog(force=refresh)
             return _model_refs_from_catalog(self.type.value, catalog)
 
     async def open(self) -> AsyncProvider:
-        await self.runtime.open(self.adapter.session.prepare, self._close_session_resources)
+        await self.runtime.open(self._prepare_session, self._close_session_resources)
         return self
 
     def _require_provider(self) -> AsyncProvider:
@@ -140,10 +132,10 @@ class AsyncProvider(BaseProvider):
 
     async def _close_session_resources(self) -> None:
         try:
-            await self.adapter.session.close()
+            await self._close_session()
         finally:
             if (
-                type(self.adapter.session).close is BaseSessionAdapter.close
+                type(self)._close_session is AsyncProvider._close_session
                 and self._transport is not None
             ):
                 await self._transport.close()
@@ -182,7 +174,7 @@ class AsyncProvider(BaseProvider):
         request = prepared.request
         output_started = thinking_started = False
         thinking_text = ""
-        stream = self.adapter.messages.stream(request)
+        stream = self._stream_provider_events(request)
         try:
             async for event in stream:
                 if isinstance(event, ConversationBound):
@@ -295,29 +287,96 @@ class AsyncProvider(BaseProvider):
         policy = policy_for(getattr(self, "id", ""))
         return policy.as_dict() if policy else None
 
+    async def _prepare_session(self) -> None:
+        return None
+
+    async def _close_session(self) -> None:
+        return None
+
+    async def _authenticate(self) -> SessionStatus:
+        raise FeatureUnavailable(Capability.AUTH, "not_implemented")
+
+    async def _session_status(self) -> SessionStatus:
+        return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
+
+    async def _forget_session(self) -> SessionStatus:
+        raise FeatureUnavailable(Capability.AUTH, "forget_session_not_implemented")
+
+    async def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
+        raise FeatureUnavailable(Capability.MODELS, "not_implemented")
+
+    def _stream_provider_events(
+        self, request: ProviderRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        raise NotImplementedError
+
+    async def _conversation_attachment_count(self, conversation_id: str) -> int | None:
+        raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")
+
+    async def _upload_file(self, path: Any) -> dict[str, Any]:
+        raise FeatureUnavailable(Capability.ATTACHMENTS, "not_implemented")
+
+    async def _resolve_download(
+        self,
+        url: str,
+        conversation_id: str | None = None,
+        message_id: str | None = None,
+    ) -> Any | None:
+        return None
+
+    async def _project_options(self, project_id: str | None = None) -> ProjectOptions:
+        return ProjectOptions()
+
+    async def _patch_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        instructions: str | None = None,
+    ) -> ProjectData:
+        raise FeatureUnavailable(Capability.PROJECT_UPDATE, "not_implemented")
+
+    async def _add_project_resource(
+        self,
+        project_id: str,
+        kind: str,
+        **values: Any,
+    ) -> ProjectData:
+        raise FeatureUnavailable(Capability.RESOURCES, "not_implemented")
+
+    async def _remove_project_resource(
+        self,
+        project_id: str,
+        resource_id: str,
+    ) -> ProjectData:
+        raise FeatureUnavailable(Capability.RESOURCES, "not_implemented")
+
+    def _invalidate_project_cache(self, project_id: str) -> None:
+        del project_id
+
     async def authenticate(self) -> SessionStatus:
         async with self.runtime.activity():
-            return await self.adapter.session.authenticate()
+            return await self._authenticate()
 
     async def session_status(self) -> SessionStatus:
         async with self.runtime.activity():
-            return await self.adapter.session.session_status()
+            return await self._session_status()
 
     async def forget_session(self) -> SessionStatus:
         async with self.runtime.activity():
-            return await self.adapter.session.forget_session()
+            return await self._forget_session()
 
     async def conversation_attachment_count(self, conversation_id: str) -> int | None:
         async with self.runtime.activity():
-            return await self.adapter.chats.conversation_attachment_count(conversation_id)
+            return await self._conversation_attachment_count(conversation_id)
 
     async def upload_file(self, path: Any) -> dict[str, Any]:
         async with self.runtime.activity():
-            return await self.adapter.attachments.upload_file(path)
+            return await self._upload_file(path)
 
     async def project_options(self, project_id: str | None = None) -> ProjectOptions:
         async with self.runtime.activity():
-            return await self.adapter.projects.project_options(project_id)
+            return await self._project_options(project_id)
 
     async def update_project(self, project: ProjectData) -> ProjectData:
         async with self.runtime.activity():
@@ -328,38 +387,36 @@ class AsyncProvider(BaseProvider):
             )
 
     async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Any:
-        return await self.adapter.chats.list_chats(cursor=cursor, limit=limit)
+        raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
-        return await self.adapter.chats.get_chat(conversation_id)
+        raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
-        await self.adapter.chats.rename_chat(conversation_id, title)
+        raise FeatureUnavailable(Capability.RENAME, "not_implemented")
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
-        await self.adapter.chats.delete_chat(conversation_id)
+        raise FeatureUnavailable(Capability.DELETE, "not_implemented")
 
     async def _branch_chat_data(self, conversation_id: str, message_id: str) -> Conversation:
-        return await self.adapter.chats.branch_chat(conversation_id, message_id)
+        raise FeatureUnavailable(Capability.CHAT_BRANCH, "not_implemented")
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
-        await self.adapter.chats.move_chat(conversation_id, project_id)
+        raise FeatureUnavailable(Capability.PROJECT_MEMBERSHIP, "not_implemented")
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Any:
-        return await self.adapter.projects.list_projects(cursor=cursor)
+        raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
     async def _get_project_data(self, project_id: str) -> ProjectData:
-        return await self.adapter.projects.get_project(project_id)
+        raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
     async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None) -> Any:
-        return await self.adapter.projects.list_project_chats(project_id, cursor=cursor)
+        raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
     async def _create_project_data(
         self, name: str, instructions: str = "", **options: Any
     ) -> ProjectData:
-        return await self.adapter.projects.create_project(
-            name, instructions=instructions, **options
-        )
+        raise FeatureUnavailable(Capability.PROJECT_CREATE, "not_implemented")
 
     async def _patch_project_data(
         self,
@@ -369,22 +426,20 @@ class AsyncProvider(BaseProvider):
         instructions: str | None = None,
     ) -> ProjectData:
         async with self.runtime.project_lock(project_id):
-            return await self.adapter.projects.patch_project(
-                project_id, name=name, instructions=instructions
-            )
+            return await self._patch_project(project_id, name=name, instructions=instructions)
 
     async def _delete_project_data(self, project_id: str) -> None:
-        await self.adapter.projects.delete_project(project_id)
+        raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
 
     async def _add_project_resource_data(
         self, project_id: str, kind: str, **values: Any
     ) -> ProjectData:
         async with self.runtime.project_lock(project_id):
-            return await self.adapter.projects.add_project_resource(project_id, kind, **values)
+            return await self._add_project_resource(project_id, kind, **values)
 
     async def _remove_project_resource_data(self, project_id: str, resource_id: str) -> ProjectData:
         async with self.runtime.project_lock(project_id):
-            return await self.adapter.projects.remove_project_resource(project_id, resource_id)
+            return await self._remove_project_resource(project_id, resource_id)
 
     async def _resolve_download_data(
         self,
@@ -393,7 +448,7 @@ class AsyncProvider(BaseProvider):
         message_id: str | None = None,
     ) -> Any | None:
         async with self.runtime.activity():
-            return await self.adapter.attachments.resolve_download(
+            return await self._resolve_download(
                 url, conversation_id=conversation_id, message_id=message_id
             )
 
@@ -408,8 +463,8 @@ class AsyncProvider(BaseProvider):
         try:
             async with self.runtime.activity():
                 opened_here = await self.runtime.ensure_open(
-                    self.adapter.session.prepare,
-                    self.adapter.session.close,
+                    self._prepare_session,
+                    self._close_session_resources,
                 )
                 chat = await self.chats.create()
                 return await chat.responses.create(

@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from weakref import WeakValueDictionary
 
 from eventflow import (
@@ -31,9 +31,6 @@ from .state import (
 )
 from .telemetry import ProviderTelemetry
 from .types import OperationContext
-
-if TYPE_CHECKING:
-    from ..base import BaseProviderAdapter
 
 
 @dataclass(slots=True, eq=False)
@@ -60,11 +57,9 @@ class ProviderRuntime:
         *,
         provider_id: str,
         account_id: str,
-        adapter: BaseProviderAdapter,
     ) -> None:
         self.provider_id = provider_id
         self.account_id = account_id
-        self.adapter = adapter
         self.events = AsyncEventBus(error_policy=ErrorPolicy.ISOLATE)
         self.sync_events = EventBus(error_policy=ErrorPolicy.ISOLATE)
         self._sync_event_pool: BoundedWorkPool | None = None

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from eventflow import EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
-from .base import BaseProvider, BaseProviderAdapter, Capability, ProviderType
+from .base import BaseProvider, Capability, ProviderType
 from .core.bridges import PortalBridge
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState
@@ -75,7 +75,6 @@ class Provider(BaseProvider):
         *,
         type: ProviderType | str | None = None,
         transport: AsyncTransport | None = None,
-        adapter: BaseProviderAdapter | None = None,
     ) -> None:
         super().__init__(account, type=type)
         provider_type = self.async_provider_type
@@ -86,8 +85,6 @@ class Provider(BaseProvider):
         options: dict[str, Any] = {"type": self.type}
         if transport is not None:
             options["transport"] = transport
-        if adapter is not None:
-            options["adapter"] = adapter
         self._provider = provider_type(account, **options)
         self._portal = PortalBridge()
         self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
@@ -105,10 +102,6 @@ class Provider(BaseProvider):
 
     def _wrap_project(self, resource: AsyncProject) -> Project:
         return (self.project_wrapper_type or Project)(self, resource)
-
-    @property
-    def adapter(self) -> BaseProviderAdapter:
-        return self._provider.adapter
 
     @property
     def capabilities(self) -> frozenset[Capability]:

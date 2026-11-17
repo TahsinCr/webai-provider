@@ -565,11 +565,11 @@ class SyncCleanupTests(unittest.TestCase):
             provider, LiveAccount("personal", "chatgpt", {}), "sync", gate=ActionGate(interval=0)
         )
         marker = f"{context.marker}-p"
-        native.adapter.projects.get_project = AsyncMock(
+        native._get_project_data = AsyncMock(
             side_effect=(ProjectData("temporary-id", marker), RemoteNotFound("missing"))
         )
-        native.adapter.projects.delete_project = AsyncMock()
-        native.adapter.projects.list_projects = AsyncMock(return_value=Page((), None))
+        native._delete_project_data = AsyncMock()
+        native._list_projects_data = AsyncMock(return_value=Page((), None))
         with tempfile.TemporaryDirectory() as temporary:
             journal = Path(temporary) / "cleanup.json"
             with (
@@ -581,8 +581,8 @@ class SyncCleanupTests(unittest.TestCase):
                 context.cleanup_entry(entry)
                 context.cleanup_pending()
                 self.assertFalse(journal.exists())
-        native.adapter.projects.delete_project.assert_awaited_once_with("temporary-id")
-        self.assertEqual(native.adapter.projects.get_project.await_count, 2)
+        native._delete_project_data.assert_awaited_once_with("temporary-id")
+        self.assertEqual(native._get_project_data.await_count, 2)
         self.assertEqual(context.state["resources"], [])
 
 
@@ -1695,14 +1695,12 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
                     return chat_obj
 
-                from webaiprovider.base import BaseProviderAdapter
                 from webaiprovider.core.hooks import OperationHooks
                 from webaiprovider.core.runtime import ProviderRuntime
 
                 runtime = ProviderRuntime(
                     provider_id="chatgpt",
                     account_id="personal",
-                    adapter=BaseProviderAdapter(provider_id="chatgpt", account_id="personal"),
                 )
                 session = SimpleNamespace(
                     capabilities={

@@ -72,8 +72,8 @@ class StreamCompletionTests(unittest.IsolatedAsyncioTestCase):
 class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def provider(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         return provider
 
     async def test_concurrent_open_and_close_share_one_lifecycle(self):
@@ -87,7 +87,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             await release.wait()
 
-        provider.adapter.session.prepare = prepare
+        provider._prepare_session = prepare
         first = asyncio.create_task(provider.open())
         await started.wait()
         second = asyncio.create_task(provider.open())
@@ -96,7 +96,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
 
         await asyncio.gather(provider.close(), provider.close())
-        provider.adapter.session.close.assert_awaited_once_with()
+        provider._close_session.assert_awaited_once_with()
         with self.assertRaises(ProviderError):
             await provider.open()
 
@@ -109,7 +109,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             yield TextDelta("answer")
 
-        provider.adapter.messages.stream = stream
+        provider._stream_provider_events = stream
         chat = AsyncChat(provider=provider)
         operation = chat.responses.create("prompt")
         consumer = asyncio.create_task(_collect_provider_stream(provider, operation))
@@ -124,7 +124,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await closing
         await consumer
 
-        provider.adapter.session.close.assert_awaited_once_with()
+        provider._close_session.assert_awaited_once_with()
         with self.assertRaises(ProviderError):
             await provider.open()
 
@@ -157,7 +157,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(provider.runtime.closed)
         release["second"].set()
         self.assertEqual(await asyncio.gather(first, second), ["first", "second"])
-        provider.adapter.session.close.assert_awaited_once_with()
+        provider._close_session.assert_awaited_once_with()
 
     async def test_sends_serialize_per_chat_without_blocking_other_chats(self):
         provider = self.provider()
@@ -178,7 +178,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 other_started.set()
             yield TextDelta("answer")
 
-        provider.adapter.messages.stream = stream
+        provider._stream_provider_events = stream
         shared_chat, other_chat = AsyncChat(provider=provider), AsyncChat(provider=provider)
         requests = [
             shared_chat.responses.create("first"),
@@ -203,7 +203,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
     async def test_analysis_replacement_and_new_segment_reset_have_replace_semantics(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.close = AsyncMock()
+        provider._close_session = AsyncMock()
 
         async def stream(_request):
             yield ThoughtDelta("old thought")
@@ -211,7 +211,7 @@ class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
             yield TextDelta("answer")
             yield ThoughtDelta("new segment")
 
-        provider.adapter.messages.stream = stream
+        provider._stream_provider_events = stream
         chat = AsyncChat(provider=provider)
         operation = chat.responses.create("prompt")
         events = await _collect_provider_stream(provider, operation)
@@ -231,8 +231,8 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_and_resource_mutations_keep_session_ownership(self):
         first = AsyncClaudeProvider(Account.from_cookies("claude", {}))
         second = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        first.adapter.session.close = AsyncMock()
-        second.adapter.session.close = AsyncMock()
+        first._close_session = AsyncMock()
+        second._close_session = AsyncMock()
         try:
             chat = await first.chats.create()
             foreign_chat = await second.chats.create()
@@ -265,8 +265,8 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_parallel_project_field_updates_preserve_each_others_changes(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         await provider.open()
         remote = ProjectData(
             "project-1",
@@ -291,8 +291,8 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             remote = replace(current, **changes)
             return remote
 
-        provider.adapter.editor = SimpleNamespace(write=AsyncMock(side_effect=write))
-        provider.adapter.projects.get_project = AsyncMock(side_effect=lambda _: remote)
+        provider.editor = SimpleNamespace(write=AsyncMock(side_effect=write))
+        provider._get_project_data = AsyncMock(side_effect=lambda _: remote)
         try:
             rename = asyncio.create_task(provider.projects.update(project, title="Renamed"))
             await write_started.wait()
@@ -387,23 +387,23 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.message.types import Content, MessageData
 
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         remote = Conversation(
             "chat", "Before", (MessageData("message", "user", (Content("text", text="old"),)),)
         )
-        provider.adapter.chats.list_chats = AsyncMock(return_value=Page((remote,)))
-        provider.adapter.chats.get_chat = AsyncMock(return_value=remote)
+        provider._list_chats_data = AsyncMock(return_value=Page((remote,)))
+        provider._get_chat_data = AsyncMock(return_value=remote)
         project = ProjectData("project", "Before")
-        provider.adapter.projects.list_projects = AsyncMock(return_value=Page((project,)))
+        provider._list_projects_data = AsyncMock(return_value=Page((project,)))
         async with provider:
             chat = (await provider.chats.refresh())[0]
             message = (await chat.responses.refresh())[0].message
             pending = chat.responses.create("pending").message
-            provider.adapter.chats.list_chats.return_value = Page((replace(remote, title="After"),))
+            provider._list_chats_data.return_value = Page((replace(remote, title="After"),))
             refreshed_chats = await provider.chats.refresh()
             self.assertEqual(refreshed_chats[0].title, "After")
-            provider.adapter.chats.get_chat.return_value = replace(
+            provider._get_chat_data.return_value = replace(
                 remote,
                 messages=(replace(remote.messages[0], content=(Content("text", text="new"),)),),
             )
@@ -413,9 +413,7 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(pending, [r.message for r in responses])
             first = (await provider.projects.refresh())[0]
             self.assertEqual(first.title, "Before")
-            provider.adapter.projects.list_projects.return_value = Page(
-                (replace(project, name="After"),)
-            )
+            provider._list_projects_data.return_value = Page((replace(project, name="After"),))
             self.assertEqual((await provider.projects.refresh())[0].title, "After")
 
 
@@ -497,23 +495,23 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.providers.grok import AsyncGrokProvider
 
         provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
-        provider.adapter.client.authenticate = AsyncMock()
-        provider.adapter.client.close = AsyncMock()
-        provider.adapter.models.load_catalog = AsyncMock()
+        provider.client.authenticate = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider._load_catalog = AsyncMock()
         try:
             await asyncio.wait_for(provider.open(), 1)
             await asyncio.wait_for(provider.open(), 1)
-            provider.adapter.client.authenticate.assert_awaited_once_with()
-            provider.adapter.models.load_catalog.assert_awaited_once_with()
+            provider.client.authenticate.assert_awaited_once_with()
+            provider._load_catalog.assert_awaited_once_with()
         finally:
             await asyncio.wait_for(provider.close(), 1)
-        provider.adapter.client.close.assert_awaited_once_with()
+        provider.client.close.assert_awaited_once_with()
 
     async def test_claude_forget_waits_for_activity_and_deletes_credentials(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "fixture"}))
-        provider.adapter.client.prepare = AsyncMock()
-        provider.adapter.client.close = AsyncMock()
-        provider.adapter.editor.close = AsyncMock()
+        provider.client.prepare = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider.editor.close = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def active():
@@ -532,9 +530,9 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(forgetting, provider.forget_session()), 1)
         from webaiprovider.accounts import session_exists
 
-        self.assertFalse(session_exists(provider.adapter.credential_file))
+        self.assertFalse(session_exists(provider.credential_file))
         self.assertTrue(provider.runtime.closed)
-        provider.adapter.client.close.assert_awaited_once_with()
+        provider.client.close.assert_awaited_once_with()
         with self.assertRaises(ProviderError):
             await provider.authenticate()
 
@@ -543,11 +541,11 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.chat.types import Conversation
 
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         remote = Conversation("remote-1", "Remote")
-        provider.adapter.chats.list_chats = AsyncMock(return_value=Page((remote,)))
-        provider.adapter.projects.list_projects = AsyncMock(return_value=Page(()))
+        provider._list_chats_data = AsyncMock(return_value=Page((remote,)))
+        provider._list_projects_data = AsyncMock(return_value=Page(()))
         async with provider:
             await provider.chats.create("Pending")
             for include_projects in (False, True):
@@ -602,11 +600,11 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_direct_patch_drains_on_close_and_rejects_new_operations(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.client.prepare = AsyncMock()
-        provider.adapter.client.close = AsyncMock()
-        provider.adapter.editor.close = AsyncMock()
+        provider.client.prepare = AsyncMock()
+        provider.client.close = AsyncMock()
+        provider.editor.close = AsyncMock()
         remote = ProjectData("project", "Before", "Keep")
-        provider.adapter.projects.get_project = AsyncMock(return_value=remote)
+        provider._get_project_data = AsyncMock(return_value=remote)
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def write(_action, _remote, *, current, **changes):
@@ -614,7 +612,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return replace(current, **changes)
 
-        provider.adapter.editor.write = AsyncMock(side_effect=write)
+        provider.editor.write = AsyncMock(side_effect=write)
         await provider.open()
         proj = await provider.projects.get("project")
         mutation = asyncio.create_task(provider.projects.update(proj, title="After"))
@@ -631,17 +629,17 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(mutation, 1)
         await asyncio.wait_for(closing, 1)
         self.assertEqual((result.title, await result.instruction.get()), ("After", "Keep"))
-        self.assertEqual(provider.adapter.editor.write.await_count, 1)
+        self.assertEqual(provider.editor.write.await_count, 1)
 
     async def test_project_pages_paginate_statelessly_and_dedup(self):
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
 
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         remote = Conversation("chat", "Title")
-        provider.adapter.projects.list_project_chats = AsyncMock(
+        provider._list_project_chats_data = AsyncMock(
             side_effect=[Page((remote,), "next"), Page((remote,), None)]
         )
         async with provider:
@@ -655,8 +653,8 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.collections import Page
 
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.adapter.session.prepare = AsyncMock()
-        provider.adapter.session.close = AsyncMock()
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def listing(**_kwargs):
@@ -664,7 +662,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return Page(())
 
-        provider.adapter.chats.list_chats = listing
+        provider._list_chats_data = listing
         async with provider:
             chat = await provider.chats.create("Pending")
             refreshing = asyncio.create_task(provider.chats.refresh())

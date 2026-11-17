@@ -186,14 +186,12 @@ class LiveContext:
             return
 
         provider = self.session if self.asynchronous else self.session._provider
-        adapter = getattr(provider, "adapter", None)
-        target = (
-            (adapter.chats if kind == "chat" else adapter.projects)
-            if adapter is not None
-            else provider
+        get_remote = getattr(provider, f"get_{kind}", None) or getattr(
+            provider, f"_get_{kind}_data"
         )
-        get_remote = getattr(target, f"get_{kind}")
-        delete_remote = getattr(target, f"delete_{kind}")
+        delete_remote = getattr(provider, f"delete_{kind}", None) or getattr(
+            provider, f"_delete_{kind}_data"
+        )
         remote_id = entry.get("remote_id")
         exclude_ids = {str(item) for item in entry.get("exclude_ids", ()) if item}
         if remote_id and str(remote_id) in exclude_ids:
@@ -277,15 +275,15 @@ class LiveContext:
 
     async def _all_records(self, kind: str) -> list[Any]:
         provider = self.session if self.asynchronous else self.session._provider
-        adapter = getattr(provider, "adapter", None)
-        if adapter is not None:
-            list_remote = (
-                (lambda cursor=None: adapter.chats.list_chats(cursor=cursor))
-                if kind == "chat"
-                else (lambda cursor=None: adapter.projects.list_projects(cursor=cursor))
-            )
+        attr = "list_chats" if kind == "chat" else "list_projects"
+        if hasattr(provider, attr):
+            list_remote = getattr(provider, attr)
         else:
-            list_remote = getattr(provider, "list_chats" if kind == "chat" else "list_projects")
+            list_remote = (
+                (lambda cursor=None: provider._list_chats_data(cursor=cursor))
+                if kind == "chat"
+                else (lambda cursor=None: provider._list_projects_data(cursor=cursor))
+            )
         cursor = None
         seen: set[str] = set()
         records = []

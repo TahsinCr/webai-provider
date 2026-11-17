@@ -29,15 +29,6 @@ from webaiprovider import (
     TimingMetrics,
     UnsupportedOperationError,
 )
-from webaiprovider.base import (
-    BaseAttachmentAdapter,
-    BaseChatAdapter,
-    BaseMessageAdapter,
-    BaseModelAdapter,
-    BaseProjectAdapter,
-    BaseProviderAdapter,
-    BaseSessionAdapter,
-)
 from webaiprovider.collections import Page
 from webaiprovider.core.operations import OperationCancelledError, OperationContext
 from webaiprovider.resources.chat.types import Conversation
@@ -58,30 +49,27 @@ def _account(name: str = "v2-test") -> Account:
     return Account(id="acc-v2", provider="chatgpt", credentials={"cookie": "v2"}, name=name)
 
 
-class _RecordingSessionAdapter(BaseSessionAdapter):
-    def __init__(self, *, fail_prepare: Exception | None = None) -> None:
+class _ScriptedAsyncProvider(AsyncProvider):
+    capabilities = frozenset(
+        {
+            Capability.CHAT,
+            Capability.HISTORY,
+            Capability.DELETE,
+            Capability.RENAME,
+            Capability.PROJECTS,
+            Capability.PROJECT_CREATE,
+            Capability.PROJECT_UPDATE,
+            Capability.PROJECT_DELETE,
+            Capability.RESOURCES,
+            Capability.MODELS,
+        }
+    )
+
+    def __init__(self, account: Account, **options: object) -> None:
+        super().__init__(account, **options)  # type: ignore[arg-type]
         self.prepare_calls = 0
         self.close_calls = 0
-        self.fail_prepare = fail_prepare
-
-    async def prepare(self) -> None:
-        self.prepare_calls += 1
-        if self.fail_prepare is not None:
-            raise self.fail_prepare
-
-    async def close(self) -> None:
-        self.close_calls += 1
-
-
-class _RecordingModelAdapter(BaseModelAdapter):
-    async def load_catalog(self) -> ModelCatalog:
-        return ModelCatalog(ModelCatalogState.AVAILABLE)
-
-
-class _ScriptedChatAdapter(BaseChatAdapter):
-    def __init__(self, provider_id: str, account_id: str) -> None:
-        self.provider_id = provider_id
-        self.account_id = account_id
+        self.fail_prepare: Exception | None = None
         self.pages: list[tuple[list[Conversation], str | None]] = []
         self.conversations: dict[str, Conversation] = {}
         self.list_calls: list[tuple[str | None, int | None]] = []
@@ -90,6 +78,24 @@ class _ScriptedChatAdapter(BaseChatAdapter):
         self.delete_calls: list[str] = []
         self.loop_threads: set[int] = set()
         self.page_error_at: int | None = None
+        self.projects_data: dict[str, ProjectData] = {}
+        self.project_chats: dict[str, list[Conversation]] = {}
+        self.upload_calls: list[tuple[str, Path]] = []
+        self.remove_calls: list[tuple[str, str]] = []
+        self.received_requests: list[ProviderRequest] = []
+        self.stream_error: Exception | None = None
+
+    async def _prepare_session(self) -> None:
+        self.prepare_calls += 1
+        if self.fail_prepare is not None:
+            raise self.fail_prepare
+
+    async def _close_session(self) -> None:
+        self.close_calls += 1
+
+    async def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
+        del force
+        return ModelCatalog(ModelCatalogState.AVAILABLE)
 
     def seed_paginated(self, count: int, *, page_size: int = 50, overlap: bool = False) -> None:
         items = [Conversation(id=f"c-{i}", title=f"Chat {i:03d}") for i in range(count)]
@@ -104,7 +110,9 @@ class _ScriptedChatAdapter(BaseChatAdapter):
             next_cursor = str(end) if end < count else None
             self.pages.append((chunk, next_cursor))
 
-    async def list_chats(self, *, cursor: str | None = None, limit: int = 50) -> Page[Conversation]:
+    async def _list_chats_data(
+        self, *, cursor: str | None = None, limit: int = 50
+    ) -> Page[Conversation]:
         self.loop_threads.add(threading.get_ident())
         call_index = len(self.list_calls) + 1
         self.list_calls.append((cursor, limit))
@@ -113,7 +121,6 @@ class _ScriptedChatAdapter(BaseChatAdapter):
         start = int(cursor) if cursor is not None else 0
         if not self.pages:
             return Page((), None)
-        # Match seeded page starting at cursor, slicing to limit if smaller than seeded page
         for chunk, next_cursor in self.pages:
             chunk_ids = [c.id for c in chunk]
             target_id = f"c-{start}"
@@ -121,47 +128,21 @@ class _ScriptedChatAdapter(BaseChatAdapter):
                 return Page(tuple(chunk[:limit]), next_cursor)
         return Page((), None)
 
-    async def get_chat(self, chat_id: str) -> Conversation:
-        self.get_chat_calls.append(chat_id)
-        if chat_id not in self.conversations:
-            raise RemoteNotFound(f"Missing chat: {chat_id}")
-        return self.conversations[chat_id]
+    async def _get_chat_data(self, conversation_id: str) -> Conversation:
+        self.get_chat_calls.append(conversation_id)
+        if conversation_id not in self.conversations:
+            raise RemoteNotFound(f"Missing chat: {conversation_id}")
+        return self.conversations[conversation_id]
 
-    async def rename_chat(self, chat_id: str, title: str) -> None:
-        self.rename_calls.append((chat_id, title))
-        conv = self.conversations.get(chat_id)
+    async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
+        self.rename_calls.append((conversation_id, title))
+        conv = self.conversations.get(conversation_id)
         if conv is not None:
-            self.conversations[chat_id] = replace(conv, title=title)
+            self.conversations[conversation_id] = replace(conv, title=title)
 
-    async def delete_chat(self, chat_id: str) -> None:
-        self.delete_calls.append(chat_id)
-        self.conversations.pop(chat_id, None)
-
-
-class _PagedRecordsChatAdapter(BaseChatAdapter):
-    """Chat adapter serving explicit discrete pages for early-stop query tests."""
-
-    def __init__(self, paged_batches: list[list[Conversation]]) -> None:
-        self._batches = paged_batches
-        self.fetch_calls: list[str | None] = []
-
-    async def list_chats(self, *, cursor: str | None = None, limit: int = 50) -> Page[Conversation]:
-        del limit
-        self.fetch_calls.append(cursor)
-        idx = int(cursor) if cursor is not None else 0
-        items = self._batches[idx] if idx < len(self._batches) else []
-        next_cursor = str(idx + 1) if idx + 1 < len(self._batches) else None
-        return Page(tuple(items), next_cursor)
-
-
-class _ScriptedProjectAdapter(BaseProjectAdapter):
-    def __init__(self, provider_id: str, account_id: str) -> None:
-        self.provider_id = provider_id
-        self.account_id = account_id
-        self.projects: dict[str, ProjectData] = {}
-        self.project_chats: dict[str, list[Conversation]] = {}
-        self.upload_calls: list[tuple[str, Path]] = []
-        self.remove_calls: list[tuple[str, str]] = []
+    async def _delete_chat_data(self, conversation_id: str) -> None:
+        self.delete_calls.append(conversation_id)
+        self.conversations.pop(conversation_id, None)
 
     def seed_project(
         self,
@@ -176,48 +157,48 @@ class _ScriptedProjectAdapter(BaseProjectAdapter):
             name=name,
             resources=resources,
         )
-        self.projects[project_id] = data
+        self.projects_data[project_id] = data
         if chats is not None:
             self.project_chats[project_id] = list(chats)
         return data
 
-    async def list_projects(
+    async def _list_projects_data(
         self, *, cursor: str | None = None, limit: int = 50
     ) -> Page[ProjectData]:
         del cursor, limit
-        return Page(tuple(self.projects.values()), None)
+        return Page(tuple(self.projects_data.values()), None)
 
-    async def get_project(self, project_id: str) -> ProjectData:
-        if project_id not in self.projects:
+    async def _get_project_data(self, project_id: str) -> ProjectData:
+        if project_id not in self.projects_data:
             raise RemoteNotFound(f"Missing project: {project_id}")
-        return self.projects[project_id]
+        return self.projects_data[project_id]
 
-    async def list_project_chats(
+    async def _list_project_chats_data(
         self, project_id: str, cursor: str | None = None
     ) -> Page[Conversation]:
         del cursor
         return Page(tuple(self.project_chats.get(project_id, ())), None)
 
-    async def create_project(
+    async def _create_project_data(
         self, name: str, instructions: str = "", **options: object
     ) -> ProjectData:
         del options
-        pid = f"p-{len(self.projects) + 1}"
+        pid = f"p-{len(self.projects_data) + 1}"
         data = ProjectData(
             id=pid,
             name=name,
             instructions=instructions or None,
         )
-        self.projects[pid] = data
+        self.projects_data[pid] = data
         return data
 
-    async def add_project_resource(
+    async def _add_project_resource(
         self, project_id: str, kind: str, **values: object
     ) -> ProjectData:
         del kind
         path = Path(str(values["path"]))
         self.upload_calls.append((project_id, path))
-        proj = self.projects[project_id]
+        proj = self.projects_data[project_id]
         res = Attachment(
             id=f"res-{len(proj.resources) + 1}",
             name=path.name,
@@ -226,31 +207,26 @@ class _ScriptedProjectAdapter(BaseProjectAdapter):
             metadata={"kind": "file"},
         )
         updated = replace(proj, resources=(*proj.resources, res))
-        self.projects[project_id] = updated
+        self.projects_data[project_id] = updated
         return updated
 
-    async def remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
+    async def _remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
         self.remove_calls.append((project_id, resource_id))
-        proj = self.projects[project_id]
+        proj = self.projects_data[project_id]
         kept = tuple(r for r in proj.resources if r.id != resource_id)
         updated = replace(proj, resources=kept)
-        self.projects[project_id] = updated
+        self.projects_data[project_id] = updated
         return updated
 
-
-class _ScriptedMessageAdapter(BaseMessageAdapter):
-    def __init__(self, chat_adapter: _ScriptedChatAdapter) -> None:
-        self.chat_adapter = chat_adapter
-        self.received_requests: list[ProviderRequest] = []
-        self.stream_error: Exception | None = None
-
-    async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+    async def _stream_provider_events(
+        self, request: ProviderRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         self.received_requests.append(request)
         if self.stream_error is not None:
             raise self.stream_error
         cid = request.conversation_id or f"c-live-{len(self.received_requests)}"
-        if cid not in self.chat_adapter.conversations:
-            self.chat_adapter.conversations[cid] = Conversation(
+        if cid not in self.conversations:
+            self.conversations[cid] = Conversation(
                 id=cid,
                 title="Live Chat",
             )
@@ -275,65 +251,34 @@ class _ScriptedMessageAdapter(BaseMessageAdapter):
         yield ResponseComplete()
 
 
-def _build_adapter(
-    acc: Account,
-    *,
-    session_adapter: _RecordingSessionAdapter | None = None,
-    chat_adapter: BaseChatAdapter | None = None,
-    project_adapter: _ScriptedProjectAdapter | None = None,
-    message_adapter: BaseMessageAdapter | None = None,
-) -> BaseProviderAdapter:
-    chats = chat_adapter or _ScriptedChatAdapter(acc.provider, acc.id)
-    projects = project_adapter or _ScriptedProjectAdapter(acc.provider, acc.id)
-    messages = message_adapter or (
-        _ScriptedMessageAdapter(chats)
-        if isinstance(chats, _ScriptedChatAdapter)
-        else BaseMessageAdapter()
-    )
-    caps = frozenset(
-        {
-            Capability.CHAT,
-            Capability.HISTORY,
-            Capability.DELETE,
-            Capability.RENAME,
-            Capability.PROJECTS,
-            Capability.PROJECT_CREATE,
-            Capability.PROJECT_UPDATE,
-            Capability.PROJECT_DELETE,
-            Capability.RESOURCES,
-            Capability.MODELS,
-        }
-    )
-    return BaseProviderAdapter(
-        provider_id=acc.provider,
-        account_id=acc.id,
-        capabilities=caps,
-        session=session_adapter or _RecordingSessionAdapter(),
-        models=_RecordingModelAdapter(),
-        chats=chats,
-        projects=projects,
-        messages=messages,
-        attachments=BaseAttachmentAdapter(),
-    )
+class _PagedRecordsAsyncProvider(_ScriptedAsyncProvider):
+    """Provider serving explicit discrete pages for early-stop query tests."""
+
+    def __init__(self, account: Account, **options: object) -> None:
+        super().__init__(account, **options)
+        self._batches: list[list[Conversation]] = []
+        self.fetch_calls: list[str | None] = []
+
+    def seed_batches(self, paged_batches: list[list[Conversation]]) -> None:
+        self._batches = paged_batches
+
+    async def _list_chats_data(
+        self, *, cursor: str | None = None, limit: int = 50
+    ) -> Page[Conversation]:
+        del limit
+        self.fetch_calls.append(cursor)
+        idx = int(cursor) if cursor is not None else 0
+        items = self._batches[idx] if idx < len(self._batches) else []
+        next_cursor = str(idx + 1) if idx + 1 < len(self._batches) else None
+        return Page(tuple(items), next_cursor)
 
 
-def _build_runtime_provider(
-    *,
-    account: Account | None = None,
-    session_adapter: _RecordingSessionAdapter | None = None,
-    chat_adapter: BaseChatAdapter | None = None,
-    project_adapter: _ScriptedProjectAdapter | None = None,
-    message_adapter: BaseMessageAdapter | None = None,
-) -> tuple[AsyncProvider, BaseProviderAdapter]:
-    acc = account or _account()
-    adapter = _build_adapter(
-        acc,
-        session_adapter=session_adapter,
-        chat_adapter=chat_adapter,
-        project_adapter=project_adapter,
-        message_adapter=message_adapter,
-    )
-    return AsyncProvider(acc, adapter=adapter), adapter
+class _ScriptedSyncProvider(Provider):
+    async_provider_type = _ScriptedAsyncProvider
+
+
+class _PagedSyncProvider(Provider):
+    async_provider_type = _PagedRecordsAsyncProvider
 
 
 class TestPublicSurfaceAndExports(unittest.TestCase):
@@ -367,46 +312,42 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
     async def test_list_paginates_limit_120_deduplicates_and_respects_default_zero_and_none(
         self,
     ) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.seed_paginated(125, page_size=50, overlap=True)
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        provider = _ScriptedAsyncProvider(_account())
+        provider.seed_paginated(125, page_size=50, overlap=True)
         try:
             await provider.open()
 
             # Default limit=50 -> 1 remote call
             default_chats = await provider.chats.list()
             self.assertEqual(len(default_chats), 50)
-            self.assertEqual(len(chat_adapter.list_calls), 1)
-            self.assertEqual(chat_adapter.list_calls[0], (None, 50))
+            self.assertEqual(len(provider.list_calls), 1)
+            self.assertEqual(provider.list_calls[0], (None, 50))
 
             # limit=0 -> returns [] with 0 remote calls
-            chat_adapter.list_calls.clear()
+            provider.list_calls.clear()
             zero_chats = await provider.chats.list(limit=0)
             self.assertEqual(zero_chats, [])
-            self.assertEqual(chat_adapter.list_calls, [])
+            self.assertEqual(provider.list_calls, [])
 
             # limit=120 -> fetches multiple pages (50, 50, 20+), deduplicates overlap -> 120 unique
-            chat_adapter.list_calls.clear()
+            provider.list_calls.clear()
             page_120 = await provider.chats.list(limit=120)
             self.assertEqual(len(page_120), 120)
             self.assertEqual(len({c.remote_id for c in page_120}), 120)
             self.assertEqual([c.remote_id for c in page_120[:3]], ["c-0", "c-1", "c-2"])
 
             # limit=None -> full scope (125 unique)
-            chat_adapter.list_calls.clear()
+            provider.list_calls.clear()
             all_chats = await provider.chats.list(limit=None)
             self.assertEqual(len(all_chats), 125)
             self.assertEqual(len({c.remote_id for c in all_chats}), 125)
-            self.assertEqual(len(chat_adapter.list_calls), 3)
+            self.assertEqual(len(provider.list_calls), 3)
         finally:
             await provider.close()
 
     async def test_invalid_limits_and_mid_pagination_partial_count(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.seed_paginated(125, page_size=50)
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        provider = _ScriptedAsyncProvider(_account())
+        provider.seed_paginated(125, page_size=50)
         try:
             await provider.open()
 
@@ -417,15 +358,15 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
                     await provider.chats.list(limit=invalid)  # type: ignore[arg-type]
 
             # Failure on 1st page attaches partial_count == 0
-            chat_adapter.list_calls.clear()
-            chat_adapter.page_error_at = 1
+            provider.list_calls.clear()
+            provider.page_error_at = 1
             with self.assertRaises(ProviderError) as err1:
                 await provider.chats.list(limit=120)
             self.assertEqual(getattr(err1.exception, "partial_count", None), 0)
 
             # Failure on 2nd page attaches partial_count == 50
-            chat_adapter.list_calls.clear()
-            chat_adapter.page_error_at = 2
+            provider.list_calls.clear()
+            provider.page_error_at = 2
             with self.assertRaises(ProviderError) as err2:
                 await provider.chats.list(limit=120)
             self.assertEqual(getattr(err2.exception, "partial_count", None), 50)
@@ -433,10 +374,8 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_no_stale_remote_cache_and_refresh_emits_event(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.seed_paginated(2, page_size=50)
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        provider = _ScriptedAsyncProvider(_account())
+        provider.seed_paginated(2, page_size=50)
         refreshed_events: list[EventEnvelope[str]] = []
 
         async def record_refreshed(event: EventEnvelope[str]) -> None:
@@ -455,7 +394,7 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([c.remote_id for c in first_list], ["c-0", "c-1"])
 
             # Remote changes without touching local collection: subsequent list reads fresh remote data
-            chat_adapter.seed_paginated(4, page_size=50)
+            provider.seed_paginated(4, page_size=50)
             second_list = await provider.chats.list(limit=None)
             self.assertEqual(len(second_list), 4)
 
@@ -470,57 +409,55 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_first_find_last_search_and_flag_validation(self) -> None:
-        acc = _account()
-
         def conv(cid: str, title: str) -> Conversation:
             return Conversation(id=cid, title=title)
 
-        paged = _PagedRecordsChatAdapter(
+        provider = _PagedRecordsAsyncProvider(_account())
+        provider.seed_batches(
             [
                 [conv("1", "alpha-one"), conv("2", "beta-only")],
                 [conv("3", "alpha-two"), conv("4", "gamma-exact")],
                 [conv("5", "alpha-three"), conv("6", "delta-end")],
             ]
         )
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=paged)
         try:
             await provider.open()
 
             # find() defaults to first() and stops immediately on page 1
-            paged.fetch_calls.clear()
+            provider.fetch_calls.clear()
             first = await provider.chats.find("alpha", startswith=True)
             self.assertEqual(first.remote_id, "1")
-            self.assertEqual(len(paged.fetch_calls), 1)
-            paged.fetch_calls.clear()
+            self.assertEqual(len(provider.fetch_calls), 1)
+            provider.fetch_calls.clear()
             self.assertEqual((await provider.chats.first()).remote_id, "1")
-            self.assertEqual(len(paged.fetch_calls), 1)
+            self.assertEqual(len(provider.fetch_calls), 1)
 
             # find(last=True) / last() scans every page (all 3 pages)
-            paged.fetch_calls.clear()
+            provider.fetch_calls.clear()
             last = await provider.chats.find("alpha", startswith=True, last=True)
             self.assertEqual(last.remote_id, "5")
-            self.assertEqual(len(paged.fetch_calls), 3)
-            paged.fetch_calls.clear()
+            self.assertEqual(len(provider.fetch_calls), 3)
+            provider.fetch_calls.clear()
             last_pred = await provider.chats.last(lambda c: c.title.startswith("alpha"))
             self.assertEqual(last_pred.remote_id, "5")
-            self.assertEqual(len(paged.fetch_calls), 3)
+            self.assertEqual(len(provider.fetch_calls), 3)
 
             # single=True (and single()) aborts as soon as 2nd match appears (page 2, does not fetch page 3)
             # and single=True overrides last=True automatically
-            paged.fetch_calls.clear()
+            provider.fetch_calls.clear()
             with self.assertRaises(AmbiguousMatchError):
                 await provider.chats.find("alpha", startswith=True, single=True, last=True)
-            self.assertEqual(len(paged.fetch_calls), 2)
-            paged.fetch_calls.clear()
+            self.assertEqual(len(provider.fetch_calls), 2)
+            provider.fetch_calls.clear()
             with self.assertRaises(AmbiguousMatchError):
                 await provider.chats.single(lambda c: c.title.startswith("alpha"))
-            self.assertEqual(len(paged.fetch_calls), 2)
+            self.assertEqual(len(provider.fetch_calls), 2)
 
             # Predicate list() exits early as soon as limit matching items are found
-            paged.fetch_calls.clear()
+            provider.fetch_calls.clear()
             limited = await provider.chats.list(lambda c: c.title.startswith("alpha"), limit=2)
             self.assertEqual([c.remote_id for c in limited], ["1", "3"])
-            self.assertEqual(len(paged.fetch_calls), 2)
+            self.assertEqual(len(provider.fetch_calls), 2)
 
             # find() unique match succeeds, search() returns all 3 matches (with optional limit)
             unique = await provider.chats.find("gamma-exact", exact=True, single=True)
@@ -544,7 +481,7 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     def test_predicate_and_sync_facade_queries(self) -> None:
-        from webaiprovider import Chat, Provider, Source, SourcesCollection
+        from webaiprovider import Chat, Source, SourcesCollection
 
         sources = SourcesCollection(
             [
@@ -564,14 +501,13 @@ class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
             sources.find("Alpha", single=True, last=True)
         self.assertEqual(sources.find("Alpha", last=True).id, "s3")
 
-        acc = _account()
-        chat_adapter = _PagedRecordsChatAdapter(
+        sync_provider = _PagedSyncProvider(_account())
+        sync_provider._provider.seed_batches(  # type: ignore[attr-defined]
             [
                 [Conversation(id="c1", title="Sync One"), Conversation(id="c2", title="Other")],
                 [Conversation(id="c3", title="Sync Two")],
             ]
         )
-        sync_provider = Provider(acc, adapter=_build_adapter(acc, chat_adapter=chat_adapter))
         sync_provider.open()
         try:
             seen_sync: list[bool] = []
@@ -592,10 +528,9 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
     async def test_shared_history_fetch_separates_messages_and_responses_with_sources_and_artifacts(
         self,
     ) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
+        provider = _ScriptedAsyncProvider(_account())
         cid = "c-history-1"
-        chat_adapter.conversations[cid] = Conversation(
+        provider.conversations[cid] = Conversation(
             id=cid,
             title="Research",
             messages=(
@@ -628,18 +563,14 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         )
-        msg_adapter = _ScriptedMessageAdapter(chat_adapter)
-        provider, _ = _build_runtime_provider(
-            account=acc, chat_adapter=chat_adapter, message_adapter=msg_adapter
-        )
         try:
             await provider.open()
             chat = await provider.chats.get(cid)
-            chat_adapter.get_chat_calls.clear()
+            provider.get_chat_calls.clear()
 
-            # History-derived responses: single get_chat call, timing is None, sources & artifacts exposed
+            # History-derived responses: single _get_chat_data call, timing is None, sources & artifacts exposed
             responses = await chat.responses.list()
-            self.assertEqual(chat_adapter.get_chat_calls, [cid])
+            self.assertEqual(provider.get_chat_calls, [cid])
             self.assertEqual(len(responses), 1)
             hist_resp = responses[0]
             self.assertIsInstance(hist_resp, Response)
@@ -676,12 +607,12 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
     async def test_retry_and_edit_carriers_excluded_after_refresh_and_user_id_binds_remote(
         self,
     ) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
         cid = "c-retry-edit"
 
-        class _NoUserIdRetryAdapter(_ScriptedMessageAdapter):
-            async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+        class _NoUserIdRetryProvider(_ScriptedAsyncProvider):
+            async def _stream_provider_events(
+                self, request: ProviderRequest
+            ) -> AsyncIterator[ProviderStreamEvent]:
                 self.received_requests.append(request)
                 yield MessageMetadata(
                     message_id="a-new",
@@ -690,16 +621,12 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                 yield TextDelta(f"Reply:{request.action}")
                 yield ResponseComplete()
 
-        provider, _ = _build_runtime_provider(
-            account=acc,
-            chat_adapter=chat_adapter,
-            message_adapter=_NoUserIdRetryAdapter(chat_adapter),
-        )
+        provider = _NoUserIdRetryProvider(_account())
         try:
             await provider.open()
             chat = await provider.chats.create("Carrier check")
             chat.remote_id = cid
-            chat_adapter.conversations[cid] = Conversation(
+            provider.conversations[cid] = Conversation(
                 id=cid,
                 title="Carrier check",
                 messages=(
@@ -735,9 +662,8 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
     async def test_project_attachments_projects_file_resources_and_supports_v2_queries(
         self,
     ) -> None:
-        acc = _account()
-        project_adapter = _ScriptedProjectAdapter(acc.provider, acc.id)
-        project_adapter.seed_project(
+        provider = _ScriptedAsyncProvider(_account())
+        provider.seed_project(
             "p-1",
             "Workspace",
             resources=(
@@ -762,7 +688,6 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
             ),
             chats=[Conversation(id="c-p1", title="In Project")],
         )
-        provider, _ = _build_runtime_provider(account=acc, project_adapter=project_adapter)
         try:
             await provider.open()
             project = await provider.projects.get("p-1")
@@ -787,10 +712,10 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
                 added = await project.attachments.add(file_path)
                 self.assertIsInstance(added, Attachment)
                 self.assertEqual(added.name, "spec.txt")
-                self.assertEqual(len(project_adapter.upload_calls), 1)
+                self.assertEqual(len(provider.upload_calls), 1)
                 removed = await project.attachments.remove(added)
                 self.assertTrue(removed)
-                self.assertEqual(len(project_adapter.remove_calls), 1)
+                self.assertEqual(len(provider.remove_calls), 1)
 
             proj_chats = await project.chats.list(limit=10)
             self.assertEqual([c.remote_id for c in proj_chats], ["c-p1"])
@@ -801,12 +726,7 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
 
 class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_before_hooks_abort_and_rewrite_and_lifecycle_errors_are_isolated(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        msg_adapter = _ScriptedMessageAdapter(chat_adapter)
-        provider, _ = _build_runtime_provider(
-            account=acc, chat_adapter=chat_adapter, message_adapter=msg_adapter
-        )
+        provider = _ScriptedAsyncProvider(_account())
         stages: list[str] = []
 
         @provider.hooks.before("chat.update")
@@ -844,17 +764,17 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
         try:
             await provider.open()
-            chat_adapter.seed_paginated(1, page_size=50)
+            provider.seed_paginated(1, page_size=50)
             chat = await provider.chats.get("c-0")
 
             with self.assertRaises(OperationCancelledError):
                 await provider.chats.update(chat, title="Denied")
-            self.assertEqual(chat_adapter.rename_calls, [])
+            self.assertEqual(provider.rename_calls, [])
             self.assertEqual(stages, ["before:chat.update", "cancelled:True", "finally:True"])
 
             # Send prompt rewritten by before hook & isolated failing on_success hook
             resp = await chat.responses.create("hello world").start()
-            self.assertEqual(msg_adapter.received_requests[-1].prompt, "[guarded] hello world")
+            self.assertEqual(provider.received_requests[-1].prompt, "[guarded] hello world")
             self.assertEqual(resp.text, "Echo: [guarded] hello world")
             self.assertEqual(len(seen_send_results), 1)
             self.assertEqual(seen_send_results[0].matched, 1)
@@ -864,9 +784,8 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_lifecycle_transitions_and_ordered_provider_events(self) -> None:
-        acc = _account()
-        session = _RecordingSessionAdapter(fail_prepare=ProviderError("auth expired"))
-        provider, _ = _build_runtime_provider(account=acc, session_adapter=session)
+        provider = _ScriptedAsyncProvider(_account())
+        provider.fail_prepare = ProviderError("auth expired")
         events: list[EventEnvelope[str]] = []
 
         async def record_event(event: EventEnvelope[str]) -> None:
@@ -879,7 +798,7 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
             await provider.open()
         self.assertEqual(provider.lifecycle_state, LifecycleState.OPEN_FAILED)
 
-        session.fail_prepare = None
+        provider.fail_prepare = None
         await provider.open()
         self.assertEqual(provider.lifecycle_state, LifecycleState.OPEN)
         await provider.close()
@@ -904,11 +823,9 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
 class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
     def test_sync_off_loop_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.seed_paginated(5, page_size=50)
-        adapter = _build_adapter(acc, chat_adapter=chat_adapter)
-        sync_provider = Provider(acc, adapter=adapter)
+        sync_provider = _ScriptedSyncProvider(_account())
+        async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
+        async_provider.seed_paginated(5, page_size=50)
 
         callback_done = threading.Event()
         callback_threads: list[int] = []
@@ -935,8 +852,8 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
         try:
             self.assertTrue(callback_done.wait(timeout=3.0))
             self.assertEqual(reentered_ids, [["c-0", "c-1", "c-2"]])
-            self.assertEqual(len(chat_adapter.loop_threads), 1)
-            self.assertNotIn(callback_threads[0], chat_adapter.loop_threads)
+            self.assertEqual(len(async_provider.loop_threads), 1)
+            self.assertNotIn(callback_threads[0], async_provider.loop_threads)
 
             # Multi-thread sync facade concurrency sharing single runtime
             def worker(idx: int) -> str:
@@ -953,13 +870,11 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
 
 class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_p1_01_find_raises_ambiguous_when_exact_and_partial_match(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
+        provider = _ScriptedAsyncProvider(_account())
         c_exact = Conversation(id="c-exact", title="Python")
         c_partial = Conversation(id="c-partial", title="Python Eğitimi")
-        chat_adapter.pages = [([c_exact, c_partial], None)]
-        chat_adapter.conversations = {"c-exact": c_exact, "c-partial": c_partial}
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        provider.pages = [([c_exact, c_partial], None)]
+        provider.conversations = {"c-exact": c_exact, "c-partial": c_partial}
         await provider.open()
         try:
             with self.assertRaises(AmbiguousMatchError):
@@ -970,7 +885,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_p1_02_chat_prepared_vs_created_on_conversation_bound(self) -> None:
-        provider, _ = _build_runtime_provider()
+        provider = _ScriptedAsyncProvider(_account())
         seen: list[tuple[str, str | None]] = []
 
         async def record_event(event: EventEnvelope[str]) -> None:
@@ -999,10 +914,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_p1_03_async_lifecycle_callbacks_do_not_deadlock(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.seed_paginated(2, page_size=10)
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        provider = _ScriptedAsyncProvider(_account())
+        provider.seed_paginated(2, page_size=10)
 
         results: dict[str, object] = {}
 
@@ -1045,7 +958,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertIn("closing_error", results)
 
     async def test_p1_04_close_failed_preserves_scope_and_allows_retry(self) -> None:
-        provider, _ = _build_runtime_provider()
+        provider = _ScriptedAsyncProvider(_account())
         await provider.open()
 
         attempts = 0
@@ -1072,7 +985,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_p1_05_success_event_error_does_not_fail_mutation_or_trigger_on_error(
         self,
     ) -> None:
-        provider, _ = _build_runtime_provider()
+        provider = _ScriptedAsyncProvider(_account())
         on_error_calls: list[str] = []
 
         async def broken_listener(_event: EventEnvelope[str]) -> None:
@@ -1098,7 +1011,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_p2_02_project_attachments_hooks_wire_into_add_and_remove(self) -> None:
-        provider, _ = _build_runtime_provider()
+        provider = _ScriptedAsyncProvider(_account())
         await provider.open()
         try:
             project = await provider.projects.create("Files")
@@ -1134,9 +1047,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_p2_03_and_p2_04_messages_search_prune_and_remote_delete_guard(self) -> None:
-        acc = _account()
-        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
-        chat_adapter.conversations["c-hist"] = Conversation(
+        provider = _ScriptedAsyncProvider(_account())
+        provider.conversations["c-hist"] = Conversation(
             id="c-hist",
             title="Hist",
             messages=(
@@ -1148,7 +1060,6 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         )
-        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
         await provider.open()
         try:
             chat = await provider.chats.get("c-hist")
@@ -1166,7 +1077,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await chat.responses.delete(local_msg)
             self.assertNotIn(local_msg.id, chat.responses._known_messages)
 
-            chat_adapter.conversations["c-hist"] = Conversation(
+            provider.conversations["c-hist"] = Conversation(
                 id="c-hist",
                 title="Hist",
                 messages=(
@@ -1196,7 +1107,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertIs(BaseProviderType, PublicProviderType)
 
     async def test_p2_07_sync_event_pool_overflow_records_drop_in_telemetry(self) -> None:
-        provider, _ = _build_runtime_provider()
+        provider = _ScriptedAsyncProvider(_account())
         async_seen: list[str] = []
 
         async def on_async(event: EventEnvelope[str]) -> None:

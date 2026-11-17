@@ -5,17 +5,7 @@ from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
 from .accounts.account import Account
 from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 from .async_provider import AsyncProvider
-from .base import (
-    BaseAttachmentAdapter,
-    BaseChatAdapter,
-    BaseMessageAdapter,
-    BaseModelAdapter,
-    BaseProjectAdapter,
-    BaseProvider,
-    BaseProviderAdapter,
-    BaseSessionAdapter,
-    Capability,
-)
+from .base import BaseProvider, Capability
 from .collections import (
     AsyncManageableCollection,
     AsyncMutableRemoteCollection,
@@ -161,13 +151,6 @@ __all__ = [
     "OperationContext",
     "HookDispatchResult",
     "ProviderRuntime",
-    "BaseProviderAdapter",
-    "BaseAttachmentAdapter",
-    "BaseChatAdapter",
-    "BaseMessageAdapter",
-    "BaseModelAdapter",
-    "BaseProjectAdapter",
-    "BaseSessionAdapter",
     "BaseLocalCollection",
     "ReadOnlyCollection",
     "AsyncRemoteCollection",
