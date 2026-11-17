@@ -1,17 +1,36 @@
 from __future__ import annotations
 
+from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
+
 from .accounts.account import Account
 from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 from .async_provider import AsyncProvider
-from .base import BaseProvider, Capability
+from .base import (
+    BaseAttachmentAdapter,
+    BaseChatAdapter,
+    BaseMessageAdapter,
+    BaseModelAdapter,
+    BaseProjectAdapter,
+    BaseProvider,
+    BaseProviderAdapter,
+    BaseSessionAdapter,
+    Capability,
+)
 from .collections import (
     AsyncManageableCollection,
+    AsyncMutableRemoteCollection,
     AsyncQueryableCollection,
+    AsyncRemoteCollection,
+    BaseLocalCollection,
     ManageableCollection,
     QueryableCollection,
+    ReadOnlyCollection,
 )
-from .core.state import OperationState
+from .core.hooks import SyncOperationHooks
+from .core.runtime import ProviderRuntime
+from .core.state import LifecycleState, OperationState
 from .core.telemetry import ProviderTelemetry
+from .core.types import HookDispatchResult, OperationContext
 from .errors import (
     AccountPaused,
     AmbiguousMatchError,
@@ -45,6 +64,7 @@ from .providers.gemini.resources import AsyncGeminiChat
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import AsyncGrokProvider, GrokProvider
 from .providers.grok.resources import AsyncGrokChat
+from .resources.artifact import Artifact, ArtifactsCollection
 from .resources.attachment import Attachment
 from .resources.chat.chat import (
     AsyncBranchableChat,
@@ -56,7 +76,12 @@ from .resources.chat.chat import (
 )
 from .resources.chat.collections import AsyncChatsCollection, ChatsCollection
 from .resources.message.attachments import Attachments
-from .resources.message.collections import AsyncMessagesCollection, MessagesCollection
+from .resources.message.collections import (
+    AsyncMessagesCollection,
+    AsyncResponsesCollection,
+    MessagesCollection,
+    ResponsesCollection,
+)
 from .resources.message.message import AsyncMessage, Message
 from .resources.message.operation import (
     ArtifactDiscovered,
@@ -76,9 +101,7 @@ from .resources.message.operation import (
     ThinkingReplace,
 )
 from .resources.message.response import (
-    Artifact,
     Response,
-    Source,
     TimingMetrics,
 )
 from .resources.model.collections import (
@@ -98,12 +121,15 @@ from .resources.project.chats import AsyncProjectChatsCollection, ProjectChatsCo
 from .resources.project.collections import AsyncProjectsCollection, ProjectsCollection
 from .resources.project.project import (
     AsyncProject,
+    AsyncProjectAttachments,
     AsyncProjectInstruction,
     AsyncProjectResources,
     Project,
+    ProjectAttachments,
     ProjectInstruction,
     ProjectResources,
 )
+from .resources.source import Source, SourcesCollection
 
 __version__ = "1.3.0b0"
 
@@ -135,6 +161,25 @@ __all__ = [
     "AsyncModelsCollection",
     "SelectionResolver",
     "StaticModelCatalog",
+    "AsyncEventBus",
+    "EventBus",
+    "EventEnvelope",
+    "EventFilter",
+    "LifecycleState",
+    "OperationContext",
+    "HookDispatchResult",
+    "ProviderRuntime",
+    "BaseProviderAdapter",
+    "BaseAttachmentAdapter",
+    "BaseChatAdapter",
+    "BaseMessageAdapter",
+    "BaseModelAdapter",
+    "BaseProjectAdapter",
+    "BaseSessionAdapter",
+    "BaseLocalCollection",
+    "ReadOnlyCollection",
+    "AsyncRemoteCollection",
+    "AsyncMutableRemoteCollection",
     "QueryableCollection",
     "ManageableCollection",
     "AsyncQueryableCollection",
@@ -145,8 +190,14 @@ __all__ = [
     "AsyncProjectsCollection",
     "ProjectChatsCollection",
     "AsyncProjectChatsCollection",
+    "ProjectAttachments",
+    "AsyncProjectAttachments",
     "MessagesCollection",
     "AsyncMessagesCollection",
+    "ResponsesCollection",
+    "AsyncResponsesCollection",
+    "SourcesCollection",
+    "ArtifactsCollection",
     "AsyncChatGPTProjectsCollection",
     "ChatGPTProjectsCollection",
     "Artifact",
@@ -199,6 +250,7 @@ __all__ = [
     "MessageOperation",
     "AsyncMessageOperation",
     "OperationHooks",
+    "SyncOperationHooks",
     "OperationState",
     "Project",
     "AsyncProject",

@@ -5,8 +5,13 @@ from enum import Enum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from .base import BaseProvider, Capability
+from eventflow import EventBus, EventEnvelope
+
+from .accounts.status import SessionStatus
+from .base import BaseProvider, BaseProviderAdapter, Capability
 from .core.bridges import PortalBridge
+from .core.hooks import SyncOperationHooks
+from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
@@ -23,6 +28,12 @@ from .resources.model.model import (
 from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .transport import AsyncTransport, PortalTransport, Transport
+
+if TYPE_CHECKING:
+    from .accounts.account import Account
+    from .async_provider import AsyncProvider
+    from .resources.chat.chat import AsyncChat
+    from .resources.project.project import AsyncProject
 
 
 class ProviderType(str, Enum):
@@ -51,13 +62,6 @@ def _provider_class(provider_type: ProviderType, *, asynchronous: bool):
     return getattr(module, ("Async" if asynchronous else "") + names[provider_type] + "Provider")
 
 
-if TYPE_CHECKING:
-    from .accounts.account import Account
-    from .async_provider import AsyncProvider
-    from .resources.chat.chat import AsyncChat
-    from .resources.project.project import AsyncProject
-
-
 def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
     if cls is base_cls:
         if not args and "account" not in options:
@@ -70,9 +74,9 @@ def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
 
 
 class Provider(BaseProvider):
-    """Synchronous provider API backed by one persistent async runtime."""
+    """Synchronous provider API backed by one persistent async ProviderRuntime."""
 
-    def __new__(cls, *args, **options):
+    def __new__(cls, *args: Any, **options: Any):
         return _construct_provider(cls, Provider, args, options, asynchronous=False)
 
     async_provider_type: type[AsyncProvider] | None = None
@@ -87,6 +91,7 @@ class Provider(BaseProvider):
         *,
         type: ProviderType | str | None = None,
         transport: AsyncTransport | None = None,
+        adapter: BaseProviderAdapter | None = None,
     ) -> None:
         super().__init__(account, type=type)
         provider_type = self.async_provider_type
@@ -97,12 +102,16 @@ class Provider(BaseProvider):
         options: dict[str, Any] = {"type": self.type}
         if transport is not None:
             options["transport"] = transport
+        if adapter is not None:
+            options["adapter"] = adapter
         self._provider = provider_type(account, **options)
         self._portal = PortalBridge()
         self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
         self._portal_started = False
         self._opened = False
         self._closed = False
+        self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
+        self.hooks: SyncOperationHooks = SyncOperationHooks(self._provider.runtime.hooks)
         self.chats = ChatsCollection(self)
         self.projects = (self.projects_collection_type or ProjectsCollection)(self)
         self.models = (self.models_collection_type or ModelsCollection)(self)
@@ -114,8 +123,16 @@ class Provider(BaseProvider):
         return (self.project_wrapper_type or Project)(self, resource)
 
     @property
+    def adapter(self) -> BaseProviderAdapter:
+        return self._provider.adapter
+
+    @property
     def capabilities(self) -> frozenset[Capability]:
         return self._provider.capabilities
+
+    @property
+    def lifecycle_state(self) -> LifecycleState:
+        return self._provider.lifecycle_state
 
     @property
     def telemetry(self) -> ProviderTelemetry:
@@ -153,10 +170,21 @@ class Provider(BaseProvider):
         try:
             if self._portal_started:
                 self._call(self._provider.close())
+            else:
+                self._provider.runtime.sync_events.close()
         finally:
             self._portal.close()
             self._opened = False
             self._closed = True
+
+    def authenticate(self) -> SessionStatus:
+        return self._call(self._provider.authenticate())
+
+    def session_status(self) -> SessionStatus:
+        return self._call(self._provider.session_status())
+
+    def forget_session(self) -> SessionStatus:
+        return self._call(self._provider.forget_session())
 
     def ask(
         self,
