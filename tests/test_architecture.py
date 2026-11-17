@@ -18,8 +18,10 @@ from webaiprovider import (
     AsyncProvider,
     Attachment,
     Capability,
-    HookDispatchResult,
     LifecycleState,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
     Provider,
     ProviderError,
     RemoteNotFound,
@@ -31,6 +33,7 @@ from webaiprovider import (
 )
 from webaiprovider.collections import Page
 from webaiprovider.core.operations import OperationCancelledError, OperationContext
+from webaiprovider.core.types import HookDispatchResult
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
@@ -45,8 +48,8 @@ from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
 from webaiprovider.resources.project.types import ProjectData
 
 
-def _account(name: str = "v2-test") -> Account:
-    return Account(id="acc-v2", provider="chatgpt", credentials={"cookie": "v2"}, name=name)
+def _account(name: str = "test") -> Account:
+    return Account(id="acc-test", provider="chatgpt", credentials={"cookie": "test"}, name=name)
 
 
 class _ScriptedAsyncProvider(AsyncProvider):
@@ -282,9 +285,27 @@ class _PagedSyncProvider(Provider):
 
 
 class TestPublicSurfaceAndExports(unittest.TestCase):
-    def test_page_is_not_exported_on_top_level_and_v2_symbols_exist(self) -> None:
-        self.assertNotIn("Page", webaiprovider.__all__)
-        self.assertFalse(hasattr(webaiprovider, "Page"))
+    def test_internal_plumbing_not_exported_on_top_level_and_public_symbols_exist(self) -> None:
+        excluded = {
+            "Page",
+            "BaseProviderAdapter",
+            "BaseSessionAdapter",
+            "BaseModelAdapter",
+            "BaseChatAdapter",
+            "BaseProjectAdapter",
+            "BaseMessageAdapter",
+            "BaseAttachmentAdapter",
+            "ProviderRuntime",
+            "HookDispatchResult",
+            "OperationContext",
+            "BaseLocalCollection",
+            "ReadOnlyCollection",
+            "AsyncRemoteCollection",
+            "AsyncMutableRemoteCollection",
+        }
+        self.assertTrue(excluded.isdisjoint(set(webaiprovider.__all__)))
+        for symbol in excluded:
+            self.assertFalse(hasattr(webaiprovider, symbol), symbol)
         expected = {
             "Account",
             "AmbiguousMatchError",
@@ -295,7 +316,6 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
             "EventEnvelope",
             "EventFilter",
             "AsyncProvider",
-            "HookDispatchResult",
             "LifecycleState",
             "OperationHooks",
             "Provider",
@@ -308,7 +328,7 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
         self.assertTrue(expected.issubset(set(webaiprovider.__all__)))
 
 
-class TestCollectionV2Contract(unittest.IsolatedAsyncioTestCase):
+class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
     async def test_list_paginates_limit_120_deduplicates_and_respects_default_zero_and_none(
         self,
     ) -> None:
@@ -659,7 +679,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
-    async def test_project_attachments_projects_file_resources_and_supports_v2_queries(
+    async def test_project_attachments_projects_file_resources_and_supports_queries(
         self,
     ) -> None:
         provider = _ScriptedAsyncProvider(_account())
@@ -1125,6 +1145,132 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.runtime.telemetry.sync_event_drops, 1)
         self.assertEqual(provider.runtime.telemetry.snapshot()["sync_event_drops"], 1)
         self.assertEqual(async_seen, ["custom.test"])
+
+
+class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
+    def _make_providers(self):
+        from webaiprovider import AsyncBranchableChat, BranchableChat, Chat
+        from webaiprovider.resources.message.types import MessageAction
+
+        class _BranchableAsyncProvider(_ScriptedAsyncProvider):
+            _chat_type = AsyncBranchableChat
+            capabilities = _ScriptedAsyncProvider.capabilities | {
+                Capability.CHAT_BRANCH,
+                Capability.MESSAGE_RETRY,
+            }
+
+            def __init__(self, account: Account, **options: object) -> None:
+                super().__init__(account, **options)
+                self.branch_calls: list[tuple[str, str]] = []
+
+            async def _branch_chat_data(
+                self, conversation_id: str, message_id: str
+            ) -> Conversation:
+                self.branch_calls.append((conversation_id, message_id))
+                branched = Conversation(
+                    id="c-branch-1",
+                    title="Branched Chat",
+                    messages=(
+                        MessageData(
+                            id="u-live-1",
+                            role="user",
+                            content=(Content(kind="text", text="Original"),),
+                        ),
+                        MessageData(
+                            id="m-live-1",
+                            role="assistant",
+                            content=(Content(kind="text", text="Branched copy"),),
+                        ),
+                    ),
+                )
+                self.conversations[branched.id] = branched
+                return branched
+
+            async def _stream_provider_events(
+                self, request: ProviderRequest
+            ) -> AsyncIterator[ProviderStreamEvent]:
+                self.received_requests.append(request)
+                cid = request.conversation_id or f"c-live-{len(self.received_requests)}"
+                if cid not in self.conversations:
+                    self.conversations[cid] = Conversation(id=cid, title="Live Chat")
+                    yield ConversationBound(cid)
+                reply_text = (
+                    f"Retried:{request.message_id}"
+                    if request.action == MessageAction.RETRY
+                    else f"Echo: {request.prompt}"
+                )
+                yield MessageMetadata(message_id="m-live-1", user_message_id="u-live-1")
+                yield TextDelta(reply_text)
+                yield ResponseComplete()
+
+        class _BranchableChat(BranchableChat, Chat):
+            pass
+
+        class _BranchableSyncProvider(Provider):
+            async_provider_type = _BranchableAsyncProvider
+            chat_wrapper_type = _BranchableChat
+
+        return (
+            _BranchableAsyncProvider,
+            _BranchableSyncProvider,
+            AsyncBranchableChat,
+            _BranchableChat,
+        )
+
+    async def test_async_chat_ask_stream_and_response_branch_retry(self) -> None:
+        async_cls, _, branchable_async_cls, _ = self._make_providers()
+        provider = async_cls(_account())
+        await provider.open()
+        try:
+            chat = await provider.chats.create("Interactive")
+            asked = await chat.ask("First prompt")
+            self.assertEqual(asked.text, "Echo: First prompt")
+            self.assertEqual(asked.message.content, "First prompt")
+            self.assertEqual(chat.remote_id, "c-live-1")
+
+            streamed = [event async for event in chat.stream("Second prompt")]
+            self.assertIsInstance(streamed[0], OutputBegin)
+            self.assertEqual(
+                "".join(e.delta for e in streamed if isinstance(e, OutputDelta)),
+                "Echo: Second prompt",
+            )
+            self.assertIsInstance(streamed[-1], OutputEnd)
+
+            branched = await asked.branch()
+            self.assertIsInstance(branched, branchable_async_cls)
+            self.assertEqual(branched.remote_id, "c-branch-1")
+            self.assertEqual(provider.branch_calls, [("c-live-1", "m-live-1")])
+
+            retried = await asked.retry().start()
+            self.assertEqual(retried.text, "Retried:m-live-1")
+        finally:
+            await provider.close()
+
+    def test_sync_chat_ask_stream_and_response_branch_retry(self) -> None:
+        _, sync_cls, _, branchable_sync_cls = self._make_providers()
+        provider = sync_cls(_account())
+        provider.open()
+        try:
+            chat = provider.chats.create("Sync Interactive")
+            asked = chat.ask("Sync prompt")
+            self.assertEqual(asked.text, "Echo: Sync prompt")
+
+            streamed = list(chat.stream("Sync stream"))
+            self.assertIsInstance(streamed[0], OutputBegin)
+            self.assertEqual(
+                "".join(e.delta for e in streamed if isinstance(e, OutputDelta)),
+                "Echo: Sync stream",
+            )
+            self.assertIsInstance(streamed[-1], OutputEnd)
+
+            branched = asked.branch()
+            self.assertIsInstance(branched, branchable_sync_cls)
+            self.assertEqual(branched.remote_id, "c-branch-1")
+
+            retried = asked.retry().wait()
+            self.assertEqual(retried.text, "Retried:m-live-1")
+        finally:
+            provider.close()
 
 
 if __name__ == "__main__":
