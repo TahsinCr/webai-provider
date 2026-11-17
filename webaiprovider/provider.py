@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from enum import Enum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from eventflow import EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
-from .base import BaseProvider, BaseProviderAdapter, Capability
+from .base import BaseProvider, BaseProviderAdapter, Capability, ProviderType
 from .core.bridges import PortalBridge
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState
@@ -34,21 +33,6 @@ if TYPE_CHECKING:
     from .async_provider import AsyncProvider
     from .resources.chat.chat import AsyncChat
     from .resources.project.project import AsyncProject
-
-
-class ProviderType(str, Enum):
-    CHATGPT = "chatgpt"
-    CLAUDE = "claude"
-    GEMINI = "gemini"
-    GROK = "grok"
-
-    @classmethod
-    def parse(cls, value: ProviderType | str) -> ProviderType:
-        try:
-            return value if isinstance(value, cls) else cls(value.casefold())
-        except (AttributeError, ValueError):
-            supported = ", ".join(item.value for item in cls)
-            raise ValueError(f"Unsupported provider type; expected one of: {supported}") from None
 
 
 def _provider_class(provider_type: ProviderType, *, asynchronous: bool):

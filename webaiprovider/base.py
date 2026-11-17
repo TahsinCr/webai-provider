@@ -11,12 +11,26 @@ from .errors import FeatureUnavailable, ProviderError, RemoteNotFound
 if TYPE_CHECKING:
     from .accounts.account import Account
     from .accounts.status import SessionStatus
-    from .provider import ProviderType
     from .resources.chat.types import Conversation
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
     from .resources.project.types import ProjectData, ProjectOptions
     from .transport import AsyncTransport
+
+
+class ProviderType(str, Enum):
+    CHATGPT = "chatgpt"
+    CLAUDE = "claude"
+    GEMINI = "gemini"
+    GROK = "grok"
+
+    @classmethod
+    def parse(cls, value: ProviderType | str) -> ProviderType:
+        try:
+            return value if isinstance(value, cls) else cls(value.casefold())
+        except (AttributeError, ValueError):
+            supported = ", ".join(item.value for item in cls)
+            raise ValueError(f"Unsupported provider type; expected one of: {supported}") from None
 
 
 class Capability(str, Enum):

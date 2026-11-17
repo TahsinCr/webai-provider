@@ -4,8 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..base import Capability
-from ..provider import ProviderType
+from ..base import Capability, ProviderType
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 
 
