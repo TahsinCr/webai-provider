@@ -29,6 +29,7 @@ from .source import Source
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
+    from ..chat.chat import Chat
     from ..message.operation import StreamEvent
 
 
@@ -294,18 +295,12 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
             elif conversation.project.name and not self.chat.project.title:
                 self.chat.project.title = conversation.project.name
 
-        existing_messages: dict[str, AsyncMessage] = {
-            **self._known_messages,
-            **{
-                (item.message.remote_id or item.message.id): item.message
-                for item in self._items
-                if item.message is not None
-            },
-        }
-        existing_responses: dict[str, Response] = {
-            **self._known_responses,
-            **{(item.remote_id or item.id): item for item in self._items},
-        }
+        existing_messages = self._known_messages.copy()
+        existing_responses = self._known_responses.copy()
+        for item in self._items:
+            existing_responses[item.remote_id or item.id] = item
+            if item.message is not None:
+                existing_messages[item.message.remote_id or item.message.id] = item.message
 
         responses: list[Response] = []
         seen_user_ids: set[str] = set()
@@ -663,13 +658,13 @@ class ResponsesCollection(_RemoteCollectionFacade[Response, Response]):
         super().__init__(owner, chat.responses)
         self.hooks = SyncOperationHooks(chat.responses.hooks)
 
-    def _wrap(self, item: Response) -> Response:
+    def _wrap(self, item: Response, *, chat_view: Chat | None = None) -> Response:
         msg = item.message
         if isinstance(msg, AsyncMessage):
             msg = Message._from_async(self._owner, msg)
         chat = item.chat
         if isinstance(chat, AsyncChat):
-            chat = self._owner._wrap_chat(chat)
+            chat = chat_view if chat_view is not None else self._owner._wrap_chat(chat)
         return Response(
             item.content,
             message=msg,

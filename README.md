@@ -33,7 +33,7 @@ async def main() -> None:
             raise RuntimeError("No models are available for this account")
 
         chat = await provider.chats.create("Quick start")
-        operation = chat.messages.create("Hello!", model=models[0])
+        operation = chat.responses.create("Hello!", model=models[0])
 
         async for event in operation.stream():
             if isinstance(event, OutputDelta):
@@ -53,7 +53,7 @@ from webaiprovider import Account, ChatGPTProvider, ProviderType
 account = Account.from_browser(ProviderType.CHATGPT)
 with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Quick start")
-    response = chat.messages.create("Hello!").start()
+    response = chat.responses.create("Hello!").start()
 ```
 
 ## Core API
@@ -62,7 +62,8 @@ with ChatGPTProvider(account) as provider:
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory.
 - Remote collections (`chats`, `projects`, `project.chats`, `project.attachments`) hide pagination behind `list(limit=50)` (`limit=0` performs zero remote calls; `limit=None` scans all pages) alongside unified `refresh()`, `get()`, `search()`, `find()` (raising `AmbiguousMatchError`), `first()`, and `last()`. `Page` is internal to adapters and is not part of the user API.
 - `provider.models.list()` loads and caches the account's available models for that session. Use `refresh=True` or `provider.models.refresh()` to request a new catalog. `find()`, `search()`, `first()`, `last()`, and `get()` select from that catalog.
-- `chat.messages.create()`, `edit()`, and `retry()` return a `MessageOperation`. Consume `operation.stream()` for events, or await `operation.wait()` for the completed `Response` (`sources` as `SourcesCollection`, `artifacts` as `ArtifactsCollection`, and `timing` as `TimingMetrics`). `chat.responses` derives `Response` views from shared `chat.messages` history (`timing=None` for history entries).
+- `chat.responses.create()`, `edit()`, and `retry()` prepare message operations. Use `operation.stream()` for events or `operation.wait()` for the completed `Response`. It exposes the associated user message, sources, artifacts, and timing for live sends.
+- To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.
 - `project.attachments` exposes a file-focused `Attachment` projection over `project.resources` (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
 - Providers share a `ProviderRuntime` backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.

@@ -33,7 +33,7 @@ async def main() -> None:
             raise RuntimeError("No models are available for this account")
 
         chat = await provider.chats.create("Hızlı başlangıç")
-        operation = chat.messages.create("Merhaba!", model=models[0])
+        operation = chat.responses.create("Merhaba!", model=models[0])
 
         async for event in operation.stream():
             if isinstance(event, OutputDelta):
@@ -53,7 +53,7 @@ from webaiprovider import Account, ChatGPTProvider, ProviderType
 account = Account.from_browser(ProviderType.CHATGPT)
 with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Hızlı başlangıç")
-    response = chat.messages.create("Merhaba!").start()
+    response = chat.responses.create("Merhaba!").start()
 ```
 
 ## Temel API
@@ -62,7 +62,8 @@ with ChatGPTProvider(account) as provider:
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir.
 - Uzak koleksiyonlar (`chats`, `projects`, `project.chats`, `project.attachments`) sayfalama ayrıntısını `list(limit=50)` arkasında gizler (`limit=0` sıfır uzak istek yapar; `limit=None` tüm sayfaları tarar) ve tutarlı `refresh()`, `get()`, `search()`, `find()` (`AmbiguousMatchError` yükseltir), `first()` ve `last()` metotlarını sunar. `Page`, adaptör katmanının iç türüdür ve kullanıcı API'sinde yer almaz.
 - `provider.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `provider.models.refresh()` kullanın. `find()`, `search()`, `first()`, `last()` ve `get()` bu katalogda seçim yapar.
-- `chat.messages.create()`, `edit()` ve `retry()` birer `MessageOperation` döndürür. Akış olayları için `operation.stream()` kullanın veya tamamlanmış `Response` nesnesini (`SourcesCollection` olarak `sources`, `ArtifactsCollection` olarak `artifacts` ve `TimingMetrics` olarak `timing`) `operation.wait()` ile alın. `chat.responses`, paylaşılan `chat.messages` geçmişinden `Response` görünümleri türetir (geçmiş kayıtlarında `timing=None` olur).
+- `chat.responses.create()`, `edit()` ve `retry()` mesaj işlemlerini hazırlar. Akış olayları için `operation.stream()`, tamamlanmış `Response` için `operation.wait()` kullanın. Yanıt; ilişkili kullanıcı mesajını, kaynakları, çıktıları ve canlı gönderim için süre bilgilerini içerir.
+- Bir sohbeti son yanıtlarıyla birlikte tek geçmiş okumasında açmak için `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)` kullanın. Senkron sağlayıcıda `await` kaldırılır. Limit, dönen yanıt sayısını belirler.
 - `project.attachments`, `project.resources` üzerinde dosya odaklı `Attachment` görünümü sunar (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
 - Sağlayıcılar `flowevent` tabanlı `ProviderRuntime` kullanır. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `SyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.

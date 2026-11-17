@@ -547,6 +547,44 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
 
 
 class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
+    def test_open_with_responses_uses_one_snapshot_in_both_apis(self):
+        history = Conversation(
+            "chat",
+            "History",
+            (
+                MessageData("u", "user", (Content(kind="text", text="Question"),)),
+                MessageData("a", "assistant", (Content(kind="text", text="Answer"),)),
+            ),
+            project=ProjectData("p", "Project"),
+        )
+
+        async def check_async() -> None:
+            async with _ScriptedAsyncProvider(_account()) as provider:
+                provider.conversations["chat"] = history
+                with self.assertRaises(ValueError):
+                    await provider.chats.get_with_responses("chat", limit=-1)
+                self.assertEqual(provider.get_chat_calls, [])
+                with self.assertRaises(RemoteNotFound):
+                    await provider.chats.get_with_responses("chat")
+                provider.get_chat_calls.clear()
+                chat, responses = await provider.chats.get_with_responses(
+                    "chat", include_projects=True, limit=1
+                )
+                self.assertEqual(provider.get_chat_calls, ["chat"])
+                self.assertIs(responses[0].chat, chat)
+                self.assertEqual(responses[0].message.text, "Question")
+                refreshed = await chat.responses.refresh()
+                self.assertEqual(provider.get_chat_calls, ["chat", "chat"])
+                self.assertIs(refreshed[0], responses[0])
+
+        asyncio.run(check_async())
+        with _ScriptedSyncProvider(_account()) as provider:
+            provider._provider.conversations["chat"] = history
+            chat, responses = provider.chats.get_with_responses("chat", include_projects=True)
+            self.assertEqual(provider._provider.get_chat_calls, ["chat"])
+            self.assertIs(responses[0].chat, chat)
+            self.assertEqual(responses[0].text, "Answer")
+
     async def test_overlapping_history_reads_share_work_and_do_not_hold_a_result_cache(self):
         started = asyncio.Event()
         release = asyncio.Event()

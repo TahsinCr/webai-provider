@@ -33,7 +33,7 @@ async def main() -> None:
             raise RuntimeError("No models are available for this account")
 
         chat = await provider.chats.create("Быстрый старт")
-        operation = chat.messages.create("Здравствуйте!", model=models[0])
+        operation = chat.responses.create("Здравствуйте!", model=models[0])
 
         async for event in operation.stream():
             if isinstance(event, OutputDelta):
@@ -53,7 +53,7 @@ from webaiprovider import Account, ChatGPTProvider, ProviderType
 account = Account.from_browser(ProviderType.CHATGPT)
 with ChatGPTProvider(account) as provider:
     chat = provider.chats.create("Быстрый старт")
-    response = chat.messages.create("Здравствуйте!").start()
+    response = chat.responses.create("Здравствуйте!").start()
 ```
 
 ## Основной API
@@ -62,7 +62,8 @@ with ChatGPTProvider(account) as provider:
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` и `GrokProvider` предоставляют функции конкретных провайдеров. Проекты ChatGPT по умолчанию используют общую область памяти; укажите `memory_share=False`, чтобы оставить память только в проекте.
 - Удалённые коллекции (`chats`, `projects`, `project.chats`, `project.attachments`) скрывают пагинацию за `list(limit=50)` (`limit=0` не выполняет сетевых запросов; `limit=None` читает все страницы) и предоставляют единые методы `refresh()`, `get()`, `search()`, `find()` (вызывает `AmbiguousMatchError`), `first()` и `last()`. Класс `Page` используется только на границе адаптеров и не входит в пользовательский API.
 - `provider.models.list()` загружает доступные аккаунту модели и кеширует каталог до конца сессии. Для нового запроса используйте `refresh=True` или `provider.models.refresh()`. Методы `find()`, `search()`, `first()`, `last()` и `get()` выбирают модель из этого каталога.
-- `chat.messages.create()`, `edit()` и `retry()` возвращают `MessageOperation`. Используйте `operation.stream()` для потока событий или дождитесь итогового `Response` (`sources` как `SourcesCollection`, `artifacts` как `ArtifactsCollection`, `timing` как `TimingMetrics`) через `operation.wait()`. `chat.responses` строит представления `Response` из общей истории `chat.messages` (для исторических записей `timing=None`).
+- Методы `chat.responses.create()`, `edit()` и `retry()` подготавливают операции с сообщениями. Используйте `operation.stream()` для потока событий или `operation.wait()` для получения готового `Response`. Ответ содержит связанное сообщение пользователя, источники, артефакты и данные о времени для текущей отправки.
+- Чтобы открыть чат вместе с последними ответами за одно чтение истории, используйте `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. В синхронном API вызов выполняется без `await`. Лимит определяет число возвращаемых ответов.
 - `project.attachments` предоставляет файловую проекцию `Attachment` поверх `project.resources` (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
 - Провайдеры используют `ProviderRuntime` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.

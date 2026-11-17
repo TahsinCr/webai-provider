@@ -21,6 +21,7 @@ from .types import Conversation
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
+    from ..response.response import Response
 
 _PROJECT_CHAT_CONCURRENCY = 4
 _MAX_PROJECT_CHAT_PAGES = 100
@@ -214,18 +215,23 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         await self._emit_refreshed(len(items))
         return items
 
-    async def _fetch_by_id(self, item_id: str, *, metadata_only: bool = False) -> AsyncChat | None:
+    async def _fetch_conversation(
+        self, item_id: str, *, metadata_only: bool = False
+    ) -> Conversation:
         session = self.provider
         async with session.runtime.activity():
             session._require_provider()
-            try:
-                load = session._get_chat_metadata if metadata_only else session._get_chat_data
-                conv = await load(item_id)
-            except FeatureUnavailable:
-                return None
-            if not isinstance(conv, Conversation):
-                return None
-            return _chat_from_conversation(conv, session)
+            load = session._get_chat_metadata if metadata_only else session._get_chat_data
+            return await load(item_id)
+
+    async def _fetch_by_id(self, item_id: str, *, metadata_only: bool = False) -> AsyncChat | None:
+        try:
+            conv = await self._fetch_conversation(item_id, metadata_only=metadata_only)
+        except FeatureUnavailable:
+            return None
+        if not isinstance(conv, Conversation):
+            return None
+        return _chat_from_conversation(conv, self.provider)
 
     async def get(
         self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
@@ -241,6 +247,22 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
                 if self._item_matches_exact_id(item, item_id):
                     return item
         raise RemoteNotFound(f"Record was not found: {item_id}")
+
+    async def get_with_responses(
+        self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
+    ) -> tuple[AsyncChat, list[Response]]:
+        """Read a chat and its latest responses from the same remote history snapshot."""
+        validated = validate_limit(limit)
+        conversation = await self._fetch_conversation(item_id, metadata_only=validated == 0)
+        if not isinstance(conversation, Conversation):
+            raise ProviderError("Provider returned an invalid conversation")
+        if not include_projects and conversation.project is not None:
+            raise RemoteNotFound(f"Record was not found: {item_id}")
+        chat = _chat_from_conversation(conversation, self.provider)
+        if validated == 0:
+            return chat, []
+        responses = chat.responses._apply_history(conversation, self.provider)
+        return chat, responses if validated is None else responses[-validated:]
 
     async def first(
         self,
@@ -476,6 +498,17 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
                 )
             )
         )
+
+    def get_with_responses(
+        self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
+    ) -> tuple[Chat, list[Response]]:
+        resource, responses = self._owner._call(
+            self._collection.get_with_responses(
+                item_id, limit=limit, include_projects=include_projects
+            )
+        )
+        chat = self._wrap(resource)
+        return chat, [chat.responses._wrap(item, chat_view=chat) for item in responses]
 
     def first(
         self,
