@@ -618,6 +618,24 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await provider.close()
 
+    async def test_metadata_only_lookup_skips_history_and_preserves_workspace_scope(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
+        provider._conversation_metadata = AsyncMock(
+            return_value={"conversationId": "chat", "title": "Example", "workspaceId": "project"}
+        )
+        provider._history = AsyncMock(return_value={"responses": []})
+
+        async with provider:
+            chat = await provider.chats.get("chat", include_projects=True, metadata_only=True)
+            self.assertEqual(chat.title, "Example")
+            self.assertEqual(chat.project.remote_id, "project")
+            provider._history.assert_not_awaited()
+
+            await provider.chats.get("chat", include_projects=True)
+            provider._history.assert_awaited_once_with("chat")
+
     async def test_history_exposes_only_the_remote_generation_state(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         provider.client = GrokClientFixture()

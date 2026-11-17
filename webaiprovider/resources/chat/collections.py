@@ -198,20 +198,24 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         await self._emit_refreshed(len(items))
         return items
 
-    async def _fetch_by_id(self, item_id: str) -> AsyncChat | None:
+    async def _fetch_by_id(self, item_id: str, *, metadata_only: bool = False) -> AsyncChat | None:
         session = self.provider
         async with session.runtime.activity():
             session._require_provider()
             try:
-                conv = await session._get_chat_data(item_id)
+                load = session._get_chat_metadata if metadata_only else session._get_chat_data
+                conv = await load(item_id)
             except FeatureUnavailable:
                 return None
             if not isinstance(conv, Conversation):
                 return None
             return _chat_from_conversation(conv, session)
 
-    async def get(self, item_id: str, /, *, include_projects: bool = False) -> AsyncChat:
-        direct = await self._fetch_by_id(item_id)
+    async def get(
+        self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
+    ) -> AsyncChat:
+        """Get a chat, preferring a metadata-only lookup when requested and supported."""
+        direct = await self._fetch_by_id(item_id, metadata_only=metadata_only)
         if direct is not None:
             if not include_projects and direct.project is not None:
                 raise RemoteNotFound(f"Record was not found: {item_id}")
@@ -446,9 +450,15 @@ class ChatsCollection(_MutableRemoteCollectionFacade[AsyncChat, Chat]):
             )
         ]
 
-    def get(self, item_id: str, /, *, include_projects: bool = False) -> Chat:
+    def get(
+        self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
+    ) -> Chat:
         return self._wrap(
-            self._owner._call(self._collection.get(item_id, include_projects=include_projects))
+            self._owner._call(
+                self._collection.get(
+                    item_id, include_projects=include_projects, metadata_only=metadata_only
+                )
+            )
         )
 
     def first(

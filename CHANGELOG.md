@@ -18,6 +18,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
 - Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.
 - Expose normalized stream events for answer text, thinking updates, sources, and artifacts. Message operations support incremental consumption, cancellation, and waiting for the completed response.
 - Expose the origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
@@ -26,8 +27,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Serialize sends within a conversation and coordinate project mutations. Apply only changed project fields and confirm incomplete server replies through readback without replaying the mutation.
 - Cancel and drain the sibling listing when either top-level chat or project listing fails during `include_projects=True` queries.
+- Serialize sends within a conversation and coordinate project mutations. Apply only changed project fields and confirm incomplete server replies through readback without replaying the mutation.
 - Keep accepted provider work tracked during shutdown, close nested streams and upload workers during cancellation, and preserve the original stream error if cleanup also fails. Async providers retain the cleanup scope after a failed close so callers can retry.
 - Preserve local drafts during history refresh, reconcile sent messages with their remote IDs, and exclude internal retry and edit records from refreshed history.
 - Resolve exact model and effort IDs before display-name matches. Normalize provider stream errors and rate-limit responses, and retain per-account cooldowns when the provider supplies a retry delay.

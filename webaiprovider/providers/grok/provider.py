@@ -347,6 +347,9 @@ class AsyncGrokProvider(ProjectEditorMixin, AsyncProvider):
     async def _conversation_metadata(self, conversation_id: str):
         return await self._conversation_get(conversation_id, includeWorkspaces=True)
 
+    async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
+        return conversation(await self._conversation_metadata(conversation_id), self.account_id)
+
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         metadata, history = await asyncio.gather(
             self._conversation_metadata(conversation_id),

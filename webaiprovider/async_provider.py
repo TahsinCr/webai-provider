@@ -392,6 +392,9 @@ class AsyncProvider(BaseProvider):
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         raise FeatureUnavailable(Capability.CHAT, "not_implemented")
 
+    async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
+        return await self._get_chat_data(conversation_id)
+
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
         raise FeatureUnavailable(Capability.RENAME, "not_implemented")
 
