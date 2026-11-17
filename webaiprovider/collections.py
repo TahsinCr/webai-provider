@@ -54,11 +54,12 @@ class BaseCollection(Generic[T], ABC):
     @staticmethod
     def _extract_name(item: Any) -> str:
         if isinstance(item, dict):
-            return str(item.get("name") or item.get("title") or "")
+            return str(item.get("name") or item.get("title") or item.get("content") or "")
         return str(
             getattr(item, "name", None)
             or getattr(item, "title", None)
             or getattr(item, "url", None)
+            or getattr(item, "content", None)
             or ""
         )
 
@@ -127,21 +128,8 @@ class BaseCollection(Generic[T], ABC):
         startswith: bool = False,
         endswith: bool = False,
     ) -> T:
+        """Return the only candidate matching the strategy, never an implicit best match."""
         validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        if not (startswith or endswith):
-            exact_id = [it for it in items if cls._item_matches_exact_id(it, query)]
-            if len(exact_id) == 1:
-                return exact_id[0]
-
-            exact_name = [
-                it for it in items if cls._matches(cls._extract_name(it), query, exact=True)
-            ]
-            if len(exact_name) == 1:
-                return exact_name[0]
-            if len(exact_name) > 1:
-                ids = [cls._extract_id(it) for it in exact_name]
-                raise AmbiguousMatchError(f"Multiple exact matches were found: {', '.join(ids)}")
-
         matches = [
             it
             for it in items
@@ -149,13 +137,16 @@ class BaseCollection(Generic[T], ABC):
         ]
         if len(matches) == 1:
             return matches[0]
-        if len(matches) > 1:
-            ids = [cls._extract_id(it) for it in matches]
-            raise AmbiguousMatchError(
-                f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
-            )
-
+        if matches:
+            raise cls._ambiguous(matches)
         raise RemoteNotFound(f"No records matched the search query: {query}")
+
+    @classmethod
+    def _ambiguous(cls, matches: Sequence[Any]) -> AmbiguousMatchError:
+        ids = [cls._extract_id(it) for it in matches]
+        return AmbiguousMatchError(
+            f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
+        )
 
     @classmethod
     def _first_in(
@@ -514,38 +505,18 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
         **options: Any,
     ) -> T:
         validate_match_flags(exact=exact, startswith=startswith, endswith=endswith)
-        seen: list[T] = []
+        matches: list[T] = []
         async for batch in self._iter_remote_pages(limit=None, **options):
-            seen.extend(batch)
-            if exact or startswith or endswith:
-                early_matches = [
-                    it
-                    for it in seen
-                    if self._item_matches(
-                        it, query, exact=exact, startswith=startswith, endswith=endswith
-                    )
-                ]
-                if len(early_matches) > 1:
-                    ids = [self._extract_id(it) for it in early_matches]
-                    raise AmbiguousMatchError(
-                        f"Search is ambiguous; multiple matches were found: {', '.join(ids)}"
-                    )
-            else:
-                exact_name = [
-                    it for it in seen if self._matches(self._extract_name(it), query, exact=True)
-                ]
-                if len(exact_name) > 1:
-                    ids = [self._extract_id(it) for it in exact_name]
-                    raise AmbiguousMatchError(
-                        f"Multiple exact matches were found: {', '.join(ids)}"
-                    )
-        return self._find_in(
-            seen,
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
+            for item in batch:
+                if self._item_matches(
+                    item, query, exact=exact, startswith=startswith, endswith=endswith
+                ):
+                    matches.append(item)
+                    if len(matches) > 1:
+                        raise self._ambiguous(matches)
+        if not matches:
+            raise RemoteNotFound(f"No records matched the search query: {query}")
+        return matches[0]
 
     async def refresh(self, *, limit: int | None = None, **options: Any) -> list[T]:
         items = await self._collect_remote(limit=limit, **options)
@@ -555,6 +526,93 @@ class BaseRemoteCollection(BaseCollection[T], ABC):
 
 class AsyncRemoteCollection(BaseRemoteCollection[T], ABC):
     """Readable remote collection returning materialized lists without caching stale _items."""
+
+
+class AsyncDerivedCollection(BaseCollection[T], ABC):
+    """Derived queryable view over another collection without fake page-fetching."""
+
+    @abstractmethod
+    async def list(self, *, limit: int | None = 50, **options: Any) -> list[T]:
+        """Return projected items from the underlying collection."""
+
+    @abstractmethod
+    async def refresh(self, *, limit: int | None = None, **options: Any) -> list[T]:
+        """Refresh the underlying collection and return projected items."""
+
+    async def get(self, item_id: str, /) -> T:
+        return self._get_from(await self.list(limit=None), item_id)
+
+    async def search(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        **_options: Any,
+    ) -> list[T]:
+        return self._search_in(
+            await self.list(limit=None),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def find(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        **_options: Any,
+    ) -> T:
+        return self._find_in(
+            await self.list(limit=None),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def first(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        **_options: Any,
+    ) -> T:
+        return self._first_in(
+            await self.list(limit=None),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
+
+    async def last(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        **_options: Any,
+    ) -> T:
+        return self._last_in(
+            await self.list(limit=None),
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+        )
 
 
 class AsyncMutableRemoteCollection(AsyncRemoteCollection[T], ABC):
