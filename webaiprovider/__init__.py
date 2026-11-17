@@ -76,9 +76,7 @@ from .resources.chat.collections import AsyncChatsCollection, ChatsCollection
 from .resources.message.attachment import Attachment, Attachments
 from .resources.message.collections import (
     AsyncMessagesCollection,
-    AsyncResponsesCollection,
     MessagesCollection,
-    ResponsesCollection,
 )
 from .resources.message.message import AsyncMessage, Message
 from .resources.message.operation import (
@@ -98,10 +96,6 @@ from .resources.message.operation import (
     ThinkingEnd,
     ThinkingReplace,
 )
-from .resources.message.response import (
-    Response,
-    TimingMetrics,
-)
 from .resources.model.collections import (
     AsyncModelsCollection,
     Models,
@@ -116,18 +110,21 @@ from .resources.model.model import (
     ModelSelection,
 )
 from .resources.project.chats import AsyncProjectChatsCollection, ProjectChatsCollection
-from .resources.project.collections import AsyncProjectsCollection, ProjectsCollection
+from .resources.project.collections import (
+    AsyncProjectAttachments,
+    AsyncProjectsCollection,
+    ProjectAttachments,
+    ProjectsCollection,
+)
 from .resources.project.project import (
     AsyncProject,
-    AsyncProjectAttachments,
     AsyncProjectInstruction,
-    AsyncProjectResources,
     Project,
-    ProjectAttachments,
     ProjectInstruction,
-    ProjectResources,
 )
 from .resources.response.artifact import Artifact, ArtifactsCollection
+from .resources.response.collections import AsyncResponsesCollection, ResponsesCollection
+from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
 
 __version__ = "1.3.0b0"
@@ -255,8 +252,6 @@ __all__ = [
     "AsyncProject",
     "ProjectInstruction",
     "AsyncProjectInstruction",
-    "ProjectResources",
-    "AsyncProjectResources",
     "Response",
     "ProviderTelemetry",
 ]

@@ -5,12 +5,10 @@ from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
-    AsyncDerivedCollection,
     AsyncManageableCollection,
     BaseCollection,
     ManageableCollection,
     _CollectionFacade,
-    _RemoteCollectionFacade,
     validate_limit,
 )
 from ...core.hooks import OperationHooks, SyncOperationHooks
@@ -23,91 +21,15 @@ from ..model.model import (
     ModelRef,
     ModelSelection,
 )
-from ..response.artifact import Artifact
-from ..response.source import Source
+from ..response.collections import _build_artifacts, _build_sources
+from ..response.response import Response
 from .attachment import Attachment, Attachments
 from .message import AsyncMessage, Message
 from .operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
-from .response import Response
 
 if TYPE_CHECKING:
     from ...provider import Provider
     from .operation import StreamEvent
-
-
-def _build_sources(raw_sources: Iterable[Any]) -> tuple[Source, ...]:
-    sources: list[Source] = []
-    for index, raw in enumerate(raw_sources):
-        if isinstance(raw, Source):
-            sources.append(raw)
-        elif isinstance(raw, dict):
-            url = str(raw.get("url") or raw.get("uri") or "")
-            sid = str(raw.get("id") or raw.get("file_id") or url or f"source-{index}")
-            sources.append(
-                Source(
-                    id=sid,
-                    url=url,
-                    title=str(raw.get("title") or raw.get("name") or ""),
-                    snippet=str(raw.get("description") or raw.get("snippet") or ""),
-                    kind=str(raw.get("kind") or ("file" if raw.get("file_id") else "web")),
-                    metadata=dict(raw),
-                )
-            )
-    return tuple(sources)
-
-
-def _build_artifacts(item: Any) -> tuple[Artifact, ...]:
-    artifacts: list[Artifact] = []
-    seen: set[str] = set()
-    raw_files = item.metadata.get("files") if isinstance(item.metadata, dict) else ()
-    for index, entry in enumerate(raw_files or ()):
-        if isinstance(entry, Artifact):
-            key = entry.id or entry.download_url or entry.name
-            if key not in seen:
-                seen.add(key)
-                artifacts.append(entry)
-        elif isinstance(entry, dict):
-            url = entry.get("remote_url") or entry.get("download_url") or entry.get("url")
-            name = str(entry.get("name") or entry.get("filename") or "file")
-            aid = str(entry.get("id") or url or f"artifact-{index}")
-            key = f"{aid}:{url or name}"
-            if key in seen:
-                continue
-            seen.add(key)
-            size = entry.get("size_bytes", entry.get("size"))
-            artifacts.append(
-                Artifact(
-                    id=aid,
-                    kind=str(entry.get("kind") or "file"),
-                    name=name,
-                    mime_type=str(
-                        entry.get("media_type")
-                        or entry.get("mime_type")
-                        or "application/octet-stream"
-                    ),
-                    size=size if isinstance(size, int) and not isinstance(size, bool) else None,
-                    download_url=str(url) if url else None,
-                    metadata=dict(entry),
-                )
-            )
-    for part in getattr(item, "content", ()):
-        resource = getattr(part, "resource", None)
-        if resource is not None and item.role == "assistant":
-            key = f"{resource.id}:{resource.remote_url or resource.name}"
-            if key in seen:
-                continue
-            seen.add(key)
-            artifacts.append(
-                Artifact(
-                    id=resource.id,
-                    kind="resource",
-                    name=resource.name,
-                    mime_type=resource.media_type or "application/octet-stream",
-                    download_url=resource.remote_url,
-                    metadata=dict(resource.metadata),
-                )
-            )
-    return tuple(artifacts)
 
 
 class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
@@ -454,64 +376,6 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
         self._known_by_id.pop(target_id, None)
 
 
-class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
-    """Derived Response query view over chat.messages without duplicating remote history."""
-
-    def __init__(self, chat: AsyncChat) -> None:
-        self.chat = chat
-
-    @staticmethod
-    def _extract_id(item: Any) -> str:
-        if isinstance(item, Response):
-            return item.message.remote_id or item.message.id
-        return BaseCollection._extract_id(item)
-
-    @staticmethod
-    def _extract_name(item: Any) -> str:
-        if isinstance(item, Response):
-            return item.text
-        return BaseCollection._extract_name(item)
-
-    @classmethod
-    def _item_matches_exact_id(cls, item: Any, item_id: str) -> bool:
-        if isinstance(item, Response):
-            return item.message.id == item_id or item.message.remote_id == item_id
-        return BaseCollection._item_matches_exact_id(item, item_id)
-
-    def _responses_from_messages(self, messages: Iterable[AsyncMessage]) -> list[Response]:
-        responses: list[Response] = []
-        for message in messages:
-            if message.role == "assistant":
-                if message.response is None:
-                    message.response = Response(
-                        message,
-                        metadata={"from_history": True, "message_id": message.id},
-                        timing=None,
-                    )
-                responses.append(message.response)
-        return responses
-
-    async def list(self, *, limit: int | None = 50, **_options: Any) -> list[Response]:
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        messages = await self.chat.messages._load_history(emit_event=False)
-        responses = self._responses_from_messages(messages)
-        if validated is None:
-            return responses
-        return responses[-validated:]
-
-    async def refresh(self, *, limit: int | None = None, **_options: Any) -> list[Response]:
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        messages = await self.chat.messages._load_history(emit_event=True)
-        responses = self._responses_from_messages(messages)
-        if validated is None:
-            return responses
-        return responses[-validated:]
-
-
 class MessagesCollection(_CollectionFacade[AsyncMessage, Message], ManageableCollection[Message]):
     def __init__(self, owner: Provider, chat: AsyncChat) -> None:
         super().__init__(owner, chat.messages)
@@ -585,20 +449,3 @@ class MessagesCollection(_CollectionFacade[AsyncMessage, Message], ManageableCol
 
     def delete(self, message: Message | str) -> None:
         self._owner._call(self._collection.delete(message))
-
-
-class ResponsesCollection(_RemoteCollectionFacade[Response, Response]):
-    def __init__(self, owner: Provider, chat: AsyncChat) -> None:
-        super().__init__(owner, chat.responses)
-
-    def _wrap(self, item: Response) -> Response:
-        msg = item.message
-        if isinstance(msg, AsyncMessage):
-            msg = Message._from_async(self._owner, msg)
-        return Response(
-            msg,
-            sources=item.sources,
-            artifacts=item.artifacts,
-            metadata=item.metadata,
-            timing=item.timing,
-        )

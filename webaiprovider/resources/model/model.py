@@ -3,17 +3,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import KW_ONLY, dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
+from .types import EffortOption, ModelCatalogState, Models
+
 if TYPE_CHECKING:
-    from .collections import Models
-
-
-class ModelCatalogState(str, Enum):
-    AVAILABLE = "available"
-    UNKNOWN = "unknown"
-    UNAVAILABLE = "unavailable"
+    pass
 
 
 @dataclass(frozen=True)
@@ -72,7 +67,7 @@ class EffortSet:
 
     @classmethod
     def find(cls, query: str) -> EffortRef:
-        from .collections import SelectionResolver
+        from .resolver import SelectionResolver
 
         result = SelectionResolver.resolve(
             query,
@@ -161,7 +156,7 @@ class ModelRef(Generic[E]):
         if effort is None or (isinstance(effort, str) and effort.casefold() == "auto"):
             return ModelSelection(self)
 
-        from .collections import Models, SelectionResolver
+        from .resolver import SelectionResolver
 
         if isinstance(effort, Models) and effort is Models.AUTO:
             return ModelSelection(self)
@@ -197,12 +192,6 @@ class ModelSelection:
     @property
     def name(self) -> str:
         return self.model.name
-
-
-@dataclass(frozen=True)
-class EffortOption:
-    id: str
-    title: str
 
 
 @dataclass(frozen=True)

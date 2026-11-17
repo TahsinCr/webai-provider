@@ -105,11 +105,11 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(project.remote_id, "project-1")
         self.assertEqual(await project.instruction.get(), "Be concise")
-        added = await project.resources.add("A note", resource_type="text", name="Notes")
+        added = await project.attachments.add("A note", resource_type="text", name="Notes")
         projects_adapter.add_project_resource.assert_awaited_once_with(
             "project-1", "text", name="Notes", text="A note"
         )
-        self.assertEqual(added["id"], "resource-2")
+        self.assertEqual(added.id, "resource-2")
 
         await self.provider.projects.update(
             project, title="Updated", instruction="New instructions"
@@ -120,14 +120,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
-        await project.resources.remove("resource-2")
+        await project.attachments.remove("resource-2")
         projects_adapter.remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
         state["project"] = original
         loaded_projects = await self.provider.projects.refresh()
         loaded = loaded_projects[0]
         self.assertEqual(loaded.remote_id, "project-1")
         self.assertEqual(await loaded.instruction.get(), "Be concise")
-        self.assertEqual((await loaded.resources.list())[0]["id"], "resource-1")
+        self.assertEqual((await loaded.attachments.list())[0].id, "resource-1")
 
     async def test_project_chat_pages_and_move_actions(self) -> None:
         from webaiprovider.providers.grok import AsyncGrokChat

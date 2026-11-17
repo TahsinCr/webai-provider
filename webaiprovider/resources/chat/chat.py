@@ -79,7 +79,8 @@ class AsyncChat:
         self.temporary: bool = bool(temporary)
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
 
-        from ..message.collections import AsyncMessagesCollection, AsyncResponsesCollection
+        from ..message.collections import AsyncMessagesCollection
+        from ..response.collections import AsyncResponsesCollection
 
         self.messages = (self._messages_collection_type or AsyncMessagesCollection)(self)
         self.responses = (self._responses_collection_type or AsyncResponsesCollection)(self)
@@ -245,7 +246,8 @@ class Chat:
     def __init__(self, owner: Provider, resource: AsyncChat) -> None:
         self._owner = owner
         self._resource = resource
-        from ..message.collections import MessagesCollection, ResponsesCollection
+        from ..message.collections import MessagesCollection
+        from ..response.collections import ResponsesCollection
 
         self.messages = (self.messages_collection_type or MessagesCollection)(owner, resource)
         self.responses = (self.responses_collection_type or ResponsesCollection)(owner, resource)

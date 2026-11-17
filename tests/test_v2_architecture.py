@@ -698,9 +698,6 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
             await provider.open()
             project = await provider.projects.get("p-1")
 
-            raw = await project.resources.list(limit=None)
-            self.assertEqual(len(raw), 3)
-
             atts = await project.attachments.list(limit=None)
             self.assertEqual([type(a) for a in atts], [Attachment, Attachment])
             self.assertEqual([a.id for a in atts], ["r-file-1", "r-file-2"])
@@ -1113,8 +1110,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     def test_p2_05_derived_collections_have_no_fake_fetch_page(self) -> None:
-        from webaiprovider.resources.message.collections import AsyncResponsesCollection
-        from webaiprovider.resources.project.project import AsyncProjectAttachments
+        from webaiprovider.resources.project.collections import AsyncProjectAttachments
+        from webaiprovider.resources.response.collections import AsyncResponsesCollection
 
         self.assertFalse(hasattr(AsyncResponsesCollection, "_fetch_page"))
         self.assertFalse(hasattr(AsyncProjectAttachments, "_fetch_page"))

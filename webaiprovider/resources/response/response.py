@@ -4,11 +4,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ..response.artifact import Artifact, ArtifactsCollection
-from ..response.source import Source, SourcesCollection
+from .artifact import Artifact, ArtifactsCollection
+from .source import Source, SourcesCollection
 
 if TYPE_CHECKING:
-    from .message import AsyncMessage, Message
+    from ..message.message import AsyncMessage, Message
 
 
 @dataclass(frozen=True)

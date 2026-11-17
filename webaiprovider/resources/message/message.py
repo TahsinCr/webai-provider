@@ -13,9 +13,9 @@ from ..model.model import (
     ModelSelection,
 )
 from ..response.artifact import ArtifactsCollection
+from ..response.response import Response
 from ..response.source import SourcesCollection
 from .attachment import Attachment, Attachments
-from .response import Response
 
 if TYPE_CHECKING:
     from ...provider import Provider

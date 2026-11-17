@@ -45,23 +45,23 @@ class ProjectApiTests(LiveSyncTestCase):
                 self.context.skip("projects.rename/instructions.edit: unsupported")
 
             if Capability.RESOURCES in capabilities:
-                resource = self.call_api(
-                    "projects.resources.add",
-                    lambda: project.resources.add(marker, "text", name=f"{marker}-resource"),
+                attachment = self.call_api(
+                    "projects.attachments.add",
+                    lambda: project.attachments.add(marker, "text", name=f"{marker}-resource"),
                 )
-                resource_id = resource.get("id") if isinstance(resource, dict) else None
-                self.assertTrue(resource_id, "Created project resource has no verifiable ID")
+                attachment_id = getattr(attachment, "id", None)
+                self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
                 attachments = self.call_api(
                     "projects.attachments.list", lambda: project.attachments.list(limit=None)
                 )
                 self.assertIsInstance(attachments, list)
                 removed = self.call_api(
-                    "projects.resources.remove",
-                    lambda: project.resources.remove(str(resource_id)),
+                    "projects.attachments.remove",
+                    lambda: project.attachments.remove(str(attachment_id)),
                 )
-                self.assertIs(removed, True, "Project resource removal was not confirmed")
+                self.assertIs(removed, True, "Project attachment removal was not confirmed")
             else:
-                self.context.skip("projects.resources.add/remove: unsupported")
+                self.context.skip("projects.attachments.add/remove: unsupported")
         finally:
             self.context.cleanup_entry(entry)
 
@@ -107,23 +107,23 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                 self.context.skip("projects.rename/instructions.edit: unsupported")
 
             if Capability.RESOURCES in capabilities:
-                resource = await self.call_api(
-                    "projects.resources.add",
-                    lambda: project.resources.add(marker, "text", name=f"{marker}-resource"),
+                attachment = await self.call_api(
+                    "projects.attachments.add",
+                    lambda: project.attachments.add(marker, "text", name=f"{marker}-resource"),
                 )
-                resource_id = resource.get("id") if isinstance(resource, dict) else None
-                self.assertTrue(resource_id, "Created project resource has no verifiable ID")
+                attachment_id = getattr(attachment, "id", None)
+                self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
                 attachments = await self.call_api(
                     "projects.attachments.list", lambda: project.attachments.list(limit=None)
                 )
                 self.assertIsInstance(attachments, list)
                 removed = await self.call_api(
-                    "projects.resources.remove",
-                    lambda: project.resources.remove(str(resource_id)),
+                    "projects.attachments.remove",
+                    lambda: project.attachments.remove(str(attachment_id)),
                 )
-                self.assertIs(removed, True, "Project resource removal was not confirmed")
+                self.assertIs(removed, True, "Project attachment removal was not confirmed")
             else:
-                self.context.skip("projects.resources.add/remove: unsupported")
+                self.context.skip("projects.attachments.add/remove: unsupported")
 
             chat_entry = None
             second_project_entry = None

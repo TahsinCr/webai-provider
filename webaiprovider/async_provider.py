@@ -39,7 +39,6 @@ from .resources.message.protocol import (
     TextReplacement,
     ThoughtDelta,
 )
-from .resources.message.response import Response
 from .resources.model.collections import (
     AsyncModelsCollection,
     Models,
@@ -50,6 +49,7 @@ from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
+from .resources.response.response import Response
 from .resources.response.source import Source
 from .transport import AsyncTransport
 

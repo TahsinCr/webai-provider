@@ -14,7 +14,6 @@ from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
-from .resources.message.response import Response
 from .resources.model.collections import (
     Models,
     ModelsCollection,
@@ -26,6 +25,7 @@ from .resources.model.model import (
 )
 from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
+from .resources.response.response import Response
 from .transport import AsyncTransport, PortalTransport, Transport
 
 if TYPE_CHECKING:

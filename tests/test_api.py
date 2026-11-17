@@ -422,15 +422,15 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await project.instruction.clear()
         self.assertEqual(await project.instruction.get(), "")
 
-        added = await project.resources.add("Doc", resource_type="text", name="res-1")
-        self.assertEqual(added["id"], "remote-res-1")
+        added = await project.attachments.add("Doc", resource_type="text", name="res-1")
+        self.assertEqual(added.id, "remote-res-1")
         projects_adapter.add_project_resource.assert_awaited_once_with(
             "proj-abc", "text", name="res-1", text="Doc"
         )
-        self.assertEqual(await project.resources.download(added["id"]), "Doc")
+        self.assertEqual(await project.attachments.download(added.id), "Doc")
 
-        created_res = await project.resources.create("Doc 2", resource_type="text", name="res-2")
-        self.assertEqual(created_res["data"], "Doc 2")
+        created_res = await project.attachments.create("Doc 2", resource_type="text", name="res-2")
+        self.assertEqual(created_res.content, "Doc 2")
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
@@ -441,11 +441,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await project.instruction.get(), "Updated Instruction")
 
         with self.assertRaises(UnsupportedOperationError):
-            await project.resources.update(added["id"], data="Updated Doc")
-        self.assertEqual((await project.resources.get(added["id"]))["data"], "Doc")
+            await project.attachments.update(added.id, content="Updated Doc")
+        self.assertEqual((await project.attachments.get(added.id)).content, "Doc")
 
-        await project.resources.delete(created_res["id"])
-        await project.resources.remove(added["id"])
+        await project.attachments.delete(created_res.id)
+        await project.attachments.remove(added.id)
         self.assertEqual(projects_adapter.remove_project_resource.await_count, 2)
         await project.delete()
         projects_adapter.delete_project.assert_awaited_once_with("proj-abc")
