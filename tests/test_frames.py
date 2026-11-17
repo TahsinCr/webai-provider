@@ -85,6 +85,10 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(len(parsed), 1)
         self.assertEqual(parsed[0][0][1], "Merhaba dünya! 🚀")
 
+    def test_jspb_rejects_frame_ending_inside_a_surrogate_pair(self):
+        with self.assertRaisesRegex(FrameDecodeError, "UTF-16 length is invalid"):
+            list(JSPBFrameDecoder().feed('2\n"🚀"'.encode(), final=True))
+
     def test_sse_parser_keeps_valid_json_data_lines_in_one_event(self):
 
         payload = b'data: {"a":1}\ndata: {"b":2}\n\n'

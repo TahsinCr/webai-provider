@@ -13,6 +13,7 @@ class JSPBFrameDecoder:
     """Decode length-prefixed JSON/JSPB frames incrementally."""
 
     _LENGTH_MARKER = re.compile(r"(\d+)\n")
+    _SCAN_CHARS = 64 * 1024
 
     def __init__(
         self,
@@ -98,23 +99,25 @@ class JSPBFrameDecoder:
             raise FrameDecodeError("JSPB frame length is missing")
         index = self.payload_start + self.scanned_chars
         needed_units = expected - self.scanned_units
-        remaining_chars = len(self.pending) - index
-        if remaining_chars > 0 and needed_units > 0:
-            take_candidate = min(remaining_chars, needed_units)
-            chunk = self.pending[index : index + take_candidate]
-            if max(chunk) <= "\uffff":
-                take_chars = len(chunk)
-                self.scanned_chars += take_chars
-                self.scanned_units += take_chars
-                index += take_chars
-        while self.scanned_units < expected and index < len(self.pending):
-            units = 2 if ord(self.pending[index]) > 0xFFFF else 1
-            if self.scanned_units + units > expected:
-                raise FrameDecodeError("JSPB stream frame UTF-16 length is invalid")
-            self.scanned_chars += 1
-            self.scanned_units += units
-            index += 1
-        return self.scanned_units >= expected
+        while needed_units and index < len(self.pending):
+            chunk = self.pending[index : index + min(needed_units, self._SCAN_CHARS)]
+            chars = units = len(chunk)
+            if not chunk.isascii():
+                encoded = chunk.encode("utf-16-le")
+                units = len(encoded) // 2
+                if units > needed_units:
+                    try:
+                        chars = len(encoded[: needed_units * 2].decode("utf-16-le"))
+                    except UnicodeDecodeError as error:
+                        raise FrameDecodeError(
+                            "JSPB stream frame UTF-16 length is invalid"
+                        ) from error
+                    units = needed_units
+            index += chars
+            needed_units -= units
+        self.scanned_chars = index - self.payload_start
+        self.scanned_units = expected - needed_units
+        return needed_units == 0
 
     def _reset_frame(self):
         self.expected_units = None
