@@ -16,6 +16,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Use curl_cffi for the shared HTTP request and streaming transports. Reuse provider connections and share incremental SSE decoding across ChatGPT, Claude, and Grok and JSPB decoding with Gemini under `webaiprovider.transport.frames`.
 - Overlap general and project chat pagination within the existing concurrency limit. Reuse a fixed set of async workers for bounded reads and uploads, and skip constructing chat objects excluded by scope.
 - Share overlapping reads of the same chat's response collection. Use `responses.list(fresh=True)` to request an independent read, and an older result cannot replace a newer applied history.
+- Reduce history reconstruction work for single-part text and turns without sources or artifacts.
 - Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
 - Run offline and live API tests separately. The live runner exercises both blocking and async APIs by default, paces account requests, and tracks cleanup and rate-limit skips separately from failures.
 

@@ -57,11 +57,10 @@ def _build_sources(raw_sources: Iterable[Any]) -> tuple[Source, ...]:
     return tuple(sources)
 
 
-def _build_artifacts(item: Any) -> tuple[Artifact, ...]:
+def _build_artifacts(item: Any, raw_files: Iterable[Any]) -> tuple[Artifact, ...]:
     artifacts: list[Artifact] = []
     seen: set[str] = set()
-    raw_files = item.metadata.get("files") if isinstance(item.metadata, dict) else ()
-    for index, entry in enumerate(raw_files or ()):
+    for index, entry in enumerate(raw_files):
         if isinstance(entry, Artifact):
             key = entry.id or entry.download_url or entry.name
             if key not in seen:
@@ -349,9 +348,13 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         for item in conversation.messages:
             if item.channel == "analysis":
                 continue
-            content = "\n".join(
-                part.text for part in item.content if part.kind == "text" and part.text
-            )
+            parts = item.content
+            if len(parts) == 1 and parts[0].kind == "text":
+                content = parts[0].text or ""
+            else:
+                content = "\n".join(
+                    part.text for part in parts if part.kind == "text" and part.text
+                )
             if item.role == "user":
                 if pending_user is not None:
                     responses.append(build_unanswered(pending_user))
@@ -366,10 +369,16 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 continue
 
             seen_resp_ids.add(item.id)
-            sources = _build_sources(
-                (item.metadata.get("sources") if isinstance(item.metadata, dict) else ()) or ()
+            raw_sources = item.metadata.get("sources")
+            sources = _build_sources(raw_sources) if raw_sources else ()
+            raw_files = item.metadata.get("files") or ()
+            artifacts = (
+                _build_artifacts(item, raw_files)
+                if raw_files
+                or (len(parts) == 1 and parts[0].resource is not None)
+                or len(parts) > 1
+                else ()
             )
-            artifacts = _build_artifacts(item)
             resp_meta = {
                 **item.metadata,
                 "actions": item.actions,
@@ -393,10 +402,8 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 resp.content = content
                 resp.remote_id = item.id
                 resp.message = pending_user
-                resp.sources = sources if hasattr(sources, "list") else type(resp.sources)(sources)
-                resp.artifacts = (
-                    artifacts if hasattr(artifacts, "list") else type(resp.artifacts)(artifacts)
-                )
+                resp.sources = type(resp.sources)(sources)
+                resp.artifacts = type(resp.artifacts)(artifacts)
                 resp.metadata = resp_meta
                 resp.chat = self.chat
             if pending_user is not None:
