@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from eventflow import StateMachine
 
 from ...core.hooks import OperationHooks, SyncOperationHooks
-from ...core.operations import run_pipeline_unwrapped
 from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
 from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
@@ -373,8 +372,6 @@ class AsyncMessageOperation:
             if runtime is not None:
                 context.resource_id = self.chat.remote_id or self.chat.id
                 context.result = response
-                context = await run_pipeline_unwrapped(runtime.result_pipeline, context)
-                response = context.result
             response_message.response = response
             self._response = response
 
@@ -382,7 +379,7 @@ class AsyncMessageOperation:
             if telemetry is not None:
                 telemetry.record_success(duration_s)
             if runtime is not None:
-                await runtime.emit(
+                await runtime.emit_safe(
                     "chat.send.completed",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,

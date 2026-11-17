@@ -22,7 +22,7 @@ from eventflow import (
 
 from ..errors import ProviderError
 from .hooks import OperationHooks
-from .operations import build_message_request_pipeline, build_result_pipeline
+from .operations import build_message_request_pipeline
 from .scope import ProviderResourceScope
 from .state import (
     _LIFECYCLE_TERMINAL_STATES,
@@ -45,6 +45,9 @@ class _ActiveOperation:
 
 _ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = contextvars.ContextVar(
     "webai_active_operations", default=()
+)
+_CLOSING_RUNTIME: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "webai_closing_runtime", default=None
 )
 _log = logging.getLogger(__name__)
 
@@ -74,7 +77,6 @@ class ProviderRuntime:
             transitions=_LIFECYCLE_TRANSITIONS,
             terminal=_LIFECYCLE_TERMINAL_STATES,
         )
-        self.result_pipeline = build_result_pipeline()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scope: ProviderResourceScope | None = None
         self._opened = False
@@ -188,6 +190,14 @@ class ProviderRuntime:
         resource_id: str | None = None,
         payload: object | None = None,
     ) -> None:
+        """Publish an event to async subscribers and bounded off-loop sync subscribers.
+
+        Async ``self.events`` delivery is awaited directly without dropping.
+        When ``self.sync_events`` has subscribers, delivery runs on a bounded
+        single-worker ``BoundedWorkPool(max_workers=1, max_pending=512)``; if the
+        queue saturates, the dropped sync dispatch is recorded in
+        ``self.telemetry.sync_event_drops`` and logged.
+        """
         self._event_sequence += 1
         event = EventEnvelope(
             event=name,
@@ -207,10 +217,12 @@ class ProviderRuntime:
                 try:
                     self._sync_event_pool.submit(self.sync_events.publish, event)
                 except Exception as error:
+                    self.telemetry.record_sync_event_drop()
                     _log.warning(
-                        "Sync event dispatch skipped: event=%s error=%s",
+                        "Sync event dispatch skipped: event=%s error=%s drops=%d",
                         name,
                         type(error).__name__,
+                        self.telemetry.sync_event_drops,
                     )
         await self.events.publish(event)
 
@@ -229,44 +241,80 @@ class ProviderRuntime:
         finally:
             await asyncio.to_thread(self._close_sync_events)
 
+    async def emit_safe(
+        self,
+        name: str,
+        *,
+        operation_id: str | None = None,
+        resource_id: str | None = None,
+        payload: object | None = None,
+    ) -> None:
+        """Publish an observer event without letting a dispatch failure affect the caller."""
+        try:
+            await self.emit(
+                name, operation_id=operation_id, resource_id=resource_id, payload=payload
+            )
+        except Exception as error:
+            _log.warning("Event dispatch failed: event=%s error=%s", name, type(error).__name__)
+
     async def open(
         self, prepare_fn: Callable[[], Awaitable[None]], close_fn: Callable[[], Awaitable[None]]
     ) -> None:
-        async with self._lifecycle_lock:
-            await self._open_unlocked(prepare_fn, close_fn)
+        await self._open(prepare_fn, close_fn, only_if_closed=False)
 
     async def ensure_open(
         self, prepare_fn: Callable[[], Awaitable[None]], close_fn: Callable[[], Awaitable[None]]
     ) -> bool:
         """Open the runtime if not already opened; return True when opened by this call."""
-        async with self._lifecycle_lock:
-            if self._opened:
-                return False
-            await self._open_unlocked(prepare_fn, close_fn)
-            return True
+        return await self._open(prepare_fn, close_fn, only_if_closed=True)
+
+    async def _open(
+        self,
+        prepare_fn: Callable[[], Awaitable[None]],
+        close_fn: Callable[[], Awaitable[None]],
+        *,
+        only_if_closed: bool,
+    ) -> bool:
+        """Transition under the lifecycle lock; publish events after releasing it.
+
+        Lifecycle subscribers may therefore await normal provider operations without
+        waiting on the lock that is still held by the opening call.
+        """
+        pending: list[tuple[str, object | None]] = []
+        opened_here = False
+        try:
+            async with self._lifecycle_lock:
+                if only_if_closed and self._opened:
+                    return False
+                opened_here = await self._open_unlocked(prepare_fn, close_fn, pending)
+        finally:
+            for name, payload in pending:
+                await self.emit_safe(name, payload=payload)
+        return opened_here
 
     async def _open_unlocked(
-        self, prepare_fn: Callable[[], Awaitable[None]], close_fn: Callable[[], Awaitable[None]]
-    ) -> None:
+        self,
+        prepare_fn: Callable[[], Awaitable[None]],
+        close_fn: Callable[[], Awaitable[None]],
+        pending: list[tuple[str, object | None]],
+    ) -> bool:
+        if self.lifecycle.state == LifecycleState.CLOSE_FAILED:
+            raise ProviderError("Provider cleanup failed; call close() again before reopening")
         if self._closed or (self._closing and not self.has_active_operation()):
             raise ProviderError("A closed provider cannot be reopened")
         if self._opened:
-            return
+            return False
         self._loop = asyncio.get_running_loop()
         if self.lifecycle.can_transition(LifecycleState.OPENING):
             self.lifecycle.transition(LifecycleState.OPENING)
-        await self.emit("provider.opening")
+        pending.append(("provider.opening", None))
         scope = ProviderResourceScope()
         try:
             await prepare_fn()
         except BaseException as error:
             if self.lifecycle.can_transition(LifecycleState.OPEN_FAILED):
                 self.lifecycle.transition(LifecycleState.OPEN_FAILED)
-            with contextlib.suppress(Exception):
-                await self.emit(
-                    "provider.open_failed",
-                    payload={"error_type": type(error).__name__},
-                )
+            pending.append(("provider.open_failed", {"error_type": type(error).__name__}))
             with contextlib.suppress(Exception):
                 await close_fn()
             await scope.aclose()
@@ -277,9 +325,12 @@ class ProviderRuntime:
         self._closed = False
         if self.lifecycle.can_transition(LifecycleState.OPEN):
             self.lifecycle.transition(LifecycleState.OPEN)
-        await self.emit("provider.opened")
+        pending.append(("provider.opened", None))
+        return True
 
     async def close(self, close_fn: Callable[[], Awaitable[None]]) -> None:
+        if _CLOSING_RUNTIME.get() == id(self):
+            raise ProviderError("close() cannot be awaited from a provider closing event callback")
         if self.has_active_operation():
             raise ProviderError("Cannot close a provider from one of its active operations")
         async with self._lifecycle_lock:
@@ -304,36 +355,34 @@ class ProviderRuntime:
             raise asyncio.CancelledError
 
     async def _finish_close(self, close_fn: Callable[[], Awaitable[None]]) -> None:
-        with contextlib.suppress(Exception):
-            await self.emit("provider.closing")
-        async with self._lifecycle_condition:
-            await self._lifecycle_condition.wait_for(lambda: self._active_operations == 0)
-        scope, self._scope = self._scope, None
-        self._opened = False
-        close_error: BaseException | None = None
+        """Release resources; a failed cleanup keeps its scope so close() can be retried."""
+        token = _CLOSING_RUNTIME.set(id(self))
         try:
-            if scope is not None:
-                await scope.aclose()
-            else:
-                await close_fn()
-        except BaseException as error:
-            close_error = error
-            if self.lifecycle.can_transition(LifecycleState.CLOSE_FAILED):
-                self.lifecycle.transition(LifecycleState.CLOSE_FAILED)
-            with contextlib.suppress(Exception):
-                await self.emit(
-                    "provider.close_failed",
-                    payload={"error_type": type(error).__name__},
+            await self.emit_safe("provider.closing")
+            async with self._lifecycle_condition:
+                await self._lifecycle_condition.wait_for(lambda: self._active_operations == 0)
+            self._opened = False
+            try:
+                if self._scope is not None:
+                    await self._scope.aclose()
+                else:
+                    await close_fn()
+            except BaseException as error:
+                if self.lifecycle.can_transition(LifecycleState.CLOSE_FAILED):
+                    self.lifecycle.transition(LifecycleState.CLOSE_FAILED)
+                await self.emit_safe(
+                    "provider.close_failed", payload={"error_type": type(error).__name__}
                 )
-            raise
-        finally:
+                raise
+            self._scope = None
             self._closed = True
+            if self.lifecycle.can_transition(LifecycleState.CLOSED):
+                self.lifecycle.transition(LifecycleState.CLOSED)
+            await self.emit_safe("provider.closed")
+            await self._close_events()
+        finally:
+            _CLOSING_RUNTIME.reset(token)
+            self._close_task = None
             async with self._lifecycle_condition:
                 self._closing = False
                 self._lifecycle_condition.notify_all()
-            if close_error is None:
-                if self.lifecycle.can_transition(LifecycleState.CLOSED):
-                    self.lifecycle.transition(LifecycleState.CLOSED)
-                with contextlib.suppress(Exception):
-                    await self.emit("provider.closed")
-            await self._close_events()

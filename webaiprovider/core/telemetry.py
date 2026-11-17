@@ -16,6 +16,7 @@ class ProviderTelemetry:
         "_total_seconds",
         "_max_seconds",
         "_ttft_records",
+        "_sync_event_drops",
     )
 
     def __init__(self) -> None:
@@ -26,6 +27,7 @@ class ProviderTelemetry:
         self._total_seconds: float = 0.0
         self._max_seconds: float = 0.0
         self._ttft_records: deque[float] = deque(maxlen=256)
+        self._sync_event_drops: int = 0
 
     def record_call(self) -> None:
         self._calls += 1
@@ -50,6 +52,13 @@ class ProviderTelemetry:
     def record_ttft(self, seconds: float) -> None:
         if seconds >= 0.0:
             self._ttft_records.append(seconds)
+
+    def record_sync_event_drop(self) -> None:
+        self._sync_event_drops += 1
+
+    @property
+    def sync_event_drops(self) -> int:
+        return self._sync_event_drops
 
     @property
     def median_ttft(self) -> float | None:
@@ -76,6 +85,7 @@ class ProviderTelemetry:
             "total_seconds": self._total_seconds,
             "max_seconds": self._max_seconds,
             "median_ttft": self.median_ttft,
+            "sync_event_drops": self._sync_event_drops,
         }
 
 

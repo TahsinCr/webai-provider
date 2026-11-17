@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -12,6 +13,8 @@ from ..resources.message.types import MessageAction
 from ..resources.model.model import EffortRef, ModelRef, ModelSelection
 from .hooks import OperationHooks
 from .types import OperationContext
+
+_log = logging.getLogger(__name__)
 
 
 async def run_pipeline_unwrapped(
@@ -153,25 +156,6 @@ def build_message_request_pipeline(
     return pipeline
 
 
-def build_result_pipeline() -> AsyncPipeline[OperationContext]:
-    """Build the verification and normalization result pipeline."""
-    pipeline: AsyncPipeline[OperationContext] = AsyncPipeline()
-
-    async def verify_result(context: OperationContext) -> OperationContext:
-        return context
-
-    async def normalize_result(context: OperationContext) -> OperationContext:
-        return context
-
-    async def build_resource(context: OperationContext) -> OperationContext:
-        return context
-
-    pipeline.add("verify_result", verify_result)
-    pipeline.add("normalize_result", normalize_result)
-    pipeline.add("build_resource", build_resource)
-    return pipeline
-
-
 async def execute_with_hooks(
     *,
     operation_name: str,
@@ -189,7 +173,16 @@ async def execute_with_hooks(
         result = await work(context)
         context.result = result
         if on_success_event is not None:
-            await on_success_event(context)
+            # The remote work already succeeded; an observer failure must not turn it into an error.
+            try:
+                await on_success_event(context)
+            except Exception as event_error:
+                context.metadata["success_event_error"] = type(event_error).__name__
+                _log.warning(
+                    "Success event dispatch failed: operation=%s error_type=%s",
+                    operation_name,
+                    type(event_error).__name__,
+                )
         await OperationHooks.run_lifecycle(hooks_chain, "on_success", operation_name, context)
         return context.result
     except (asyncio.CancelledError, OperationCancelledError) as error:
