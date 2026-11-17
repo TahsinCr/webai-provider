@@ -774,6 +774,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             type("IncompleteManageable", (ManageableCollection,), {})()
 
     async def test_include_projects_paginates_all_pages_and_bounds_concurrency(self) -> None:
+        project_reads_started = asyncio.Event()
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
@@ -794,13 +795,18 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
             async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
                 del cursor, limit
-                return Page(
-                    (
-                        Conversation("c-loose", "Loose"),
-                        Conversation("c-shared", "Shared"),
-                    ),
-                    None,
-                )
+                self.active_fetches += 1
+                try:
+                    await project_reads_started.wait()
+                    return Page(
+                        (
+                            Conversation("c-loose", "Loose"),
+                            Conversation("c-shared", "Shared"),
+                        ),
+                        None,
+                    )
+                finally:
+                    self.active_fetches -= 1
 
             async def _list_projects_data(self, *, cursor: str | None = None):
                 self.project_page_calls.append(cursor)
@@ -810,6 +816,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 )
 
             async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+                project_reads_started.set()
                 self.page_calls.append((project_id, cursor))
                 self.active_fetches += 1
                 self.max_active_fetches = max(self.max_active_fetches, self.active_fetches)
@@ -854,7 +861,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         async with PaginatedProvider(account) as provider:
-            chats = await provider.chats.refresh(include_projects=True)
+            chats = await asyncio.wait_for(provider.chats.refresh(include_projects=True), timeout=2)
 
         self.assertLessEqual(provider.max_active_fetches, 4)
         self.assertEqual(provider.project_page_calls, [None, "projects-page-2"])

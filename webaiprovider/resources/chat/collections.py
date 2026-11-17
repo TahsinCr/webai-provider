@@ -99,18 +99,24 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
             limit_arg = page_limit or self._default_page_size
             raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
             page = _require_conversation_page(raw_page)
-            chats: list[AsyncChat] = []
-            for item in page.items:
-                chat = _chat_from_conversation(item, session)
-                if include_projects or chat.project is None:
-                    chats.append(chat)
-            return Page(tuple(chats), page.next_cursor)
+            chats = tuple(
+                _chat_from_conversation(item, session)
+                for item in page.items
+                if include_projects or item.project is None
+            )
+            return Page(chats, page.next_cursor)
 
-    async def _fetch_project_chats(self, projects: list[AsyncProject]) -> list[AsyncChat]:
+    async def _fetch_project_chats(
+        self, projects: list[AsyncProject], slots: asyncio.Semaphore
+    ) -> list[AsyncChat]:
         project_map = {p.remote_id: p for p in projects if p.remote_id}
         session = self.provider
 
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
+            async with slots:
+                return await fetch_pages(project)
+
+        async def fetch_pages(project: AsyncProject) -> list[AsyncChat]:
             assert project.remote_id is not None
             chats: list[AsyncChat] = []
             cursor: str | None = None
@@ -150,19 +156,29 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         if validated == 0:
             return []
         session = self.provider
+        slots = asyncio.Semaphore(_PROJECT_CHAT_CONCURRENCY)
+        collect_normal = super()._collect_remote
+
+        async def normal_chats():
+            async with slots:
+                return await collect_normal(limit=None)
+
+        async def project_chats():
+            projects = await session.projects.list(limit=None)
+            return await self._fetch_project_chats(projects, slots)
+
         async with session.runtime.activity():
             session._require_provider()
-            normal_task = asyncio.create_task(super()._collect_remote(limit=None))
-            projects_task = asyncio.create_task(session.projects.list(limit=None))
+            normal_task = asyncio.create_task(normal_chats())
+            projects_task = asyncio.create_task(project_chats())
             try:
-                normal_chats, projects = await asyncio.gather(normal_task, projects_task)
+                normal, scoped = await asyncio.gather(normal_task, projects_task)
             except BaseException:
                 normal_task.cancel()
                 projects_task.cancel()
                 await asyncio.gather(normal_task, projects_task, return_exceptions=True)
                 raise
-            project_chats = await self._fetch_project_chats(projects)
-            merged = _merge_chat_lists(normal_chats, project_chats)
+            merged = _merge_chat_lists(normal, scoped)
             return merged if validated is None else merged[:validated]
 
     async def _iter_remote_pages(self, *, limit: int | None = None, **options: Any):

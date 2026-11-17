@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from eventflow import KeyedConcurrencyLimiter, SingleFlight
 
@@ -20,21 +20,23 @@ async def gather_bounded(
         return []
     if len(items) == 1:
         return [await worker(items[0])]
-    semaphore = asyncio.Semaphore(max(1, limit))
+    pending = iter(enumerate(items))
+    results: list[R | None] = [None] * len(items)
 
-    async def run_one(item: T) -> R:
-        async with semaphore:
-            return await worker(item)
+    async def run_worker() -> None:
+        for index, item in pending:
+            results[index] = await worker(item)
 
-    tasks = [asyncio.create_task(run_one(item)) for item in items]
+    tasks = [asyncio.create_task(run_worker()) for _ in range(min(len(items), max(1, limit)))]
     try:
-        return list(await asyncio.gather(*tasks))
+        await asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+    return cast(list[R], results)
 
 
 class ConcurrencyCoordinator:

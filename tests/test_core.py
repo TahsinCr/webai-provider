@@ -5,7 +5,7 @@ import unittest
 
 from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import MultiDimensionBoundedCache
-from webaiprovider.core.concurrency import ConcurrencyCoordinator
+from webaiprovider.core.concurrency import ConcurrencyCoordinator, gather_bounded
 from webaiprovider.core.scope import ProviderResourceScope
 from webaiprovider.core.telemetry import (
     ProviderTelemetry,
@@ -15,6 +15,18 @@ from webaiprovider.core.telemetry import (
 
 
 class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bounded_gather_reuses_workers_and_preserves_input_order(self) -> None:
+        tasks = set()
+
+        async def read(index: int) -> int:
+            tasks.add(asyncio.current_task())
+            if index % 2 == 0:
+                await asyncio.sleep(0)
+            return index
+
+        self.assertEqual(await gather_bounded(range(32), read, limit=4), list(range(32)))
+        self.assertEqual(len(tasks), 4)
+
     async def test_keyed_limiter_allows_concurrency_within_limit(self) -> None:
         coordinator = ConcurrencyCoordinator(max_concurrency_per_key=2)
         key = ("chatgpt", "acc_1")
