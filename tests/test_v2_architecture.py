@@ -27,6 +27,7 @@ from webaiprovider import (
     SourcesCollection,
     SyncOperationHooks,
     TimingMetrics,
+    UnsupportedOperationError,
 )
 from webaiprovider.base import (
     BaseAttachmentAdapter,
@@ -884,6 +885,278 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
         finally:
             sync_provider.close()
             self.assertEqual(sync_provider.lifecycle_state, LifecycleState.CLOSED)
+
+
+class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
+    async def test_p1_01_find_raises_ambiguous_when_exact_and_partial_match(self) -> None:
+        acc = _account()
+        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
+        c_exact = Conversation(
+            origin=Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-exact"),
+            title="Python",
+        )
+        c_partial = Conversation(
+            origin=Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-partial"),
+            title="Python Eğitimi",
+        )
+        chat_adapter.pages = [([c_exact, c_partial], None)]
+        chat_adapter.conversations = {"c-exact": c_exact, "c-partial": c_partial}
+        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        await provider.open()
+        try:
+            with self.assertRaises(AmbiguousMatchError):
+                await provider.chats.find("Python")
+            exact = await provider.chats.find("Python", exact=True)
+            self.assertEqual(exact.remote_id, "c-exact")
+        finally:
+            await provider.close()
+
+    async def test_p1_02_chat_prepared_vs_created_on_conversation_bound(self) -> None:
+        provider, _ = _build_runtime_provider()
+        seen: list[tuple[str, str | None]] = []
+
+        async def record_event(event: EventEnvelope[str]) -> None:
+            seen.append((event.event, event.metadata.get("resource_id")))
+
+        await provider.events.subscribe(
+            record_event,
+            event_filter=EventFilter(
+                event_type=EventEnvelope,
+                predicate=lambda event: event.event in {"chat.prepared", "chat.created"},
+            ),
+        )
+        await provider.open()
+        try:
+            chat = await provider.chats.create("Yeni")
+            self.assertEqual(seen, [("chat.prepared", chat.id)])
+
+            await chat.messages.create("ilk mesaj")
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(seen[1][0], "chat.created")
+            self.assertEqual(seen[1][1], chat.remote_id)
+
+            await chat.messages.create("ikinci mesaj")
+            self.assertEqual(len(seen), 2)
+        finally:
+            await provider.close()
+
+    async def test_p1_03_async_lifecycle_callbacks_do_not_deadlock(self) -> None:
+        acc = _account()
+        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
+        chat_adapter.seed_paginated(2, page_size=10)
+        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+
+        results: dict[str, object] = {}
+
+        async def on_opening(_event: EventEnvelope[str]) -> None:
+            await provider.open()
+            results["opening_open"] = True
+
+        async def on_opened(_event: EventEnvelope[str]) -> None:
+            results["opened_chats"] = len(await provider.chats.list())
+
+        async def on_closing(_event: EventEnvelope[str]) -> None:
+            try:
+                await provider.close()
+            except ProviderError as exc:
+                results["closing_error"] = str(exc)
+
+        await provider.events.subscribe(
+            on_opening,
+            event_filter=EventFilter(
+                event_type=EventEnvelope, predicate=lambda e: e.event == "provider.opening"
+            ),
+        )
+        await provider.events.subscribe(
+            on_opened,
+            event_filter=EventFilter(
+                event_type=EventEnvelope, predicate=lambda e: e.event == "provider.opened"
+            ),
+        )
+        await provider.events.subscribe(
+            on_closing,
+            event_filter=EventFilter(
+                event_type=EventEnvelope, predicate=lambda e: e.event == "provider.closing"
+            ),
+        )
+
+        await provider.open()
+        self.assertEqual(results.get("opening_open"), True)
+        self.assertEqual(results.get("opened_chats"), 2)
+        await provider.close()
+        self.assertIn("closing_error", results)
+
+    async def test_p1_04_close_failed_preserves_scope_and_allows_retry(self) -> None:
+        provider, _ = _build_runtime_provider()
+        await provider.open()
+
+        attempts = 0
+
+        async def flaky_cleanup() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("cleanup transient failure")
+
+        provider.runtime._scope.defer(flaky_cleanup)
+
+        with self.assertRaises(Exception):
+            await provider.close()
+        self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSE_FAILED)
+
+        with self.assertRaises(ProviderError):
+            await provider.open()
+
+        await provider.close()
+        self.assertEqual(attempts, 2)
+        self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
+
+    async def test_p1_05_success_event_error_does_not_fail_mutation_or_trigger_on_error(
+        self,
+    ) -> None:
+        provider, _ = _build_runtime_provider()
+        on_error_calls: list[str] = []
+
+        async def broken_listener(_event: EventEnvelope[str]) -> None:
+            raise RuntimeError("observer failed")
+
+        async def record_error(ctx) -> None:
+            on_error_calls.append(ctx.operation_name)
+
+        await provider.events.subscribe(
+            broken_listener,
+            event_filter=EventFilter(
+                event_type=EventEnvelope, predicate=lambda e: e.event == "chat.prepared"
+            ),
+        )
+        provider.hooks.on_error(record_error)
+
+        await provider.open()
+        try:
+            chat = await provider.chats.create("Safe Chat")
+            self.assertEqual(chat.title, "Safe Chat")
+            self.assertEqual(on_error_calls, [])
+        finally:
+            await provider.close()
+
+    async def test_p2_02_project_attachments_hooks_wire_into_add_and_remove(self) -> None:
+        provider, _ = _build_runtime_provider()
+        await provider.open()
+        try:
+            project = await provider.projects.create("Files")
+            hook_ops: list[str] = []
+
+            async def before(ctx) -> None:
+                hook_ops.append(f"before:{ctx.resource_id}")
+
+            async def after(ctx) -> None:
+                hook_ops.append(f"after:{ctx.resource_id}")
+
+            project.attachments.hooks.before(before)
+            project.attachments.hooks.on_success(after)
+
+            with tempfile.NamedTemporaryFile(suffix=".txt") as tmp:
+                tmp.write(b"hello")
+                tmp.flush()
+                att = await project.attachments.add(tmp.name)
+                removed = await project.attachments.remove(att)
+                self.assertTrue(removed)
+
+            target_id = project.remote_id or project.id
+            self.assertEqual(
+                hook_ops,
+                [
+                    f"before:{target_id}",
+                    f"after:{target_id}",
+                    f"before:{target_id}",
+                    f"after:{target_id}",
+                ],
+            )
+        finally:
+            await provider.close()
+
+    async def test_p2_03_and_p2_04_messages_search_prune_and_remote_delete_guard(self) -> None:
+        acc = _account()
+        chat_adapter = _ScriptedChatAdapter(acc.provider, acc.id)
+        origin = Origin(provider_id=acc.provider, account_id=acc.id, remote_id="c-hist")
+        chat_adapter.conversations["c-hist"] = Conversation(
+            origin=origin,
+            title="Hist",
+            messages=(
+                MessageData(
+                    id="u-1", role="user", content=(Content(kind="text", text="alpha question"),)
+                ),
+                MessageData(
+                    id="a-1", role="assistant", content=(Content(kind="text", text="beta answer"),)
+                ),
+            ),
+        )
+        provider, _ = _build_runtime_provider(account=acc, chat_adapter=chat_adapter)
+        await provider.open()
+        try:
+            chat = await provider.chats.get("c-hist")
+            found = await chat.messages.search("beta")
+            self.assertEqual([m.id for m in found], ["a-1"])
+            self.assertEqual((await chat.messages.find("alpha")).id, "u-1")
+
+            with self.assertRaises(UnsupportedOperationError):
+                await chat.messages.delete("a-1")
+
+            from webaiprovider.resources.message.message import AsyncMessage
+
+            local_msg = AsyncMessage(role="user", content="unsent draft", chat=chat)
+            chat.messages._track_local_message(local_msg)
+            await chat.messages.delete(local_msg)
+            self.assertNotIn(local_msg.id, chat.messages._known_by_id)
+
+            chat_adapter.conversations["c-hist"] = Conversation(
+                origin=origin,
+                title="Hist",
+                messages=(
+                    MessageData(
+                        id="u-1",
+                        role="user",
+                        content=(Content(kind="text", text="alpha question"),),
+                    ),
+                ),
+            )
+            await chat.messages.refresh()
+            self.assertNotIn("a-1", chat.messages._known_by_id)
+        finally:
+            await provider.close()
+
+    def test_p2_05_derived_collections_have_no_fake_fetch_page(self) -> None:
+        from webaiprovider.resources.message.collections import AsyncResponsesCollection
+        from webaiprovider.resources.project.project import AsyncProjectAttachments
+
+        self.assertFalse(hasattr(AsyncResponsesCollection, "_fetch_page"))
+        self.assertFalse(hasattr(AsyncProjectAttachments, "_fetch_page"))
+
+    def test_p2_06_provider_type_lives_in_base_without_provider_cycle(self) -> None:
+        from webaiprovider.base import ProviderType as BaseProviderType
+        from webaiprovider.provider import ProviderType as PublicProviderType
+
+        self.assertIs(BaseProviderType, PublicProviderType)
+
+    async def test_p2_07_sync_event_pool_overflow_records_drop_in_telemetry(self) -> None:
+        provider, _ = _build_runtime_provider()
+        async_seen: list[str] = []
+
+        async def on_async(event: EventEnvelope[str]) -> None:
+            async_seen.append(event.event)
+
+        await provider.events.subscribe(on_async)
+        provider.runtime.sync_events.subscribe(lambda _e: None)
+
+        class _FullPool:
+            def submit(self, *_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("pool full")
+
+        provider.runtime._sync_event_pool = _FullPool()  # type: ignore[assignment]
+        await provider.runtime.emit("custom.test")
+        self.assertEqual(provider.runtime.telemetry.sync_event_drops, 1)
+        self.assertEqual(provider.runtime.telemetry.snapshot()["sync_event_drops"], 1)
+        self.assertEqual(async_seen, ["custom.test"])
 
 
 if __name__ == "__main__":
