@@ -2,7 +2,27 @@ from __future__ import annotations
 
 from enum import Enum
 
-from eventflow import StateMachine
+
+class LifecycleState(str, Enum):
+    CREATED = "CREATED"
+    OPENING = "OPENING"
+    OPEN = "OPEN"
+    OPEN_FAILED = "OPEN_FAILED"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
+    CLOSE_FAILED = "CLOSE_FAILED"
+
+
+_LIFECYCLE_TRANSITIONS: dict[LifecycleState, set[LifecycleState]] = {
+    LifecycleState.CREATED: {LifecycleState.OPENING, LifecycleState.CLOSING},
+    LifecycleState.OPENING: {LifecycleState.OPEN, LifecycleState.OPEN_FAILED},
+    LifecycleState.OPEN: {LifecycleState.CLOSING},
+    LifecycleState.OPEN_FAILED: {LifecycleState.OPENING, LifecycleState.CLOSING},
+    LifecycleState.CLOSING: {LifecycleState.CLOSED, LifecycleState.CLOSE_FAILED},
+    LifecycleState.CLOSED: set(),
+    LifecycleState.CLOSE_FAILED: {LifecycleState.CLOSING, LifecycleState.CLOSED},
+}
+_LIFECYCLE_TERMINAL_STATES = {LifecycleState.CLOSED}
 
 
 class OperationState(str, Enum):
@@ -15,59 +35,30 @@ class OperationState(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-_OPERATION_TRANSITIONS: dict[str, set[str]] = {
-    OperationState.PENDING.value: {
-        OperationState.PREPARING.value,
-        OperationState.CANCELLED.value,
+_OPERATION_TRANSITIONS: dict[OperationState, set[OperationState]] = {
+    OperationState.PENDING: {OperationState.PREPARING, OperationState.CANCELLED},
+    OperationState.PREPARING: {
+        OperationState.SENDING,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
     },
-    OperationState.PREPARING.value: {
-        OperationState.SENDING.value,
-        OperationState.FAILED.value,
-        OperationState.CANCELLED.value,
+    OperationState.SENDING: {
+        OperationState.STREAMING,
+        OperationState.COMPLETED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
     },
-    OperationState.SENDING.value: {
-        OperationState.STREAMING.value,
-        OperationState.COMPLETED.value,
-        OperationState.FAILED.value,
-        OperationState.CANCELLED.value,
+    OperationState.STREAMING: {
+        OperationState.COMPLETED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
     },
-    OperationState.STREAMING.value: {
-        OperationState.COMPLETED.value,
-        OperationState.FAILED.value,
-        OperationState.CANCELLED.value,
-    },
-    OperationState.COMPLETED.value: set(),
-    OperationState.FAILED.value: set(),
-    OperationState.CANCELLED.value: set(),
+    OperationState.COMPLETED: set(),
+    OperationState.FAILED: set(),
+    OperationState.CANCELLED: set(),
 }
-
-_TERMINAL_STATES: set[str] = {
-    OperationState.COMPLETED.value,
-    OperationState.FAILED.value,
-    OperationState.CANCELLED.value,
+_OPERATION_TERMINAL_STATES = {
+    OperationState.COMPLETED,
+    OperationState.FAILED,
+    OperationState.CANCELLED,
 }
-
-
-class OperationStateMachine:
-    __slots__ = ("_machine",)
-
-    def __init__(self, initial: OperationState | str = OperationState.PENDING) -> None:
-        init_val = initial.value if isinstance(initial, OperationState) else str(initial)
-        self._machine = StateMachine(
-            initial=init_val,
-            transitions=_OPERATION_TRANSITIONS,
-            terminal=_TERMINAL_STATES,
-        )
-
-    @property
-    def state(self) -> str:
-        return self._machine.state
-
-    def transition(self, target: OperationState | str) -> str:
-        target_val = target.value if isinstance(target, OperationState) else str(target)
-        self._machine.transition(target_val)
-        return self._machine.state
-
-    def can_transition(self, target: OperationState | str) -> bool:
-        target_val = target.value if isinstance(target, OperationState) else str(target)
-        return self._machine.can_transition(target_val)

@@ -7,7 +7,6 @@ from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import MultiDimensionBoundedCache
 from webaiprovider.core.concurrency import ConcurrencyCoordinator
 from webaiprovider.core.scope import ProviderResourceScope
-from webaiprovider.core.state import OperationState, OperationStateMachine
 from webaiprovider.core.telemetry import (
     ProviderTelemetry,
     correlation_context,
@@ -126,28 +125,6 @@ class CorePortalBridgeTests(unittest.TestCase):
 
             result = bridge.call(add(15, 27))
             self.assertEqual(result, 42)
-
-
-class CoreStateTests(unittest.TestCase):
-    def test_operation_state_machine_valid_transitions(self) -> None:
-        sm = OperationStateMachine()
-        self.assertEqual(sm.state, OperationState.PENDING.value)
-
-        sm.transition(OperationState.PREPARING)
-        self.assertEqual(sm.state, OperationState.PREPARING.value)
-
-        sm.transition(OperationState.SENDING)
-        self.assertEqual(sm.state, OperationState.SENDING.value)
-
-        sm.transition(OperationState.STREAMING)
-        self.assertEqual(sm.state, OperationState.STREAMING.value)
-
-        sm.transition(OperationState.COMPLETED)
-        self.assertEqual(sm.state, OperationState.COMPLETED.value)
-
-    def test_operation_state_machine_invalid_transition(self) -> None:
-        sm = OperationStateMachine()
-        self.assertFalse(sm.can_transition(OperationState.STREAMING))
 
 
 class CoreTelemetryTests(unittest.TestCase):
