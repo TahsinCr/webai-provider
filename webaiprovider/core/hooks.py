@@ -10,7 +10,6 @@ from typing import Any
 from .types import HookDispatchResult, OperationContext
 
 _log = logging.getLogger(__name__)
-_HOOK_STAGES = ("before", "on_success", "on_error", "on_cancelled", "on_finally")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,9 +23,7 @@ class OperationHooks:
 
     def __init__(self) -> None:
         self._handlers: dict[str, list[_HookEntry]] = {}
-        self._lifecycle: dict[str, dict[str, list[_HookEntry]]] = {
-            stage: {} for stage in _HOOK_STAGES
-        }
+        self._lifecycle: dict[str, dict[str, list[_HookEntry]]] = {}
 
     def on(
         self,
@@ -61,14 +58,14 @@ class OperationHooks:
         off_loop: bool = False,
     ) -> Any:
         if callable(event_or_handler) and handler is None:
-            self._lifecycle[stage].setdefault("*", []).append(
+            self._lifecycle.setdefault(stage, {}).setdefault("*", []).append(
                 _HookEntry(event_or_handler, off_loop=off_loop)
             )
             return event_or_handler
         event_name = event_or_handler if isinstance(event_or_handler, str) else "*"
 
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self._lifecycle[stage].setdefault(event_name, []).append(
+            self._lifecycle.setdefault(stage, {}).setdefault(event_name, []).append(
                 _HookEntry(fn, off_loop=off_loop)
             )
             return fn
@@ -136,7 +133,9 @@ class OperationHooks:
                 )
 
     def _entries_for(self, stage: str, operation_name: str) -> list[_HookEntry]:
-        stage_map = self._lifecycle[stage]
+        stage_map = self._lifecycle.get(stage)
+        if stage_map is None:
+            return []
         exact = stage_map.get(operation_name)
         wildcard = stage_map.get("*")
         if not exact and not wildcard:

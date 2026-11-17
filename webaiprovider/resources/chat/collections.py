@@ -56,25 +56,18 @@ def _merge_chat_lists(
     normal_chats: list[AsyncChat],
     project_chats: list[AsyncChat],
 ) -> list[AsyncChat]:
-    by_key: dict[str, AsyncChat] = {}
-    order: list[str] = []
-    for chat in normal_chats:
-        key = chat.remote_id or chat.id
-        if key not in by_key:
-            order.append(key)
-        by_key[key] = chat
+    by_key = {chat.remote_id or chat.id: chat for chat in normal_chats}
     for chat in project_chats:
         key = chat.remote_id or chat.id
         existing = by_key.get(key)
         if existing is None:
-            order.append(key)
             by_key[key] = chat
         elif existing.project is None and chat.project is not None:
             existing.project = chat.project
             existing.title = chat.title
             existing.temporary = chat.temporary
             existing.metadata.update(chat.metadata)
-    return [by_key[key] for key in order]
+    return list(by_key.values())
 
 
 class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):

@@ -17,6 +17,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Overlap general and project chat pagination within the existing concurrency limit. Reuse a fixed set of async workers for bounded reads and uploads, and skip constructing chat objects excluded by scope.
 - Share overlapping reads of the same chat's response collection. Use `responses.list(fresh=True)` to request an independent read, and an older result cannot replace a newer applied history.
 - Reduce history reconstruction work for single-part text and turns without sources or artifacts.
+- Reduce allocation during chat listing by creating hook tables on registration and reusing one ordered index when merging project chats.
 - Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
 - Run offline and live API tests separately. The live runner exercises both blocking and async APIs by default, paces account requests, and tracks cleanup and rate-limit skips separately from failures.
 
