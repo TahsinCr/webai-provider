@@ -669,7 +669,11 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
 
         with (
             patch.object(provider.session, "import_cookies") as import_cookies,
-            patch.object(provider, "_load_catalog", new_callable=AsyncMock) as load_catalog,
+            patch.object(
+                provider,
+                "_load_catalog",
+                AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE)),
+            ) as load_catalog,
         ):
             asyncio.run(provider._prepare_session())
 

@@ -100,7 +100,7 @@ class AsyncClaudeProvider(ProjectEditorMixin, AsyncProvider):
             return self._purge_credentials_unlocked()
 
     async def _prepare_session(self) -> None:
-        await self.client.prepare()
+        self._prime_models(await self.client.prepare())
 
     async def _close_session(self) -> None:
         async with self._rename_gate:

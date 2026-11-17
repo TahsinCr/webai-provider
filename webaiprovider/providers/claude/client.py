@@ -141,7 +141,7 @@ class ClaudeClient:
 
     async def prepare(self):
         """Resolve the account workspace and its selectable model catalog once."""
-        await self.discover()
+        return await self.discover()
 
     async def base(self):
         if not self.organization:

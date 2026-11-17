@@ -19,6 +19,7 @@ from webaiprovider.core.telemetry import ProviderTelemetry
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
 from webaiprovider.resources.message.operation import ThinkingEnd, ThinkingReplace
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
+from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
 from webaiprovider.resources.project.types import ProjectData
 
 
@@ -497,7 +498,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
         provider.client.authenticate = AsyncMock()
         provider.client.close = AsyncMock()
-        provider._load_catalog = AsyncMock()
+        provider._load_catalog = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         try:
             await asyncio.wait_for(provider.open(), 1)
             await asyncio.wait_for(provider.open(), 1)
@@ -509,7 +510,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_claude_forget_waits_for_activity_and_deletes_credentials(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "fixture"}))
-        provider.client.prepare = AsyncMock()
+        provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
         provider.editor.close = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()
@@ -600,7 +601,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_direct_patch_drains_on_close_and_rejects_new_operations(self):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        provider.client.prepare = AsyncMock()
+        provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
         provider.editor.close = AsyncMock()
         remote = ProjectData("project", "Before", "Keep")

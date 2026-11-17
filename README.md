@@ -61,7 +61,7 @@ with ChatGPTProvider(account) as provider:
 - `BaseProvider` provides account and provider identity. Use `AsyncProvider` for async work and `Provider` for blocking calls. Use a provider-specific class such as `AsyncChatGPTProvider` for additional features.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory.
 - Remote collections read provider data on demand. `list(limit=50)` hides pagination, `limit=0` skips remote work, and `limit=None` reads all available pages. Collections share `get()`, `search()`, `find()`, `first()`, `last()`, and `single()`. `find(single=True)` raises `AmbiguousMatchError` if more than one item matches.
-- The first model query loads the session catalog. Subsequent queries reuse it, including an empty catalog. Call `provider.models.refresh()` to reload it.
+- Model queries reuse the account catalog loaded when the provider session opens, including an empty catalog. Call `provider.models.refresh()` to reload it.
 - Overlapping calls to `chat.responses.list()` share a history request. Use `chat.responses.list(fresh=True)` for a separate request.
 - `chat.responses.create()`, `edit()`, and `retry()` prepare message operations. Use `operation.stream()` for events or `operation.wait()` for the completed `Response`. It exposes the associated user message, sources, artifacts, and timing for live sends.
 - To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.

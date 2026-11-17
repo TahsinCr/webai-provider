@@ -549,7 +549,7 @@ class AsyncChatGPTProvider(ProjectEditorMixin, AsyncProvider):
                         raise
                     cookies = ProviderCookieFilter.filter_cookies("https://chatgpt.com", cookies)
                     await asyncio.to_thread(self.session_state.import_cookies, cookies)
-            await self._load_catalog()
+            self._prime_models(await self._load_catalog())
             if self._persistent_client and self._http_client is not None:
                 prewarm = getattr(self._http_client, "trigger_sentinel_prewarm", None)
                 if callable(prewarm):

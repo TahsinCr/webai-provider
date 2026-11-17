@@ -32,6 +32,7 @@ from webaiprovider.resources.message.protocol import (
     TextReplacement,
 )
 from webaiprovider.resources.message.types import MessageAction
+from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
 
 
 class GrokClientFixture:
@@ -1487,11 +1488,14 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_warms_models_and_get_chat_warms_continuation(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         provider.client.authenticate = AsyncMock()
-        provider._load_catalog = AsyncMock()
+        provider._load_catalog = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         try:
-            await provider._prepare_session()
+            await provider.open()
+            self.assertEqual(await provider.models.list(), [])
             provider.client.authenticate.assert_awaited_once_with()
             provider._load_catalog.assert_awaited_once_with()
+            await provider.models.refresh()
+            provider._load_catalog.assert_awaited_with(force=True)
 
             provider.client.request = AsyncMock(
                 side_effect=[
@@ -1507,5 +1511,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             chat = await provider._get_chat_data("c-grok")
             self.assertEqual(chat.id, "c-grok")
             self.assertEqual(provider._continuations.get("c-grok"), "a1")
+            provider._forget_session = AsyncMock()
+            await provider.forget_session()
+            await provider.models.list()
+            self.assertEqual(provider._load_catalog.await_count, 3)
         finally:
             await provider.close()

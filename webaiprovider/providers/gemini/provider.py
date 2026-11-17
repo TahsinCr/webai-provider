@@ -201,7 +201,7 @@ class AsyncGeminiProvider(ProjectEditorMixin, AsyncProvider):
         self._chat_metadata.put(conversation_id, list(metadata))
 
     async def _prepare_session(self) -> None:
-        await self._load_catalog()
+        self._prime_models(await self._load_catalog())
 
     async def _close_session(self) -> None:
         async with self._gate, self._connect_gate:

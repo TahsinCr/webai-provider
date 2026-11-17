@@ -114,6 +114,9 @@ class AsyncProvider(BaseProvider):
     def lifecycle_state(self) -> LifecycleState:
         return self.runtime.lifecycle.state
 
+    def _prime_models(self, catalog: ModelCatalog) -> None:
+        self.models._items = tuple(_model_refs_from_catalog(self.id, catalog))
+
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
         async with self.runtime.activity():
             catalog = await self._load_catalog(force=refresh)
@@ -376,8 +379,11 @@ class AsyncProvider(BaseProvider):
             return await self._session_status()
 
     async def forget_session(self) -> SessionStatus:
-        async with self.runtime.activity():
-            return await self._forget_session()
+        async with self.runtime.activity(), self.models._lock:
+            try:
+                return await self._forget_session()
+            finally:
+                self.models._clear()
 
     async def conversation_attachment_count(self, conversation_id: str) -> int | None:
         async with self.runtime.activity():
