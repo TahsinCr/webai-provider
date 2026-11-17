@@ -19,6 +19,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Reduce history reconstruction work for single-part text and turns without sources or artifacts.
 - Reduce allocation during chat listing by creating hook tables on registration and reusing one ordered index when merging project chats.
 - Reuse the account model catalog loaded at session opening for the first model query. Explicit catalog refresh still requests up-to-date options.
+- Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
 - Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
 - Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
 - Run offline and live API tests separately. The live runner exercises both blocking and async APIs by default, paces account requests, and tracks cleanup and rate-limit skips separately from failures.

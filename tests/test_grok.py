@@ -308,6 +308,30 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata.user_message_id, "user-3")
         self.assertEqual(metadata.message_id, "answer-3")
 
+    async def test_public_chat_list_uses_large_pages_and_keeps_the_exact_limit(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        provider._prepare_session = AsyncMock()
+
+        async def list_page(method, path, *, params):
+            self.assertEqual((method, path), ("GET", "/rest/app-chat/conversations"))
+            start = int(params.get("pageToken", 0))
+            end = start + params["pageSize"]
+            return {
+                "conversations": [
+                    {"conversationId": f"chat-{i}", "title": f"Chat {i}"} for i in range(start, end)
+                ],
+                "nextPageToken": str(end),
+            }
+
+        provider.client.request = AsyncMock(side_effect=list_page)
+        async with provider:
+            chats = await provider.chats.list(limit=125)
+        self.assertEqual([chat.remote_id for chat in chats], [f"chat-{i}" for i in range(125)])
+        self.assertEqual(
+            [call.kwargs["params"] for call in provider.client.request.await_args_list],
+            [{"pageSize": 100}, {"pageSize": 25, "pageToken": "100"}],
+        )
+
     async def test_model_catalog_only_exposes_account_available_modes(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
         transport = GrokClientFixture()

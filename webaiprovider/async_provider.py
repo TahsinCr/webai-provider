@@ -64,6 +64,7 @@ class AsyncProvider(BaseProvider):
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
 
     _chat_type = AsyncChat
+    _chat_page_size = 50
     _project_type = AsyncProject
     _projects_collection_type = AsyncProjectsCollection
     capabilities: frozenset[Capability] = frozenset()

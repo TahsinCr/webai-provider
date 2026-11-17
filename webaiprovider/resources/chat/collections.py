@@ -79,6 +79,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
 
     def __init__(self, provider: AsyncProvider) -> None:
         self.provider = provider
+        self._default_page_size = provider._chat_page_size
         self.hooks = OperationHooks()
 
     async def _fetch_page(

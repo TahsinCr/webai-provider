@@ -199,6 +199,7 @@ class AsyncGrokProvider(ProjectEditorMixin, AsyncProvider):
 
     _chat_type = AsyncGrokChat
 
+    _chat_page_size = 100
     capabilities = frozenset(
         {
             Capability.CHAT,
