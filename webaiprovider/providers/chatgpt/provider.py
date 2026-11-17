@@ -98,7 +98,7 @@ class AsyncChatGPTProvider(AsyncProvider):
             if isinstance(chat, AsyncChat)
             else await self.chats.get(chat, include_projects=True)
         )
-        if target_chat.session is not self:
+        if target_chat.provider is not self:
             raise ValueError("Chat must belong to this ChatGPT provider session")
         if target_chat.project is None:
             raise UnsupportedOperationError(

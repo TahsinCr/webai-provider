@@ -1429,10 +1429,12 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
         chat = SimpleNamespace(
             temporary=True,
             remote_id="tmp-1",
-            messages=SimpleNamespace(
+            responses=SimpleNamespace(
                 create=lambda *_a, **_kw: SimpleNamespace(
                     start=AsyncMock(
-                        return_value=SimpleNamespace(message=SimpleNamespace(content="OK"))
+                        return_value=SimpleNamespace(
+                            text="OK", message=SimpleNamespace(content="OK")
+                        )
                     )
                 )
             ),
@@ -1564,6 +1566,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                             self.result = SimpleNamespace(
                                 chat_id=chat_id,
                                 chat=chat_obj,
+                                id=f"m-{chat_id}",
+                                text=text,
+                                content=text,
                                 sources=(),
                                 artifacts=(),
                                 message=MessageData(
@@ -1614,6 +1619,10 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     title = branched.title if cid == "c_branch_real" else root_chat.title
                     return Conversation(cid, title)
 
+                from webaiprovider import AsyncMessage, Response
+
+                root_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
+                branch_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
                 root_msgs_data = [
                     MessageData(
                         "u-1",
@@ -1664,15 +1673,23 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 )
 
                 def bind_chat(cid, title, *, messages_data, rename_hook=None):
-                    chat_obj = AsyncChatGPTChat(id=cid, title=title, session=session)
-                    chat_obj.messages = SimpleNamespace(
+                    chat_obj = AsyncChatGPTChat(id=cid, title=title, provider=session)
+                    resp_obj = Response(
+                        "BR" if cid == "preview-1" else "ROOT",
+                        id=f"m-{cid}",
+                        remote_id=f"m-{cid}",
+                        message=branch_user if cid == "preview-1" else root_user,
+                        chat=chat_obj,
+                        metadata={"actions": ("retry", "branch")},
+                    )
+                    chat_obj.responses = SimpleNamespace(
                         create=lambda *_a, **_kw: make_op(
                             chat_obj,
                             "c_branch_real" if cid == "preview-1" else "c_root",
                             "BR" if cid == "preview-1" else "ROOT",
                             fail_rate=rate_limit_branch if cid == "preview-1" else False,
                         ),
-                        refresh=AsyncMock(return_value=messages_data),
+                        refresh=AsyncMock(return_value=[resp_obj]),
                     )
                     if rename_hook is not None:
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
@@ -1739,11 +1756,19 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     real = await orig_branch(self, message_id, title=title)
                     real.id = "preview-1"
                     real.rename = AsyncMock(side_effect=fake_rename_branched)
-                    real.messages = SimpleNamespace(
+                    real_resp = Response(
+                        "BR",
+                        id="m-c_branch_real",
+                        remote_id="m-c_branch_real",
+                        message=branch_user,
+                        chat=real,
+                        metadata={"actions": ("retry", "branch")},
+                    )
+                    real.responses = SimpleNamespace(
                         create=lambda *_a, **_kw: make_op(
                             real, "c_branch_real", "BR", fail_rate=rate_limit_branch
                         ),
-                        refresh=AsyncMock(return_value=branched_msgs_data),
+                        refresh=AsyncMock(return_value=[real_resp]),
                     )
                     branched = real
                     return real
@@ -1818,15 +1843,6 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     return Conversation(cid, root_chat.title)
                 raise RemoteNotFound("gone")
 
-            root_msgs_data = [
-                MessageData("u-1", "user", (Content("text", "u1"),)),
-                MessageData(
-                    "m-c_root",
-                    "assistant",
-                    (Content("text", "ROOT"),),
-                    actions=("branch",),
-                ),
-            ]
             session = SimpleNamespace(
                 capabilities={
                     Capability.MODELS,
@@ -1842,10 +1858,13 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 get_chat=AsyncMock(side_effect=fake_get_chat),
                 delete_chat=AsyncMock(side_effect=fake_delete_chat),
             )
-            root_chat = AsyncChatGPTChat(id="c_root", title="Root", session=session)
+            root_chat = AsyncChatGPTChat(id="c_root", title="Root", provider=session)
 
             def make_fake_op(target_chat, cid: str, msg_id: str, text: str):
                 result = SimpleNamespace(
+                    id=msg_id,
+                    text=text,
+                    content=text,
                     message=MessageData(
                         msg_id,
                         "assistant",
@@ -1868,9 +1887,19 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
 
                 return _FakeOp()
 
-            root_chat.messages = SimpleNamespace(
+            from webaiprovider import AsyncMessage, Response
+
+            root_turn = Response(
+                "ROOT",
+                id="m-c_root",
+                remote_id="m-c_root",
+                message=AsyncMessage("u1", role="user", id="u-1", remote_id="u-1"),
+                chat=root_chat,
+                metadata={"actions": ("branch",)},
+            )
+            root_chat.responses = SimpleNamespace(
                 create=lambda *_a, **_kw: make_fake_op(root_chat, "c_root", "m-c_root", "ROOT"),
-                refresh=AsyncMock(return_value=root_msgs_data),
+                refresh=AsyncMock(return_value=[root_turn]),
             )
             root_chat.rename = AsyncMock(
                 side_effect=lambda title: setattr(root_chat, "title", title)
@@ -1882,9 +1911,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     remote_id="preview-1",
                     title="Broken branch",
                     metadata={"pending_branch": {"conversation_id": "c_root"}},
-                    session=session,
+                    provider=session,
                 )
-                branched_chat.messages = SimpleNamespace(
+                branched_chat.responses = SimpleNamespace(
                     create=lambda *_a, **_kw: make_fake_op(
                         branched_chat, "c_branch_real", "m-c_branch_real", "BR"
                     ),

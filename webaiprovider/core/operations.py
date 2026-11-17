@@ -69,9 +69,9 @@ def build_message_request_pipeline(
                 raise UnsupportedOperationError("Unsupported message action")
             if not chat.remote_id or not message_id:
                 raise UnsupportedOperationError("Message actions require remote message identities")
-        session_account = getattr(getattr(chat, "session", None), "account", None)
-        if session_account is not None and (
-            session_account.provider != provider_id or session_account.id != account_id
+        provider_account = getattr(getattr(chat, "provider", None), "account", None)
+        if provider_account is not None and (
+            provider_account.provider != provider_id or provider_account.id != account_id
         ):
             raise ValueError("message operation belongs to a different provider account")
         return context
@@ -108,7 +108,7 @@ def build_message_request_pipeline(
             return context
 
         chat = context.parameters["chat"]
-        if chat.session is None:
+        if getattr(chat, "provider", None) is None:
             raise UnsupportedOperationError("Model selection requires an active provider session")
         resolved = await model_resolver(selected)
         context.parameters["resolved_model"] = resolved.model.id

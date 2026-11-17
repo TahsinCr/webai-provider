@@ -151,12 +151,12 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
         await provider.open()
         chat = await provider.chats.create(title="Reentrant send")
-        operation = chat.messages.create("first")
+        operation = chat.responses.create("first")
         nested_errors: list[ProviderError] = []
 
         async def send_from_hook(_event) -> None:
             try:
-                await chat.messages.create("nested").start()
+                await chat.responses.create("nested").start()
             except ProviderError as error:
                 nested_errors.append(error)
 
@@ -175,7 +175,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         chat = await provider.chats.create(title="Context lifetime")
         send_lock = provider.runtime.send_lock(chat.id)
         self.assertIs(send_lock, provider.runtime.send_lock(chat.id))
-        operation = chat.messages.create("first")
+        operation = chat.responses.create("first")
         first_finished = asyncio.Event()
         child_task: asyncio.Task | None = None
 
@@ -186,7 +186,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
 
             async def followup():
                 await first_finished.wait()
-                response = await chat.messages.create("second").start()
+                response = await chat.responses.create("second").start()
                 await provider.close()
                 return response
 
@@ -229,7 +229,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         await provider.open()
         chat = await provider.chats.create(title="Cancellation")
-        operation = chat.messages.create("prompt")
+        operation = chat.responses.create("prompt")
         hook_started = asyncio.Event()
         release_hook = asyncio.Event()
 
@@ -255,7 +255,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
 class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_events_and_updates_operation(self) -> None:
         session = _create_mock_session("claude")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello Claude", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
@@ -306,7 +306,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execute_stream_rejects_unauthenticated_session(self) -> None:
         session = _create_mock_session("claude")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello Claude", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
@@ -323,7 +323,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_events_and_caches_continuation(self) -> None:
         session = _create_mock_session("grok")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello Grok", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
@@ -370,7 +370,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_execute_stream_raises_on_rate_limit(self) -> None:
         session = _create_mock_session("grok")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello Grok", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
@@ -401,7 +401,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_events_and_resolves_image_links(self) -> None:
         session = _create_mock_session("gemini")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello Gemini", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
@@ -457,7 +457,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_events_and_updates_remote_ids(self) -> None:
         session = _create_mock_session("chatgpt")
-        chat = AsyncChat(title="Test Chat", session=session)
+        chat = AsyncChat(title="Test Chat", provider=session)
         message = AsyncMessage("Hello ChatGPT", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 

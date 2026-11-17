@@ -25,7 +25,7 @@ class MessageApiTests(LiveSyncTestCase):
         try:
             chat = self.context.session.chats.create(title=marker)
             self.context.record_chat_id(entry, chat)
-            operation = chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
+            operation = chat.responses.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
 
             def consume_stream() -> int:
                 events = 0
@@ -38,27 +38,21 @@ class MessageApiTests(LiveSyncTestCase):
                     self.context.record_chat_id(entry, chat)
 
             event_count = self.call_or_skip_rate_limit(
-                "messages.create.stream", consume_stream, entry=entry, chat=chat
+                "responses.create.stream", consume_stream, entry=entry, chat=chat
             )
             response = operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")
-            self.assertTrue(getattr(response.message, "content", ""), "Message returned no text")
+            self.assertTrue(getattr(response, "text", ""), "Message returned no text")
             if isinstance(response, Response):
                 self.assertIsInstance(response.timing, TimingMetrics)
                 self.assertIsInstance(response.sources, SourcesCollection)
                 self.assertIsInstance(response.artifacts, ArtifactsCollection)
-            messages = self.call_api("messages.list_temporary_chat", chat.messages.refresh)
-            roles = {getattr(message.role, "value", message.role) for message in messages}
-            self.assertTrue({"user", "assistant"}.issubset(roles))
-            if isinstance(response, Response):
-                responses = self.call_api(
-                    "responses.list_temporary_chat", lambda: chat.responses.list(limit=1)
-                )
-                self.assertEqual(len(responses), 1)
-                self.assertIsInstance(responses[0], Response)
-                self.assertIsNone(responses[0].timing)
+            responses = self.call_api("responses.list_temporary_chat", chat.responses.refresh)
+            self.assertGreaterEqual(len(responses), 1)
+            self.assertTrue(all(isinstance(item, Response) for item in responses))
+            self.assertIsNone(responses[-1].timing)
 
             if Capability.RENAME in capabilities:
                 renamed = f"{marker}-renamed"
@@ -82,13 +76,11 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
         chat = await self.context.session.chats.create(title=marker, temporary=True)
         self.assertTrue(chat.temporary)
         try:
-            operation = chat.messages.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
+            operation = chat.responses.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
             response = await self.call_or_skip_rate_limit(
-                "messages.temporary.send", operation.start, chat=chat
+                "responses.temporary.send", operation.start, chat=chat
             )
-            self.assertTrue(
-                getattr(response.message, "content", ""), "Temporary chat returned no text"
-            )
+            self.assertTrue(getattr(response, "text", ""), "Temporary chat returned no text")
             chats = await self.call_api(
                 "chats.list_after_temporary", self.context.session.chats.refresh
             )
@@ -126,14 +118,14 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     name="note.txt",
                     mime_type="text/plain",
                 )
-                operation = chat.messages.create(
+                operation = chat.responses.create(
                     f"{marker} Read the attached file and reply with the token or OK.",
                     model=Models.LOW,
                     attachments=[attachment],
                 )
             else:
-                self.context.skip("messages.attachments: unsupported")
-                operation = chat.messages.create(
+                self.context.skip("responses.attachments: unsupported")
+                operation = chat.responses.create(
                     f"{marker} Reply with exactly OK.",
                     model=Models.LOW,
                 )
@@ -149,134 +141,102 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     self.context.record_chat_id(entry, chat)
 
             event_count = await self.call_or_skip_rate_limit(
-                "messages.create.stream", consume_stream, entry=entry, chat=chat
+                "responses.create.stream", consume_stream, entry=entry, chat=chat
             )
             response = await operation.wait()
             self.context.record_chat_id(entry, chat)
             self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
             self.assertTrue(event_count, "Message produced no stream events")
-            self.assertTrue(getattr(response.message, "content", ""), "Message returned no text")
+            self.assertTrue(getattr(response, "text", ""), "Message returned no text")
             if isinstance(response, Response):
                 self.assertIsInstance(response.timing, TimingMetrics)
                 self.assertIsInstance(response.sources, SourcesCollection)
                 self.assertIsInstance(response.artifacts, ArtifactsCollection)
 
-            web_op = chat.messages.create(
+            web_op = chat.responses.create(
                 f"{marker} Search the web for the official Python website URL and include the link.",
                 model=Models.LOW,
             )
             web_response = await self.call_or_skip_rate_limit(
-                "messages.create.web_followup", web_op.start, entry=entry, chat=chat
+                "responses.create.web_followup", web_op.start, entry=entry, chat=chat
             )
-            self.assertTrue(getattr(web_response.message, "content", ""))
+            self.assertTrue(getattr(web_response, "text", ""))
             for source in web_response.sources:
                 if source.url:
                     self.assertTrue(source.url.startswith(("http://", "https://")))
 
-            followup_op = chat.messages.create(
+            followup_op = chat.responses.create(
                 f"{marker} Reply with the single word GAMMA.", model=Models.LOW
             )
             followup_response = await self.call_or_skip_rate_limit(
-                "messages.create.followup", followup_op.start, entry=entry, chat=chat
+                "responses.create.followup", followup_op.start, entry=entry, chat=chat
             )
-            self.assertTrue(getattr(followup_response.message, "content", ""))
+            self.assertTrue(getattr(followup_response, "text", ""))
 
-            messages = await self.call_api("messages.list_temporary_chat", chat.messages.refresh)
-            roles = {getattr(message.role, "value", message.role) for message in messages}
-            self.assertTrue({"user", "assistant"}.issubset(roles))
-            if isinstance(response, Response):
-                responses = await self.call_api(
-                    "responses.list_temporary_chat", lambda: chat.responses.list(limit=1)
-                )
-                self.assertEqual(len(responses), 1)
-                self.assertIsInstance(responses[0], Response)
-                self.assertIsNone(responses[0].timing)
+            responses = await self.call_api("responses.list_temporary_chat", chat.responses.refresh)
+            self.assertGreaterEqual(len(responses), 1)
+            self.assertTrue(all(isinstance(item, Response) for item in responses))
+            self.assertIsNone(responses[-1].timing)
 
             if Capability.MESSAGE_RETRY in capabilities:
-                assistant_messages = [
-                    m for m in messages if getattr(m.role, "value", m.role) == "assistant"
-                ]
-                self.assertGreaterEqual(len(assistant_messages), 3)
+                self.assertGreaterEqual(len(responses), 3)
                 retried_last = await self.call_or_skip_rate_limit(
-                    "messages.retry.last",
-                    assistant_messages[-1].retry().start,
+                    "responses.retry.last",
+                    responses[-1].retry().start,
                     entry=entry,
                     chat=chat,
                 )
-                self.assertTrue(getattr(retried_last.message, "content", ""))
-                messages = await self.call_api(
-                    "messages.refresh_after_retry_last", chat.messages.refresh
+                self.assertTrue(getattr(retried_last, "text", ""))
+                responses = await self.call_api(
+                    "responses.refresh_after_retry_last", chat.responses.refresh
                 )
             else:
-                self.context.skip("messages.retry: unsupported")
+                self.context.skip("responses.retry: unsupported")
 
             if Capability.MESSAGE_EDIT in capabilities:
-                user_messages = [m for m in messages if getattr(m.role, "value", m.role) == "user"]
-                self.assertGreaterEqual(len(user_messages), 2)
+                editable = [r.message for r in responses if r.message is not None]
+                self.assertGreaterEqual(len(editable), 2)
                 edited_last = await self.call_or_skip_rate_limit(
-                    "messages.edit.last",
-                    user_messages[-1].edit(f"{marker} Edited last turn: reply with EDITED.").start,
+                    "responses.edit.last",
+                    editable[-1].edit(f"{marker} Edited last turn: reply with EDITED.").start,
                     entry=entry,
                     chat=chat,
                 )
-                self.assertTrue(getattr(edited_last.message, "content", ""))
-                messages = await self.call_api(
-                    "messages.refresh_after_edit_last", chat.messages.refresh
+                self.assertTrue(getattr(edited_last, "text", ""))
+                responses = await self.call_api(
+                    "responses.refresh_after_edit_last", chat.responses.refresh
                 )
             else:
-                self.context.skip("messages.edit: unsupported")
+                self.context.skip("responses.edit: unsupported")
 
-            if Capability.MESSAGE_RETRY in capabilities:
-                last_user_idx = max(
-                    (
-                        idx
-                        for idx, m in enumerate(messages)
-                        if getattr(m.role, "value", m.role) == "user"
-                    ),
-                    default=len(messages),
+            if Capability.MESSAGE_RETRY in capabilities and len(responses) >= 2:
+                retried_middle = await self.call_or_skip_rate_limit(
+                    "responses.retry.middle",
+                    responses[-2].retry().start,
+                    entry=entry,
+                    chat=chat,
                 )
-                middle_assistants = [
-                    m
-                    for m in messages[:last_user_idx]
-                    if getattr(m.role, "value", m.role) == "assistant"
-                ]
-                if not middle_assistants:
-                    middle_assistants = [
-                        m for m in messages if getattr(m.role, "value", m.role) == "assistant"
-                    ][:-1]
-                if middle_assistants:
-                    retried_middle = await self.call_or_skip_rate_limit(
-                        "messages.retry.middle",
-                        middle_assistants[-1].retry().start,
-                        entry=entry,
-                        chat=chat,
-                    )
-                    self.assertTrue(getattr(retried_middle.message, "content", ""))
-                    messages = await self.call_api(
-                        "messages.refresh_after_retry_middle", chat.messages.refresh
-                    )
+                self.assertTrue(getattr(retried_middle, "text", ""))
+                responses = await self.call_api(
+                    "responses.refresh_after_retry_middle", chat.responses.refresh
+                )
 
             if Capability.MESSAGE_EDIT in capabilities:
-                user_messages = [m for m in messages if getattr(m.role, "value", m.role) == "user"]
-                if len(user_messages) >= 2:
+                editable = [r.message for r in responses if r.message is not None]
+                if len(editable) >= 2:
                     edited_first = await self.call_or_skip_rate_limit(
-                        "messages.edit.middle",
-                        user_messages[0]
-                        .edit(f"{marker} Edited earlier turn: reply with MIDDLE.")
-                        .start,
+                        "responses.edit.middle",
+                        editable[0].edit(f"{marker} Edited earlier turn: reply with MIDDLE.").start,
                         entry=entry,
                         chat=chat,
                     )
-                    self.assertTrue(getattr(edited_first.message, "content", ""))
+                    self.assertTrue(getattr(edited_first, "text", ""))
 
             if Capability.CHAT_BRANCH in capabilities and Capability.RENAME in capabilities:
-                messages = await self.call_api(
-                    "messages.refresh_before_branch", chat.messages.refresh
+                responses = await self.call_api(
+                    "responses.refresh_before_branch", chat.responses.refresh
                 )
-                assistant_messages = [
-                    m for m in messages if getattr(m.role, "value", m.role) == "assistant"
-                ]
-                if assistant_messages:
+                if responses:
                     src_title = f"{marker}-src"
                     entry["markers"].append(src_title)
                     self.context.save()
@@ -296,7 +256,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
 
                     branched = await self.call_or_skip_rate_limit(
                         "chats.branch",
-                        lambda: chat.branch(assistant_messages[-1].id),
+                        lambda: responses[-1].branch(),
                         entry=branch_entry,
                     )
                     if branched.remote_id and branched.remote_id != chat.remote_id:
@@ -312,7 +272,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                             self.context.save()
                         else:
                             self.context.record_chat_id(branch_entry, branched)
-                        branch_op = branched.messages.create(
+                        branch_op = branched.responses.create(
                             f"{branch_marker} Branch check: reply with BRANCH.",
                             model=Models.LOW,
                         )
@@ -320,13 +280,13 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                             branch_entry["attempted"] = True
                             self.context.save()
                         branch_res = await self.call_or_skip_rate_limit(
-                            "messages.create.branched",
+                            "responses.create.branched",
                             branch_op.start,
                             entry=branch_entry,
                             chat=branched,
                         )
                         self.context.record_chat_id(branch_entry, branched)
-                        self.assertTrue(getattr(branch_res.message, "content", ""))
+                        self.assertTrue(getattr(branch_res, "text", ""))
                         await self.call_api(
                             "chats.rename_branched", lambda: branched.rename(branch_marker)
                         )

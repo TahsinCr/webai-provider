@@ -154,13 +154,13 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
-        project = AsyncProject(title="Research", session=provider, remote_id="project-1")
+        project = AsyncProject(title="Research", provider=provider, remote_id="project-1")
         items = await project.chats.refresh()
         self.assertEqual([item.remote_id for item in items], ["chat-1", "chat-2b"])
-        self.assertIs(items[0].session, provider)
+        self.assertIs(items[0].provider, provider)
         self.assertIs(items[0].project, project)
 
-        chat = AsyncGrokChat(title="Loose chat", session=provider, remote_id="chat-2")
+        chat = AsyncGrokChat(title="Loose chat", provider=provider, remote_id="chat-2")
         self.assertIsNone(chat.project)
         await chat.move_to(project)
         provider.adapter.chats.move_chat.assert_awaited_once_with("chat-2", "project-1")
@@ -187,7 +187,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.provider.adapter.messages = stream_provider.adapter.messages
         chat = await self.provider.chats.create()
-        operation = chat.messages.create("prompt")
+        operation = chat.responses.create("prompt")
         events = [event async for event in operation.stream()]
 
         self.assertIsInstance(operation, AsyncMessageOperation)
@@ -229,15 +229,16 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.provider.adapter.messages = stream_provider.adapter.messages
         chat = await self.provider.chats.create()
-        operation = chat.messages.create("solve")
+        operation = chat.responses.create("solve")
         self.assertEqual(operation.state, OperationState.PENDING)
         events = [event async for event in operation.stream()]
         response = await operation.wait()
 
         self.assertEqual(operation.state, OperationState.COMPLETED)
         self.assertEqual(operation.message.id, "msg-user-99")
-        self.assertEqual(response.message.id, "msg-assistant-99")
+        self.assertEqual(response.id, "msg-assistant-99")
         self.assertEqual(response.text, "Final output")
+        self.assertIs(response.message, operation.message)
         self.assertEqual(response.message.response, response)
         self.provider.adapter.chats.get_chat.return_value = Conversation(
             "conversation-2",
@@ -247,7 +248,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 NativeMessage("msg-assistant-99", "assistant", (Content("text", "Final output"),)),
             ),
         )
-        self.assertIn("msg-assistant-99", [m.id for m in await chat.messages.list()])
+        self.assertIn("msg-assistant-99", [r.id for r in await chat.responses.list()])
         self.assertEqual(self.provider.telemetry.snapshot()["successful"], 1)
         self.assertIsInstance(events[0], ThinkingBegin)
         self.assertEqual(
@@ -273,17 +274,16 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.provider.adapter.chats.get_chat.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
-        messages = await chat.messages.refresh()
+        responses = await chat.responses.refresh()
         self.assertEqual(chat.title, "Loaded Title")
         self.assertEqual(chat.metadata, {"default_model_slug": "sonnet"})
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[0].id, "u-1")
-        self.assertEqual(messages[0].role, "user")
-        self.assertEqual(messages[0].content, "Hello")
-        self.assertEqual(messages[1].id, "a-1")
-        self.assertEqual(messages[1].role, "assistant")
-        self.assertEqual(messages[1].content, "Hi there!")
-        self.assertIsNone(messages[1].response.timing)
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0].id, "a-1")
+        self.assertEqual(responses[0].text, "Hi there!")
+        self.assertEqual(responses[0].message.id, "u-1")
+        self.assertEqual(responses[0].message.role, "user")
+        self.assertEqual(responses[0].message.content, "Hello")
+        self.assertIsNone(responses[0].timing)
 
     async def test_chats_include_projects_and_temporary_flag(self) -> None:
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
@@ -350,7 +350,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         temp_chat = await provider.chats.create("Incognito", temporary=True)
         self.assertTrue(temp_chat.temporary)
-        op = temp_chat.messages.create("secret")
+        op = temp_chat.responses.create("secret")
         ctx = provider.runtime.new_context(
             "chat.send.prepare",
             resource_id=temp_chat.id,

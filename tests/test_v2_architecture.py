@@ -652,19 +652,20 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(hist_resp.artifacts), 1)
             self.assertEqual(hist_resp.artifacts.find("report.pdf").id, "art-1")
 
-            # Assistant Message links back to same response/sources/artifacts
-            msgs = await chat.messages.list()
-            self.assertEqual([m.role for m in msgs], ["user", "assistant"])
-            self.assertIsNotNone(msgs[1].response)
-            self.assertIsNone(msgs[1].response.timing)
-            self.assertEqual(len(msgs[1].sources), 2)
-            self.assertEqual(len(msgs[1].artifacts), 1)
+            # Response carries triggering user message and prompt/reply search works via responses
+            self.assertIsNotNone(hist_resp.message)
+            self.assertEqual(hist_resp.message.role, "user")
+            self.assertEqual(hist_resp.message.content, "Summarize report")
+            self.assertIs(hist_resp.message.response, hist_resp)
+            self.assertEqual(len(hist_resp.message.sources), 2)
+            self.assertEqual(len(hist_resp.message.artifacts), 1)
 
             # Live stream response carries TimingMetrics plus normalized sources and artifacts
-            live_resp = await chat.messages.create("Follow up").start()
+            live_resp = await chat.responses.create("Follow up").start()
             self.assertIsInstance(live_resp, Response)
             self.assertIsInstance(live_resp.timing, TimingMetrics)
             self.assertEqual(live_resp.text, "Echo: Follow up")
+            self.assertEqual(live_resp.message.content, "Follow up")
             self.assertIsInstance(live_resp.sources, SourcesCollection)
             self.assertEqual(live_resp.sources.find("Live Source").url, "https://example.com/live")
             self.assertIsInstance(live_resp.artifacts, ArtifactsCollection)
@@ -714,16 +715,18 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
             )
-            op = chat.messages.create("Next prompt")
+            op = chat.responses.create("Next prompt")
             await op.start()
             self.assertEqual(op.message.id, "u-real-1")
             self.assertEqual(op.message.remote_id, "u-real-1")
 
-            msgs = await chat.messages.refresh()
-            retried = await msgs[-1].retry().start()
+            responses = await chat.responses.refresh()
+            retried = await responses[-1].retry().start()
             self.assertTrue(retried.text.startswith("Reply:"))
-            refreshed = await chat.messages.refresh()
-            self.assertEqual([m.id for m in refreshed if m.role == "user"], ["u-real-1"])
+            refreshed = await chat.responses.refresh()
+            self.assertEqual(
+                [r.message.id for r in refreshed if r.message is not None], ["u-real-1"]
+            )
         finally:
             await provider.close()
 
@@ -850,7 +853,7 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stages, ["before:chat.update", "cancelled:True", "finally:True"])
 
             # Send prompt rewritten by before hook & isolated failing on_success hook
-            resp = await chat.messages.create("hello world").start()
+            resp = await chat.responses.create("hello world").start()
             self.assertEqual(msg_adapter.received_requests[-1].prompt, "[guarded] hello world")
             self.assertEqual(resp.text, "Echo: [guarded] hello world")
             self.assertEqual(len(seen_send_results), 1)
@@ -985,12 +988,12 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             chat = await provider.chats.create("Yeni")
             self.assertEqual(seen, [("chat.prepared", chat.id)])
 
-            await chat.messages.create("ilk mesaj")
+            await chat.responses.create("ilk mesaj")
             self.assertEqual(len(seen), 2)
             self.assertEqual(seen[1][0], "chat.created")
             self.assertEqual(seen[1][1], chat.remote_id)
 
-            await chat.messages.create("ikinci mesaj")
+            await chat.responses.create("ikinci mesaj")
             self.assertEqual(len(seen), 2)
         finally:
             await provider.close()
@@ -1149,19 +1152,19 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         try:
             chat = await provider.chats.get("c-hist")
-            found = await chat.messages.search("beta")
-            self.assertEqual([m.id for m in found], ["a-1"])
-            self.assertEqual((await chat.messages.find("alpha")).id, "u-1")
+            found = await chat.responses.search("beta")
+            self.assertEqual([r.id for r in found], ["a-1"])
+            self.assertEqual((await chat.responses.find("alpha")).message.id, "u-1")
 
             with self.assertRaises(UnsupportedOperationError):
-                await chat.messages.delete("a-1")
+                await chat.responses.delete("a-1")
 
             from webaiprovider.resources.message.message import AsyncMessage
 
             local_msg = AsyncMessage(role="user", content="unsent draft", chat=chat)
-            chat.messages._track_local_message(local_msg)
-            await chat.messages.delete(local_msg)
-            self.assertNotIn(local_msg.id, chat.messages._known_by_id)
+            chat.responses._track_local_message(local_msg)
+            await chat.responses.delete(local_msg)
+            self.assertNotIn(local_msg.id, chat.responses._known_messages)
 
             chat_adapter.conversations["c-hist"] = Conversation(
                 id="c-hist",
@@ -1174,8 +1177,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
             )
-            await chat.messages.refresh()
-            self.assertNotIn("a-1", chat.messages._known_by_id)
+            await chat.responses.refresh()
+            self.assertNotIn("a-1", chat.responses._known_responses)
         finally:
             await provider.close()
 

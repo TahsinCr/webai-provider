@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...core.files import DownloadSource, download_source
@@ -14,12 +14,17 @@ from .types import Conversation
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
+    from ..message.attachment import Attachment, Attachments
     from ..message.message import AsyncMessage, Message
+    from ..message.operation import AsyncMessageOperation, StreamEvent
+    from ..model.collections import Models
+    from ..model.model import EffortRef, ModelRef, ModelSelection
     from ..project.project import AsyncProject, Project
+    from ..response.response import Response
 
 
 def _resolve_project_arg(
-    session: AsyncProvider,
+    provider: AsyncProvider,
     project: AsyncProject | str | None,
 ) -> AsyncProject | None:
     if project is None:
@@ -27,14 +32,14 @@ def _resolve_project_arg(
     from ..project.project import AsyncProject
 
     if isinstance(project, AsyncProject):
-        if project.session is not session:
+        if project.provider is not provider:
             raise ValueError("Project and chat must belong to the same provider session")
         return project
-    return session._project_type(remote_id=str(project), session=session)
+    return provider._project_type(remote_id=str(project), provider=provider)
 
 
 def _project_from_data(
-    session: AsyncProvider,
+    provider: AsyncProvider,
     data: ProjectData | None,
     projects: Mapping[str, AsyncProject] | None = None,
 ) -> AsyncProject | None:
@@ -46,10 +51,10 @@ def _project_from_data(
         if data.name and not existing.title:
             existing.title = data.name
         return existing
-    created = session._project_type(
+    created = provider._project_type(
         title=data.name,
         remote_id=remote_id,
-        session=session,
+        provider=provider,
     )
     if data.instructions is not None or data.resources:
         created._apply_provider_project(data)
@@ -57,7 +62,6 @@ def _project_from_data(
 
 
 class AsyncChat:
-    _messages_collection_type = None
     _responses_collection_type = None
 
     def __init__(
@@ -65,7 +69,7 @@ class AsyncChat:
         id: str | None = None,
         title: str = "",
         *,
-        session: AsyncProvider | None = None,
+        provider: AsyncProvider | None = None,
         remote_id: str | None = None,
         project: AsyncProject | None = None,
         temporary: bool = False,
@@ -73,29 +77,59 @@ class AsyncChat:
     ) -> None:
         self.id = id or str(uuid.uuid4())
         self.title = title
-        self.session = session
+        self.provider = provider
         self.remote_id = remote_id
         self.project: AsyncProject | None = project
         self.temporary: bool = bool(temporary)
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
 
-        from ..message.collections import AsyncMessagesCollection
         from ..response.collections import AsyncResponsesCollection
 
-        self.messages = (self._messages_collection_type or AsyncMessagesCollection)(self)
         self.responses = (self._responses_collection_type or AsyncResponsesCollection)(self)
 
-    async def get(self, message_id: str) -> AsyncMessage:
-        return await self.messages.get(message_id)
+    async def get(self, item_id: str) -> Response:
+        return await self.responses.get(item_id)
+
+    def ask(
+        self,
+        prompt: AsyncMessage | Message | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
+        **metadata: Any,
+    ) -> AsyncMessageOperation:
+        return self.responses.create(
+            prompt,
+            model=model,
+            attachments=attachments,
+            **metadata,
+        )
+
+    async def stream(
+        self,
+        prompt: AsyncMessage | Message | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
+        **metadata: Any,
+    ) -> AsyncIterator[StreamEvent]:
+        operation = self.responses.create(
+            prompt,
+            model=model,
+            attachments=attachments,
+            **metadata,
+        )
+        async for event in operation.stream():
+            yield event
 
     async def download(self, target: Artifact | str) -> bytes:
         if self.remote_id:
-            if self.session is None:
+            if self.provider is None:
                 raise ProviderError("Chat is not attached to an open provider")
             url = target.download_url if isinstance(target, Artifact) else target
             if not url:
                 raise ValueError("Artifact has no download URL")
-            source: DownloadSource | None = await self.session._resolve_download_data(
+            source: DownloadSource | None = await self.provider._resolve_download_data(
                 url,
                 conversation_id=self.remote_id,
             )
@@ -103,14 +137,14 @@ class AsyncChat:
         raise UnsupportedOperationError("Cannot download from an unpersisted chat")
 
     async def rename(self, title: str) -> AsyncChat:
-        if self.session is not None:
-            return await self.session.chats.update(self, title=title)
+        if self.provider is not None:
+            return await self.provider.chats.update(self, title=title)
         self.title = title
         return self
 
     async def delete(self) -> None:
-        if self.session is not None:
-            await self.session.chats.delete(self)
+        if self.provider is not None:
+            await self.provider.chats.delete(self)
         elif self.remote_id:
             raise ProviderError("Chat is not attached to an open provider")
 
@@ -124,10 +158,10 @@ class AsyncBranchableChat(AsyncChat):
             raise UnsupportedOperationError(
                 "Cannot branch a conversation that has not been persisted remotely"
             )
-        if self.session is None:
+        if self.provider is None:
             raise ProviderError("Chat is not attached to an open provider")
-        session = self.session
-        runtime = session.runtime
+        provider = self.provider
+        runtime = provider.runtime
         context = runtime.new_context(
             "chat.branch",
             resource_id=self.remote_id,
@@ -135,11 +169,13 @@ class AsyncBranchableChat(AsyncChat):
         )
 
         async def work(ctx) -> AsyncChat:
-            branched = await session._branch_chat_data(self.remote_id, ctx.parameters["message_id"])
+            branched = await provider._branch_chat_data(
+                self.remote_id, ctx.parameters["message_id"]
+            )
             if not isinstance(branched, Conversation):
                 raise ProviderError("Provider returned an invalid branched conversation")
             project = (
-                _project_from_data(session, branched.project)
+                _project_from_data(provider, branched.project)
                 if branched.project is not None
                 else self.project
             )
@@ -148,7 +184,7 @@ class AsyncBranchableChat(AsyncChat):
                 remote_id=branched.id,
                 project=project,
                 metadata=branched.metadata,
-                session=session,
+                provider=provider,
             )
 
         async def on_success(ctx) -> None:
@@ -163,7 +199,7 @@ class AsyncBranchableChat(AsyncChat):
         return await execute_with_hooks(
             operation_name="chat.branch",
             context=context,
-            hooks_chain=(runtime.hooks, session.chats.hooks),
+            hooks_chain=(runtime.hooks, provider.chats.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -171,21 +207,21 @@ class AsyncBranchableChat(AsyncChat):
 
 class AsyncMovableChat(AsyncChat):
     async def move_to(self: AsyncChat, project: AsyncProject | str) -> AsyncChat:
-        if self.session is None:
+        if self.provider is None:
             raise ProviderError("Chat is not attached to a provider session")
         if self.project is not None:
             raise UnsupportedOperationError(
                 "Moving a chat that already belongs to a project is not supported by the common chat contract"
             )
-        target = _resolve_project_arg(self.session, project)
+        target = _resolve_project_arg(self.provider, project)
         if target is None:
             raise UnsupportedOperationError("Moving a chat requires a target project")
         if self.remote_id and not target.remote_id:
             raise UnsupportedOperationError(
                 "A remote chat cannot be moved into a project that is not persisted remotely"
             )
-        session = self.session
-        runtime = session.runtime
+        provider = self.provider
+        runtime = provider.runtime
         target_id = target.remote_id or target.id
         context = runtime.new_context(
             "chat.move",
@@ -195,7 +231,7 @@ class AsyncMovableChat(AsyncChat):
 
         async def work(ctx) -> AsyncChat:
             if self.remote_id:
-                await session._move_chat_data(self.remote_id, ctx.parameters["project_id"])
+                await provider._move_chat_data(self.remote_id, ctx.parameters["project_id"])
             self.project = target
             return self
 
@@ -210,7 +246,7 @@ class AsyncMovableChat(AsyncChat):
         return await execute_with_hooks(
             operation_name="chat.move",
             context=context,
-            hooks_chain=(runtime.hooks, session.chats.hooks),
+            hooks_chain=(runtime.hooks, provider.chats.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -240,16 +276,13 @@ class MovableChat(_ChatCapability):
 
 
 class Chat:
-    messages_collection_type = None
     responses_collection_type = None
 
     def __init__(self, owner: Provider, resource: AsyncChat) -> None:
         self._owner = owner
         self._resource = resource
-        from ..message.collections import MessagesCollection
         from ..response.collections import ResponsesCollection
 
-        self.messages = (self.messages_collection_type or MessagesCollection)(owner, resource)
         self.responses = (self.responses_collection_type or ResponsesCollection)(owner, resource)
 
     @property
@@ -282,8 +315,39 @@ class Chat:
     def metadata(self, value: Mapping[str, Any]) -> None:
         self._resource.metadata = dict(value)
 
-    def get(self, message_id: str) -> Message:
-        return self.messages.get(message_id)
+    def get(self, item_id: str) -> Response:
+        return self.responses.get(item_id)
+
+    def ask(
+        self,
+        prompt: Message | AsyncMessage | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
+        **metadata: Any,
+    ) -> Response:
+        return self.responses.create(
+            prompt,
+            model=model,
+            attachments=attachments,
+            **metadata,
+        ).wait()
+
+    def stream(
+        self,
+        prompt: Message | AsyncMessage | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
+        **metadata: Any,
+    ) -> Iterator[StreamEvent]:
+        operation = self.responses.create(
+            prompt,
+            model=model,
+            attachments=attachments,
+            **metadata,
+        )
+        yield from operation.stream()
 
     def download(self, target: Any) -> bytes:
         return self._owner._call(self._resource.download(target))
@@ -293,6 +357,3 @@ class Chat:
 
     def delete(self) -> None:
         self._owner._call(self._resource.delete())
-
-    def __repr__(self) -> str:
-        return f"<Chat id={self.id!r} title={self.title!r} remote_id={self.remote_id!r}>"

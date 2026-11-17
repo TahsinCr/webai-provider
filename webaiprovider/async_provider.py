@@ -412,7 +412,7 @@ class AsyncProvider(BaseProvider):
                     self.adapter.session.close,
                 )
                 chat = await self.chats.create()
-                return await chat.messages.create(
+                return await chat.responses.create(
                     prompt,
                     model=model,
                     attachments=attachments,

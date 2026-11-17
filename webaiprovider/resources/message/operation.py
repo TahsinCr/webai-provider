@@ -146,14 +146,14 @@ class AsyncMessageOperation:
             self._state_machine.transition(target)
 
     def _runtime_and_hooks(self) -> tuple[Any, tuple[OperationHooks, ...]]:
-        session = getattr(self.chat, "session", None)
-        runtime = getattr(session, "runtime", None) if session is not None else None
+        provider = getattr(self.chat, "provider", None)
+        runtime = getattr(provider, "runtime", None) if provider is not None else None
         chain: list[OperationHooks] = []
-        if session is not None and isinstance(getattr(session, "hooks", None), OperationHooks):
-            chain.append(session.hooks)
-        messages = getattr(self.chat, "messages", None)
-        if messages is not None and isinstance(getattr(messages, "hooks", None), OperationHooks):
-            chain.append(messages.hooks)
+        if provider is not None and isinstance(getattr(provider, "hooks", None), OperationHooks):
+            chain.append(provider.hooks)
+        responses = getattr(self.chat, "responses", None)
+        if responses is not None and isinstance(getattr(responses, "hooks", None), OperationHooks):
+            chain.append(responses.hooks)
         chain.append(self.hooks)
         return runtime, tuple(chain)
 
@@ -277,7 +277,7 @@ class AsyncMessageOperation:
         collected_text: list[str] = []
         collected_sources: list[Source] = []
         collected_artifacts: list[Artifact] = []
-        session = getattr(self.chat, "session", None)
+        session = getattr(self.chat, "provider", None)
         runtime, hooks_chain = self._runtime_and_hooks()
         telemetry = getattr(session, "telemetry", None)
         if telemetry is not None:
@@ -355,26 +355,23 @@ class AsyncMessageOperation:
             )
 
             full_text = "".join(collected_text)
-            response_message = AsyncMessage(
-                content=full_text,
-                role="assistant",
-                model=self.message.model,
-                id=self._assistant_message_id,
-                chat=self.chat,
-            )
-            response_message.remote_id = self._assistant_message_id
-            if self.chat is not None and hasattr(self.chat, "messages"):
-                response_message = self.chat.messages._reconcile_assistant_message(response_message)
             response = Response(
-                response_message,
+                full_text,
+                message=self.message,
+                id=self._assistant_message_id,
+                remote_id=self._assistant_message_id,
+                model=self.message.model,
                 sources=collected_sources,
                 artifacts=collected_artifacts,
                 timing=timing,
+                chat=self.chat,
             )
+            self.message.response = response
+            if self.chat is not None and hasattr(self.chat, "responses"):
+                response = self.chat.responses._reconcile_live_response(self, response)
             if runtime is not None:
                 context.resource_id = self.chat.remote_id or self.chat.id
                 context.result = response
-            response_message.response = response
             self._response = response
 
             self._transition_to(OperationState.COMPLETED)
@@ -385,7 +382,7 @@ class AsyncMessageOperation:
                     "chat.send.completed",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,
-                    payload={"message_id": response.message.id},
+                    payload={"message_id": response.id},
                 )
             res_success = await OperationHooks.run_lifecycle(
                 hooks_chain, "on_success", "chat.send", context
@@ -493,12 +490,22 @@ class MessageOperation:
         message = response.message
         if isinstance(message, AsyncMessage):
             message = Message._from_async(self._owner, message)
+        chat = response.chat
+        from ..chat.chat import AsyncChat
+
+        if isinstance(chat, AsyncChat):
+            chat = self._owner._wrap_chat(chat)
         return Response(
-            message,
+            response.content,
+            message=message,
+            id=response.id,
+            remote_id=response.remote_id,
+            model=response.model,
             sources=response.sources,
             artifacts=response.artifacts,
             metadata=response.metadata,
             timing=response.timing,
+            chat=chat,
         )
 
     @property

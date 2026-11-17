@@ -74,10 +74,6 @@ from .resources.chat.chat import (
 )
 from .resources.chat.collections import AsyncChatsCollection, ChatsCollection
 from .resources.message.attachment import Attachment, Attachments
-from .resources.message.collections import (
-    AsyncMessagesCollection,
-    MessagesCollection,
-)
 from .resources.message.message import AsyncMessage, Message
 from .resources.message.operation import (
     ArtifactDiscovered,
@@ -188,8 +184,6 @@ __all__ = [
     "AsyncProjectChatsCollection",
     "ProjectAttachments",
     "AsyncProjectAttachments",
-    "MessagesCollection",
-    "AsyncMessagesCollection",
     "ResponsesCollection",
     "AsyncResponsesCollection",
     "SourcesCollection",

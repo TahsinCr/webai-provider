@@ -86,25 +86,10 @@ class AsyncMessage:
             raise UnsupportedOperationError(
                 "Cannot edit a message that does not belong to a conversation"
             )
-        self.chat.messages._track_local_message(self)
-        return self.chat.messages.edit(
-            self.id,
+        self.chat.responses._track_local_message(self)
+        return self.chat.responses.edit(
+            self,
             new_content,
-            model=model if model is not None else self.model,
-        )
-
-    def retry(
-        self,
-        *,
-        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-    ) -> AsyncMessageOperation:
-        if self.chat is None:
-            raise UnsupportedOperationError(
-                "Cannot retry a message that does not belong to a conversation"
-            )
-        self.chat.messages._track_local_message(self)
-        return self.chat.messages.retry(
-            self.id,
             model=model if model is not None else self.model,
         )
 
@@ -217,12 +202,20 @@ class Message:
         msg = raw.message
         if self._owner is not None and isinstance(msg, AsyncMessage):
             msg = Message._from_async(self._owner, msg)
+        chat = raw.chat
+        if self._owner is not None and isinstance(chat, AsyncChat):
+            chat = self._owner._wrap_chat(chat)
         return Response(
-            msg,
+            raw.content,
+            message=msg,
+            id=raw.id,
+            remote_id=raw.remote_id,
+            model=raw.model,
             sources=raw.sources,
             artifacts=raw.artifacts,
             metadata=raw.metadata,
             timing=raw.timing,
+            chat=chat,
         )
 
     @property
@@ -255,24 +248,9 @@ class Message:
             raise UnsupportedOperationError(
                 "Cannot edit a message that does not belong to a conversation"
             )
-        return chat.messages.edit(
-            self.id,
+        return chat.responses.edit(
+            self,
             new_content,
-            model=model if model is not None else self.model,
-        )
-
-    def retry(
-        self,
-        *,
-        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-    ) -> MessageOperation | AsyncMessageOperation:
-        chat = self.chat
-        if chat is None:
-            raise UnsupportedOperationError(
-                "Cannot retry a message that does not belong to a conversation"
-            )
-        return chat.messages.retry(
-            self.id,
             model=model if model is not None else self.model,
         )
 

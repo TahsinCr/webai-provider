@@ -1615,15 +1615,15 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         provider._catalog = catalog
         await provider.open()
         try:
-            chat = provider._chat_type(title="Source Chat", remote_id="c_root", session=provider)
+            chat = provider._chat_type(title="Source Chat", remote_id="c_root", provider=provider)
             branched = await chat.branch("m_root_a")
             self.assertEqual(branched.remote_id, "preview-branch-1")
             self.assertEqual(
                 branched.metadata.get("pending_branch"),
                 {"conversation_id": "c_root", "message_id": "m_root_a"},
             )
-            response = await branched.messages.create("Branch prompt").start()
-            self.assertEqual(response.message.content, "BRANCH")
+            response = await branched.responses.create("Branch prompt").start()
+            self.assertEqual(response.text, "BRANCH")
             self.assertEqual(branched.remote_id, "c_persisted_branch")
             self.assertNotIn("pending_branch", branched.metadata)
             self.assertNotIn(("GET", "/backend-api/conversations/preview-branch-1"), requests_seen)

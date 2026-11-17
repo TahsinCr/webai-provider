@@ -128,7 +128,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             Account.from_cookies("grok", {}), transport=transport
         ) as provider:
             chat = await provider.chats.create()
-            operation = chat.messages.create("question")
+            operation = chat.responses.create("question")
             response = await operation.wait()
             self.assertEqual(response.text, "reply")
         client.request.assert_awaited_once()

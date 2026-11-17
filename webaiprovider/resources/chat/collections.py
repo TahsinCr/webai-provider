@@ -27,17 +27,17 @@ _MAX_PROJECT_CHAT_PAGES = 100
 
 def _chat_from_conversation(
     item: Conversation,
-    session: AsyncProvider,
+    provider: AsyncProvider,
     projects: Mapping[str, AsyncProject] | None = None,
 ) -> AsyncChat:
-    project = _project_from_data(session, item.project, projects)
-    return session._chat_type(
+    project = _project_from_data(provider, item.project, projects)
+    return provider._chat_type(
         title=item.title,
         remote_id=item.id,
         project=project,
         temporary=bool(item.metadata.get("temporary", False)),
         metadata=item.metadata,
-        session=session,
+        provider=provider,
     )
 
 
@@ -73,12 +73,12 @@ def _merge_chat_lists(
 
 
 class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
-    def __init__(self, session: AsyncProvider) -> None:
+    def __init__(self, provider: AsyncProvider) -> None:
         super().__init__()
-        self.session = session
+        self.provider = provider
 
     async def _emit_refreshed(self, count: int) -> None:
-        runtime = getattr(self.session, "runtime", None)
+        runtime = getattr(self.provider, "runtime", None)
         if runtime is not None:
             await runtime.emit(
                 "collection.refreshed",
@@ -92,7 +92,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         **options: Any,
     ) -> Page[AsyncChat]:
         include_projects = bool(options.get("include_projects", False))
-        session = self.session
+        session = self.provider
         async with session.runtime.activity():
             session._require_provider()
             limit_arg = page_limit or self._default_page_size
@@ -111,7 +111,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         project_map = {p.remote_id: p for p in projects if p.remote_id}
         if not project_map:
             return project_map, []
-        session = self.session
+        session = self.provider
         semaphore = asyncio.Semaphore(_PROJECT_CHAT_CONCURRENCY)
 
         async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
@@ -161,7 +161,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         validated = validate_limit(limit)
         if validated == 0:
             return []
-        session = self.session
+        session = self.provider
         async with session.runtime.activity():
             session._require_provider()
             normal_coro = super()._collect_remote(limit=None, _normal_only=True)
@@ -176,7 +176,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         if (
             include_projects
             and not options.get("_normal_only")
-            and Capability.PROJECTS in self.session.capabilities
+            and Capability.PROJECTS in self.provider.capabilities
         ):
             items = await self._collect_with_projects(limit=limit)
             if items:
@@ -209,7 +209,7 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         return items
 
     async def _fetch_by_id(self, item_id: str) -> AsyncChat | None:
-        session = self.session
+        session = self.provider
         async with session.runtime.activity():
             session._require_provider()
             try:
@@ -309,18 +309,18 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         temporary: bool = False,
     ) -> AsyncChat:
         resolved_project = (
-            _resolve_project_arg(self.session, project) if project is not None else None
+            _resolve_project_arg(self.provider, project) if project is not None else None
         )
-        runtime = self.session.runtime
+        runtime = self.provider.runtime
         context = runtime.new_context(
             "chat.create",
             parameters={"title": title, "project": resolved_project, "temporary": temporary},
         )
 
         async def work(ctx) -> AsyncChat:
-            return self.session._chat_type(
+            return self.provider._chat_type(
                 title=ctx.parameters["title"],
-                session=self.session,
+                provider=self.provider,
                 project=ctx.parameters["project"],
                 temporary=ctx.parameters["temporary"],
             )
@@ -349,13 +349,13 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         title: str | None = None,
     ) -> AsyncChat:
         if isinstance(chat, AsyncChat):
-            if chat.session is not self.session:
+            if chat.provider is not self.provider:
                 raise ValueError("Chat belongs to a different provider session")
             target = chat
         else:
             target = await self.get(str(chat), include_projects=True)
 
-        runtime = self.session.runtime
+        runtime = self.provider.runtime
         context = runtime.new_context(
             "chat.update",
             resource_id=target.remote_id or target.id,
@@ -367,8 +367,8 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
             if new_title is not None and new_title != target.title:
                 if target.remote_id:
                     async with runtime.activity():
-                        self.session._require_provider()
-                        await self.session._rename_chat_data(target.remote_id, new_title)
+                        self.provider._require_provider()
+                        await self.provider._rename_chat_data(target.remote_id, new_title)
                 target.title = new_title
             return target
 
@@ -390,13 +390,13 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
 
     async def delete(self, chat: AsyncChat | str) -> None:
         if isinstance(chat, AsyncChat):
-            if chat.session is not self.session:
+            if chat.provider is not self.provider:
                 raise ValueError("Chat belongs to a different provider session")
             target = chat
         else:
             target = await self.get(str(chat), include_projects=True)
 
-        runtime = self.session.runtime
+        runtime = self.provider.runtime
         rid = target.remote_id or target.id
         context = runtime.new_context(
             "chat.delete",
@@ -407,8 +407,8 @@ class AsyncChatsCollection(AsyncMutableRemoteCollection[AsyncChat]):
         async def work(_ctx) -> None:
             if target.remote_id:
                 async with runtime.activity():
-                    self.session._require_provider()
-                    await self.session._delete_chat_data(target.remote_id)
+                    self.provider._require_provider()
+                    await self.provider._delete_chat_data(target.remote_id)
 
         async def on_success(ctx) -> None:
             await runtime.emit(

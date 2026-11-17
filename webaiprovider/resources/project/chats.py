@@ -20,8 +20,8 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         self.project = project
 
     async def _emit_refreshed(self, count: int) -> None:
-        session = self.project.session
-        runtime = getattr(session, "runtime", None) if session is not None else None
+        provider = self.project.provider
+        runtime = getattr(provider, "runtime", None) if provider is not None else None
         if runtime is not None:
             await runtime.emit(
                 "collection.refreshed",
@@ -36,14 +36,14 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         **options: Any,
     ) -> Page[AsyncChat]:
         del page_limit, options
-        session = self.project.session
-        if session is None:
+        provider = self.project.provider
+        if provider is None:
             raise ProviderError("Project is not attached to an open provider")
         if not self.project.remote_id:
             return Page(())
-        async with session.runtime.activity():
-            session._require_provider()
-            page = await session._list_project_chats_data(self.project.remote_id, cursor=cursor)
+        async with provider.runtime.activity():
+            provider._require_provider()
+            page = await provider._list_project_chats_data(self.project.remote_id, cursor=cursor)
         if not isinstance(page, Page) or any(
             not isinstance(item, Conversation) for item in page.items
         ):
@@ -51,7 +51,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         project_map = {self.project.remote_id: self.project}
         chats = []
         for item in page.items:
-            chat = _chat_from_conversation(item, session, project_map)
+            chat = _chat_from_conversation(item, provider, project_map)
             if chat.project is None:
                 chat.project = self.project
             chats.append(chat)

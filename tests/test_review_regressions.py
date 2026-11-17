@@ -110,8 +110,8 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             yield TextDelta("answer")
 
         provider.adapter.messages.stream = stream
-        chat = AsyncChat(session=provider)
-        operation = chat.messages.create("prompt")
+        chat = AsyncChat(provider=provider)
+        operation = chat.responses.create("prompt")
         consumer = asyncio.create_task(_collect_provider_stream(provider, operation))
         await started.wait()
         closing = asyncio.create_task(provider.close())
@@ -144,7 +144,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         async def create_chat():
             return SimpleNamespace(
-                messages=SimpleNamespace(create=lambda prompt, **_options: Operation(prompt))
+                responses=SimpleNamespace(create=lambda prompt, **_options: Operation(prompt))
             )
 
         provider.chats.create = create_chat
@@ -179,11 +179,11 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             yield TextDelta("answer")
 
         provider.adapter.messages.stream = stream
-        shared_chat, other_chat = AsyncChat(session=provider), AsyncChat(session=provider)
+        shared_chat, other_chat = AsyncChat(provider=provider), AsyncChat(provider=provider)
         requests = [
-            shared_chat.messages.create("first"),
-            shared_chat.messages.create("second"),
-            other_chat.messages.create("other"),
+            shared_chat.responses.create("first"),
+            shared_chat.responses.create("second"),
+            other_chat.responses.create("other"),
         ]
         tasks = [asyncio.create_task(_collect_provider_stream(provider, requests[0]))]
         await first_started.wait()
@@ -212,8 +212,8 @@ class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
             yield ThoughtDelta("new segment")
 
         provider.adapter.messages.stream = stream
-        chat = AsyncChat(session=provider)
-        operation = chat.messages.create("prompt")
+        chat = AsyncChat(provider=provider)
+        operation = chat.responses.create("prompt")
         events = await _collect_provider_stream(provider, operation)
 
         self.assertEqual(
@@ -237,24 +237,24 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             chat = await first.chats.create()
             foreign_chat = await second.chats.create()
             attachment = Attachment.from_bytes(b"content", "note.txt")
-            original = chat.messages.create("question", attachments=[attachment]).message
+            original = chat.responses.create("question", attachments=[attachment]).message
 
             with self.assertRaisesRegex(ValueError, "different chat"):
-                foreign_chat.messages.create(original)
+                foreign_chat.responses.create(original)
             with self.assertRaisesRegex(ValueError, "already in this chat"):
-                chat.messages.create(original)
+                chat.responses.create(original)
 
-            edited = chat.messages.edit(original.id, "edited").message
-            retried = chat.messages.retry(original.id).message
+            edited = chat.responses.edit(original.id, "edited").message
+            retried = chat.responses.retry(original.id).message
             self.assertIsNot(edited.attachments, original.attachments)
             self.assertIsNot(retried.attachments, original.attachments)
             self.assertIsNot(next(iter(edited.attachments)), next(iter(original.attachments)))
             self.assertIsNot(next(iter(retried.attachments)), next(iter(original.attachments)))
 
             with self.assertRaisesRegex(ValueError, "different provider session"):
-                await first.projects.update(second._project_type(title="foreign", session=second))
+                await first.projects.update(second._project_type(title="foreign", provider=second))
             with self.assertRaisesRegex(ValueError, "different provider session"):
-                await first.projects.delete(second._project_type(title="foreign", session=second))
+                await first.projects.delete(second._project_type(title="foreign", provider=second))
             with self.assertRaisesRegex(ValueError, "different provider session"):
                 await first.chats.delete(foreign_chat)
 
@@ -276,7 +276,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
         project = provider._project_type(
             title=remote.name,
             remote_id=remote.id,
-            session=provider,
+            provider=provider,
         )
         project._apply_provider_project(remote)
         write_started, release_write = asyncio.Event(), asyncio.Event()
@@ -398,8 +398,8 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
         provider.adapter.projects.list_projects = AsyncMock(return_value=Page((project,)))
         async with provider:
             chat = (await provider.chats.refresh())[0]
-            message = (await chat.messages.refresh())[0]
-            pending = chat.messages.create("pending").message
+            message = (await chat.responses.refresh())[0].message
+            pending = chat.responses.create("pending").message
             provider.adapter.chats.list_chats.return_value = Page((replace(remote, title="After"),))
             refreshed_chats = await provider.chats.refresh()
             self.assertEqual(refreshed_chats[0].title, "After")
@@ -407,10 +407,10 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
                 remote,
                 messages=(replace(remote.messages[0], content=(Content("text", text="new"),)),),
             )
-            messages = await chat.messages.refresh()
-            self.assertIs(messages[0], message)
+            responses = await chat.responses.refresh()
+            self.assertIs(responses[0].message, message)
             self.assertEqual(message.content, "new")
-            self.assertIn(pending, messages)
+            self.assertIn(pending, [r.message for r in responses])
             first = (await provider.projects.refresh())[0]
             self.assertEqual(first.title, "Before")
             provider.adapter.projects.list_projects.return_value = Page(
@@ -567,14 +567,15 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         operation = AsyncMessageOperation(chat, AsyncMessage("question"), executor=execute)
         task = asyncio.create_task(operation.start())
         await entered.wait()
-        loaded = AsyncMessage("partial", role="assistant", id="assistant-1", chat=chat)
-        loaded.remote_id = "assistant-1"
-        chat.messages._items.append(loaded)
+        from webaiprovider import Response
+
+        loaded = Response("partial", id="assistant-1", remote_id="assistant-1", chat=chat)
+        chat.responses._items.append(loaded)
         release.set()
         response = await task
-        self.assertIs(response.message, loaded)
+        self.assertIs(response, loaded)
         self.assertEqual(loaded.content, "answer")
-        self.assertEqual(len(chat.messages._items), 1)
+        self.assertEqual(len(chat.responses._items), 1)
 
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
         from webaiprovider.resources.message.operation import _close_async_iterator
@@ -644,7 +645,9 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[Page((remote,), "next"), Page((remote,), None)]
         )
         async with provider:
-            project = provider._project_type(title="Project", remote_id="project", session=provider)
+            project = provider._project_type(
+                title="Project", remote_id="project", provider=provider
+            )
             listed = await project.chats.list()
             self.assertEqual([c.remote_id for c in listed], ["chat"])
 

@@ -14,7 +14,7 @@ class AsyncChatGPTProjectsCollection(AsyncProjectsCollection):
         memory_share: bool = True,
     ) -> AsyncProject:
         """Create a project with shared default memory or project-only memory."""
-        runtime = self.session.runtime
+        runtime = self.provider.runtime
         context = runtime.new_context(
             "project.create",
             parameters={
@@ -25,14 +25,14 @@ class AsyncChatGPTProjectsCollection(AsyncProjectsCollection):
         )
 
         async def work(ctx) -> AsyncProject:
-            project = self.session._project_type(
-                title=ctx.parameters["title"], session=self.session
+            project = self.provider._project_type(
+                title=ctx.parameters["title"], provider=self.provider
             )
             if ctx.parameters["instruction"] is not None:
                 project.instruction._text = ctx.parameters["instruction"]
             async with runtime.activity():
-                self.session._require_provider()
-                created = await self.session._create_project_data(
+                self.provider._require_provider()
+                created = await self.provider._create_project_data(
                     project.title,
                     instructions=ctx.parameters["instruction"] or "",
                     memory_share=ctx.parameters["memory_share"],

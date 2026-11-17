@@ -111,7 +111,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         mock_provider = provider
         chat = await provider.chats.create(title="Test Chat")
 
-        op = chat.messages.create(
+        op = chat.responses.create(
             "Hello AI",
             model=ChatGPTModels.GPT_6_THINKING.select(ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM),
         )
@@ -155,8 +155,15 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         res = await op
         self.assertIsInstance(res, Response)
         self.assertEqual(res.text, "Hello World!")
-        self.assertEqual(res.message.content, "Hello World!")
-        self.assertEqual(res.message.role, "assistant")
+        self.assertEqual(res.content, "Hello World!")
+        self.assertEqual(res.message.content, "Hello AI")
+        self.assertEqual(res.message.role, "user")
+
+        stream_events = [ev async for ev in chat.stream("Hello via stream")]
+        self.assertTrue(any(isinstance(ev, OutputDelta) for ev in stream_events))
+        asked = await chat.ask("Hello via ask")
+        self.assertEqual(asked.text, "Hello World!")
+        self.assertEqual(asked.message.content, "Hello via ask")
 
     async def test_cancelling_one_waiter_does_not_cancel_shared_send(self) -> None:
         provider = await self.open_provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
@@ -175,7 +182,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             yield OutputEnd()
 
         provider.execute_stream = fake_stream
-        operation = chat.messages.create("prompt")
+        operation = chat.responses.create("prompt")
         first = asyncio.create_task(operation.start())
         second = asyncio.create_task(operation.wait())
         await started.wait()
@@ -219,7 +226,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def consume(stream):
             return [event async for event in stream]
 
-        operation = chat.messages.create("send once")
+        operation = chat.responses.create("send once")
         operation._executor = fake_stream
 
         stage_wait = asyncio.create_task(operation.wait_for("output.delta", timeout=1))
@@ -253,14 +260,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         chat = await provider.chats.create()
 
         with self.assertRaisesRegex(ProviderError, "Open the provider before using its resources"):
-            await chat.messages.create("must not be echoed as a response").wait()
+            await chat.responses.create("must not be echoed as a response").wait()
 
     async def test_response_with_sources_and_artifacts(self) -> None:
         acc = Account.from_cookies("gemini", {"cookie": "gemini-val"})
         provider = await self.open_provider(acc)
         mock_provider = provider
         chat = await provider.chats.create()
-        op = chat.messages.create("Explain relativity")
+        op = chat.responses.create("Explain relativity")
 
         async def fake_stream(_operation: AsyncMessageOperation):
             yield OutputBegin()
@@ -346,11 +353,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(dl, b"file-bytes")
 
-        op = chat.messages.create("Hello test")
+        op = chat.responses.create("Hello test")
         state["messages"] = (
             NativeMessage(op.message.id, "user", (Content("text", "Hello test"),)),
         )
-        self.assertEqual((await chat.get(op.message.id)).content, "Hello test")
+        self.assertEqual((await chat.get(op.message.id)).message.content, "Hello test")
         await chat.delete()
         chats_adapter.delete_chat.assert_awaited_once_with("chat-123")
 
@@ -465,26 +472,28 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             chat=chat,
         )
 
-        retry_op = msg.retry()
+        resp = Response("Original answer", message=msg, id="resp-orig-1", chat=chat)
+        retry_op = resp.retry()
         self.assertIsInstance(retry_op, AsyncMessageOperation)
         self.assertEqual(retry_op.message.metadata.get("action"), "retry")
+        self.assertEqual(retry_op.message.metadata.get("parent_message_id"), "resp-orig-1")
         edit_op = msg.edit("Edited prompt")
         self.assertEqual(edit_op.message.content, "Edited prompt")
         self.assertEqual(edit_op.message.metadata.get("action"), "edit")
-        update_op = chat.messages.update(msg, content="Updated via messages.update")
-        self.assertEqual(update_op.message.content, "Updated via messages.update")
+        update_op = chat.responses.update(msg, content="Updated via responses.update")
+        self.assertEqual(update_op.message.content, "Updated via responses.update")
         self.assertEqual(update_op.message.metadata.get("action"), "edit")
 
         branch_meta = {
-            "pending_branch": {"conversation_id": "remote-chat-id", "message_id": "msg-orig-1"}
+            "pending_branch": {"conversation_id": "remote-chat-id", "message_id": "resp-orig-1"}
         }
         session.adapter.chats.branch_chat.return_value = Conversation(
             "branch-chat-id",
             "Branch chat",
             metadata=branch_meta,
         )
-        branched_chat = await chat.branch(msg.id, title="Branch chat")
-        session.adapter.chats.branch_chat.assert_awaited_once_with("remote-chat-id", "msg-orig-1")
+        branched_chat = await resp.branch(title="Branch chat")
+        session.adapter.chats.branch_chat.assert_awaited_once_with("remote-chat-id", "resp-orig-1")
         self.assertEqual(branched_chat.remote_id, "branch-chat-id")
         self.assertEqual(branched_chat.metadata, branch_meta)
         branched_chat.metadata["local_only"] = True
@@ -633,7 +642,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider.adapter.messages.stream = fail_stream
         await provider.open()
         chat = await provider.chats.create()
-        operation = chat.messages.create("Hello")
+        operation = chat.responses.create("Hello")
         with self.assertRaises(RateLimited) as ctx:
             await operation.start()
         self.assertEqual(ctx.exception.retry_after, 42.0)
@@ -644,7 +653,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         provider.adapter.messages.stream = fail_validation
         with self.assertRaisesRegex(ValueError, "invalid effort level"):
-            await chat.messages.create("Hello").start()
+            await chat.responses.create("Hello").start()
         self.assertTrue(repr(provider).startswith("<AsyncGrokProvider "))
         await provider.close()
 
@@ -659,7 +668,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             chat = await provider.chats.create()
             att = Attachment.from_bytes(b"hello", name="notes.txt", mime_type="text/plain")
             msg = Message("Read", attachments=[att])
-            op = chat.messages.create(msg)
+            op = chat.responses.create(msg)
             ctx = provider.runtime.new_context(
                 "chat.send.prepare",
                 resource_id=chat.id,
@@ -688,7 +697,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await p.open()
         res = await p.ask("What is 2+2?")
         self.assertEqual(res.text, "Direct answer")
-        self.assertEqual(res.message.content, "Direct answer")
+        self.assertEqual(res.message.content, "What is 2+2?")
         await p.close()
 
     async def test_model_resolution_from_string_and_policy(self) -> None:
@@ -719,21 +728,21 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         chat = await provider.chats.create()
 
         with patch.object(
-            chat.session.models, "resolve", wraps=chat.session.models.resolve
+            chat.provider.models, "resolve", wraps=chat.provider.models.resolve
         ) as resolve_spy:
-            operation = chat.messages.create("test", model=ChatGPTModels.GPT_6_THINKING)
+            operation = chat.responses.create("test", model=ChatGPTModels.GPT_6_THINKING)
             await operation.start()
             self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
             self.assertIsNone(provider.requests[-1].effort)
 
-            operation = chat.messages.create(
+            operation = chat.responses.create(
                 "test", model=ChatGPTModels.GPT_6_THINKING.efforts.HIGH
             )
             await operation.start()
             self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
             self.assertEqual(provider.requests[-1].effort, "extended")
 
-            operation = chat.messages.create(
+            operation = chat.responses.create(
                 "test", model=ChatGPTModels.GPT_6_THINKING.select("standard")
             )
             await operation.start()
@@ -741,18 +750,18 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider.requests[-1].effort, "standard")
 
             with self.assertRaises(RemoteNotFound):
-                await chat.messages.create("test", model=GeminiModels.HYDROGEN).start()
+                await chat.responses.create("test", model=GeminiModels.HYDROGEN).start()
 
             resolve_spy.assert_not_awaited()
             provider.adapter.models.load_catalog.assert_not_awaited()
 
-        operation = chat.messages.create("test", model="gpt-6-instant")
+        operation = chat.responses.create("test", model="gpt-6-instant")
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-instant")
-        operation = chat.messages.create("test", model=Models.AUTO)
+        operation = chat.responses.create("test", model=Models.AUTO)
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-instant")
-        operation = chat.messages.create("test", model=Models.HIGH)
+        operation = chat.responses.create("test", model=Models.HIGH)
         await operation.start()
         self.assertEqual(provider.requests[-1].model, "gpt-6-thinking")
 
@@ -1025,7 +1034,7 @@ class TestSyncApi(unittest.TestCase):
         ):
             project = provider.projects.create("Notes", memory_share=False)
             chat = provider.chats.create("Draft", project=project)
-            operation = chat.messages.create("hello")
+            operation = chat.responses.create("hello")
             events = list(operation.stream())
             response = operation.wait()
 
@@ -1289,7 +1298,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             project = provider._project_type(
                 title=proj_adapter.remote.name,
                 remote_id=proj_adapter.remote.id,
-                session=provider,
+                provider=provider,
             )
             project._apply_provider_project(proj_adapter.remote)
 
@@ -1347,7 +1356,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         ):
             chat = provider.chats.create()
             with patch.object(provider, "_call", wraps=provider._call) as portal_calls:
-                operation = chat.messages.create("hello")
+                operation = chat.responses.create("hello")
                 events = list(operation.stream())
             call_count = portal_calls.call_count
 
@@ -1380,7 +1389,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             chat = provider.chats.create()
             collected = []
             with self.assertRaisesRegex(ProviderError, "stream aborted"):
-                for event in chat.messages.create("hello").stream():
+                for event in chat.responses.create("hello").stream():
                     collected.append(event)
             self.assertEqual(
                 [event.delta for event in collected if isinstance(event, OutputDelta)],
@@ -1393,7 +1402,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                     yield OutputDelta("custom")
                     yield OutputEnd()
 
-            sync_base = chat.messages.create("hello")
+            sync_base = chat.responses.create("hello")
 
             async def make_custom():
                 return CustomAsyncOp(
