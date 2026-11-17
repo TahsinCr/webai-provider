@@ -21,6 +21,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport bridge, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
 - Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
 - Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
 - Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.

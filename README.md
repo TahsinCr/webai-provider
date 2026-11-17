@@ -154,6 +154,8 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
+For offline performance measurements, see the [benchmark guide](benchmarks/README.md).
+
 ## Diagnostics
 
 Send timing is opt-in and records named durations and counters without message or credential contents. Activate it around an awaited operation; it does not run automatically.

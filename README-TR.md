@@ -154,6 +154,8 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
+Çevrimdışı performans ölçümleri için [benchmark kılavuzuna](benchmarks/README.md) bakın.
+
 ## Tanılama
 
 Gönderim ölçümü isteğe bağlıdır; mesaj ve kimlik bilgisi içeriklerini kaydetmeden adlandırılmış süreleri ve sayaçları tutar. Beklenen işlemin çevresinde etkinleştirin; kendiliğinden çalışmaz.

@@ -36,6 +36,7 @@ Issues = "https://github.com/TahsinCr/webai-provider/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1,<2", "ruff>=0.11,<1", "twine>=6,<7"]
+benchmark = ["pyperf>=2.7,<3"]
 
 [tool.ruff]
 target-version = "py310"

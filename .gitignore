@@ -21,3 +21,4 @@ dist/
 /.config/live-cleanup*.json
 /.config/live-cleanup*.tmp
 /.config/live-run*.lock
+/benchmarks/results/

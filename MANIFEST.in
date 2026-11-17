@@ -4,5 +4,8 @@ include LICENSE
 include README.md
 include README-TR.md
 include README-RU.md
+include run_benchmarks.py
+recursive-include benchmarks *.py README.md
+prune benchmarks/results
 recursive-include webaiprovider/providers/chatgpt/sentinel *.h *.c Makefile
 include tests/test_sentinel.c
