@@ -3,7 +3,7 @@
 from webaiprovider.base import Capability
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
-from webaiprovider.resources.model.collections import Models
+from webaiprovider.resources.model.types import Models
 
 from .support.case import LiveAsyncTestCase, LiveSyncTestCase
 
@@ -48,22 +48,21 @@ class ProjectApiTests(LiveSyncTestCase):
 
             if Capability.RESOURCES in capabilities:
                 attachment = self.call_api(
-                    "projects.attachments.add",
-                    lambda: project.attachments.add(marker, "text", name=f"{marker}-resource"),
+                    "projects.attachments.create",
+                    lambda: project.attachments.create(marker, "text", name=f"{marker}-resource"),
                 )
                 attachment_id = getattr(attachment, "id", None)
                 self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
                 attachments = self.call_api(
                     "projects.attachments.list", lambda: project.attachments.list(limit=None)
                 )
-                self.assertIsInstance(attachments, list)
-                removed = self.call_api(
-                    "projects.attachments.remove",
-                    lambda: project.attachments.remove(str(attachment_id)),
+                self.assertIn(attachment_id, {item.id for item in attachments})
+                self.call_api(
+                    "projects.attachments.delete",
+                    lambda: project.attachments.delete(str(attachment_id)),
                 )
-                self.assertIs(removed, True, "Project attachment removal was not confirmed")
             else:
-                self.context.skip("projects.attachments.add/remove: unsupported")
+                self.context.skip("projects.attachments.create/delete: unsupported")
         finally:
             self.context.cleanup_entry(entry)
 
@@ -110,22 +109,21 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
 
             if Capability.RESOURCES in capabilities:
                 attachment = await self.call_api(
-                    "projects.attachments.add",
-                    lambda: project.attachments.add(marker, "text", name=f"{marker}-resource"),
+                    "projects.attachments.create",
+                    lambda: project.attachments.create(marker, "text", name=f"{marker}-resource"),
                 )
                 attachment_id = getattr(attachment, "id", None)
                 self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
                 attachments = await self.call_api(
                     "projects.attachments.list", lambda: project.attachments.list(limit=None)
                 )
-                self.assertIsInstance(attachments, list)
-                removed = await self.call_api(
-                    "projects.attachments.remove",
-                    lambda: project.attachments.remove(str(attachment_id)),
+                self.assertIn(attachment_id, {item.id for item in attachments})
+                await self.call_api(
+                    "projects.attachments.delete",
+                    lambda: project.attachments.delete(str(attachment_id)),
                 )
-                self.assertIs(removed, True, "Project attachment removal was not confirmed")
             else:
-                self.context.skip("projects.attachments.add/remove: unsupported")
+                self.context.skip("projects.attachments.create/delete: unsupported")
 
             chat_entry = None
             second_project_entry = None

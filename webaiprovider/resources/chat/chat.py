@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from ..message.attachment import Attachment, Attachments
     from ..message.message import AsyncMessage, Message
     from ..message.operation import AsyncMessageOperation, StreamEvent
-    from ..model.collections import Models
     from ..model.model import EffortRef, ModelRef, ModelSelection
+    from ..model.types import Models
     from ..project.project import AsyncProject, Project
     from ..response.response import Response
 

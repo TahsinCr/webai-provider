@@ -58,14 +58,14 @@ with ChatGPTProvider(account) as provider:
 
 ## Основной API
 
-- `BaseProvider` содержит общие сведения об аккаунте и провайдере. Для асинхронной работы используйте `AsyncChatGPTProvider` (или соответствующий класс другого провайдера), а для блокирующей — `ChatGPTProvider`. Общие классы `AsyncProvider` и `Provider` подходят для выбора провайдера через `ProviderType` или внедрения собственного `BaseProviderAdapter` (`adapter=...`).
+- `BaseProvider` хранит идентификаторы аккаунта и провайдера. Для асинхронной работы используйте `AsyncProvider`, для блокирующих вызовов — `Provider`. Дополнительные возможности доступны в классах конкретных провайдеров, например `AsyncChatGPTProvider`.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` и `GrokProvider` предоставляют функции конкретных провайдеров. Проекты ChatGPT по умолчанию используют общую область памяти; укажите `memory_share=False`, чтобы оставить память только в проекте.
 - Удалённые коллекции читают данные провайдера по запросу. `list(limit=50)` управляет пагинацией, `limit=0` пропускает сетевые запросы, а `limit=None` читает все доступные страницы. Общие методы коллекций — `get()`, `search()`, `find()`, `first()`, `last()` и `single()`. При нескольких совпадениях `find(single=True)` вызывает `AmbiguousMatchError`.
 - Первый запрос к моделям загружает каталог сессии. Последующие запросы используют его повторно, даже если он пуст. Вызовите `provider.models.refresh()`, чтобы загрузить каталог заново.
 - Одновременные вызовы `chat.responses.list()` используют один запрос истории. Для независимого запроса используйте `chat.responses.list(fresh=True)`.
 - Методы `chat.responses.create()`, `edit()` и `retry()` подготавливают операции с сообщениями. Используйте `operation.stream()` для потока событий или `operation.wait()` для получения готового `Response`. Ответ содержит связанное сообщение пользователя, источники, артефакты и данные о времени для текущей отправки.
 - Чтобы открыть чат вместе с последними ответами за одно чтение истории, используйте `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. В синхронном API вызов выполняется без `await`. Лимит определяет число возвращаемых ответов.
-- `project.attachments` предоставляет файловую проекцию `Attachment` поверх `project.resources` (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
+- Добавляйте файлы и текст в проект через `project.attachments.create()`. Для просмотра вложений используйте `list()`, для удаления — `delete()`.
 - Провайдеры используют `ProviderRuntime` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Событие `collection.read.completed` передаёт пакет идентификаторов после успешного удалённого чтения. `collection.changed` сообщает о подтверждённых добавлениях, обновлениях и удалениях. В обоих событиях список `items` доступен в `event.metadata["payload"]`. Метаданные содержат аккаунт и идентификатор родительского ресурса для вложенных коллекций. Изменения ответов относятся к соответствующему чату. События не содержат текст сообщений, содержимое файлов или учётные данные.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.
@@ -119,25 +119,7 @@ Claude и Grok используют `HttpSession`. Gemini использует `
 
 Общие преобразования источников и файлов находятся в `webaiprovider.normalizers`. История провайдера, RPC-данные, идентификаторы продолжения и интерпретация ответов остаются в пакетах отдельных провайдеров.
 
-Для расширений протокола `webaiprovider.base` предоставляет `BaseProviderAdapter` и субадаптеры (`BaseSessionAdapter`, `BaseModelAdapter`, `BaseChatAdapter`, `BaseProjectAdapter`, `EditorProjectAdapter`, `BaseMessageAdapter`, `BaseAttachmentAdapter`), а `webaiprovider.resources.message.protocol` предоставляет `ProviderRequest` и нормализованные события `ProviderStreamEvent` (`TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata`):
-
-```python
-from collections.abc import AsyncIterator
-from webaiprovider import AsyncProvider
-from webaiprovider.base import BaseMessageAdapter, BaseProviderAdapter
-from webaiprovider.resources.message.protocol import ProviderRequest, ProviderStreamEvent, TextDelta
-
-
-class CustomMessageAdapter(BaseMessageAdapter):
-    async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
-        yield TextDelta(f"Echo: {request.prompt}")
-
-
-# adapter = BaseProviderAdapter(..., messages=CustomMessageAdapter())
-# provider = AsyncProvider(account, adapter=adapter)
-```
-
-Встроенные провайдеры используют те же контракты. Обычное приложение отправляет сообщения через `chat.messages`, оставляя wire-запросы и повторы провайдеру. `ProviderType` обозначает четыре поддерживаемых веб-провайдера. Использование transport и декодеров кадров с другим origin само по себе не добавляет поддержку его аутентификации, моделей, возможностей или ресурсов.
+Отправляйте сообщения через `chat.responses`. Провайдер управляет сетевыми запросами и повторными попытками.
 
 ## Безопасность и поведение
 

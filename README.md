@@ -58,14 +58,14 @@ with ChatGPTProvider(account) as provider:
 
 ## Core API
 
-- `BaseProvider` carries the shared account and provider identity. Use `AsyncChatGPTProvider` (or the matching async class) for asynchronous work and `ChatGPTProvider` for blocking work; generic `AsyncProvider` and `Provider` serve shared use through `ProviderType` or custom `BaseProviderAdapter` injection (`adapter=...`).
+- `BaseProvider` provides account and provider identity. Use `AsyncProvider` for async work and `Provider` for blocking calls. Use a provider-specific class such as `AsyncChatGPTProvider` for additional features.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory.
 - Remote collections read provider data on demand. `list(limit=50)` hides pagination, `limit=0` skips remote work, and `limit=None` reads all available pages. Collections share `get()`, `search()`, `find()`, `first()`, `last()`, and `single()`. `find(single=True)` raises `AmbiguousMatchError` if more than one item matches.
 - The first model query loads the session catalog. Subsequent queries reuse it, including an empty catalog. Call `provider.models.refresh()` to reload it.
 - Overlapping calls to `chat.responses.list()` share a history request. Use `chat.responses.list(fresh=True)` for a separate request.
 - `chat.responses.create()`, `edit()`, and `retry()` prepare message operations. Use `operation.stream()` for events or `operation.wait()` for the completed `Response`. It exposes the associated user message, sources, artifacts, and timing for live sends.
 - To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.
-- `project.attachments` exposes a file-focused `Attachment` projection over `project.resources` (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
+- Use `project.attachments.create()` to add a file or text, `list()` to inspect project attachments, and `delete()` to remove one.
 - Providers share a `ProviderRuntime` backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Subscribe to `collection.read.completed` for one batch of item identities per successful remote read and to `collection.changed` for confirmed creates, updates, and deletes. Both events put an `items` list in `event.metadata["payload"]`. The envelope carries the account and, for nested collections, the parent resource ID. Message revisions use the chat scope. Payloads omit message text, file bodies, and credentials.
 - Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.
@@ -119,25 +119,7 @@ Frame decoding is separate from HTTP. `SSEFrameDecoder` preserves `data`, `event
 
 Shared source and file normalization lives in `webaiprovider.normalizers`. Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
 
-For custom protocol extensions, `webaiprovider.base` provides `BaseProviderAdapter` and sub-adapters (`BaseSessionAdapter`, `BaseModelAdapter`, `BaseChatAdapter`, `BaseProjectAdapter`, `EditorProjectAdapter`, `BaseMessageAdapter`, `BaseAttachmentAdapter`), while `webaiprovider.resources.message.protocol` exports `ProviderRequest` and normalized `ProviderStreamEvent` types (`TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata`):
-
-```python
-from collections.abc import AsyncIterator
-from webaiprovider import AsyncProvider
-from webaiprovider.base import BaseMessageAdapter, BaseProviderAdapter
-from webaiprovider.resources.message.protocol import ProviderRequest, ProviderStreamEvent, TextDelta
-
-
-class CustomMessageAdapter(BaseMessageAdapter):
-    async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
-        yield TextDelta(f"Echo: {request.prompt}")
-
-
-# adapter = BaseProviderAdapter(..., messages=CustomMessageAdapter())
-# provider = AsyncProvider(account, adapter=adapter)
-```
-
-Built-in providers use the same contracts. Normal application code should send through `chat.messages` and let the provider own wire requests and retry semantics. `ProviderType` identifies the four supported web providers; using the transport and frame tools with another origin does not add that provider's authentication, model, capability, or resource support.
+Send messages through `chat.responses`. The provider handles its own requests and retry semantics.
 
 ## Security and behavior
 

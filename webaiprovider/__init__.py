@@ -78,19 +78,15 @@ from .resources.message.operation import (
     ThinkingEnd,
     ThinkingReplace,
 )
-from .resources.model.collections import (
-    AsyncModelsCollection,
-    Models,
-    ModelsCollection,
-    SelectionResolver,
-    StaticModelCatalog,
-)
+from .resources.model.collections import AsyncModelsCollection, ModelsCollection
 from .resources.model.model import (
     EffortRef,
     EffortSet,
     ModelRef,
     ModelSelection,
 )
+from .resources.model.resolver import SelectionResolver
+from .resources.model.types import Models, StaticModelCatalog
 from .resources.project.chats import AsyncProjectChatsCollection, ProjectChatsCollection
 from .resources.project.collections import (
     AsyncProjectAttachments,

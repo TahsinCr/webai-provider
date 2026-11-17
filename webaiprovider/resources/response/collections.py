@@ -23,8 +23,8 @@ from ..chat.types import Conversation
 from ..message.attachment import Attachment, Attachments
 from ..message.message import AsyncMessage, Message
 from ..message.operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
-from ..model.collections import Models
 from ..model.model import EffortRef, ModelRef, ModelSelection
+from ..model.types import Models
 from .artifact import Artifact
 from .response import Response
 from .source import Source

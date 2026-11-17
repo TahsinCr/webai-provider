@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
 from ..chat.chat import AsyncChat, Chat
-from ..model.collections import Models
 from ..model.model import (
     EffortRef,
     ModelRef,
     ModelSelection,
 )
+from ..model.types import Models
 from ..response.artifact import ArtifactsCollection
 from ..response.response import Response
 from ..response.source import SourcesCollection

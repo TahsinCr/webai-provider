@@ -2,10 +2,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...resources.model.collections import (
-    StaticModelCatalog,
-    effort_ref,
-)
 from ...resources.model.model import (
     EffortOption,
     EffortRef,
@@ -15,6 +11,7 @@ from ...resources.model.model import (
     ModelCatalogState,
     ModelRef,
 )
+from ...resources.model.types import StaticModelCatalog, effort_ref
 from .errors import ClaudeCompatibilityError
 
 

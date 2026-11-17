@@ -400,11 +400,13 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
         direct = await self._fetch_by_id(item_id)
         if direct is not None:
             return direct
-        async for batch in self._iter_batches(limit=None):
-            for item in batch:
-                if self._item_matches_exact_id(item, item_id):
-                    return item
-        raise RemoteNotFound(f"Record was not found: {item_id}")
+        return await self._find_id(item_id)
+
+    async def _find_id(self, item_id: str, **options: Any) -> T:
+        item = await self.first(lambda item: self._item_matches_exact_id(item, item_id), **options)
+        if item is None:
+            raise RemoteNotFound(f"Record was not found: {item_id}")
+        return item
 
     @_report_read
     async def first(
@@ -554,9 +556,6 @@ class Collection(BaseCollection[T]):
 
     def __getitem__(self, index: Any) -> Any:
         return self._items[index]
-
-    def __bool__(self) -> bool:
-        return bool(self._items)
 
     def __contains__(self, item: Any) -> bool:
         target_id = self._extract_id(item) if not isinstance(item, str) else item

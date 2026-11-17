@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from ...collections import BaseCollection
 from ...errors import ProviderError, RemoteNotFound
@@ -94,38 +94,28 @@ def _model_refs_from_catalog(provider: str, catalog: ModelCatalog) -> list[Model
     return result
 
 
-class StaticModelCatalog:
-    provider: str = ""
+Ref = TypeVar("Ref")
+
+
+class _ReferenceQueries(Generic[Ref]):
+    @classmethod
+    def list(cls) -> Sequence[Ref]:
+        raise NotImplementedError
 
     @classmethod
-    def list(
-        cls,
-        predicate: Callable[[ModelRef], bool] | None = None,
-        *,
-        limit: int | None = None,
-    ) -> list[ModelRef]:
-        from .model import ModelRef
-
-        items = [v for v in cls.__dict__.values() if isinstance(v, ModelRef)]
-        return BaseCollection._filter_items(items, predicate, limit=limit)
+    def _find_policy(cls, query: Models) -> Ref:
+        raise NotImplementedError
 
     @classmethod
-    def get(cls, model_id: str) -> ModelRef:
-        for m in cls.list():
-            if m.id == model_id:
-                return m
-        raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} was not found in the catalog")
-
-    @classmethod
-    def first(cls, predicate: Callable[[ModelRef], bool] | None = None) -> ModelRef | None:
+    def first(cls, predicate: Callable[[Ref], bool] | None = None) -> Ref | None:
         return BaseCollection._first_matching(cls.list(), predicate)
 
     @classmethod
-    def last(cls, predicate: Callable[[ModelRef], bool] | None = None) -> ModelRef | None:
+    def last(cls, predicate: Callable[[Ref], bool] | None = None) -> Ref | None:
         return BaseCollection._last_matching(cls.list(), predicate)
 
     @classmethod
-    def single(cls, predicate: Callable[[ModelRef], bool] | None = None) -> ModelRef | None:
+    def single(cls, predicate: Callable[[Ref], bool] | None = None) -> Ref | None:
         return BaseCollection._single_matching(cls.list(), predicate)
 
     @classmethod
@@ -139,15 +129,9 @@ class StaticModelCatalog:
         endswith: bool = False,
         single: bool = False,
         last: bool = False,
-    ) -> ModelRef | None:
+    ) -> Ref | None:
         if isinstance(query, Models) and not (exact or startswith or endswith or last):
-            from .model import ModelRef
-            from .resolver import SelectionResolver
-
-            result = SelectionResolver.resolve(query, cls.list())
-            if not isinstance(result, ModelRef):
-                raise TypeError("Model query did not resolve to a model")
-            return result
+            return cls._find_policy(query)
         pred = BaseCollection._query_predicate(
             query, exact=exact, startswith=startswith, endswith=endswith
         )
@@ -167,11 +151,46 @@ class StaticModelCatalog:
         startswith: bool = False,
         endswith: bool = False,
         limit: int | None = None,
-    ) -> list[ModelRef]:
+    ) -> list[Ref]:
         pred = BaseCollection._query_predicate(
             query, exact=exact, startswith=startswith, endswith=endswith
         )
         return BaseCollection._filter_items(cls.list(), pred, limit=limit)
+
+
+class StaticModelCatalog(_ReferenceQueries["ModelRef"]):
+    provider: str = ""
+
+    @classmethod
+    def list(
+        cls,
+        predicate: Callable[[ModelRef], bool] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[ModelRef]:
+        from .model import ModelRef
+
+        items = [v for v in cls.__dict__.values() if isinstance(v, ModelRef)]
+        if predicate is None and limit is None:
+            return items
+        return BaseCollection._filter_items(items, predicate, limit=limit)
+
+    @classmethod
+    def get(cls, model_id: str) -> ModelRef:
+        for m in cls.list():
+            if m.id == model_id:
+                return m
+        raise RemoteNotFound(f"Model ID {model_id!r} {cls.provider} was not found in the catalog")
+
+    @classmethod
+    def _find_policy(cls, query: Models) -> ModelRef:
+        from .model import ModelRef
+        from .resolver import SelectionResolver
+
+        result = SelectionResolver.resolve(query, cls.list())
+        if not isinstance(result, ModelRef):
+            raise TypeError("Model query did not resolve to a model")
+        return result
 
     @classmethod
     def contains(cls, item: str | EffortRef | ModelRef | ModelSelection) -> bool:

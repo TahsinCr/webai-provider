@@ -4,10 +4,6 @@ import re
 from typing import ClassVar
 
 from ...errors import AccountPaused, ProviderError
-from ...resources.model.collections import (
-    StaticModelCatalog,
-    effort_ref,
-)
 from ...resources.model.model import (
     EffortOption,
     EffortRef,
@@ -15,6 +11,7 @@ from ...resources.model.model import (
     Model,
     ModelRef,
 )
+from ...resources.model.types import StaticModelCatalog, effort_ref
 from .errors import GeminiCompatibilityError, GeminiError
 from .rpc import nested, rpc_parts
 

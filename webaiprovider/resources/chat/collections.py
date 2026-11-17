@@ -222,11 +222,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             if not include_projects and direct.project is not None:
                 raise RemoteNotFound(f"Record was not found: {item_id}")
             return direct
-        async for batch in self._iter_batches(limit=None, include_projects=include_projects):
-            for item in batch:
-                if self._item_matches_exact_id(item, item_id):
-                    return item
-        raise RemoteNotFound(f"Record was not found: {item_id}")
+        return await self._find_id(item_id, include_projects=include_projects)
 
     @_report_read
     async def get_with_responses(

@@ -40,12 +40,9 @@ from .resources.message.protocol import (
     TextReplacement,
     ThoughtDelta,
 )
-from .resources.model.collections import (
-    AsyncModelsCollection,
-    Models,
-    _model_refs_from_catalog,
-)
+from .resources.model.collections import AsyncModelsCollection
 from .resources.model.model import EffortRef, ModelRef, ModelSelection
+from .resources.model.types import Models, _model_refs_from_catalog
 from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions

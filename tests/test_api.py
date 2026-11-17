@@ -433,15 +433,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await project.instruction.clear()
         self.assertEqual(await project.instruction.get(), "")
 
-        added = await project.attachments.add("Doc", resource_type="text", name="res-1")
+        added = await project.attachments.create("Doc", resource_type="text", name="res-1")
         self.assertEqual(added.id, "remote-res-1")
         session._add_project_resource.assert_awaited_once_with(
             "proj-abc", "text", name="res-1", text="Doc"
         )
         self.assertEqual(await project.attachments.download(added.id), "Doc")
 
-        created_res = await project.attachments.create("Doc 2", resource_type="text", name="res-2")
-        self.assertEqual(created_res.content, "Doc 2")
         await session.projects.update(
             project, title="Updated Project", instruction="Updated Instruction"
         )
@@ -455,9 +453,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             await project.attachments.update(added.id, content="Updated Doc")
         self.assertEqual((await project.attachments.get(added.id)).content, "Doc")
 
-        await project.attachments.delete(created_res.id)
-        await project.attachments.remove(added.id)
-        self.assertEqual(session._remove_project_resource.await_count, 2)
+        await project.attachments.delete(added.id)
+        session._remove_project_resource.assert_awaited_once_with("proj-abc", added.id)
         await project.delete()
         session._delete_project_data.assert_awaited_once_with("proj-abc")
 

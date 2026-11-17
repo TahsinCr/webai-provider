@@ -88,10 +88,15 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
         *,
         instruction: str | None = None,
     ) -> AsyncProject:
+        return await self._create_project(title, instruction)
+
+    async def _create_project(
+        self, title: str, instruction: str | None, **options: Any
+    ) -> AsyncProject:
         runtime = self.provider.runtime
         context = runtime.new_context(
             "project.create",
-            parameters={"title": title, "instruction": instruction},
+            parameters={"title": title, "instruction": instruction, **options},
         )
 
         async def work(ctx) -> AsyncProject:
@@ -105,6 +110,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
                 created = await self.provider._create_project_data(
                     project.title,
                     instructions=ctx.parameters["instruction"] or "",
+                    **{name: ctx.parameters[name] for name in options},
                 )
             project._apply_provider_project(created)
             return project
@@ -413,23 +419,6 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         mime_type: str | None = None,
         **options: Any,
     ) -> Attachment:
-        return await self.add(
-            file_or_data,
-            resource_type,
-            name=name,
-            mime_type=mime_type,
-            **options,
-        )
-
-    async def add(
-        self,
-        file_or_data: Attachment | str | bytes | os.PathLike[str],
-        resource_type: str | None = None,
-        *,
-        name: str | None = None,
-        mime_type: str | None = None,
-        **options: Any,
-    ) -> Attachment:
         provider = self.project.provider
         runtime = provider.runtime if provider is not None else None
         raw_options = dict(options)
@@ -515,43 +504,37 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             on_success_event=on_success,
         )
 
-    async def remove(self, attachment: Attachment | str) -> bool:
+    async def delete(self, attachment: Attachment | str) -> None:
         file_id = attachment.id if isinstance(attachment, Attachment) else str(attachment)
         await self._load_attachments()
         provider = self.project.provider
         runtime = provider.runtime if provider is not None else None
-        if not any(att.id == file_id for att in self._items):
-            raise RemoteNotFound(f"Project attachment was not found: {file_id}")
 
-        async def perform_remove() -> bool:
-            for index, item in enumerate(self._items):
-                if item.id != file_id:
-                    continue
-                if self.project.remote_id:
-                    if provider is None:
-                        raise ProviderError("Project is not attached to an open provider")
-                    async with provider.runtime.activity():
-                        provider._require_provider()
-                        updated = await provider._remove_project_resource_data(
-                            self.project.remote_id, file_id
-                        )
-                    if isinstance(updated, ProviderProject):
-                        self.project._provider_project = updated
-                    elif isinstance(self.project._provider_project, ProviderProject):
-                        self.project._provider_project = replace(
-                            self.project._provider_project,
-                            resources=tuple(
-                                r
-                                for r in self.project._provider_project.resources
-                                if r.id != file_id
-                            ),
-                        )
-                del self._items[index]
-                return True
-            return False
+        async def perform_remove() -> None:
+            if not any(item.id == file_id for item in self._items):
+                raise RemoteNotFound(f"Project attachment was not found: {file_id}")
+            if self.project.remote_id:
+                if provider is None:
+                    raise ProviderError("Project is not attached to an open provider")
+                async with provider.runtime.activity():
+                    provider._require_provider()
+                    updated = await provider._remove_project_resource_data(
+                        self.project.remote_id, file_id
+                    )
+                if isinstance(updated, ProviderProject):
+                    self.project._provider_project = updated
+                elif isinstance(self.project._provider_project, ProviderProject):
+                    self.project._provider_project = replace(
+                        self.project._provider_project,
+                        resources=tuple(
+                            r for r in self.project._provider_project.resources if r.id != file_id
+                        ),
+                    )
+            self._items = [item for item in self._items if item.id != file_id]
 
         if runtime is None:
-            return await perform_remove()
+            await perform_remove()
+            return
 
         context = runtime.new_context(
             "project.attachment.remove",
@@ -560,33 +543,29 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         )
 
         async def on_success(ctx) -> None:
-            if ctx.result:
-                if self.project.remote_id:
-                    await _publish_collection_change(
-                        runtime,
-                        "project.attachments",
-                        "delete",
-                        file_id,
-                        scope_id=self.project.remote_id,
-                        operation_id=ctx.operation_id,
-                    )
-                await runtime.emit(
-                    "project.attachment.removed",
+            if self.project.remote_id:
+                await _publish_collection_change(
+                    runtime,
+                    "project.attachments",
+                    "delete",
+                    file_id,
+                    scope_id=self.project.remote_id,
                     operation_id=ctx.operation_id,
-                    resource_id=self.project.remote_id or self.project.id,
-                    payload={"attachment_id": file_id},
                 )
+            await runtime.emit(
+                "project.attachment.removed",
+                operation_id=ctx.operation_id,
+                resource_id=self.project.remote_id or self.project.id,
+                payload={"attachment_id": file_id},
+            )
 
-        return await execute_with_hooks(
+        await execute_with_hooks(
             operation_name="project.attachment.remove",
             context=context,
             hooks_chain=(runtime.hooks, self.hooks),
             work=lambda _ctx: perform_remove(),
             on_success_event=on_success,
         )
-
-    async def delete(self, attachment: Attachment | str) -> None:
-        await self.remove(attachment)
 
     async def update(self, attachment: Attachment | str, **options: Any) -> Attachment:
         att_id = attachment.id if isinstance(attachment, Attachment) else str(attachment)
@@ -659,30 +638,8 @@ class ProjectAttachments(RemoteCollection[Attachment, Attachment]):
             )
         )
 
-    def add(
-        self,
-        file_or_data: Attachment | str | bytes | os.PathLike[str],
-        resource_type: str | None = None,
-        *,
-        name: str | None = None,
-        mime_type: str | None = None,
-        **options: Any,
-    ) -> Attachment:
-        return self._owner._call(
-            self._collection.add(
-                file_or_data,
-                resource_type,
-                name=name,
-                mime_type=mime_type,
-                **options,
-            )
-        )
-
     def update(self, attachment: Attachment | str, **options: Any) -> Attachment:
         return self._owner._call(self._collection.update(attachment, **options))
-
-    def remove(self, attachment: Attachment | str) -> bool:
-        return self._owner._call(self._collection.remove(attachment))
 
     def delete(self, attachment: Attachment | str) -> None:
         self._owner._call(self._collection.delete(attachment))

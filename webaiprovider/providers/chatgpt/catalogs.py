@@ -1,6 +1,5 @@
 from typing import Any, ClassVar
 
-from ...resources.model.collections import StaticModelCatalog
 from ...resources.model.model import (
     EffortOption,
     EffortRef,
@@ -10,6 +9,7 @@ from ...resources.model.model import (
     ModelCatalogState,
     ModelRef,
 )
+from ...resources.model.types import StaticModelCatalog
 from .errors import ChatGPTError
 
 

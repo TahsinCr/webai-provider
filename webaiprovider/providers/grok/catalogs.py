@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import ClassVar
 
 from ...errors import ProviderError
-from ...resources.model.collections import StaticModelCatalog
 from ...resources.model.model import (
     EffortSet,
     Model,
@@ -11,6 +10,7 @@ from ...resources.model.model import (
     ModelCatalogState,
     ModelRef,
 )
+from ...resources.model.types import StaticModelCatalog
 
 _MODEL_MODES = {
     "auto": "MODEL_MODE_AUTO",

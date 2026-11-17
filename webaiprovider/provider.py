@@ -14,15 +14,13 @@ from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
-from .resources.model.collections import (
-    Models,
-    ModelsCollection,
-)
+from .resources.model.collections import ModelsCollection
 from .resources.model.model import (
     EffortRef,
     ModelRef,
     ModelSelection,
 )
+from .resources.model.types import Models
 from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .resources.response.response import Response

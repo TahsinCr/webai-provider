@@ -110,7 +110,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(project.remote_id, "project-1")
         self.assertEqual(await project.instruction.get(), "Be concise")
-        added = await project.attachments.add("A note", resource_type="text", name="Notes")
+        added = await project.attachments.create("A note", resource_type="text", name="Notes")
         self.provider._add_project_resource.assert_awaited_once_with(
             "project-1", "text", name="Notes", text="A note"
         )
@@ -125,7 +125,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
-        await project.attachments.remove("resource-2")
+        await project.attachments.delete("resource-2")
         self.provider._remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
         state["project"] = original
         loaded_projects = await self.provider.projects.list(limit=None)

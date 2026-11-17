@@ -6,7 +6,7 @@ from webaiprovider import ArtifactsCollection, Response, SourcesCollection, Timi
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.resources.message.attachment import Attachment
-from webaiprovider.resources.model.collections import Models
+from webaiprovider.resources.model.types import Models
 
 from .support.case import LiveAsyncTestCase, LiveSyncTestCase
 

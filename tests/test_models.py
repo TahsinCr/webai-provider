@@ -17,18 +17,15 @@ from webaiprovider.providers.claude.catalogs import (
 )
 from webaiprovider.providers.gemini.catalogs import GeminiModels
 from webaiprovider.providers.grok.catalogs import GrokModels
-from webaiprovider.resources.model.collections import (
-    AsyncModelsCollection,
-    Models,
-    SelectionResolver,
-    StaticModelCatalog,
-)
+from webaiprovider.resources.model.collections import AsyncModelsCollection
 from webaiprovider.resources.model.model import (
     EffortRef,
     EffortSet,
     ModelRef,
     ModelSelection,
 )
+from webaiprovider.resources.model.resolver import SelectionResolver
+from webaiprovider.resources.model.types import Models, StaticModelCatalog
 
 
 def _claude_selector_fixture() -> dict:

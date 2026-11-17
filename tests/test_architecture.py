@@ -882,12 +882,11 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 file_path = Path(tmp) / "spec.txt"
                 file_path.write_text("hello", encoding="utf-8")
-                added = await project.attachments.add(file_path)
+                added = await project.attachments.create(file_path)
                 self.assertIsInstance(added, Attachment)
                 self.assertEqual(added.name, "spec.txt")
                 self.assertEqual(len(provider.upload_calls), 1)
-                removed = await project.attachments.remove(added)
-                self.assertTrue(removed)
+                await project.attachments.delete(added)
                 self.assertEqual(len(provider.remove_calls), 1)
 
             proj_chats = await project.chats.list(limit=10)
@@ -1214,9 +1213,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             with tempfile.NamedTemporaryFile(suffix=".txt") as tmp:
                 tmp.write(b"hello")
                 tmp.flush()
-                att = await project.attachments.add(tmp.name)
-                removed = await project.attachments.remove(att)
-                self.assertTrue(removed)
+                att = await project.attachments.create(tmp.name)
+                await project.attachments.delete(att)
 
             target_id = project.remote_id or project.id
             self.assertEqual(
