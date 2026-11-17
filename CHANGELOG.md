@@ -15,6 +15,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Use one `model=` argument for model and effort selection. Pass a typed model reference for its default effort or a choice from `model_ref.efforts` for a specific effort. These references carry provider IDs directly. String queries and selection policies resolve against the account catalog, which `provider.models.list()` caches and `provider.models.refresh()` reloads.
 - Use curl_cffi for the shared HTTP request and streaming transports. Reuse provider connections and share incremental SSE decoding across ChatGPT, Claude, and Grok and JSPB decoding with Gemini under `webaiprovider.transport.frames`.
 - Overlap general and project chat pagination within the existing concurrency limit. Reuse a fixed set of async workers for bounded reads and uploads, and skip constructing chat objects excluded by scope.
+- Share overlapping reads of the same chat's response collection. Explicit refreshes still make their own request, and an older result cannot replace a newer applied history.
 - Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
 - Run offline and live API tests separately. The live runner exercises both blocking and async APIs by default, paces account requests, and tracks cleanup and rate-limit skips separately from failures.
 

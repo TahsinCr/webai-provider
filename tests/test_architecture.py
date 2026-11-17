@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import tempfile
 import threading
@@ -15,6 +16,7 @@ from webaiprovider import (
     Account,
     AmbiguousMatchError,
     ArtifactsCollection,
+    AsyncChat,
     AsyncProvider,
     Attachment,
     Capability,
@@ -545,6 +547,95 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
 
 
 class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
+    async def test_overlapping_history_reads_share_work_and_do_not_hold_a_result_cache(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        class HistoryProvider(_ScriptedAsyncProvider):
+            async def _get_chat_data(self, conversation_id):
+                nonlocal calls
+                calls += 1
+                started.set()
+                await release.wait()
+                return Conversation(conversation_id, "History")
+
+        async with HistoryProvider(_account()) as provider:
+            chat = AsyncChat(provider=provider, remote_id="chat")
+            first = asyncio.create_task(chat.responses.list(limit=None))
+            await started.wait()
+            second = asyncio.create_task(chat.responses.list(limit=None))
+            third = asyncio.create_task(chat.responses.list(limit=None))
+            await asyncio.sleep(0)
+            first.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            release.set()
+            left, right = await asyncio.gather(second, third)
+            self.assertEqual(calls, 1)
+            self.assertEqual(left, right)
+            self.assertIsNot(left, right)
+            await chat.responses.list()
+            self.assertEqual(calls, 2)
+
+    async def test_explicit_refresh_is_independent_and_older_history_cannot_overwrite_it(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        class HistoryProvider(_ScriptedAsyncProvider):
+            async def _get_chat_data(self, conversation_id):
+                nonlocal calls
+                calls += 1
+                revision = calls
+                if revision == 1:
+                    started.set()
+                    await release.wait()
+                return Conversation(conversation_id, "History", metadata={"revision": revision})
+
+        async with HistoryProvider(_account()) as provider:
+            chat = AsyncChat(provider=provider, remote_id="chat")
+            read = asyncio.create_task(chat.responses.list())
+            await started.wait()
+            try:
+                await asyncio.wait_for(chat.responses.refresh(), timeout=2)
+            finally:
+                release.set()
+                await read
+            self.assertEqual(calls, 2)
+            self.assertEqual(chat.metadata["revision"], 2)
+
+    async def test_close_waits_for_history_after_last_waiter_is_cancelled(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class HistoryProvider(_ScriptedAsyncProvider):
+            async def _get_chat_data(self, conversation_id):
+                started.set()
+                await release.wait()
+                return Conversation(conversation_id, "History")
+
+        provider = HistoryProvider(_account())
+        await provider.open()
+        chat = AsyncChat(provider=provider, remote_id="chat")
+        read = asyncio.create_task(chat.responses.list())
+        await started.wait()
+        read.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await read
+
+        close = asyncio.create_task(provider.close())
+        try:
+            while not provider.runtime.closing:
+                await asyncio.sleep(0)
+            self.assertEqual(provider.close_calls, 0)
+            with self.assertRaisesRegex(ProviderError, "closing"):
+                await chat.responses.list()
+        finally:
+            release.set()
+            await close
+        self.assertEqual(provider.close_calls, 1)
+
     async def test_shared_history_fetch_separates_messages_and_responses_with_sources_and_artifacts(
         self,
     ) -> None:

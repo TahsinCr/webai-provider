@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator, Callable, Iterable
 from copy import copy
 from typing import TYPE_CHECKING, Any
 
+from eventflow import SingleFlight
+
 from ...collections import (
     AsyncDerivedCollection,
     BaseCollection,
@@ -25,6 +27,7 @@ from .response import Response
 from .source import Source
 
 if TYPE_CHECKING:
+    from ...async_provider import AsyncProvider
     from ...provider import Provider
     from ..message.operation import StreamEvent
 
@@ -113,6 +116,9 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         self._items: list[Response] = []
         self._known_responses: dict[str, Response] = {}
         self._known_messages: dict[str, AsyncMessage] = {}
+        self._history_flight: SingleFlight[str] | None = None
+        self._history_read = 0
+        self._history_applied = 0
 
     @staticmethod
     def _extract_id(item: Any) -> str:
@@ -239,12 +245,43 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
                 self._known_messages[response.message.remote_id] = response.message
 
     async def _load_history(self, *, emit_event: bool = False) -> list[Response]:
-        if not self.chat.remote_id:
+        remote_id = self.chat.remote_id
+        if not remote_id:
             return list(self._items)
         provider = self.chat.provider
         if provider is None:
             raise ProviderError("Chat is not attached to an open provider")
-        conversation = await provider._get_chat_data(self.chat.remote_id)
+        provider._require_provider()
+
+        async def read() -> list[Response]:
+            # SingleFlight shields its worker from waiter cancellation. Track
+            # the worker itself so shutdown cannot close its transport early.
+            async with provider.runtime.activity():
+                provider._require_provider()
+                self._history_read += 1
+                read_id = self._history_read
+                conversation = await provider._get_chat_data(remote_id)
+                if read_id < self._history_applied or self.chat.remote_id != remote_id:
+                    return list(self._items)
+                responses = self._apply_history(conversation, provider)
+                self._history_applied = read_id
+                return responses
+
+        if emit_event:
+            responses = await read()
+            await provider.runtime.emit(
+                "collection.refreshed",
+                resource_id=remote_id,
+                payload={"collection": "responses", "count": len(responses)},
+            )
+            return responses
+        if provider.runtime.closing and not provider.runtime.has_active_operation():
+            raise ProviderError("Provider is closing or is closed")
+        if self._history_flight is None:
+            self._history_flight = SingleFlight()
+        return await self._history_flight.run(remote_id, read)
+
+    def _apply_history(self, conversation: Conversation, provider: AsyncProvider) -> list[Response]:
         if not isinstance(conversation, Conversation):
             raise ProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
@@ -375,15 +412,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         for resp in responses:
             self._index_response(resp)
 
-        if emit_event:
-            runtime = getattr(provider, "runtime", None)
-            if runtime is not None:
-                await runtime.emit(
-                    "collection.refreshed",
-                    resource_id=self.chat.remote_id,
-                    payload={"collection": "responses", "count": len(responses)},
-                )
-        return list(responses)
+        return responses
 
     async def list(
         self,
@@ -400,7 +429,7 @@ class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
         if predicate is not None:
             responses = [item for item in responses if predicate(item)]
         if validated is None:
-            return responses
+            return list(responses) if predicate is None else responses
         return responses[-validated:]
 
     async def refresh(self, *, limit: int | None = None, **_options: Any) -> list[Response]:
