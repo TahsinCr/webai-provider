@@ -8,7 +8,7 @@ from .types import MessageAction
 
 __all__ = [
     "ProviderRequest",
-    "ProviderEvent",
+    "ProviderStreamEvent",
     "TextDelta",
     "ThoughtDelta",
     "TextReplacement",
@@ -68,7 +68,7 @@ class MessageMetadata:
     files: tuple[dict, ...] = ()
 
 
-ProviderEvent = (
+ProviderStreamEvent = (
     TextDelta
     | ThoughtDelta
     | TextReplacement
