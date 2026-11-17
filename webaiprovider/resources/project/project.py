@@ -6,10 +6,9 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
+    AsyncDerivedCollection,
     AsyncManageableCollection,
-    AsyncRemoteCollection,
     BaseCollection,
-    Page,
     _CollectionFacade,
     _RemoteCollectionFacade,
     validate_limit,
@@ -127,7 +126,14 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
     ) -> dict[str, Any]:
         return await self.add(data, resource_type=resource_type, **options)
 
-    async def add(self, data: Any, resource_type: str = "custom", **options: Any) -> dict[str, Any]:
+    async def add(
+        self,
+        data: Any,
+        resource_type: str = "custom",
+        *,
+        _extra_hooks: tuple[OperationHooks, ...] = (),
+        **options: Any,
+    ) -> dict[str, Any]:
         session = self.project.session
         runtime = session.runtime if session is not None else None
         raw_options = dict(options)
@@ -213,12 +219,14 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
         return await execute_with_hooks(
             operation_name="project.resource.add",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(runtime.hooks, self.hooks, *_extra_hooks),
             work=lambda _ctx: perform_add(),
             on_success_event=on_success,
         )
 
-    async def remove(self, resource_id: str) -> bool:
+    async def remove(
+        self, resource_id: str, *, _extra_hooks: tuple[OperationHooks, ...] = ()
+    ) -> bool:
         await self._load_resources(emit_event=False)
         session = self.project.session
         runtime = session.runtime if session is not None else None
@@ -271,7 +279,7 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
         return await execute_with_hooks(
             operation_name="project.resource.remove",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(runtime.hooks, self.hooks, *_extra_hooks),
             work=lambda _ctx: perform_remove(),
             on_success_event=on_success,
         )
@@ -318,18 +326,12 @@ class AsyncProjectResources(AsyncManageableCollection[dict[str, Any]]):
         return item
 
 
-class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
+class AsyncProjectAttachments(AsyncDerivedCollection[Attachment]):
     """File-focused projection over AsyncProjectResources using shared resource storage."""
 
     def __init__(self, project: AsyncProject) -> None:
         self.project = project
         self.hooks = OperationHooks()
-
-    async def _fetch_page(
-        self, cursor: str | None, page_limit: int | None, **options: Any
-    ) -> Page[Attachment]:
-        del cursor, page_limit, options
-        raise NotImplementedError("Project attachments delegate to project.resources")
 
     def _file_attachments(self, records: list[dict[str, Any]]) -> list[Attachment]:
         return [
@@ -354,88 +356,15 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         attachments = self._file_attachments(records)
         return attachments if validated is None else attachments[:validated]
 
-    async def get(self, item_id: str, /) -> Attachment:
-        return self._get_from(await self.list(limit=None), item_id)
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> list[Attachment]:
-        return self._search_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Attachment:
-        return self._find_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Attachment:
-        return self._first_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Attachment:
-        return self._last_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
     async def add(
         self, file_or_path: Attachment | str | os.PathLike[str], **options: Any
     ) -> Attachment:
         path = file_or_path.path if isinstance(file_or_path, Attachment) else file_or_path
         if path is None:
             raise ValueError("Project attachment uploads require a local file path")
-        record = await self.project.resources.add(path, resource_type="file", **options)
+        record = await self.project.resources.add(
+            path, resource_type="file", _extra_hooks=(self.hooks,), **options
+        )
         return _attachment_from_resource(record)
 
     async def remove(self, attachment: Attachment | str) -> bool:
@@ -443,7 +372,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         records = await self.project.resources.list(limit=None)
         if not any(r.get("id") == file_id and r.get("type", "file") == "file" for r in records):
             raise RemoteNotFound(f"Project attachment was not found: {file_id}")
-        return await self.project.resources.remove(file_id)
+        return await self.project.resources.remove(file_id, _extra_hooks=(self.hooks,))
 
     async def delete(self, attachment: Attachment | str) -> None:
         await self.remove(attachment)

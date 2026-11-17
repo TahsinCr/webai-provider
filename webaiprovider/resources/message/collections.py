@@ -5,8 +5,8 @@ from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
+    AsyncDerivedCollection,
     AsyncManageableCollection,
-    AsyncRemoteCollection,
     BaseCollection,
     ManageableCollection,
     _CollectionFacade,
@@ -14,7 +14,7 @@ from ...collections import (
     validate_limit,
 )
 from ...core.hooks import OperationHooks, SyncOperationHooks
-from ...errors import ProviderError, RemoteNotFound
+from ...errors import ProviderError, UnsupportedOperationError
 from ..artifact import Artifact
 from ..attachment import Attachment
 from ..chat.chat import AsyncChat, _project_from_data
@@ -213,6 +213,13 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
             and item.metadata.get("action") not in ("retry", "edit")
         )
         self._items = list(messages)
+        rebuilt_known: dict[str, AsyncMessage] = {}
+        for msg in messages:
+            if msg.id:
+                rebuilt_known[msg.id] = msg
+            if msg.remote_id:
+                rebuilt_known[msg.remote_id] = msg
+        self._known_by_id = rebuilt_known
         if emit_event:
             runtime = getattr(session, "runtime", None)
             if runtime is not None:
@@ -425,14 +432,30 @@ class AsyncMessagesCollection(AsyncManageableCollection[AsyncMessage]):
         return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
 
     async def delete(self, target: AsyncMessage | Message | str) -> None:
+        """Delete an unsent local message; deleting persisted remote messages is unsupported."""
         if isinstance(target, Message):
             target = target._resource
-        target_id = target.id if isinstance(target, AsyncMessage) else str(target)
+        if isinstance(target, AsyncMessage):
+            if target.remote_id:
+                raise UnsupportedOperationError(
+                    "Deleting persisted remote messages is not supported"
+                )
+            target_id = target.id
+        else:
+            target_id = str(target)
+            existing = self._known_by_id.get(target_id) or next(
+                (m for m in self._items if m.id == target_id or m.remote_id == target_id),
+                None,
+            )
+            if existing is not None and existing.remote_id:
+                raise UnsupportedOperationError(
+                    "Deleting persisted remote messages is not supported"
+                )
         self._items = [m for m in self._items if m.id != target_id]
         self._known_by_id.pop(target_id, None)
 
 
-class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
+class AsyncResponsesCollection(AsyncDerivedCollection[Response]):
     """Derived Response query view over chat.messages without duplicating remote history."""
 
     def __init__(self, chat: AsyncChat) -> None:
@@ -455,9 +478,6 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         if isinstance(item, Response):
             return item.message.id == item_id or item.message.remote_id == item_id
         return BaseCollection._item_matches_exact_id(item, item_id)
-
-    async def _fetch_page(self, cursor: str | None, page_limit: int | None, **options: Any):
-        raise NotImplementedError("Responses delegate directly to shared chat.messages history")
 
     def _responses_from_messages(self, messages: Iterable[AsyncMessage]) -> list[Response]:
         responses: list[Response] = []
@@ -491,85 +511,6 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         if validated is None:
             return responses
         return responses[-validated:]
-
-    async def get(self, item_id: str, /) -> Response:
-        responses = await self.list(limit=None)
-        for item in responses:
-            if self._item_matches_exact_id(item, item_id):
-                return item
-        raise RemoteNotFound(f"Record was not found: {item_id}")
-
-    async def search(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> list[Response]:
-        return self._search_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def find(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Response:
-        return self._find_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def first(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Response:
-        return self._first_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
-
-    async def last(
-        self,
-        query: str,
-        /,
-        *,
-        exact: bool = False,
-        startswith: bool = False,
-        endswith: bool = False,
-        **_options: Any,
-    ) -> Response:
-        return self._last_in(
-            await self.list(limit=None),
-            query,
-            exact=exact,
-            startswith=startswith,
-            endswith=endswith,
-        )
 
 
 class MessagesCollection(_CollectionFacade[AsyncMessage, Message], ManageableCollection[Message]):
