@@ -228,17 +228,17 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             (Model("gpt-6-pro", "GPT-6 Pro"),),
         )
         provider = AsyncProvider(account)
-        provider.prepare = AsyncMock()
-        provider._load_model_catalog = AsyncMock(return_value=catalog)
+        provider.adapter.session.prepare = AsyncMock()
+        provider.adapter.models.load_catalog = AsyncMock(return_value=catalog)
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
-        provider._load_model_catalog.assert_awaited_once_with(force=False)
+        provider.adapter.models.load_catalog.assert_awaited_once_with(force=False)
         await provider.models.refresh()
         self.assertEqual(
-            provider._load_model_catalog.await_args_list,
+            provider.adapter.models.load_catalog.await_args_list,
             [call(force=False), call(force=True)],
         )
 

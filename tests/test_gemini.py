@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fixtures import notebook
 from tests.provider_fakes import provider_account
-from webaiprovider.async_provider import MessageAction
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
@@ -21,6 +20,7 @@ from webaiprovider.providers.gemini.notebooks import Notebooks, project_from_nat
 from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.resources.common import Choice
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
+from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import Model
 from webaiprovider.transport import AsyncRequestTransport
 
@@ -103,7 +103,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             provider = AsyncGeminiProvider(
                 provider_account("gemini", credential), client_factory=lambda _path: client
             )
-            opening = asyncio.create_task(provider.prepare())
+            opening = asyncio.create_task(provider.adapter.session.prepare())
             await started.wait()
             logout = asyncio.create_task(provider.forget_session())
             await asyncio.sleep(0)
@@ -112,22 +112,22 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(opening, logout)
 
             self.assertFalse(credential.exists())
-            self.assertIsNone(provider._client)
+            self.assertIsNone(provider.adapter._client)
             client.close.assert_awaited_once_with()
             with self.assertRaises(AccountPaused):
-                await provider.prepare()
+                await provider.adapter.session.prepare()
 
     async def test_close_releases_gemini_session_when_editor_cleanup_fails(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
         client = SimpleNamespace(close=AsyncMock())
-        provider._client = client
-        provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
+        provider.adapter._client = client
+        provider.adapter.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
 
         with self.assertRaisesRegex(RuntimeError, "editor close failed"):
             await provider.close()
 
         client.close.assert_awaited_once_with()
-        self.assertIsNone(provider._client)
+        self.assertIsNone(provider.adapter._client)
 
     async def test_background_prepare_and_first_request_share_session_open(self):
         provider = AsyncGeminiProvider(
@@ -144,8 +144,10 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             models=(),
             discover_models=AsyncMock(return_value=(first,)),
         )
-        with patch("webaiprovider.providers.gemini.provider.session_exists", return_value=True):
-            await asyncio.gather(provider.prepare(), provider._load_model_catalog())
+        with patch("webaiprovider.providers.gemini.adapter.session_exists", return_value=True):
+            await asyncio.gather(
+                provider.adapter.session.prepare(), provider.adapter.models.load_catalog()
+            )
         client.open.assert_awaited_once_with()
         client.discover_models.assert_awaited_once_with()
         await provider.close()
@@ -157,7 +159,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             models=(Model("flash", "Flash"),),
             sync_activity=AsyncMock(side_effect=lambda: events.append("activity")),
         )
-        provider._connect = AsyncMock(return_value=client)
+        provider.adapter._connect = AsyncMock(return_value=client)
 
         async def generate(*_args, **_kwargs):
             events.append("generation")
@@ -173,27 +175,32 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
 
         request = ProviderRequest("question")
         with patch("webaiprovider.providers.gemini.generation.generate", generate):
-            _ = [event async for event in provider._stream(request)]
+            _ = [event async for event in provider.adapter.messages._stream(request)]
 
         self.assertEqual(events, ["activity", "generation"])
 
     async def test_silent_generation_time_is_not_mistaken_for_network_idle(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
-        provider.stream_idle_timeout = 0.005
-        provider.stream_total_timeout = 0.5
+        provider.adapter.stream_idle_timeout = 0.005
+        provider.adapter.stream_total_timeout = 0.5
 
-        provider._stream = delayed_response
-        events = [event async for event in provider._stream_request(ProviderRequest("question"))]
+        provider.adapter.messages._stream = delayed_response
+        events = [
+            event async for event in provider.adapter.messages.stream(ProviderRequest("question"))
+        ]
 
         self.assertEqual(events, [TextReplacement("answer")])
 
     async def test_stream_still_enforces_the_total_request_deadline(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
-        provider.stream_total_timeout = 0.005
+        provider.adapter.stream_total_timeout = 0.005
 
-        provider._stream = delayed_response
+        provider.adapter.messages._stream = delayed_response
         with self.assertRaisesRegex(ProviderError, "10-minute time limit"):
-            _ = [event async for event in provider._stream_request(ProviderRequest("question"))]
+            _ = [
+                event
+                async for event in provider.adapter.messages.stream(ProviderRequest("question"))
+            ]
 
     async def test_activity_sync_uses_the_web_preference_rpc(self):
         session = GeminiSession(Path("unused"))
@@ -215,25 +222,29 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         session = SimpleNamespace(
             models=(first,), discover_models=AsyncMock(return_value=(second,))
         )
-        provider._connect = AsyncMock(return_value=session)
-        provider._catalog_at = time.monotonic()
-        self.assertEqual((await provider._load_model_catalog()).models, (first,))
-        await asyncio.gather(provider._load_model_catalog(), provider._load_model_catalog())
+        provider.adapter._connect = AsyncMock(return_value=session)
+        provider.adapter._catalog_at = time.monotonic()
+        self.assertEqual((await provider.adapter.models.load_catalog()).models, (first,))
+        await asyncio.gather(
+            provider.adapter.models.load_catalog(), provider.adapter.models.load_catalog()
+        )
         session.discover_models.assert_not_awaited()
-        self.assertEqual((await provider._load_model_catalog(force=True)).models, (second,))
-        provider._catalog_at -= 301
-        await asyncio.gather(provider._load_model_catalog(), provider._load_model_catalog())
+        self.assertEqual((await provider.adapter.models.load_catalog(force=True)).models, (second,))
+        provider.adapter._catalog_at -= 301
+        await asyncio.gather(
+            provider.adapter.models.load_catalog(), provider.adapter.models.load_catalog()
+        )
         self.assertEqual(session.discover_models.await_count, 2)
 
     async def test_delete_clears_cached_continuation_only_after_remote_confirmation(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        provider._client = SimpleNamespace()
-        provider._chat_metadata.put("conversation", ["conversation", "rid", "rcid"])
-        provider.rpc.call = AsyncMock(side_effect=[[], []])
+        provider.adapter._client = SimpleNamespace()
+        provider.adapter._chat_metadata.put("conversation", ["conversation", "rid", "rcid"])
+        provider.adapter.rpc.call = AsyncMock(side_effect=[[], []])
 
-        await provider.delete_chat("conversation")
+        await provider.adapter.chats.delete_chat("conversation")
 
-        self.assertIsNone(provider._chat_metadata.get("conversation"))
+        self.assertIsNone(provider.adapter._chat_metadata.get("conversation"))
 
     async def test_rotated_credentials_are_serialized_and_saved_on_close(self):
         session = GeminiSession("unused")
@@ -571,8 +582,8 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[37] = "rcid", ["Answer"], [["Thought"]]
         turn = [["cid", "rid"], None, [["Question"]], [[candidate]]]
-        provider.rpc.call = AsyncMock(return_value=[[[turn]]])
-        history = await provider.get_chat("cid")
+        provider.adapter.rpc.call = AsyncMock(return_value=[[[turn]]])
+        history = await provider.adapter.chats.get_chat("cid")
         self.assertEqual([m.channel for m in history.messages], [None, "analysis", None])
         self.assertEqual(history.messages[-1].id, "rid:model")
 
@@ -818,8 +829,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),
         )
-        provider._connect = AsyncMock(return_value=client)
-        provider.rpc = SimpleNamespace(call=AsyncMock())
+        provider.adapter._connect = AsyncMock(return_value=client)
+        provider.adapter.rpc = SimpleNamespace(call=AsyncMock())
 
         async def fake_generate(*_args, **_kwargs):
             yield {
@@ -835,16 +846,18 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
             _ = [
                 e
-                async for e in provider._stream_request(
+                async for e in provider.adapter.messages.stream(
                     ProviderRequest("first message", model="gemini-flash")
                 )
             ]
-            self.assertEqual(provider.rpc.call.await_count, 0)
-            self.assertEqual(provider._chat_metadata.get("conv_1"), ["conv_1", "rid_1", "rcid_1"])
+            self.assertEqual(provider.adapter.rpc.call.await_count, 0)
+            self.assertEqual(
+                provider.adapter._chat_metadata.get("conv_1"), ["conv_1", "rid_1", "rcid_1"]
+            )
 
             _ = [
                 e
-                async for e in provider._stream_request(
+                async for e in provider.adapter.messages.stream(
                     ProviderRequest(
                         "second message",
                         model="gemini-flash",
@@ -852,30 +865,30 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
             ]
-            self.assertEqual(provider.rpc.call.await_count, 0)
+            self.assertEqual(provider.adapter.rpc.call.await_count, 0)
 
     async def test_chat_metadata_cache_expires_after_verification_ttl(self):
-        from webaiprovider.providers.gemini.provider import _CHAT_METADATA_TTL_SECONDS
+        from webaiprovider.providers.gemini.adapter import _CHAT_METADATA_TTL_SECONDS
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
         metadata = ["conversation", "request", "response"]
-        with patch("webaiprovider.providers.gemini.provider.time.monotonic", return_value=100.0):
-            provider._remember_chat_metadata("conversation", metadata)
+        with patch("webaiprovider.providers.gemini.adapter.time.monotonic", return_value=100.0):
+            provider.adapter._remember_chat_metadata("conversation", metadata)
 
         with patch(
-            "webaiprovider.providers.gemini.provider.time.monotonic",
+            "webaiprovider.providers.gemini.adapter.time.monotonic",
             return_value=100.0 + _CHAT_METADATA_TTL_SECONDS - 1,
         ):
-            self.assertEqual(provider._take_chat_metadata("conversation"), metadata)
+            self.assertEqual(provider.adapter._take_chat_metadata("conversation"), metadata)
 
-        with patch("webaiprovider.providers.gemini.provider.time.monotonic", return_value=100.0):
-            provider._remember_chat_metadata("conversation", metadata)
+        with patch("webaiprovider.providers.gemini.adapter.time.monotonic", return_value=100.0):
+            provider.adapter._remember_chat_metadata("conversation", metadata)
         with patch(
-            "webaiprovider.providers.gemini.provider.time.monotonic",
+            "webaiprovider.providers.gemini.adapter.time.monotonic",
             return_value=100.0 + _CHAT_METADATA_TTL_SECONDS + 1,
         ):
-            self.assertIsNone(provider._take_chat_metadata("conversation"))
-        self.assertIsNone(provider._chat_metadata.get("conversation"))
+            self.assertIsNone(provider.adapter._take_chat_metadata("conversation"))
+        self.assertIsNone(provider.adapter._chat_metadata.get("conversation"))
 
     async def test_flash_variants_distinguish_default_fast_and_specialized_models(self):
         fast_row = [None] * 18
@@ -948,7 +961,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),
         )
-        provider._connect = AsyncMock(return_value=client)
+        provider.adapter._connect = AsyncMock(return_value=client)
         turns = [
             [
                 [None, f"r_{number}"],
@@ -958,7 +971,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             ]
             for number in (3, 2, 1)
         ]
-        provider.rpc = SimpleNamespace(call=AsyncMock(return_value=[[turns]]))
+        provider.adapter.rpc = SimpleNamespace(call=AsyncMock(return_value=[[turns]]))
 
         captured = []
 
@@ -978,7 +991,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
                 return [
                     event
-                    async for event in provider._stream_request(
+                    async for event in provider.adapter.messages.stream(
                         ProviderRequest(
                             "",
                             conversation_id="conv_1",
@@ -1208,34 +1221,40 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
         detail = [None] * 13
         detail[12] = [1, None, None, None, 0]
-        provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
+        provider.adapter._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
         provider.notebooks.get = AsyncMock(
             return_value=SimpleNamespace(metadata={"native": ["notebooks/abcdef", detail]})
         )
-        provider.rpc.call = AsyncMock(return_value=[])
-        provider.get_project = AsyncMock(return_value="confirmed")
+        provider.adapter.rpc.call = AsyncMock(return_value=[])
+        provider.adapter.projects.get_project = AsyncMock(return_value="confirmed")
         try:
-            first = await provider._resolve_project_context("notebooks/abcdef", None)
-            second = await provider._resolve_project_context("notebooks/abcdef", None)
+            first = await provider.adapter.messages._resolve_project_context(
+                "notebooks/abcdef", None
+            )
+            second = await provider.adapter.messages._resolve_project_context(
+                "notebooks/abcdef", None
+            )
             self.assertEqual(first, ("notebooks/abcdef", [1, None, None, None, 0]))
             self.assertEqual(second, ("notebooks/abcdef", [1, None, None, None, 0]))
             self.assertEqual(provider.notebooks.get.await_count, 1)
 
-            await provider._project_after_write("notebooks/abcdef", lambda _p: True)
-            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+            await provider.adapter.projects._project_after_write(
+                "notebooks/abcdef", lambda _p: True
+            )
+            self.assertIsNone(provider.adapter._project_contexts.get("notebooks/abcdef"))
 
-            await provider._resolve_project_context("notebooks/abcdef", None)
+            await provider.adapter.messages._resolve_project_context("notebooks/abcdef", None)
             self.assertEqual(provider.notebooks.get.await_count, 2)
 
-            with patch("webaiprovider.providers.gemini.provider.confirm_deleted", AsyncMock()):
-                await provider.delete_project("notebooks/abcdef")
-            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+            with patch("webaiprovider.providers.gemini.adapter.confirm_deleted", AsyncMock()):
+                await provider.adapter.projects.delete_project("notebooks/abcdef")
+            self.assertIsNone(provider.adapter._project_contexts.get("notebooks/abcdef"))
 
-            await provider._resolve_project_context("notebooks/abcdef", None)
+            await provider.adapter.messages._resolve_project_context("notebooks/abcdef", None)
             self.assertEqual(provider.notebooks.get.await_count, 3)
 
             await provider.close()
-            self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
+            self.assertIsNone(provider.adapter._project_contexts.get("notebooks/abcdef"))
         finally:
             await provider.close()
 
@@ -1243,9 +1262,9 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
-        provider.rpc.call = AsyncMock(return_value=None)
-        provider._chat_metadata.put("cid-1", ["cid-1", "r1", "rc1"])
+        provider.adapter._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
+        provider.adapter.rpc.call = AsyncMock(return_value=None)
+        provider.adapter._chat_metadata.put("cid-1", ["cid-1", "r1", "rc1"])
 
         confirm_started = asyncio.Event()
         release_confirm = asyncio.Event()
@@ -1256,28 +1275,30 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with patch(
-                "webaiprovider.providers.gemini.provider.confirm_deleted",
+                "webaiprovider.providers.gemini.adapter.confirm_deleted",
                 side_effect=blocked_confirm,
             ):
-                task = asyncio.create_task(provider.delete_chat("cid-1"))
+                task = asyncio.create_task(provider.adapter.chats.delete_chat("cid-1"))
                 await asyncio.wait_for(confirm_started.wait(), 1.0)
-                self.assertFalse(provider._gate.locked())
-                async with provider._gate:
-                    self.assertEqual(provider._chat_metadata.get("cid-1"), ["cid-1", "r1", "rc1"])
+                self.assertFalse(provider.adapter._gate.locked())
+                async with provider.adapter._gate:
+                    self.assertEqual(
+                        provider.adapter._chat_metadata.get("cid-1"), ["cid-1", "r1", "rc1"]
+                    )
                 release_confirm.set()
                 await task
-            self.assertIsNone(provider._chat_metadata.get("cid-1"))
+            self.assertIsNone(provider.adapter._chat_metadata.get("cid-1"))
 
-            provider._chat_metadata.put("cid-2", ["cid-2", "r2", "rc2"])
+            provider.adapter._chat_metadata.put("cid-2", ["cid-2", "r2", "rc2"])
             with (
                 patch(
-                    "webaiprovider.providers.gemini.provider.confirm_deleted",
+                    "webaiprovider.providers.gemini.adapter.confirm_deleted",
                     side_effect=ProviderError("delete not yet confirmed"),
                 ),
                 self.assertRaises(ProviderError),
             ):
-                await provider.delete_chat("cid-2")
-            self.assertEqual(provider._chat_metadata.get("cid-2"), ["cid-2", "r2", "rc2"])
+                await provider.adapter.chats.delete_chat("cid-2")
+            self.assertEqual(provider.adapter._chat_metadata.get("cid-2"), ["cid-2", "r2", "rc2"])
         finally:
             await provider.close()
 
@@ -1346,13 +1367,13 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         rpc.call.assert_awaited_once()
 
     async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
-        from webaiprovider.providers.gemini import provider as gemini_provider_mod
+        from webaiprovider.providers.gemini import adapter as gemini_adapter_mod
         from webaiprovider.resources.message.protocol import MessageMetadata
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
         client = SimpleNamespace()
         request = ProviderRequest("Q", conversation_id="cid-1")
-        provider._prepare_send_context = AsyncMock(
+        provider.adapter.messages._prepare_send_context = AsyncMock(
             return_value=(client, request, ["cid-1", "r0", "rc0"], None, [])
         )
         img1 = {
@@ -1394,15 +1415,15 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with (
-                patch.object(gemini_provider_mod.generation, "generate", side_effect=fake_generate),
+                patch.object(gemini_adapter_mod.generation, "generate", side_effect=fake_generate),
                 patch.object(
-                    gemini_provider_mod, "sources_from", wraps=gemini_provider_mod.sources_from
+                    gemini_adapter_mod, "sources_from", wraps=gemini_adapter_mod.sources_from
                 ) as norm_sources,
                 patch.object(
-                    gemini_provider_mod, "files_from", wraps=gemini_provider_mod.files_from
+                    gemini_adapter_mod, "files_from", wraps=gemini_adapter_mod.files_from
                 ) as norm_files,
             ):
-                events = [e async for e in provider._stream(request)]
+                events = [e async for e in provider.adapter.messages._stream(request)]
             meta = next(e for e in events if isinstance(e, MessageMetadata))
             self.assertEqual(norm_sources.call_count, 1)
             self.assertEqual(norm_files.call_count, 1)
@@ -1529,18 +1550,18 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         client.sync_activity = fake_sync
-        provider._connect = AsyncMock(return_value=client)
-        provider.rpc.call = AsyncMock(side_effect=fake_rpc_call)
+        provider.adapter._connect = AsyncMock(return_value=client)
+        provider.adapter.rpc.call = AsyncMock(side_effect=fake_rpc_call)
         try:
-            chat = await provider.get_chat("c_warm")
+            chat = await provider.adapter.chats.get_chat("c_warm")
             self.assertEqual(chat.origin.remote_id, "c_warm")
             self.assertEqual(
-                provider._chat_metadata.get("c_warm")[:3], ["c_warm", "r_warm", "rc_warm"]
+                provider.adapter._chat_metadata.get("c_warm")[:3], ["c_warm", "r_warm", "rc_warm"]
             )
 
-            provider._resolve_project_context = fake_context
+            provider.adapter.messages._resolve_project_context = fake_context
             # Clear cache for c_uncached so hNvQHb actually runs in parallel with context & activity.
-            _, req, meta, ctx, _ = await provider._prepare_send_context(
+            _, req, meta, ctx, _ = await provider.adapter.messages._prepare_send_context(
                 ProviderRequest("next", conversation_id="c_uncached", project_id="notebooks/abcdef")
             )
             self.assertEqual(req.conversation_id, "c_uncached")
@@ -1607,9 +1628,11 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        provider._prepare_send_context = fake_prepare
+        provider.adapter.messages._prepare_send_context = fake_prepare
         with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
-            events = [event async for event in provider._stream_request(ProviderRequest("hi"))]
+            events = [
+                event async for event in provider.adapter.messages.stream(ProviderRequest("hi"))
+            ]
 
         self.assertIn(TextDelta("Step 1", "analysis"), events)
         self.assertIn(TextDelta(" and 2", "analysis"), events)
@@ -1631,26 +1654,26 @@ def message(role, text, **extra):
 class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_listing_reads_remote_pages_and_returns_real_pagination(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        provider._connect = AsyncMock()
-        provider.rpc.call = AsyncMock(
+        provider.adapter._connect = AsyncMock()
+        provider.adapter.rpc.call = AsyncMock(
             return_value=[[None, None, [["c_" + str(i), str(i)] for i in range(5)]]]
         )
-        first = await provider.list_chats(limit=2)
-        second = await provider.list_chats(first.next_cursor, limit=2)
+        first = await provider.adapter.chats.list_chats(limit=2)
+        second = await provider.adapter.chats.list_chats(cursor=first.next_cursor, limit=2)
         self.assertEqual([x.title for x in first.items], ["0", "1"])
         self.assertEqual([x.title for x in second.items], ["2", "3"])
         self.assertEqual(second.next_cursor, "4")
-        self.assertEqual(provider.rpc.call.await_count, 2)
+        self.assertEqual(provider.adapter.rpc.call.await_count, 2)
 
     async def test_message_ids_do_not_shift_when_older_history_arrives(self):
         def turn(rid):
             return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        provider.rpc.call = AsyncMock(return_value=[[[turn("r_stable")]]])
-        first = await provider.get_chat("c_abc")
-        provider.rpc.call.return_value = [[[turn("r_stable"), turn("r_old")]]]
-        second = await provider.get_chat("c_abc")
+        provider.adapter.rpc.call = AsyncMock(return_value=[[[turn("r_stable")]]])
+        first = await provider.adapter.chats.get_chat("c_abc")
+        provider.adapter.rpc.call.return_value = [[[turn("r_stable"), turn("r_old")]]]
+        second = await provider.adapter.chats.get_chat("c_abc")
         self.assertEqual([m.id for m in first.messages], [m.id for m in second.messages[-2:]])
 
 
@@ -1669,10 +1692,10 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
             provider_account("gemini", Path("unused")), notebooks=notebooks
         )
         with (
-            patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
-            patch("webaiprovider.async_provider.asyncio.sleep", new_callable=AsyncMock) as wait,
+            patch.object(provider.adapter.editor, "write", new_callable=AsyncMock) as delete,
+            patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as wait,
         ):
-            await provider.delete_project("notebooks/abcdef")
+            await provider.adapter.projects.delete_project("notebooks/abcdef")
             delete.assert_awaited_once()
             wait.assert_awaited_once_with(0.2)
         self.assertEqual(notebooks.get.await_count, 2)

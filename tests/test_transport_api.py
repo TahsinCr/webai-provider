@@ -11,7 +11,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fakes import FakeHTTPClient, FakeHTTPResponse
-from webaiprovider import Account, AsyncProvider, Provider, ProviderType
+from webaiprovider import (
+    Account,
+    AsyncProvider,
+    BaseMessageAdapter,
+    BaseProviderAdapter,
+    BaseSessionAdapter,
+    Provider,
+    ProviderType,
+)
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
@@ -19,8 +27,8 @@ from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.grok import AsyncGrokProvider
 from webaiprovider.resources.message.protocol import (
-    ProviderEvent,
     ProviderRequest,
+    ProviderStreamEvent,
     TextDelta,
 )
 from webaiprovider.transport import (
@@ -88,15 +96,28 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         await transport.close()
 
     async def test_custom_implementation_uses_public_events_and_the_shared_operation_pipeline(self):
+        class CustomMessages(BaseMessageAdapter):
+            def __init__(self, provider: AsyncProvider) -> None:
+                self._provider = provider
+
+            async def stream(self, request: ProviderRequest):
+                payload = await self._provider.transport.request(
+                    "POST", "/fixture", json={"text": request.prompt}
+                )
+                event: ProviderStreamEvent = TextDelta(payload["answer"])
+                yield event
+
         class CustomProvider(AsyncProvider):
             provider_type = ProviderType.GROK
 
-            async def _stream_request(self, request: ProviderRequest):
-                payload = await self.transport.request(
-                    "POST", "/fixture", json={"text": request.prompt}
+            def _create_adapter(self) -> BaseProviderAdapter:
+                return BaseProviderAdapter(
+                    provider_id=self.id,
+                    account_id=self.account_id,
+                    session=BaseSessionAdapter(),
+                    messages=CustomMessages(self),
+                    transport=self._transport,
                 )
-                event: ProviderEvent = TextDelta(payload["answer"])
-                yield event
 
         client = SimpleNamespace(
             request=AsyncMock(return_value=FakeHTTPResponse(200, json={"answer": "reply"})),
@@ -409,8 +430,8 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(provider=provider_type):
                 transport, client = self.transport(origin)
                 provider = cls(Account.from_cookies(provider_type, {}), transport=transport)
-                provider.prepare = AsyncMock()
-                provider._close_provider = AsyncMock()
+                provider.adapter.session.prepare = AsyncMock()
+                provider.adapter.session.close = AsyncMock()
                 async with provider:
                     self.assertIs(provider.transport, transport)
                     await provider.transport.request("GET", "/fixture")

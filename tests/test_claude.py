@@ -228,20 +228,21 @@ class ClaudeRecordsTests(unittest.TestCase):
 class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.provider = AsyncClaudeProvider(provider_account("claude", Path("unused"), "account"))
-        self.provider.client.authenticated = True
-        self.provider.client.request = AsyncMock()
+        self.adapter = self.provider.adapter
+        self.adapter.client.authenticated = True
+        self.adapter.client.request = AsyncMock()
 
     async def test_close_releases_transport_when_editor_cleanup_fails(self):
-        self.provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
-        self.provider.client.close = AsyncMock()
+        self.adapter.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
+        self.adapter.client.close = AsyncMock()
 
         with self.assertRaisesRegex(RuntimeError, "editor close failed"):
             await self.provider.close()
 
-        self.provider.client.close.assert_awaited_once_with()
+        self.adapter.client.close.assert_awaited_once_with()
 
     async def test_attachment_count_uses_the_compact_history_operation(self):
-        self.provider.client.request.return_value = {
+        self.adapter.client.request.return_value = {
             "uuid": CHAT,
             "chat_messages": [
                 {"uuid": "u", "attachments": [{"uuid": "file-1"}]},
@@ -252,10 +253,10 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         count = await self.provider.conversation_attachment_count(CHAT)
 
         self.assertEqual(count, 2)
-        self.provider.client.request.assert_awaited_once_with("history", conversation_id=CHAT)
+        self.adapter.client.request.assert_awaited_once_with("history", conversation_id=CHAT)
 
     async def test_dynamic_models_keep_only_discovered_efforts_and_default(self):
-        self.provider.client.request.return_value = parse_model_catalog(
+        self.adapter.client.request.return_value = parse_model_catalog(
             {
                 "model_selector_config": [
                     {
@@ -274,41 +275,41 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
                 ],
             }
         )
-        result = await self.provider._load_model_catalog()
+        result = await self.adapter.models.load_catalog()
         self.assertEqual(result.state, ModelCatalogState.AVAILABLE)
         self.assertEqual(result.models[0].default_effort, "high")
         self.assertEqual(result.models[0].id, "claude-future")
 
     async def test_chat_and_project_queries_use_scoped_transport(self):
-        self.provider.client.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
-        result = await self.provider.list_project_chats(PROJECT)
+        self.adapter.client.request.return_value = [{"uuid": CHAT, "name": "Chat"}]
+        result = await self.adapter.projects.list_project_chats(PROJECT)
         self.assertIsNotNone(result.items[0].project)
         assert result.items[0].project is not None
         self.assertEqual(result.items[0].project.origin.remote_id, PROJECT)
-        self.provider.client.request.assert_awaited_once_with("project_chats", project_id=PROJECT)
+        self.adapter.client.request.assert_awaited_once_with("project_chats", project_id=PROJECT)
 
     async def test_chatgpt_project_option_is_not_exposed_by_claude(self):
         with self.assertRaises(TypeError):
-            await self.provider.create_project("Name", memory_share=False)
-        self.provider.client.request.assert_not_awaited()
+            await self.provider.projects.create("Name", memory_share=False)
+        self.adapter.client.request.assert_not_awaited()
 
     async def test_delete_and_move_do_not_retry_mutations(self):
-        await self.provider.delete_chat(CHAT)
-        self.provider.client.request.assert_awaited_once_with("delete_chat", conversation_id=CHAT)
-        self.provider.client.request.reset_mock()
-        self.provider.client.request.side_effect = ProviderError("network")
+        await self.adapter.chats.delete_chat(CHAT)
+        self.adapter.client.request.assert_awaited_once_with("delete_chat", conversation_id=CHAT)
+        self.adapter.client.request.reset_mock()
+        self.adapter.client.request.side_effect = ProviderError("network")
         with self.assertRaises(ProviderError):
-            await self.provider.move_chat(CHAT, PROJECT)
-        self.provider.client.request.assert_awaited_once()
+            await self.adapter.chats.move_chat(CHAT, PROJECT)
+        self.adapter.client.request.assert_awaited_once()
 
     async def test_truncated_stream_is_not_success(self):
         async def events(*args, **kwargs):
             yield {"type": "bound", "id": CHAT}
             yield {"type": "replace", "text": "Partial", "channel": "final"}
 
-        self.provider.client.events = events
+        self.adapter.client.events = events
         with self.assertRaises(ProviderError):
-            _ = [x async for x in self.provider._stream_request(ProviderRequest("Question"))]
+            _ = [x async for x in self.adapter.messages.stream(ProviderRequest("Question"))]
 
     async def test_transport_attaches_web_search_results_and_citations(self):
         frames = [
@@ -412,8 +413,8 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "replace", "text": "Answer", "channel": "final"}
             yield {"type": "done"}
 
-        self.provider.client.events = events
-        result = [x async for x in self.provider._stream_request(ProviderRequest("Question"))]
+        self.adapter.client.events = events
+        result = [x async for x in self.adapter.messages.stream(ProviderRequest("Question"))]
         self.assertIsInstance(result[0], ConversationBound)
         self.assertIsInstance(result[1], TextReplacement)
         self.assertEqual(result[1].channel, "analysis")
@@ -426,10 +427,10 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "bound", "id": CHAT}
             yield {"type": "done"}
 
-        self.provider.client.events = events
+        self.adapter.client.events = events
         _ = [
             x
-            async for x in self.provider._stream_request(
+            async for x in self.adapter.messages.stream(
                 ProviderRequest("Q", attachments=({"id": "file-id"},))
             )
         ]
@@ -440,7 +441,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "notes.pdf"
             path.write_bytes(b"pdf")
-            transport = self.provider.client
+            transport = self.adapter.client
             transport.organization = PROJECT
             transport.session.request = AsyncMock(return_value={"file_uuid": "remote-file"})
             with patch("curl_cffi.CurlMime") as mime_type:
@@ -461,10 +462,10 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
                 yield {"type": "bound", "id": CHAT}
                 yield {"type": "done"}
 
-            self.provider.client.events = events
+            self.adapter.client.events = events
             _ = [
                 x
-                async for x in self.provider._stream_request(
+                async for x in self.adapter.messages.stream(
                     ProviderRequest(
                         "Q",
                         attachments=(
@@ -479,7 +480,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "30 MB"):
                 _ = [
                     x
-                    async for x in self.provider._stream_request(
+                    async for x in self.adapter.messages.stream(
                         ProviderRequest(
                             "Q",
                             attachments=(
@@ -662,28 +663,28 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         origin = Origin("claude", provider.account_id, PROJECT)
         initial = NativeProject(origin, "Old Name", "Keep brief", metadata={"native": {}})
         updated = NativeProject(origin, "New Name", "Keep brief", metadata={"native": {}})
-        provider.prepare = AsyncMock()
-        provider.list_projects = AsyncMock(return_value=Page((initial,), None))
-        provider.get_project = AsyncMock(side_effect=[initial, updated])
-        provider.editor.write = AsyncMock()
+        provider.adapter.session.prepare = AsyncMock()
+        provider.adapter.projects.list_projects = AsyncMock(return_value=Page((initial,), None))
+        provider.adapter.projects.get_project = AsyncMock(side_effect=[initial, updated])
+        provider.adapter.editor.write = AsyncMock()
         await provider.open()
         try:
             loaded = await provider.projects.refresh()
             result = await provider.projects.update(loaded[0], title="New Name")
             self.assertEqual(result.title, "New Name")
-            self.assertEqual(provider.get_project.await_count, 2)
-            provider.editor.write.assert_awaited_once_with(
+            self.assertEqual(provider.adapter.projects.get_project.await_count, 2)
+            provider.adapter.editor.write.assert_awaited_once_with(
                 "update", PROJECT, current=initial, name="New Name"
             )
         finally:
             await provider.close()
 
     async def test_continuation_cache_normalizes_sources_files_and_handles_invalidations(self):
-        from webaiprovider.async_provider import MessageAction
         from webaiprovider.providers.claude.errors import (
             ClaudeRequestNotSent,
             ClaudeStreamError,
         )
+        from webaiprovider.resources.message.types import MessageAction
 
         get_paths = []
         post_bodies = []
@@ -946,14 +947,14 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             captured_attachments.extend(kwargs["attachments"])
             yield {"type": "done"}
 
-        provider.client.authenticated = True
-        provider.client.catalog = claude_model_catalog("claude-test")
-        provider.client.upload_file = fake_upload
-        provider.client.events = fake_events
+        provider.adapter.client.authenticated = True
+        provider.adapter.client.catalog = claude_model_catalog("claude-test")
+        provider.adapter.client.upload_file = fake_upload
+        provider.adapter.client.events = fake_events
         try:
             events = [
                 e
-                async for e in provider._stream_request(
+                async for e in provider.adapter.messages.stream(
                     ProviderRequest(
                         "Upload all",
                         attachments=tuple(
@@ -1147,16 +1148,18 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             await release_stream.wait()
             yield {"type": "done"}
 
-        provider.client.authenticated = True
-        provider.client.events = blocking_events
-        provider.client.request = AsyncMock(return_value={})
+        provider.adapter.client.authenticated = True
+        provider.adapter.client.events = blocking_events
+        provider.adapter.client.request = AsyncMock(return_value={})
 
-        stream_task = asyncio.create_task(anext(provider._stream_request(ProviderRequest("hi"))))
+        stream_task = asyncio.create_task(
+            anext(provider.adapter.messages.stream(ProviderRequest("hi")))
+        )
         try:
             await asyncio.wait_for(stream_entered.wait(), 1.0)
-            self.assertFalse(provider._gate.locked())
-            await asyncio.wait_for(provider.delete_chat(CHAT), 1.0)
-            await asyncio.wait_for(provider._load_model_catalog(), 1.0)
+            self.assertFalse(provider.adapter._gate.locked())
+            await asyncio.wait_for(provider.adapter.chats.delete_chat(CHAT), 1.0)
+            await asyncio.wait_for(provider.adapter.models.load_catalog(), 1.0)
             release_stream.set()
             with self.assertRaises(StopAsyncIteration):
                 await stream_task

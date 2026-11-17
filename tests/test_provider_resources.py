@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState
 from webaiprovider.collections import Page
+from webaiprovider.core.operations import run_pipeline_unwrapped
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.common import (
@@ -39,25 +40,22 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.account = Account.from_cookies("claude", {"sessionKey": "session"})
         self.provider = AsyncProvider(self.account)
+        for name in ("prepare", "close"):
+            setattr(self.provider.adapter.session, name, AsyncMock())
         for name in (
-            "prepare",
-            "_close_provider",
             "create_project",
             "get_project",
-            "update_project",
+            "patch_project",
             "add_project_resource",
             "remove_project_resource",
             "list_projects",
             "delete_project",
             "list_project_chats",
-            "move_chat",
-            "get_chat",
-            "list_chats",
-            "rename_chat",
-            "delete_chat",
-            "resolve_download",
         ):
-            setattr(self.provider, name, AsyncMock())
+            setattr(self.provider.adapter.projects, name, AsyncMock())
+        for name in ("get_chat", "list_chats", "rename_chat", "delete_chat", "move_chat"):
+            setattr(self.provider.adapter.chats, name, AsyncMock())
+        self.provider.adapter.attachments.resolve_download = AsyncMock()
         await self.provider.open()
         self.addAsyncCleanup(self.provider.close)
 
@@ -71,28 +69,47 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             "Be concise",
             (ResourceData("resource-1", "Source", "text/plain"),),
         )
-        self.provider.create_project.return_value = original
-        self.provider.get_project.return_value = original
-        self.provider.patch_project = AsyncMock(
-            side_effect=lambda project_id, **fields: replace(
-                original, **{key: value for key, value in fields.items() if value is not None}
+        state = {"project": original}
+        projects_adapter = self.provider.adapter.projects
+        projects_adapter.create_project.return_value = original
+        projects_adapter.get_project.side_effect = lambda _pid: state["project"]
+
+        async def do_patch(project_id, **fields):
+            del project_id
+            state["project"] = replace(
+                state["project"],
+                **{key: value for key, value in fields.items() if value is not None},
             )
-        )
-        self.provider.add_project_resource.return_value = NativeProject(
+            return state["project"]
+
+        projects_adapter.patch_project = AsyncMock(side_effect=do_patch)
+        with_resource = NativeProject(
             original.origin,
             original.name,
             original.instructions,
             (*original.resources, ResourceData("resource-2", "Notes", "text/plain")),
         )
-        self.provider.remove_project_resource.return_value = original
-        self.provider.list_projects.return_value = Page((original,))
+
+        async def do_add(*_args, **_kwargs):
+            state["project"] = with_resource
+            return state["project"]
+
+        async def do_remove(*_args, **_kwargs):
+            state["project"] = original
+            return state["project"]
+
+        projects_adapter.add_project_resource.side_effect = do_add
+        projects_adapter.remove_project_resource.side_effect = do_remove
+        projects_adapter.list_projects.return_value = Page((original,))
 
         project = await self.provider.projects.create("Research", instruction="Be concise")
-        self.provider.create_project.assert_awaited_once_with("Research", instructions="Be concise")
+        projects_adapter.create_project.assert_awaited_once_with(
+            "Research", instructions="Be concise"
+        )
         self.assertEqual(project.remote_id, "project-1")
         self.assertEqual(await project.instruction.get(), "Be concise")
         added = await project.resources.add("A note", resource_type="text", name="Notes")
-        self.provider.add_project_resource.assert_awaited_once_with(
+        projects_adapter.add_project_resource.assert_awaited_once_with(
             "project-1", "text", name="Notes", text="A note"
         )
         self.assertEqual(added["id"], "resource-2")
@@ -100,19 +117,20 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         await self.provider.projects.update(
             project, title="Updated", instruction="New instructions"
         )
-        self.provider.patch_project.assert_awaited_once_with(
+        projects_adapter.patch_project.assert_awaited_once_with(
             "project-1", name="Updated", instructions="New instructions"
         )
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
         await project.resources.remove("resource-2")
-        self.provider.remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
-        await self.provider.projects.refresh()
-        loaded = self.provider.projects._items[0]
+        projects_adapter.remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
+        state["project"] = original
+        loaded_projects = await self.provider.projects.refresh()
+        loaded = loaded_projects[0]
         self.assertEqual(loaded.remote_id, "project-1")
         self.assertEqual(await loaded.instruction.get(), "Be concise")
-        self.assertEqual(loaded.resources._items[0]["id"], "resource-1")
+        self.assertEqual((await loaded.resources.list())[0]["id"], "resource-1")
 
     async def test_project_chat_pages_and_move_actions(self) -> None:
         from webaiprovider.providers.grok import AsyncGrokChat
@@ -120,30 +138,35 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("grok", {"sso": "session"})
         provider = AsyncProvider(account)
-        provider.prepare = AsyncMock()
-        provider._close_provider = AsyncMock()
-        provider.list_project_chats = AsyncMock()
-        provider.move_chat = AsyncMock()
-        conversation = Conversation(
+        provider.adapter.session.prepare = AsyncMock()
+        provider.adapter.session.close = AsyncMock()
+        chat1 = Conversation(
             Origin(account.provider, account.id, "chat-1"),
-            "Project chat",
+            "Project chat 1",
             project=NativeProject(Origin(account.provider, account.id, "project-1"), "Research"),
         )
-        provider.list_project_chats.return_value = Page((conversation,), "cursor-2")
+        chat2 = Conversation(
+            Origin(account.provider, account.id, "chat-2b"),
+            "Project chat 2",
+            project=NativeProject(Origin(account.provider, account.id, "project-1"), "Research"),
+        )
+        provider.adapter.projects.list_project_chats = AsyncMock(
+            side_effect=[Page((chat1,), "cursor-2"), Page((chat2,), None)]
+        )
+        provider.adapter.chats.move_chat = AsyncMock()
         await provider.open()
         self.addAsyncCleanup(provider.close)
 
         project = AsyncProject(title="Research", session=provider, remote_id="project-1")
-        page = await project.chats.refresh()
-        self.assertEqual(page.items[0].remote_id, "chat-1")
-        self.assertIs(page.items[0].session, provider)
-        self.assertIs(page.items[0].project, project)
-        self.assertEqual(project.chats.next_cursor, "cursor-2")
+        items = await project.chats.refresh()
+        self.assertEqual([item.remote_id for item in items], ["chat-1", "chat-2b"])
+        self.assertIs(items[0].session, provider)
+        self.assertIs(items[0].project, project)
 
         chat = AsyncGrokChat(title="Loose chat", session=provider, remote_id="chat-2")
         self.assertIsNone(chat.project)
         await chat.move_to(project)
-        provider.move_chat.assert_awaited_once_with("chat-2", "project-1")
+        provider.adapter.chats.move_chat.assert_awaited_once_with("chat-2", "project-1")
         self.assertIsNotNone(chat.project)
         assert chat.project is not None
         self.assertEqual(chat.project.remote_id, "project-1")
@@ -165,7 +188,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 ResponseComplete(),
             ),
         )
-        self.provider._stream_request = stream_provider._stream_request
+        self.provider.adapter.messages = stream_provider.adapter.messages
         chat = await self.provider.chats.create()
         operation = chat.messages.create("prompt")
         events = [event async for event in operation.stream()]
@@ -181,13 +204,13 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(artifact.id, "file-1")
 
     async def test_download_rejects_unresolved_user_url(self) -> None:
-        self.provider.resolve_download.return_value = None
+        self.provider.adapter.attachments.resolve_download.return_value = None
         chat = await self.provider.chats.create()
         chat.remote_id = "conversation-1"
         with self.assertRaises(UnsupportedOperationError):
             await chat.download("https://example.test/file")
-        self.provider.resolve_download.assert_awaited_once_with(
-            "https://example.test/file", conversation_id="conversation-1"
+        self.provider.adapter.attachments.resolve_download.assert_awaited_once_with(
+            "https://example.test/file", conversation_id="conversation-1", message_id=None
         )
 
     async def test_stream_handles_analysis_channel_and_propagates_message_ids(self) -> None:
@@ -207,7 +230,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
                 ResponseComplete(),
             ),
         )
-        self.provider._stream_request = stream_provider._stream_request
+        self.provider.adapter.messages = stream_provider.adapter.messages
         chat = await self.provider.chats.create()
         operation = chat.messages.create("solve")
         self.assertEqual(operation.state, OperationState.PENDING)
@@ -218,7 +241,16 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.message.id, "msg-user-99")
         self.assertEqual(response.message.id, "msg-assistant-99")
         self.assertEqual(response.text, "Final output")
-        self.assertIn(response.message, await chat.messages.list())
+        self.assertEqual(response.message.response, response)
+        self.provider.adapter.chats.get_chat.return_value = Conversation(
+            Origin(self.account.provider, self.account.id, "conversation-2"),
+            "Solved",
+            messages=(
+                NativeMessage("msg-user-99", "user", (Content("text", "solve"),)),
+                NativeMessage("msg-assistant-99", "assistant", (Content("text", "Final output"),)),
+            ),
+        )
+        self.assertIn("msg-assistant-99", [m.id for m in await chat.messages.list()])
         self.assertEqual(self.provider.telemetry.snapshot()["successful"], 1)
         self.assertIsInstance(events[0], ThinkingBegin)
         self.assertEqual(
@@ -242,7 +274,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             ),
             metadata={"default_model_slug": "sonnet"},
         )
-        self.provider.get_chat.return_value = remote_conv
+        self.provider.adapter.chats.get_chat.return_value = remote_conv
         chat = await self.provider.chats.create(title="")
         chat.remote_id = "conv-remote-1"
         messages = await chat.messages.refresh()
@@ -255,14 +287,13 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1].id, "a-1")
         self.assertEqual(messages[1].role, "assistant")
         self.assertEqual(messages[1].content, "Hi there!")
+        self.assertIsNone(messages[1].response.timing)
 
     async def test_chats_include_projects_and_temporary_flag(self) -> None:
-        from webaiprovider.async_provider import _prepare_operation
-
         account = Account.from_cookies("chatgpt", {"session_token": "tok"})
         provider = AsyncProvider(account)
-        provider.prepare = AsyncMock()
-        provider._close_provider = AsyncMock()
+        provider.adapter.session.prepare = AsyncMock()
+        provider.adapter.session.close = AsyncMock()
         project_alpha = NativeProject(Origin(account.provider, account.id, "proj-1"), "Alpha")
         loose_conv = Conversation(
             Origin(account.provider, account.id, "chat-loose"),
@@ -282,9 +313,17 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             "Project Only",
             project=project_alpha,
         )
-        provider.list_chats = AsyncMock(return_value=Page((loose_conv, shared_conv), None))
-        provider.list_projects = AsyncMock(return_value=Page((project_alpha,), None))
-        provider.list_project_chats = AsyncMock(
+        from webaiprovider.base import Capability
+        from webaiprovider.errors import FeatureUnavailable
+
+        provider.adapter.chats.get_chat = AsyncMock(side_effect=FeatureUnavailable(Capability.CHAT))
+        provider.adapter.chats.list_chats = AsyncMock(
+            return_value=Page((loose_conv, shared_conv), None)
+        )
+        provider.adapter.projects.list_projects = AsyncMock(
+            return_value=Page((project_alpha,), None)
+        )
+        provider.adapter.projects.list_project_chats = AsyncMock(
             return_value=Page((project_shared_conv, project_only_conv), None)
         )
         await provider.open()
@@ -294,8 +333,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c.remote_id for c in main_page], ["chat-loose", "chat-shared"])
         self.assertEqual(main_page[0].metadata, {"temporary": False, "source": "list"})
         self.assertTrue(all(c.project is None for c in main_page))
-        provider.list_projects.assert_not_awaited()
-        provider.list_project_chats.assert_not_awaited()
+        provider.adapter.projects.list_projects.assert_not_awaited()
+        provider.adapter.projects.list_project_chats.assert_not_awaited()
         self.assertEqual(await provider.chats.search("Project Only"), [])
 
         all_page = await provider.chats.refresh(include_projects=True)
@@ -303,8 +342,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             [c.remote_id for c in all_page],
             ["chat-loose", "chat-shared", "chat-proj"],
         )
-        provider.list_projects.assert_awaited()
-        provider.list_project_chats.assert_awaited_with("proj-1")
+        provider.adapter.projects.list_projects.assert_awaited()
+        provider.adapter.projects.list_project_chats.assert_awaited_with("proj-1", cursor=None)
         shared = await provider.chats.get("chat-shared", include_projects=True)
         self.assertEqual(shared.title, "Shared In Project")
         self.assertIsNotNone(shared.project)
@@ -318,9 +357,14 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         temp_chat = await provider.chats.create("Incognito", temporary=True)
         self.assertTrue(temp_chat.temporary)
         op = temp_chat.messages.create("secret")
-        request = await _prepare_operation(op, provider)
-        self.assertTrue(request.temporary)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        ctx = provider.runtime.new_context(
+            "chat.send.prepare",
+            resource_id=temp_chat.id,
+            operation=op,
+            prompt=op.message.content,
+            model=op.message.model,
+            attachments=tuple(op.message.attachments),
+            parameters={"chat": temp_chat, "message": op.message},
+        )
+        prepared = await run_pipeline_unwrapped(provider._send_pipeline, ctx)
+        self.assertTrue(prepared.request.temporary)

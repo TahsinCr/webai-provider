@@ -12,6 +12,12 @@ from webaiprovider import (
     AsyncMessage,
     AsyncMessageOperation,
     AsyncProvider,
+    BaseChatAdapter,
+    BaseMessageAdapter,
+    BaseModelAdapter,
+    BaseProjectAdapter,
+    BaseProviderAdapter,
+    BaseSessionAdapter,
 )
 from webaiprovider.collections import Page
 from webaiprovider.errors import (
@@ -62,30 +68,32 @@ def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> As
 
 class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_waits_for_resource_refreshes(self) -> None:
-        class SlowRefreshProvider(AsyncProvider):
-            def __init__(self) -> None:
-                super().__init__(Account.from_cookies("chatgpt", {"session": "token"}))
-                self.refresh_started = asyncio.Event()
-                self.release_refresh = asyncio.Event()
-                self.close_started = asyncio.Event()
-                self.provider_closed = asyncio.Event()
+        refresh_started = asyncio.Event()
+        release_refresh = asyncio.Event()
+        close_started = asyncio.Event()
+        provider_closed = asyncio.Event()
 
-            async def prepare(self) -> None:
-                return None
+        class SlowSessionAdapter(BaseSessionAdapter):
+            async def close(self) -> None:
+                provider_closed.set()
 
+        class SlowChatAdapter(BaseChatAdapter):
             async def list_chats(self, **_options) -> Page:
-                self.refresh_started.set()
-                await self.release_refresh.wait()
+                refresh_started.set()
+                await release_refresh.wait()
                 return Page(())
 
+        class SlowProjectAdapter(BaseProjectAdapter):
             async def list_projects(self, **_options) -> Page:
-                self.refresh_started.set()
-                await self.release_refresh.wait()
+                refresh_started.set()
+                await release_refresh.wait()
                 return Page(())
 
-            async def _load_model_catalog(self, *, force: bool = False) -> ModelCatalog:
-                self.refresh_started.set()
-                await self.release_refresh.wait()
+        class SlowModelAdapter(BaseModelAdapter):
+            async def load_catalog(self, *, force: bool = False) -> ModelCatalog:
+                del force
+                refresh_started.set()
+                await release_refresh.wait()
                 model = CatalogModel(
                     "default-model",
                     "Default Model",
@@ -94,34 +102,51 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
                 )
                 return ModelCatalog(ModelCatalogState.AVAILABLE, (model,), model.id)
 
-            async def _finish_close(self) -> None:
-                self.close_started.set()
-                await super()._finish_close()
+        def make_provider() -> AsyncProvider:
+            account = Account.from_cookies("chatgpt", {"session": "token"})
+            adapter = BaseProviderAdapter(
+                provider_id="chatgpt",
+                account_id=account.id,
+                session=SlowSessionAdapter(),
+                chats=SlowChatAdapter(),
+                projects=SlowProjectAdapter(),
+                models=SlowModelAdapter(),
+            )
+            provider = AsyncProvider(account, adapter=adapter)
+            orig_finish = provider.runtime._finish_close
 
-            async def _close_provider(self) -> None:
-                self.provider_closed.set()
+            async def tracked_finish(close_fn):
+                close_started.set()
+                await orig_finish(close_fn)
+
+            provider.runtime._finish_close = tracked_finish  # type: ignore[method-assign]
+            return provider
 
         for refresh in (
             lambda provider: provider.chats.refresh(),
             lambda provider: provider.projects.refresh(),
             lambda provider: provider.models.refresh(),
         ):
+            refresh_started.clear()
+            release_refresh.clear()
+            close_started.clear()
+            provider_closed.clear()
             with self.subTest(refresh=refresh):
-                provider = SlowRefreshProvider()
+                provider = make_provider()
                 await provider.open()
                 refresh_task = asyncio.create_task(refresh(provider))
-                await provider.refresh_started.wait()
-                self.assertEqual(provider._active_operations, 1)
+                await refresh_started.wait()
+                self.assertEqual(provider.runtime._active_operations, 1)
 
                 close_task = asyncio.create_task(provider.close())
-                await provider.close_started.wait()
+                await close_started.wait()
                 self.assertFalse(close_task.done())
-                self.assertFalse(provider.provider_closed.is_set())
+                self.assertFalse(provider_closed.is_set())
 
-                provider.release_refresh.set()
+                release_refresh.set()
                 await refresh_task
                 await close_task
-                self.assertTrue(provider.provider_closed.is_set())
+                self.assertTrue(provider_closed.is_set())
 
     async def test_send_hook_cannot_await_send_in_same_conversation(self) -> None:
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
@@ -149,8 +174,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
         await provider.open()
         chat = await provider.chats.create(title="Context lifetime")
-        send_lock = provider._send_lock(chat.id)
-        self.assertIs(send_lock, provider._send_lock(chat.id))
+        send_lock = provider.runtime.send_lock(chat.id)
+        self.assertIs(send_lock, provider.runtime.send_lock(chat.id))
         operation = chat.messages.create("first")
         first_finished = asyncio.Event()
         child_task: asyncio.Task | None = None
@@ -175,29 +200,34 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         response = await asyncio.wait_for(child_task, timeout=1)
 
         self.assertEqual(response.text, "answer")
-        self.assertTrue(provider._closed)
+        self.assertTrue(provider.runtime.closed)
 
     async def test_cancel_during_hook_closes_stream_and_releases_provider_resources(self) -> None:
-        class CleanupProvider(AsyncProvider):
-            def __init__(self) -> None:
-                super().__init__(Account.from_cookies("chatgpt", {"session": "token"}))
-                self.stream_closed = asyncio.Event()
-                self.provider_closed = asyncio.Event()
+        stream_closed = asyncio.Event()
+        provider_closed = asyncio.Event()
 
-            async def prepare(self) -> None:
-                return None
+        class CleanupSession(BaseSessionAdapter):
+            async def close(self) -> None:
+                provider_closed.set()
 
-            async def _close_provider(self) -> None:
-                self.provider_closed.set()
-
-            async def _stream_request(self, _request):
+        class CleanupMessages(BaseMessageAdapter):
+            async def stream(self, _request):
                 try:
                     yield TextDelta("partial")
                     await asyncio.Event().wait()
                 finally:
-                    self.stream_closed.set()
+                    stream_closed.set()
 
-        provider = CleanupProvider()
+        account = Account.from_cookies("chatgpt", {"session": "token"})
+        provider = AsyncProvider(
+            account,
+            adapter=BaseProviderAdapter(
+                provider_id="chatgpt",
+                account_id=account.id,
+                session=CleanupSession(),
+                messages=CleanupMessages(),
+            ),
+        )
         await provider.open()
         chat = await provider.chats.create(title="Cancellation")
         operation = chat.messages.create("prompt")
@@ -216,11 +246,11 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OperationCancelledError):
             await waiter
 
-        self.assertTrue(provider.stream_closed.is_set())
-        self.assertEqual(provider._active_operations, 0)
-        self.assertFalse(provider._send_lock(chat.id).locked())
+        self.assertTrue(stream_closed.is_set())
+        self.assertEqual(provider.runtime._active_operations, 0)
+        self.assertFalse(provider.runtime.send_lock(chat.id).locked())
         await asyncio.wait_for(provider.close(), timeout=1)
-        self.assertTrue(provider.provider_closed.is_set())
+        self.assertTrue(provider_closed.is_set())
 
 
 class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
@@ -231,9 +261,10 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
-        provider.client.authenticated = True
+        provider.adapter.client.authenticated = True
 
         async def fake_events(*args, **kwargs):
+            del args, kwargs
             yield {"type": "bound", "id": "claude-conv-123"}
             yield {"type": "delta", "text": "Analyzing query", "channel": "analysis"}
             yield {"type": "delta", "text": "Hello ", "channel": "final"}
@@ -247,9 +278,9 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             }
             yield {"type": "done"}
 
-        provider.client.events = fake_events
+        provider.adapter.client.events = fake_events
 
-        with patch("webaiprovider.providers.claude.provider.session_exists", return_value=True):
+        with patch("webaiprovider.providers.claude.adapter.session_exists", return_value=True):
             events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
@@ -281,10 +312,10 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
-        provider.client.authenticated = False
+        provider.adapter.client.authenticated = False
 
         with (
-            patch("webaiprovider.providers.claude.provider.session_exists", return_value=False),
+            patch("webaiprovider.providers.claude.adapter.session_exists", return_value=False),
             self.assertRaises(AccountPaused),
         ):
             _ = [event async for event in provider.execute_stream(operation)]
@@ -303,9 +334,10 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )
-        provider._load_model_catalog = AsyncMock(return_value=catalog)
+        provider.adapter.models.load_catalog = AsyncMock(return_value=catalog)
 
         async def fake_events(*args, **kwargs):
+            del args, kwargs
             yield {
                 "result": {
                     "conversation": {"conversationId": "grok-conv-456"},
@@ -322,14 +354,14 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        provider.client.events = fake_events
+        provider.adapter.client.events = fake_events
 
         events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "grok-conv-456")
         self.assertEqual(operation.message.id, "grok-user-456")
         self.assertEqual(operation._assistant_message_id, "grok-resp-456")
-        self.assertEqual(provider._take_continuation("grok-conv-456"), "grok-resp-456")
+        self.assertEqual(provider.adapter._take_continuation("grok-conv-456"), "grok-resp-456")
 
         event_types = [type(e) for e in events]
         self.assertIn(OutputBegin, event_types)
@@ -349,9 +381,10 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
             "grok-3",
         )
-        provider._load_model_catalog = AsyncMock(return_value=catalog)
+        provider.adapter.models.load_catalog = AsyncMock(return_value=catalog)
 
         async def fake_events(*args, **kwargs):
+            del args, kwargs
             yield {
                 "result": {
                     "conversationId": "grok-conv-789",
@@ -359,7 +392,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
                 }
             }
 
-        provider.client.events = fake_events
+        provider.adapter.client.events = fake_events
 
         with self.assertRaises(RateLimited) as cm:
             _ = [event async for event in provider.execute_stream(operation)]
@@ -374,7 +407,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = AsyncMessageOperation(chat, message)
 
         provider = AsyncGeminiProvider(provider_account("gemini", "cookie_file", "acc-test"))
-        provider._connect = AsyncMock()
+        provider.adapter._connect = AsyncMock()
 
         mock_client = MagicMock()
         mock_client.models = ("gemini-2.5-flash",)
@@ -383,9 +416,10 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         async def fake_prepare(req):
             return mock_client, req, ["", "", ""], None, None
 
-        provider._prepare_send_context = fake_prepare
+        provider.adapter.messages._prepare_send_context = fake_prepare
 
         async def fake_generate(*args, **kwargs):
+            del args, kwargs
             yield {
                 "cid": "gemini-conv-321",
                 "metadata": ["gemini-conv-321", "rc_turn_1", "rc_cid_1"],
@@ -429,30 +463,39 @@ class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         operation = AsyncMessageOperation(chat, message)
 
         mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=None)
 
-        def fake_send_prompt(*args, on_event=None, **kwargs):
-            if on_event:
-                on_event({"type": "delta", "text": "Reasoning step", "channel": "analysis"})
-                on_event({"type": "delta", "text": "Output step", "channel": "final"})
+        def fake_send_prompt(cid, prompt, *, on_event=None, **kwargs):
+            del cid, prompt, kwargs
+            assert on_event is not None
+            on_event({"type": "bound", "conversation_id": "chatgpt-conv-999"})
+            on_event({"type": "delta", "text": "Reasoning steps", "channel": "analysis"})
+            on_event({"type": "delta", "text": "Final answer", "channel": None})
+            on_event({"type": "response_complete"})
+
             completed = {
                 "messages": [
                     {"id": "chatgpt-u1", "author": {"role": "user"}},
                     {
                         "id": "chatgpt-a1",
                         "author": {"role": "assistant"},
-                        "content": {"parts": ["Output step"]},
-                        "metadata": {"model_slug": "gpt-4o"},
+                        "metadata": {"model_slug": "gpt-6"},
                     },
                 ]
             }
-            return "chatgpt-conv-999", completed, ()
+            return "chatgpt-conv-999", completed, set()
 
         mock_client.send_prompt = fake_send_prompt
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
         class DummyBrowserSession:
-            pass
+            class Paths:
+                session_file = "dummy"
+
+            paths = Paths()
+
+            def load(self):
+                pass
 
         provider = AsyncChatGPTProvider(
             provider_account("chatgpt", "cred_file", "acc-test"),
