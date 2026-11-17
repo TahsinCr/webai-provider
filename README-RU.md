@@ -58,10 +58,13 @@ with ChatGPTProvider(account) as provider:
 
 ## Основной API
 
-- `BaseProvider` содержит общие сведения об аккаунте и провайдере. Для асинхронной работы используйте `AsyncChatGPTProvider` (или соответствующий класс другого провайдера), а для блокирующей — `ChatGPTProvider`. Общие классы `AsyncProvider` и `Provider` подходят для выбора провайдера через `ProviderType`.
+- `BaseProvider` содержит общие сведения об аккаунте и провайдере. Для асинхронной работы используйте `AsyncChatGPTProvider` (или соответствующий класс другого провайдера), а для блокирующей — `ChatGPTProvider`. Общие классы `AsyncProvider` и `Provider` подходят для выбора провайдера через `ProviderType` или внедрения собственного `BaseProviderAdapter` (`adapter=...`).
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` и `GrokProvider` предоставляют функции конкретных провайдеров. Проекты ChatGPT по умолчанию используют общую область памяти; укажите `memory_share=False`, чтобы оставить память только в проекте.
-- `provider.models.list()` загружает доступные аккаунту модели и кеширует каталог до конца сессии. Для нового запроса используйте `refresh=True` или `provider.models.refresh()`. Методы `find()`, `search()` и `get()` выбирают модель из этого каталога.
-- `chat.messages.create()`, `edit()` и `retry()` возвращают `MessageOperation`. Используйте `operation.stream()` для потока событий или дождитесь итогового ответа через `operation.wait()`. Эти методы используют одну отправку.
+- Удалённые коллекции (`chats`, `projects`, `project.chats`, `project.attachments`) скрывают пагинацию за `list(limit=50)` (`limit=0` не выполняет сетевых запросов; `limit=None` читает все страницы) и предоставляют единые методы `refresh()`, `get()`, `search()`, `find()` (вызывает `AmbiguousMatchError`), `first()` и `last()`. Класс `Page` используется только на границе адаптеров и не входит в пользовательский API.
+- `provider.models.list()` загружает доступные аккаунту модели и кеширует каталог до конца сессии. Для нового запроса используйте `refresh=True` или `provider.models.refresh()`. Методы `find()`, `search()`, `first()`, `last()` и `get()` выбирают модель из этого каталога.
+- `chat.messages.create()`, `edit()` и `retry()` возвращают `MessageOperation`. Используйте `operation.stream()` для потока событий или дождитесь итогового `Response` (`sources` как `SourcesCollection`, `artifacts` как `ArtifactsCollection`, `timing` как `TimingMetrics`) через `operation.wait()`. `chat.responses` строит представления `Response` из общей истории `chat.messages` (для исторических записей `timing=None`).
+- `project.attachments` предоставляет файловую проекцию `Attachment` поверх `project.resources` (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
+- Провайдеры используют `ProviderRuntime` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.
 
 Пакет предоставляет типизированные ссылки на модели и уровни усилий. Каталог, полученный от аккаунта, является источником доступных ему моделей и может различаться в зависимости от подписки и изменений на стороне провайдера.
@@ -113,18 +116,22 @@ Claude и Grok используют `HttpSession`. Gemini использует `
 
 Общие преобразования источников и файлов находятся в `webaiprovider.normalizers`. История провайдера, RPC-данные, идентификаторы продолжения и интерпретация ответов остаются в пакетах отдельных провайдеров.
 
-Для расширений `webaiprovider.resources.message.protocol` предоставляет `ProviderRequest` и нормализованные события: `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound` и `MessageMetadata`. Переопределяйте `_stream_request`, сохраняя порядок событий:
+Для расширений протокола `webaiprovider.base` предоставляет `BaseProviderAdapter` и субадаптеры (`BaseSessionAdapter`, `BaseModelAdapter`, `BaseChatAdapter`, `BaseProjectAdapter`, `EditorProjectAdapter`, `BaseMessageAdapter`, `BaseAttachmentAdapter`), а `webaiprovider.resources.message.protocol` предоставляет `ProviderRequest` и нормализованные события `ProviderStreamEvent` (`TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata`):
 
 ```python
 from collections.abc import AsyncIterator
-from webaiprovider import AsyncClaudeProvider
-from webaiprovider.resources.message.protocol import ProviderEvent, ProviderRequest
+from webaiprovider import AsyncProvider
+from webaiprovider.base import BaseMessageAdapter, BaseProviderAdapter
+from webaiprovider.resources.message.protocol import ProviderRequest, ProviderStreamEvent, TextDelta
 
 
-class CustomClaudeProvider(AsyncClaudeProvider):
-    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
-        async for event in super()._stream_request(request):
-            yield event
+class CustomMessageAdapter(BaseMessageAdapter):
+    async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+        yield TextDelta(f"Echo: {request.prompt}")
+
+
+# adapter = BaseProviderAdapter(..., messages=CustomMessageAdapter())
+# provider = AsyncProvider(account, adapter=adapter)
 ```
 
 Встроенные провайдеры используют те же контракты. Обычное приложение отправляет сообщения через `chat.messages`, оставляя wire-запросы и повторы провайдеру. `ProviderType` обозначает четыре поддерживаемых веб-провайдера. Использование transport и декодеров кадров с другим origin само по себе не добавляет поддержку его аутентификации, моделей, возможностей или ресурсов.

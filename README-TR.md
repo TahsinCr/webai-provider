@@ -58,10 +58,13 @@ with ChatGPTProvider(account) as provider:
 
 ## Temel API
 
-- `BaseProvider`, ortak hesap ve sağlayıcı kimliğini taşır. Asenkron işlemlerde `AsyncChatGPTProvider` (ve diğer sağlayıcıların karşılık gelen sınıfı), bloklayan işlemlerde `ChatGPTProvider` kullanılır; `AsyncProvider` ve `Provider`, `ProviderType` ile ortak kullanım içindir.
+- `BaseProvider`, ortak hesap ve sağlayıcı kimliğini taşır. Asenkron işlemlerde `AsyncChatGPTProvider` (ve diğer sağlayıcıların karşılık gelen sınıfı), bloklayan işlemlerde `ChatGPTProvider` kullanılır; `AsyncProvider` ve `Provider`, `ProviderType` veya özel `BaseProviderAdapter` (`adapter=...`) ile ortak kullanım içindir.
 - `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir.
-- `provider.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `provider.models.refresh()` kullanın. `find()`, `search()` ve `get()` bu katalogda seçim yapar.
-- `chat.messages.create()`, `edit()` ve `retry()` birer `MessageOperation` döndürür. Akış olayları için `operation.stream()` kullanın veya tamamlanmış yanıtı `operation.wait()` ile alın. Bu yöntemler aynı gönderim işlemini paylaşır.
+- Uzak koleksiyonlar (`chats`, `projects`, `project.chats`, `project.attachments`) sayfalama ayrıntısını `list(limit=50)` arkasında gizler (`limit=0` sıfır uzak istek yapar; `limit=None` tüm sayfaları tarar) ve tutarlı `refresh()`, `get()`, `search()`, `find()` (`AmbiguousMatchError` yükseltir), `first()` ve `last()` metotlarını sunar. `Page`, adaptör katmanının iç türüdür ve kullanıcı API'sinde yer almaz.
+- `provider.models.list()` hesabın kullanılabilir modellerini yükler ve oturum boyunca önbelleğe alır. Yeni katalog için `refresh=True` veya `provider.models.refresh()` kullanın. `find()`, `search()`, `first()`, `last()` ve `get()` bu katalogda seçim yapar.
+- `chat.messages.create()`, `edit()` ve `retry()` birer `MessageOperation` döndürür. Akış olayları için `operation.stream()` kullanın veya tamamlanmış `Response` nesnesini (`SourcesCollection` olarak `sources`, `ArtifactsCollection` olarak `artifacts` ve `TimingMetrics` olarak `timing`) `operation.wait()` ile alın. `chat.responses`, paylaşılan `chat.messages` geçmişinden `Response` görünümleri türetir (geçmiş kayıtlarında `timing=None` olur).
+- `project.attachments`, `project.resources` üzerinde dosya odaklı `Attachment` görünümü sunar (`add()`, `remove()`, `list()`, `get()`, `find()`, `first()`, `last()`, `search()`).
+- Sağlayıcılar `flowevent` tabanlı `ProviderRuntime` kullanır. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `SyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
 
 Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri sunar. Hesaptan keşfedilen modeller, o hesap için yetkili kaynaktır; aboneliğe ve sağlayıcı değişikliklerine göre farklılık gösterebilir.
@@ -113,18 +116,22 @@ Frame çözümleme HTTP’den ayrıdır. `SSEFrameDecoder`, `data`, `event`, `id
 
 Kaynak ve dosya normalizasyonu `webaiprovider.normalizers` içindedir. Sağlayıcı geçmişi, RPC yükleri, devam kimlikleri ve yanıt yorumlama ise her sağlayıcının kendi paketinde kalır.
 
-Sağlayıcı uzantıları için `webaiprovider.resources.message.protocol`; `ProviderRequest` ve `TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata` gibi ortak olay türlerini sunar. Olay sırasını koruyarak özelleştirme yapmak için `_stream_request` metodunu genişletin:
+Özel protokol uzantıları için `webaiprovider.base` paketi `BaseProviderAdapter` ve alt adaptörleri (`BaseSessionAdapter`, `BaseModelAdapter`, `BaseChatAdapter`, `BaseProjectAdapter`, `EditorProjectAdapter`, `BaseMessageAdapter`, `BaseAttachmentAdapter`), `webaiprovider.resources.message.protocol` ise `ProviderRequest` ve ortak `ProviderStreamEvent` türlerini (`TextDelta`, `ThoughtDelta`, `TextReplacement`, `ResponseComplete`, `ConversationBound`, `MessageMetadata`) sunar:
 
 ```python
 from collections.abc import AsyncIterator
-from webaiprovider import AsyncClaudeProvider
-from webaiprovider.resources.message.protocol import ProviderEvent, ProviderRequest
+from webaiprovider import AsyncProvider
+from webaiprovider.base import BaseMessageAdapter, BaseProviderAdapter
+from webaiprovider.resources.message.protocol import ProviderRequest, ProviderStreamEvent, TextDelta
 
 
-class CustomClaudeProvider(AsyncClaudeProvider):
-    async def _stream_request(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
-        async for event in super()._stream_request(request):
-            yield event
+class CustomMessageAdapter(BaseMessageAdapter):
+    async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+        yield TextDelta(f"Echo: {request.prompt}")
+
+
+# adapter = BaseProviderAdapter(..., messages=CustomMessageAdapter())
+# provider = AsyncProvider(account, adapter=adapter)
 ```
 
 Yerleşik sağlayıcılar da aynı sözleşmeleri kullanır. Normal uygulama kodu mesajları `chat.messages` üzerinden göndermeli; wire isteklerini ve yeniden deneme davranışını sağlayıcıya bırakmalıdır. `ProviderType` desteklenen dört web sağlayıcısını tanımlar. Taşıma ve frame araçlarını başka bir origin için kullanmak o sağlayıcının kimlik doğrulama, model, yetenek veya kaynak desteğini eklemez.
