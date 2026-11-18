@@ -1247,8 +1247,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             await provider._resolve_project_context("notebooks/abcdef", None)
             self.assertEqual(provider.notebooks.get.await_count, 2)
 
-            with patch("webaiprovider.providers.gemini.provider.confirm_deleted", AsyncMock()):
-                await provider._delete_project_data("notebooks/abcdef")
+            await provider._delete_project_data("notebooks/abcdef")
             self.assertIsNone(provider._project_contexts.get("notebooks/abcdef"))
 
             await provider._resolve_project_context("notebooks/abcdef", None)
@@ -1259,43 +1258,25 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
-    async def test_delete_chat_releases_gate_before_confirm_and_preserves_metadata_until_confirmed(
+    async def test_delete_chat_skips_redundant_readback_and_preserves_metadata_on_error(
         self,
     ):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
         provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
-        provider.rpc.call = AsyncMock(return_value=None)
         provider._chat_metadata.put("cid-1", ["cid-1", "r1", "rc1"])
 
-        confirm_started = asyncio.Event()
-        release_confirm = asyncio.Event()
-
-        async def blocked_confirm(*_args, **_kwargs):
-            confirm_started.set()
-            await asyncio.wait_for(release_confirm.wait(), 1.0)
-
         try:
-            with patch(
-                "webaiprovider.providers.gemini.provider.confirm_deleted",
-                side_effect=blocked_confirm,
-            ):
-                task = asyncio.create_task(provider._delete_chat_data("cid-1"))
-                await asyncio.wait_for(confirm_started.wait(), 1.0)
-                self.assertFalse(provider._gate.locked())
-                async with provider._gate:
-                    self.assertEqual(provider._chat_metadata.get("cid-1"), ["cid-1", "r1", "rc1"])
-                release_confirm.set()
-                await task
+            provider.rpc.call = AsyncMock(return_value=None)
+            await provider._delete_chat_data("cid-1")
+            provider.rpc.call.assert_awaited_once_with(
+                "GzXR5e", ["cid-1"], "/app", allow_empty=True
+            )
             self.assertIsNone(provider._chat_metadata.get("cid-1"))
+            self.assertFalse(provider._gate.locked())
 
             provider._chat_metadata.put("cid-2", ["cid-2", "r2", "rc2"])
-            with (
-                patch(
-                    "webaiprovider.providers.gemini.provider.confirm_deleted",
-                    side_effect=ProviderError("delete not yet confirmed"),
-                ),
-                self.assertRaises(ProviderError),
-            ):
+            provider.rpc.call = AsyncMock(side_effect=ProviderError("delete failed"))
+            with self.assertRaises(ProviderError):
                 await provider._delete_chat_data("cid-2")
             self.assertEqual(provider._chat_metadata.get("cid-2"), ["cid-2", "r2", "rc2"])
         finally:
@@ -1712,16 +1693,8 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_server_index_may_lag_deletion_without_resubmitting_the_write(self):
-        from webaiprovider.errors import RemoteNotFound
-
-        project = SimpleNamespace(
-            name="Fixture", origin=SimpleNamespace(remote_id="notebooks/abcdef")
-        )
-        notebooks = SimpleNamespace(
-            get=AsyncMock(side_effect=[project, RemoteNotFound("missing")]),
-            list=AsyncMock(),
-        )
+    async def test_delete_project_skips_redundant_readback_after_write(self):
+        notebooks = SimpleNamespace(get=AsyncMock(), list=AsyncMock())
         provider = AsyncGeminiProvider(
             provider_account("gemini", Path("unused")), notebooks=notebooks
         )
@@ -1730,9 +1703,9 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as wait,
         ):
             await provider._delete_project_data("notebooks/abcdef")
-            delete.assert_awaited_once()
-            wait.assert_awaited_once_with(0.2)
-        self.assertEqual(notebooks.get.await_count, 2)
+            delete.assert_awaited_once_with("delete", "notebooks/abcdef")
+            wait.assert_not_awaited()
+        notebooks.get.assert_not_awaited()
         notebooks.list.assert_not_awaited()
 
 

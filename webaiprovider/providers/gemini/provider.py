@@ -11,7 +11,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectMutationsMixin, confirm_deleted
+from ...base import Capability, ProjectMutationsMixin
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
@@ -316,15 +316,6 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         async with self._gate:
             await self._connect()
             await self.rpc.call("GzXR5e", [conversation_id], "/app", allow_empty=True)
-        await confirm_deleted(
-            lambda: self.rpc.call(
-                "hNvQHb",
-                [conversation_id, 1, None, 1, [1], [4], None, 1],
-                "/app",
-                allow_empty=True,
-            ),
-            lambda parts: not parts,
-        )
         self._chat_metadata.pop(conversation_id, None)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
@@ -373,7 +364,6 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         async with self._gate:
             await self.editor.write("delete", remote)
         self._project_contexts.remove(remote)
-        await confirm_deleted(lambda: self.notebooks.get(remote))
 
     async def _stream_provider_events(
         self, request: ProviderRequest
