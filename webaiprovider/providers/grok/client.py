@@ -16,12 +16,13 @@ from ...resources.project.types import (
     source_file,
 )
 from ...transport import HttpSession
-from ...transport.frames import SSEFrameDecoder
+from ...transport.frames import SSEFrameDecoder, aiter_bounded_lines
 
 ORIGIN = "https://grok.com"
 _MAX_LINE_BYTES = 1_048_576
 _MAX_STREAM_BYTES = 64 * 1024 * 1024
-_MAX_WORKSPACE_FILE_BYTES = 3 * 1024 * 1024
+_MAX_CHAT_FILE_BYTES = 3 * 1024 * 1024
+_MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024
 
 
 def remote_id(value):
@@ -32,13 +33,18 @@ def remote_id(value):
     return quote(value, safe="")
 
 
-def _read_limited(path, *, error="Grok file is empty or exceeds the 3 MiB limit"):
+def _read_limited(
+    path,
+    *,
+    max_bytes=_MAX_WORKSPACE_FILE_BYTES,
+    error="Grok file is empty or exceeds the size limit",
+):
     with path.open("rb") as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _MAX_WORKSPACE_FILE_BYTES:
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= max_bytes:
             raise ValueError(error)
-        data = stream.read(_MAX_WORKSPACE_FILE_BYTES + 1)
-    if not 0 < len(data) <= _MAX_WORKSPACE_FILE_BYTES:
+        data = stream.read(max_bytes + 1)
+    if not 0 < len(data) <= max_bytes:
         raise ValueError(error)
     return data
 
@@ -47,35 +53,13 @@ def _b64_ascii(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-async def _iter_bounded_lines(response):
-    buffer = bytearray()
-    total = 0
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > _MAX_STREAM_BYTES:
-            raise ProviderError("Grok stream response exceeds the size limit")
-        start = 0
-        while (end := chunk.find(b"\n", start)) >= 0:
-            if len(buffer) + end - start > _MAX_LINE_BYTES:
-                raise ProviderError("Grok stream response exceeds the size limit")
-            buffer.extend(chunk[start:end])
-            line = bytes(buffer)
-            buffer.clear()
-            if line.endswith(b"\r"):
-                line = line[:-1]
-            try:
-                yield line.decode("utf-8")
-            except UnicodeDecodeError:
-                raise ProviderError("Grok stream response format has changed") from None
-            start = end + 1
-        if len(buffer) + len(chunk) - start > _MAX_LINE_BYTES:
-            raise ProviderError("Grok stream response exceeds the size limit")
-        buffer.extend(chunk[start:])
-    if buffer:
-        try:
-            yield bytes(buffer).decode("utf-8")
-        except UnicodeDecodeError:
-            raise ProviderError("Grok stream response format has changed") from None
+def _iter_bounded_lines(response):
+    return aiter_bounded_lines(
+        response.aiter_bytes(),
+        max_line_bytes=_MAX_LINE_BYTES,
+        max_stream_bytes=_MAX_STREAM_BYTES,
+        error_label="Grok stream",
+    )
 
 
 def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=None):
@@ -149,7 +133,11 @@ class GrokClient:
             payload = (
                 content
                 if content is not None
-                else _read_limited(file, error="Grok chat file is empty or exceeds the 3 MiB limit")
+                else _read_limited(
+                    file,
+                    max_bytes=_MAX_CHAT_FILE_BYTES,
+                    error="Grok chat file is empty or exceeds the 3 MiB limit",
+                )
             )
             return filename, resolved_mime, len(payload), _b64_ascii(payload)
 
@@ -275,16 +263,18 @@ class GrokProjectEditor:
                 mime_type = "text/plain"
                 raw = content.encode("utf-8")
                 if not 0 < len(raw) <= _MAX_WORKSPACE_FILE_BYTES:
-                    raise ValueError("Grok workspace files must not exceed 3 MiB")
+                    raise ValueError("Grok workspace files must not exceed 20 MiB")
                 encoded = await asyncio.to_thread(_b64_ascii, raw)
             else:
 
                 def _prepare_workspace_file():
                     file = source_file(
-                        values["path"], error="Grok workspace files must not exceed 3 MiB"
+                        values["path"], error="Grok workspace files must not exceed 20 MiB"
                     )
                     raw_bytes = _read_limited(
-                        file, error="Grok workspace files must not exceed 3 MiB"
+                        file,
+                        max_bytes=_MAX_WORKSPACE_FILE_BYTES,
+                        error="Grok workspace files must not exceed 20 MiB",
                     )
                     resolved_mime = (
                         "text/markdown"
