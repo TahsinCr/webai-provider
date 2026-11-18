@@ -598,7 +598,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
     def _scope_id(self) -> str | None:
         return None
 
-    _max_remote_pages = 500
+    _max_remote_pages = 2000
     _default_page_size = 50
 
     def _item_key(self, item: T) -> str:

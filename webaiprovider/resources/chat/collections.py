@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from ..response.response import Response
 
 _PROJECT_CHAT_CONCURRENCY = 4
-_MAX_PROJECT_CHAT_PAGES = 100
+_MAX_PROJECT_CHAT_PAGES = 500
 
 
 def _chat_from_conversation(
@@ -103,7 +103,11 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             return Page(chats, page.next_cursor)
 
     async def _fetch_project_chats(
-        self, projects: list[AsyncProject], slots: asyncio.Semaphore
+        self,
+        projects: list[AsyncProject],
+        slots: asyncio.Semaphore,
+        *,
+        per_project_limit: int | None = None,
     ) -> list[AsyncChat]:
         project_map = {p.remote_id: p for p in projects if p.remote_id}
         session = self.provider
@@ -125,6 +129,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
                     if chat.project is None:
                         chat.project = project
                     chats.append(chat)
+                    if per_project_limit is not None and len(chats) >= per_project_limit:
+                        return chats[:per_project_limit]
                 next_cursor = page.next_cursor
                 if next_cursor is None:
                     return chats
@@ -157,11 +163,11 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
 
         async def normal_chats():
             async with slots:
-                return await collect_normal(limit=None)
+                return await collect_normal(limit=validated)
 
         async def project_chats():
             projects = await session.projects._collect_items(limit=None)
-            return await self._fetch_project_chats(projects, slots)
+            return await self._fetch_project_chats(projects, slots, per_project_limit=validated)
 
         async with session.runtime.activity():
             session._require_provider()

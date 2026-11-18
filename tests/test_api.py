@@ -950,6 +950,57 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(provider.chats.list(include_projects=True), timeout=2)
             self.assertTrue(cancelled.is_set())
 
+    async def test_include_projects_stops_early_when_limit_is_bounded(self) -> None:
+        from webaiprovider.collections import Page
+        from webaiprovider.resources.chat.types import Conversation
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        class BoundedProvider(AsyncChatGPTProvider):
+            def __init__(self, account: Account) -> None:
+                super().__init__(account)
+                self.chat_cursors: list[str | None] = []
+                self.project_chat_calls: list[tuple[str, str | None]] = []
+
+            async def _prepare_session(self) -> None:
+                return None
+
+            async def _close_session(self) -> None:
+                return None
+
+            async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
+                self.chat_cursors.append(cursor)
+                if cursor is not None:
+                    raise AssertionError("normal chat pagination should stop after limit=2")
+                return Page(
+                    tuple(Conversation(f"c-{i}", f"Chat {i}") for i in range(limit)),
+                    "page-2",
+                )
+
+            async def _list_projects_data(self, *, cursor: str | None = None):
+                del cursor
+                return Page((NativeProject("p-1", "Project 1"),), None)
+
+            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+                self.project_chat_calls.append((project_id, cursor))
+                if cursor is not None:
+                    raise AssertionError("project chat pagination should stop after limit=2")
+                p1 = NativeProject("p-1", "Project 1")
+                return Page(
+                    (
+                        Conversation("cp-1", "P1 One", project=p1),
+                        Conversation("cp-2", "P1 Two", project=p1),
+                        Conversation("cp-3", "P1 Three", project=p1),
+                    ),
+                    "p1-page-2",
+                )
+
+        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        async with BoundedProvider(account) as provider:
+            chats = await provider.chats.list(limit=2, include_projects=True)
+        self.assertEqual([chat.remote_id for chat in chats], ["c-0", "c-1"])
+        self.assertEqual(provider.chat_cursors, [None])
+        self.assertEqual(provider.project_chat_calls, [("p-1", None)])
+
     async def test_project_refresh_rejects_repeated_cursor_cleanly(self) -> None:
         from webaiprovider.collections import Page
 
