@@ -582,6 +582,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ClaudeModels.SONNET_5_5.id, "claude-sonnet-5-5")
         self.assertEqual(GeminiModels.FLASH.id, "gemini-flash")
         self.assertEqual(GeminiModels.HYDROGEN.id, "gemini-hydrogen")
+        self.assertEqual(GeminiModels.NEON.id, "gemini-neon")
+        self.assertEqual(GeminiModels.CARBON.id, "gemini-carbon")
         self.assertEqual(
             [model.id for model in GeminiModels.list()],
             [
@@ -590,6 +592,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 "gemini-hydrogen",
                 "gemini-pro",
                 "gemini-argon",
+                "gemini-neon",
+                "gemini-carbon",
             ],
         )
         self.assertEqual(GrokModels.GROK_3.id, "fast")

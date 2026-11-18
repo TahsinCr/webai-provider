@@ -60,6 +60,18 @@ class GeminiArgonEfforts(EffortSet):
     EXTENDED: ClassVar[EffortRef] = effort_ref("gemini", "gemini-argon", "extended")
 
 
+class GeminiNeonEfforts(EffortSet):
+    STANDARD: ClassVar[EffortRef] = effort_ref("gemini", "gemini-neon", "standard")
+    MEDIUM: ClassVar[EffortRef] = effort_ref("gemini", "gemini-neon", "medium")
+    EXTENDED: ClassVar[EffortRef] = effort_ref("gemini", "gemini-neon", "extended")
+
+
+class GeminiCarbonEfforts(EffortSet):
+    STANDARD: ClassVar[EffortRef] = effort_ref("gemini", "gemini-carbon", "standard")
+    MEDIUM: ClassVar[EffortRef] = effort_ref("gemini", "gemini-carbon", "medium")
+    EXTENDED: ClassVar[EffortRef] = effort_ref("gemini", "gemini-carbon", "extended")
+
+
 class GeminiModels(StaticModelCatalog):
     provider = "gemini"
 
@@ -80,6 +92,12 @@ class GeminiModels(StaticModelCatalog):
     )
     ARGON: ClassVar[ModelRef[GeminiArgonEfforts]] = ModelRef(
         "gemini", "gemini-argon", "Gemini 4 Argon", efforts=GeminiArgonEfforts
+    )
+    NEON: ClassVar[ModelRef[GeminiNeonEfforts]] = ModelRef(
+        "gemini", "gemini-neon", "Gemini 4 Neon", efforts=GeminiNeonEfforts
+    )
+    CARBON: ClassVar[ModelRef[GeminiCarbonEfforts]] = ModelRef(
+        "gemini", "gemini-carbon", "Gemini 4 Carbon", efforts=GeminiCarbonEfforts
     )
 
 

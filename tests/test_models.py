@@ -193,8 +193,18 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(GrokModels.GROK_3.metadata["modelName"], "grok-3")
         self.assertEqual(
             tuple(model.id for model in GeminiModels.list()),
-            ("gemini-flash-lite", "gemini-flash", "gemini-hydrogen", "gemini-pro", "gemini-argon"),
+            (
+                "gemini-flash-lite",
+                "gemini-flash",
+                "gemini-hydrogen",
+                "gemini-pro",
+                "gemini-argon",
+                "gemini-neon",
+                "gemini-carbon",
+            ),
         )
+        self.assertEqual(GeminiModels.NEON.name, "Gemini 4 Neon")
+        self.assertEqual(GeminiModels.CARBON.name, "Gemini 4 Carbon")
         self.assertEqual(GeminiModels.HYDROGEN.name, "Gemini 4 Hydrogen")
         self.assertEqual(
             [effort.id for effort in GeminiModels.HYDROGEN.efforts.list()],
