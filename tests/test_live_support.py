@@ -524,7 +524,7 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(kind=kind):
                 self.context.state["resources"].clear()
                 entry, remote = self.track(kind)
-                delete = AsyncMock()
+                delete = AsyncMock(side_effect=ProviderError("uncertain"))
                 listing = AsyncMock(side_effect=(Page((), "next-page"), Page((remote,))))
                 setattr(
                     self.provider,
@@ -593,7 +593,7 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.provider.delete_chat = AsyncMock()
         await self.context.cleanup_entry_async(entry)
         self.provider.get_chat.assert_awaited_once_with(self.remote_id)
-        self.assertEqual(self.provider._get_chat_metadata.await_count, 2)
+        self.assertEqual(self.provider._get_chat_metadata.await_count, 1)
         self.provider.delete_chat.assert_awaited_once_with(self.remote_id)
         self.assertFalse(self.journal.exists())
 
@@ -624,7 +624,7 @@ class SyncCleanupTests(unittest.TestCase):
                 context.cleanup_pending()
                 self.assertFalse(journal.exists())
         native._delete_project_data.assert_awaited_once_with("temporary-id")
-        self.assertEqual(native._get_project_data.await_count, 2)
+        self.assertEqual(native._get_project_data.await_count, 1)
         self.assertEqual(context.state["resources"], [])
 
 

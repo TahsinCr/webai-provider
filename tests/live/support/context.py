@@ -291,6 +291,7 @@ class LiveContext:
         if not matches or not self._matches_marker(remote, kind, markers):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
+        delete_uncertain = False
         try:
             await self.call_async(
                 f"cleanup.delete_{kind}",
@@ -300,7 +301,10 @@ class LiveContext:
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
         except ProviderError:
-            pass
+            delete_uncertain = True
+        if not delete_uncertain:
+            self._remove_entry(entry)
+            return
         try:
             remaining = await self.call_async(
                 f"cleanup.verify_{kind}_deleted",

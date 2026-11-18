@@ -49,13 +49,13 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
         chat = await self.context.session.chats.create(title=marker, temporary=True)
         self.assertTrue(chat.temporary)
         try:
-            operation = chat.responses.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
+            operation = chat.responses.create(f"{marker} Reply with only: OK", model=Models.LOW)
             response = await self.call_or_skip_rate_limit(
                 "responses.temporary.send", operation.start, chat=chat
             )
             self.assertTrue(getattr(response, "text", ""), "Temporary chat returned no text")
             chats = await self.call_api(
-                "chats.list_after_temporary", lambda: self.context.session.chats.list(limit=50)
+                "chats.list_after_temporary", lambda: self.context.session.chats.list(limit=10)
             )
             if chat.remote_id:
                 self.assertNotIn(
@@ -92,14 +92,14 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     mime_type="text/plain",
                 )
                 operation = chat.responses.create(
-                    f"{marker} Read the attached file and reply with the token or OK.",
+                    f"{marker} Read the attached file and reply with only the token or OK.",
                     model=Models.LOW,
                     attachments=[attachment],
                 )
             else:
                 self.context.skip("responses.attachments: unsupported")
                 operation = chat.responses.create(
-                    f"{marker} Reply with exactly OK.",
+                    f"{marker} Reply with only: OK",
                     model=Models.LOW,
                 )
 
@@ -128,7 +128,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 self.assertIsInstance(response.artifacts, ArtifactsCollection)
 
             followup_op = chat.responses.create(
-                f"{marker} Reply with the single word GAMMA.", model=Models.LOW
+                f"{marker} Reply with only the single word: GAMMA", model=Models.LOW
             )
             followup_response = await self.call_or_skip_rate_limit(
                 "responses.create.followup", followup_op.start, entry=entry, chat=chat
@@ -136,7 +136,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             self.assertTrue(getattr(followup_response, "text", ""))
 
             web_op = chat.responses.create(
-                f"{marker} Search the web for the official Python website URL and include the link.",
+                f"{marker} Search the web for python.org and reply with only the URL.",
                 model=Models.LOW,
             )
             web_response = await self.call_or_skip_rate_limit(
@@ -175,7 +175,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             if Capability.MESSAGE_EDIT in capabilities:
                 editable = [r.message for r in responses if r.message is not None]
                 self.assertGreaterEqual(len(editable), 2)
-                edit_prompt = f"{marker} Edited last turn: reply with EDITED."
+                edit_prompt = f"{marker} Reply with only: EDITED"
                 edited_last = await self.call_or_skip_rate_limit(
                     "responses.edit.last",
                     editable[-1].edit(edit_prompt).start,
@@ -220,7 +220,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 if len(editable) >= 2:
                     edited_first = await self.call_or_skip_rate_limit(
                         "responses.edit.middle",
-                        editable[0].edit(f"{marker} Edited earlier turn: reply with MIDDLE.").start,
+                        editable[0].edit(f"{marker} Reply with only: MIDDLE").start,
                         entry=entry,
                         chat=chat,
                     )
@@ -267,7 +267,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         else:
                             self.context.record_chat_id(branch_entry, branched)
                         branch_op = branched.responses.create(
-                            f"{branch_marker} Branch check: reply with BRANCH.",
+                            f"{branch_marker} Reply with only: BRANCH",
                             model=Models.LOW,
                         )
                         if pending_branch:

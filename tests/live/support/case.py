@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -23,6 +24,35 @@ _DEFAULT_ACTION_GATE = ActionGate(interval=DEFAULT_ACTION_INTERVAL, limit=DEFAUL
 _ACTION_GATE = _DEFAULT_ACTION_GATE
 _SHARED_ACTION_GATE: tuple[tuple[str, int], ActionGate] | None = None
 _FAILED_SESSION_OPENS: set[tuple[str, str]] = set()
+_SHARED_ASYNC_RUNNER: asyncio.Runner | None = None
+_SHARED_ASYNC_SESSION: tuple[Any, LiveContext] | None = None
+_SHARED_CLEANUP_REGISTERED = False
+
+
+def _close_shared_async_session() -> None:
+    global _SHARED_ASYNC_RUNNER, _SHARED_ASYNC_SESSION
+    session_pair, _SHARED_ASYNC_SESSION = _SHARED_ASYNC_SESSION, None
+    runner, _SHARED_ASYNC_RUNNER = _SHARED_ASYNC_RUNNER, None
+    if session_pair is not None and runner is not None:
+        try:
+            runner.run(session_pair[0].close_async())
+        except Exception:
+            pass
+    if runner is not None:
+        try:
+            runner.close()
+        except Exception:
+            pass
+
+
+def _get_shared_async_runner(loop_factory: Any = None) -> asyncio.Runner:
+    global _SHARED_ASYNC_RUNNER, _SHARED_CLEANUP_REGISTERED
+    if _SHARED_ASYNC_RUNNER is None:
+        _SHARED_ASYNC_RUNNER = asyncio.Runner(debug=False, loop_factory=loop_factory)
+        if not _SHARED_CLEANUP_REGISTERED:
+            atexit.register(_close_shared_async_session)
+            _SHARED_CLEANUP_REGISTERED = True
+    return _SHARED_ASYNC_RUNNER
 
 
 def _resolve_action_gate() -> ActionGate:
@@ -379,6 +409,9 @@ class LiveSession:
             lock.__exit__(None, None, None)
 
 
+_ORIGINAL_LIVE_SESSION = LiveSession
+
+
 class _LiveReportingMixin(unittest.TestCase):
     """Capture non-secret per-scenario outcomes for the live runner summary."""
 
@@ -512,8 +545,32 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
     _live_api = "async"
     recovery_only = False
+    use_shared_session = True
+
+    def _uses_shared_session(self) -> bool:
+        return (
+            self.use_shared_session
+            and not self.recovery_only
+            and os.environ.get("WEBAI_LIVE_TESTS") == "1"
+            and os.environ.get("WEBAI_LIVE_API", "async").casefold() == "async"
+            and os.environ.get("WEBAI_LIVE_SHARED_SESSION", "1") == "1"
+            and LiveSession is _ORIGINAL_LIVE_SESSION
+        )
+
+    def _setupAsyncioRunner(self) -> None:
+        if self._uses_shared_session():
+            self._asyncioRunner = _get_shared_async_runner(self.loop_factory)
+            self._owns_shared_runner = False
+            return
+        super()._setupAsyncioRunner()
+        self._owns_shared_runner = True
+
+    def _tearDownAsyncioRunner(self) -> None:
+        if getattr(self, "_owns_shared_runner", True):
+            super()._tearDownAsyncioRunner()
 
     async def asyncSetUp(self) -> None:
+        global _SHARED_ASYNC_SESSION
         if os.environ.get("WEBAI_LIVE_TESTS") != "1":
             self._live_ignore_skip = True
             self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
@@ -529,7 +586,20 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
         except unittest.SkipTest:
             self._live_skip_kind = "skipped_setup_failed"
             raise
+        if self._uses_shared_session():
+            if _SHARED_ASYNC_SESSION is None:
+                live = LiveSession("async")
+                try:
+                    context = await live.open_async()
+                except Exception:
+                    _record_session_open_failure("async")
+                    raise
+                _SHARED_ASYNC_SESSION = (live, context)
+            self.live, self.context = _SHARED_ASYNC_SESSION
+            self._owns_live_session = False
+            return
         self.live = LiveSession("async")
+        self._owns_live_session = True
         try:
             self.context = await self.live.open_async()
         except Exception:
@@ -537,7 +607,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
             raise
 
     async def asyncTearDown(self) -> None:
-        if hasattr(self, "live"):
+        if getattr(self, "_owns_live_session", True) and hasattr(self, "live"):
             await self.live.close_async()
 
     async def call_api(
