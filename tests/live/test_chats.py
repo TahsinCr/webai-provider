@@ -2,19 +2,7 @@
 
 from webaiprovider.base import Capability
 
-from .support.case import LiveAsyncTestCase, LiveSyncTestCase
-
-
-class ChatApiTests(LiveSyncTestCase):
-    def test_chat_metadata_can_be_listed_without_loading_histories(self) -> None:
-        if Capability.CHAT not in self.context.session.capabilities:
-            self.skipTest("Provider does not expose chats")
-        self.assertEqual(self.context.session.chats.list(limit=0), [])
-        chats = self.call_api(
-            "chats.list_metadata", lambda: self.context.session.chats.list(limit=2)
-        )
-        self.assertLessEqual(len(chats), 2)
-        self.assertTrue(all(chat.project is None for chat in chats))
+from .support.case import LiveAsyncTestCase
 
 
 class AsyncChatApiTests(LiveAsyncTestCase):

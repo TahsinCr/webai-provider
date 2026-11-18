@@ -27,12 +27,13 @@ def _safe_error_label(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         return "operation timeout"
     kind = type(exc).__name__
-    prefix = "ChatGPT returned HTTP "
     message = str(exc)
-    if kind == "ChatGPTError" and message.startswith(prefix):
-        status = message[len(prefix) :].split(" ", 1)[0]
-        if len(status) == 3 and status.isdecimal():
-            return f"{kind} (HTTP {status})"
+    if kind == "ChatGPTError":
+        for prefix in ("ChatGPT returned HTTP ", "ChatGPT submission returned HTTP "):
+            if message.startswith(prefix):
+                status = message[len(prefix) :].split(" ", 1)[0]
+                if len(status) == 3 and status.isascii() and status.isdecimal():
+                    return f"{kind} (HTTP {status})"
     return kind
 
 

@@ -8,12 +8,11 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from tests.live.support.actions import DEFAULT_COMBINED_RUN_LIMIT, DEFAULT_SINGLE_API_LIMIT
+from tests.live.support.actions import DEFAULT_SINGLE_API_LIMIT
 from tests.live.support.config import PROVIDERS, supports_process_credentials_lock
 from tests.live.support.errors import SafetyError
 from tests.live.support.journal import (
@@ -94,30 +93,20 @@ def _provider_cleanup_pending(provider: str) -> bool:
 
 def _matrix() -> tuple[tuple[str, str], ...] | None:
     provider = os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold()
-    api = os.environ.get("WEBAI_LIVE_API", "").casefold()
     recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
 
     if provider and provider not in PROVIDERS:
         print("WEBAI_LIVE_PROVIDER must be chatgpt, gemini, claude, or grok.", file=sys.stderr)
         return None
-    if api and api not in {"sync", "async"}:
-        print("WEBAI_LIVE_API must be sync or async.", file=sys.stderr)
-        return None
-    if recovering and (not provider or not api or not os.environ.get("WEBAI_LIVE_ACCOUNT")):
+    if recovering and (not provider or not os.environ.get("WEBAI_LIVE_ACCOUNT")):
         print(
-            "Recovery requires WEBAI_LIVE_PROVIDER, WEBAI_LIVE_ACCOUNT, and WEBAI_LIVE_API.",
+            "Recovery requires WEBAI_LIVE_PROVIDER and WEBAI_LIVE_ACCOUNT.",
             file=sys.stderr,
         )
         return None
 
-    if recovering:
-        return ((provider, api),)
-
     providers = (provider,) if provider else tuple(sorted(PROVIDERS))
-    apis = (api,) if api else ("sync", "async")
-    return tuple(
-        (current_provider, current_api) for current_provider in providers for current_api in apis
-    )
+    return tuple((current_provider, "async") for current_provider in providers)
 
 
 def _live_command(recovering: bool) -> list[str]:
@@ -190,63 +179,56 @@ def _read_phase_report(
 
 def _run_provider(
     provider: str,
-    apis: list[str],
     *,
     project_root: Path,
     runtime_dir: Path,
     recovering: bool,
     output_lock: threading.Lock,
-) -> list[_PhaseOutcome]:
-    outcomes: list[_PhaseOutcome] = []
+) -> _PhaseOutcome:
+    api = "async"
     command = _live_command(recovering)
     gate_file = runtime_dir / f"gate-{provider}.json"
-    gate_limit = DEFAULT_SINGLE_API_LIMIT if len(apis) == 1 else DEFAULT_COMBINED_RUN_LIMIT
-    for index, api in enumerate(apis):
-        if index > 0:
-            time.sleep(1)
-        with output_lock:
-            print(f"\n[{provider}] Live provider API: {provider} ({api})", flush=True)
-        report_file = runtime_dir / f"report-{provider}-{api}.json"
-        environment = os.environ.copy()
-        environment["WEBAI_LIVE_TESTS"] = "1"
-        environment["WEBAI_LIVE_PROVIDER"] = provider
-        environment["WEBAI_LIVE_API"] = api
-        environment["WEBAI_LIVE_GATE_FILE"] = str(gate_file)
-        environment["WEBAI_LIVE_GATE_LIMIT"] = str(gate_limit)
-        environment["WEBAI_LIVE_REPORT_FILE"] = str(report_file)
-        environment["PYTHONUNBUFFERED"] = "1"
-        process = subprocess.Popen(
-            command,
-            cwd=project_root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert process.stdout is not None
-        try:
-            for line in process.stdout:
-                with output_lock:
-                    sys.stdout.write(f"[{provider}] {line}")
-                    sys.stdout.flush()
-        finally:
-            process.stdout.close()
-        returncode = process.wait()
-        cleanup_pending = _provider_cleanup_pending(provider)
-        outcome = _read_phase_report(provider, api, report_file, returncode)
-        if cleanup_pending:
-            outcome = replace(outcome, cleanup_pending=True)
-        outcomes.append(outcome)
-        if cleanup_pending:
+    with output_lock:
+        print(f"\n[{provider}] Live provider API: {provider} ({api})", flush=True)
+    report_file = runtime_dir / f"report-{provider}-{api}.json"
+    environment = os.environ.copy()
+    environment["WEBAI_LIVE_TESTS"] = "1"
+    environment["WEBAI_LIVE_PROVIDER"] = provider
+    environment["WEBAI_LIVE_API"] = api
+    environment["WEBAI_LIVE_GATE_FILE"] = str(gate_file)
+    environment["WEBAI_LIVE_GATE_LIMIT"] = str(DEFAULT_SINGLE_API_LIMIT)
+    environment["WEBAI_LIVE_REPORT_FILE"] = str(report_file)
+    environment["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(
+        command,
+        cwd=project_root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    try:
+        for line in process.stdout:
             with output_lock:
-                print(
-                    f"[{provider}] A cleanup journal remains; stopping {provider} so its account can be recovered first.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            return outcomes
-    return outcomes
+                sys.stdout.write(f"[{provider}] {line}")
+                sys.stdout.flush()
+    finally:
+        process.stdout.close()
+    returncode = process.wait()
+    cleanup_pending = _provider_cleanup_pending(provider)
+    outcome = _read_phase_report(provider, api, report_file, returncode)
+    if cleanup_pending:
+        outcome = replace(outcome, cleanup_pending=True)
+    if cleanup_pending:
+        with output_lock:
+            print(
+                f"[{provider}] A cleanup journal remains; recover this account before another run.",
+                file=sys.stderr,
+                flush=True,
+            )
+    return outcome
 
 
 def main() -> int:
@@ -271,43 +253,25 @@ def main() -> int:
         )
         return 2
 
-    by_provider: dict[str, list[str]] = {}
-    for provider, api in matrix:
-        by_provider.setdefault(provider, []).append(api)
-
+    providers = [provider for provider, _ in matrix]
     output_lock = threading.Lock()
-    outcomes: list[_PhaseOutcome] = []
     with tempfile.TemporaryDirectory() as runtime_raw:
         runtime_dir = Path(runtime_raw)
-        if len(by_provider) == 1:
-            provider, apis = next(iter(by_provider.items()))
-            outcomes.extend(
-                _run_provider(
-                    provider,
-                    apis,
-                    project_root=project_root,
-                    runtime_dir=runtime_dir,
-                    recovering=recovering,
-                    output_lock=output_lock,
-                )
-            )
+        options = {
+            "project_root": project_root,
+            "runtime_dir": runtime_dir,
+            "recovering": recovering,
+            "output_lock": output_lock,
+        }
+        if len(providers) == 1:
+            outcomes = [_run_provider(providers[0], **options)]
         else:
-            workers = 1 if not supports_process_credentials_lock() else len(by_provider)
+            workers = len(providers) if supports_process_credentials_lock() else 1
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                future_map = {
-                    pool.submit(
-                        _run_provider,
-                        provider,
-                        apis,
-                        project_root=project_root,
-                        runtime_dir=runtime_dir,
-                        recovering=recovering,
-                        output_lock=output_lock,
-                    ): provider
-                    for provider, apis in by_provider.items()
-                }
-                for future in future_map:
-                    outcomes.extend(future.result())
+                futures = [
+                    pool.submit(_run_provider, provider, **options) for provider in providers
+                ]
+                outcomes = [future.result() for future in futures]
 
     outcomes.sort(key=lambda item: (item.provider, item.api))
     print("\nLive API scenario summary:", flush=True)

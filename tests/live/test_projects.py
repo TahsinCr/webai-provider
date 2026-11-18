@@ -5,66 +5,7 @@ from webaiprovider.errors import RemoteNotFound, UnsupportedOperationError
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
 from webaiprovider.resources.model.types import Models
 
-from .support.case import LiveAsyncTestCase, LiveSyncTestCase
-
-
-class ProjectApiTests(LiveSyncTestCase):
-    def test_project_metadata_and_disposable_lifecycle(self) -> None:
-        capabilities = self.context.session.capabilities
-        if Capability.PROJECTS not in capabilities:
-            self.skipTest("Provider does not expose projects")
-        projects = self.call_api(
-            "projects.list_metadata", lambda: self.context.session.projects.list(limit=50)
-        )
-        self.assertIsInstance(projects, list)
-        required = {Capability.PROJECT_CREATE, Capability.PROJECT_DELETE}
-        if not required.issubset(capabilities):
-            self.context.skip("projects.create/delete: unsupported")
-            return
-
-        marker = f"{self.context.marker}-p"
-        entry = self.context.new_remote("project", marker)
-        entry["attempted"] = True
-        self.context.save()
-        try:
-            project = self.call_api(
-                "projects.create", lambda: self.context.session.projects.create(marker)
-            )
-            self.assertTrue(project.remote_id, "Created project has no verifiable remote ID")
-            entry["remote_id"] = str(project.remote_id)
-            self.context.save()
-
-            if Capability.PROJECT_UPDATE in capabilities:
-                renamed = f"{self.context.marker}-r"
-                entry["markers"].append(renamed)
-                self.context.save()
-                self.call_api("projects.rename", lambda: project.rename(renamed))
-                self.call_api(
-                    "projects.instructions.edit",
-                    lambda: project.instruction.edit(f"Temporary live API test {marker}."),
-                )
-            else:
-                self.context.skip("projects.rename/instructions.edit: unsupported")
-
-            if Capability.RESOURCES in capabilities:
-                attachment = self.call_api(
-                    "projects.attachments.create",
-                    lambda: project.attachments.create(marker, "text", name=f"{marker}-resource"),
-                )
-                attachment_id = getattr(attachment, "id", None)
-                self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
-                attachments = self.call_api(
-                    "projects.attachments.list", lambda: project.attachments.list(limit=None)
-                )
-                self.assertIn(attachment_id, {item.id for item in attachments})
-                self.call_api(
-                    "projects.attachments.delete",
-                    lambda: project.attachments.delete(str(attachment_id)),
-                )
-            else:
-                self.context.skip("projects.attachments.create/delete: unsupported")
-        finally:
-            self.context.cleanup_entry(entry)
+from .support.case import LiveAsyncTestCase
 
 
 class AsyncProjectApiTests(LiveAsyncTestCase):

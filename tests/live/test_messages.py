@@ -8,7 +8,7 @@ from webaiprovider.errors import RemoteNotFound
 from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.model.types import Models
 
-from .support.case import LiveAsyncTestCase, LiveSyncTestCase
+from .support.case import LiveAsyncTestCase
 
 
 def _assert_streamed_turn_in_history(case, response, history) -> None:
@@ -28,59 +28,17 @@ def _assert_streamed_turn_in_history(case, response, history) -> None:
         case.assertIs(verified.timing, response.timing)
 
 
-class MessageApiTests(LiveSyncTestCase):
-    def test_temporary_message_stream_history_and_cleanup(self) -> None:
-        capabilities = self.context.session.capabilities
-        required = {Capability.CHAT, Capability.DELETE, Capability.MODELS}
-        if not required.issubset(capabilities):
-            self.skipTest("Provider cannot safely send and delete a temporary chat")
-
-        marker = f"{self.context.marker}-chat"
-        entry = self.context.new_remote("chat", marker)
-        entry["attempted"] = True
-        self.context.save()
-        try:
-            chat = self.context.session.chats.create(title=marker)
-            self.context.record_chat_id(entry, chat)
-            operation = chat.responses.create(f"{marker} Reply with exactly OK.", model=Models.LOW)
-
-            def consume_stream() -> int:
-                events = 0
-                try:
-                    for _event in operation.stream():
-                        events += 1
-                        if not entry.get("remote_id"):
-                            self.context.record_chat_id(entry, chat)
-                    return events
-                finally:
-                    self.context.record_chat_id(entry, chat)
-
-            event_count = self.call_or_skip_rate_limit(
-                "responses.create.stream", consume_stream, entry=entry, chat=chat
-            )
-            response = operation.wait()
-            self.context.record_chat_id(entry, chat)
-            self.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
-            self.assertTrue(event_count, "Message produced no stream events")
-            self.assertTrue(getattr(response, "text", ""), "Message returned no text")
-            if isinstance(response, Response):
-                self.assertIsInstance(response.timing, TimingMetrics)
-                self.assertIsInstance(response.sources, SourcesCollection)
-                self.assertIsInstance(response.artifacts, ArtifactsCollection)
-            responses = self.call_api(
-                "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
-            )
-            _assert_streamed_turn_in_history(self, response, responses)
-
-            if Capability.RENAME in capabilities:
-                renamed = f"{marker}-renamed"
-                entry["markers"].append(renamed)
-                self.context.save()
-                self.call_api("chats.rename_temporary", lambda: chat.rename(renamed))
-            else:
-                self.context.skip("chats.rename: unsupported")
-        finally:
-            self.context.cleanup_entry(entry)
+def _assert_edited_turn_in_history(case, prompt: str, history: list[Response]) -> None:
+    case.assertTrue(
+        any(
+            item.metadata.get("from_history")
+            and item.message is not None
+            and item.message.content == prompt
+            and item.text.strip()
+            for item in history
+        ),
+        "Edited prompt and its answer were not found in provider history",
+    )
 
 
 class AsyncMessageApiTests(LiveAsyncTestCase):
@@ -172,6 +130,14 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 self.assertIsInstance(response.sources, SourcesCollection)
                 self.assertIsInstance(response.artifacts, ArtifactsCollection)
 
+            followup_op = chat.responses.create(
+                f"{marker} Reply with the single word GAMMA.", model=Models.LOW
+            )
+            followup_response = await self.call_or_skip_rate_limit(
+                "responses.create.followup", followup_op.start, entry=entry, chat=chat
+            )
+            self.assertTrue(getattr(followup_response, "text", ""))
+
             web_op = chat.responses.create(
                 f"{marker} Search the web for the official Python website URL and include the link.",
                 model=Models.LOW,
@@ -185,14 +151,6 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             for source in web_response.sources:
                 if source.url:
                     self.assertTrue(source.url.startswith(("http://", "https://")))
-
-            followup_op = chat.responses.create(
-                f"{marker} Reply with the single word GAMMA.", model=Models.LOW
-            )
-            followup_response = await self.call_or_skip_rate_limit(
-                "responses.create.followup", followup_op.start, entry=entry, chat=chat
-            )
-            self.assertTrue(getattr(followup_response, "text", ""))
 
             responses = await self.call_api(
                 "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
@@ -220,9 +178,10 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             if Capability.MESSAGE_EDIT in capabilities:
                 editable = [r.message for r in responses if r.message is not None]
                 self.assertGreaterEqual(len(editable), 2)
+                edit_prompt = f"{marker} Edited last turn: reply with EDITED."
                 edited_last = await self.call_or_skip_rate_limit(
                     "responses.edit.last",
-                    editable[-1].edit(f"{marker} Edited last turn: reply with EDITED.").start,
+                    editable[-1].edit(edit_prompt).start,
                     entry=entry,
                     chat=chat,
                 )
@@ -230,14 +189,19 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 responses = await self.call_api(
                     "responses.list_after_edit_last", lambda: chat.responses.list(limit=50)
                 )
-                _assert_streamed_turn_in_history(self, edited_last, responses)
+                _assert_edited_turn_in_history(self, edit_prompt, responses)
             else:
                 self.context.skip("responses.edit: unsupported")
 
             if Capability.MESSAGE_RETRY in capabilities and len(responses) >= 2:
+                followup_id = getattr(followup_response, "remote_id", None) or followup_response.id
+                earlier = next(
+                    (item for item in responses[:-1] if item.remote_id == followup_id), None
+                )
+                self.assertIsNotNone(earlier, "Earlier plain-text turn was not found in history")
                 retried_middle = await self.call_or_skip_rate_limit(
                     "responses.retry.middle",
-                    responses[-2].retry().start,
+                    earlier.retry().start,
                     entry=entry,
                     chat=chat,
                 )

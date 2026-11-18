@@ -309,19 +309,12 @@ class LiveCredentialTests(unittest.TestCase):
 
 class ActionGateTests(unittest.TestCase):
     def test_feature_scenarios_use_standard_unittest_cases(self) -> None:
-        from tests.live.test_chats import AsyncChatApiTests, ChatApiTests
-        from tests.live.test_messages import AsyncMessageApiTests, MessageApiTests
-        from tests.live.test_models import AsyncModelApiTests, ModelApiTests
-        from tests.live.test_projects import AsyncProjectApiTests, ProjectApiTests
-        from tests.live.test_sessions import AsyncSessionApiTests, SessionApiTests
+        from tests.live.test_chats import AsyncChatApiTests
+        from tests.live.test_messages import AsyncMessageApiTests
+        from tests.live.test_models import AsyncModelApiTests
+        from tests.live.test_projects import AsyncProjectApiTests
+        from tests.live.test_sessions import AsyncSessionApiTests
 
-        synchronous = (
-            ChatApiTests,
-            MessageApiTests,
-            ModelApiTests,
-            ProjectApiTests,
-            SessionApiTests,
-        )
         asynchronous = (
             AsyncChatApiTests,
             AsyncMessageApiTests,
@@ -329,11 +322,9 @@ class ActionGateTests(unittest.TestCase):
             AsyncProjectApiTests,
             AsyncSessionApiTests,
         )
-        self.assertTrue(all(issubclass(case, unittest.TestCase) for case in synchronous))
         self.assertTrue(
             all(issubclass(case, unittest.IsolatedAsyncioTestCase) for case in asynchronous)
         )
-        self.assertTrue(all(case.__bases__ == (LiveSyncTestCase,) for case in synchronous))
         self.assertTrue(all(case.__bases__ == (LiveAsyncTestCase,) for case in asynchronous))
 
     def test_serializes_actions_and_stops_at_fixed_budget(self) -> None:
@@ -369,10 +360,10 @@ class ActionGateTests(unittest.TestCase):
             gate.call_sync(action)
 
     def test_live_api_suite_is_disabled_without_explicit_opt_in(self) -> None:
-        from tests.live.test_sessions import SessionApiTests
+        from tests.live.test_sessions import AsyncSessionApiTests
 
         with patch.dict(os.environ, {"WEBAI_LIVE_TESTS": "0"}):
-            suite = unittest.defaultTestLoader.loadTestsFromTestCase(SessionApiTests)
+            suite = unittest.defaultTestLoader.loadTestsFromTestCase(AsyncSessionApiTests)
             result = unittest.TestResult()
             suite.run(result)
         self.assertEqual(len(result.skipped), 1)
@@ -381,6 +372,23 @@ class ActionGateTests(unittest.TestCase):
 
 
 class LiveContextErrorTests(unittest.TestCase):
+    def test_edit_readback_uses_the_new_prompt_and_requires_a_remote_answer(self) -> None:
+        from tests.live.test_messages import _assert_edited_turn_in_history
+        from webaiprovider import AsyncMessage, Response
+
+        response = Response(
+            "Edited answer",
+            id="persisted-assistant:1",
+            message=AsyncMessage("Edited prompt"),
+            metadata={"from_history": True},
+        )
+        _assert_edited_turn_in_history(self, "Edited prompt", [response])
+        with self.assertRaisesRegex(AssertionError, "Edited prompt and its answer"):
+            _assert_edited_turn_in_history(self, "Original prompt", [response])
+        response.metadata.clear()
+        with self.assertRaisesRegex(AssertionError, "Edited prompt and its answer"):
+            _assert_edited_turn_in_history(self, "Edited prompt", [response])
+
     def test_chat_id_is_persisted_only_when_it_changes(self) -> None:
         context = LiveContext.__new__(LiveContext)
         context.save = Mock()
@@ -421,6 +429,10 @@ class LiveContextErrorTests(unittest.TestCase):
         from webaiprovider.providers.chatgpt.errors import ChatGPTError
 
         error = ChatGPTError("ChatGPT returned HTTP 400 for PATCH /backend-api/projects/private-id")
+        self.assertEqual(
+            _safe_error_label(ChatGPTError("ChatGPT submission returned HTTP 422")),
+            "ChatGPTError (HTTP 422)",
+        )
         summary = _safe_error_label(error)
 
         self.assertEqual(summary, "ChatGPTError (HTTP 400)")

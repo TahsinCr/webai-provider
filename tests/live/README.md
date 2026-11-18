@@ -1,8 +1,8 @@
 # Live provider API tests
 
-This package runs bounded integration checks against real provider accounts. It is separate from the deterministic offline suite, and importing it never sends requests. `run_live_tests.py` runs the offline suite first, then tests the four providers through both synchronous and asynchronous APIs unless `WEBAI_LIVE_PROVIDER` or `WEBAI_LIVE_API` narrows the matrix.
+This package runs bounded integration checks against real provider accounts. It is separate from the deterministic offline suite, and importing it never sends requests. `run_live_tests.py` runs the offline suite first, then tests the four providers through the asynchronous API. The synchronous API is covered by the offline suite. Limit the live run with `WEBAI_LIVE_PROVIDER`.
 
-Each feature file contains concrete `unittest.TestCase` and `unittest.IsolatedAsyncioTestCase` tests for that API area: sessions, models, chats, projects, or messages. `tests/live/support/case.py` centralizes account selection, guarded session setup, pacing, and cleanup. Run the suite through `run_live_tests.py`; it opens and closes a session for each feature case so async sessions stay on their test's event loop.
+Each feature file contains concrete `unittest.IsolatedAsyncioTestCase` tests for that API area: sessions, models, chats, projects, or messages. `tests/live/support/case.py` centralizes account selection, guarded session setup, pacing, and cleanup. Run the suite through `run_live_tests.py`; it opens and closes a session for each feature case so async sessions stay on their test's event loop.
 
 ## Account setup
 
@@ -38,24 +38,24 @@ python run_tests.py
 python run_live_tests.py
 ```
 
-The first script excludes `tests/live` entirely. The second stops if any offline test fails. It runs the sync and async phases in sequence for each provider. Different providers can run concurrently where the credential store supports process locking. Limit the run with `WEBAI_LIVE_PROVIDER` and `WEBAI_LIVE_API`:
+The first script excludes `tests/live` entirely. The second stops if any offline test fails. It runs one async phase per provider. Different providers can run concurrently where the credential store supports process locking. Limit the run with `WEBAI_LIVE_PROVIDER`:
 
 ```sh
-WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_API=async python run_live_tests.py
+WEBAI_LIVE_PROVIDER=chatgpt python run_live_tests.py
 ```
 
 `WEBAI_LIVE_ACCOUNT` selects the same local alias for each selected provider. If a provider has multiple saved accounts, set the alias; the suite will not guess. Without that setting, one configured account is selected automatically, or the default browser is imported when none exists.
 
-## Run one provider and API style directly
+## Run one provider directly
 
-From the repository root, explicitly select one provider account and API style. Discovery still runs each feature as its own test case:
+From the repository root, explicitly select one provider account. Discovery still runs each feature as its own test case:
 
 ```sh
-WEBAI_LIVE_TESTS=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal WEBAI_LIVE_API=async \
+WEBAI_LIVE_TESTS=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal \
   python -m unittest discover -s tests/live -t . -p 'test_*.py' -f -v
 ```
 
-Use `WEBAI_LIVE_API=sync` to test the synchronous API. The test base class skips the other API style, and `-f` stops on the first failure to limit further provider calls.
+`-f` stops on the first failure to limit further provider calls.
 
 ## Coverage and limits
 
@@ -67,14 +67,14 @@ Use `WEBAI_LIVE_API=sync` to test the synchronous API. The test base class skips
 
 The suite uses disposable data and the account's advertised capabilities. Raw transport endpoints, arbitrary downloads, destructive account operations, and provider-specific combinations outside these scenarios have deterministic offline coverage where applicable. A model that returns no sources leaves source coverage partial.
 
-The gate keeps a one-second cooldown between API actions on the same account. It caps a single API phase at 64 actions and a combined run at 120. Async actions time out after 300 seconds. Sync actions use provider transport timeouts. Providers may issue multiple requests within an API action. The harness only retries setup once for a typed authentication error on the default-browser account.
+The gate keeps a one-second cooldown between API actions on the same account. It caps each provider at 64 actions. Actions time out after 300 seconds. Providers may issue multiple requests within an API action. The harness only retries setup once for a typed authentication error on the default-browser account.
 
 `ACTION OK` confirms the API call returned. Its duration includes gate wait time. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. The report contains no prompt, response, credential, or remote ID values.
 
 Before creating a remote test object, the suite writes a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
 
 ```sh
-WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal WEBAI_LIVE_API=async \
+WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal \
   python run_live_tests.py
 ```
 

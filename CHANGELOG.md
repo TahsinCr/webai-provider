@@ -22,7 +22,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
 - Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
 - Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
-- Run offline and live API tests separately. The live runner exercises both blocking and async APIs by default, paces account requests, and tracks cleanup and rate-limit skips separately from failures.
+- Run offline and live API tests separately. The live runner exercises the shared async provider implementation once per account. Blocking API coverage runs offline. The live runner paces account requests and reports cleanup and rate-limit skips separately from failures.
 
 ### Added
 
@@ -38,7 +38,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Verify sent and edited responses by remote history identity in the live suite. Report partial coverage separately and avoid repeat model setup and account-wide searches during project moves.
+- Verify sent responses by remote history identity and edits by the revised prompt and its persisted answer in the live suite. Report partial coverage separately and avoid repeat model setup and account-wide searches during project moves.
 
 - Cancel and drain the sibling listing when either top-level chat or project listing fails during `include_projects=True` queries.
 - Serialize sends within a conversation and coordinate project mutations. Apply only changed project fields and confirm incomplete server replies through readback without replaying the mutation.

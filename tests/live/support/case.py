@@ -560,12 +560,6 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
             self._skip_on_rate_limit(label, exc, entry, chat)
 
 
-class LiveSyncRecoveryTestCase(LiveSyncTestCase):
-    """Recovery-only live test base for the synchronous API."""
-
-    recovery_only = True
-
-
 class LiveAsyncRecoveryTestCase(LiveAsyncTestCase):
     """Recovery-only live test base for the asynchronous API."""
 

@@ -88,18 +88,16 @@ class TestRunnerTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("tests.test_") for item in ids))
         self.assertFalse(any(item.startswith("tests.live.") for item in ids))
 
-    def test_default_live_matrix_covers_each_provider_with_sync_and_async_apis(self) -> None:
+    def test_default_live_matrix_covers_each_provider_with_async_api(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 run_live_tests._matrix(),
-                tuple(
-                    (provider, api) for provider in sorted(PROVIDERS) for api in ("sync", "async")
-                ),
+                tuple((provider, "async") for provider in sorted(PROVIDERS)),
             )
 
     def test_live_runner_runs_offline_suite_before_parallel_provider_matrix(self) -> None:
         result = CompletedProcess([], 0)
-        popen_cls = _fake_popen_factory([0] * (len(PROVIDERS) * 2))
+        popen_cls = _fake_popen_factory([0] * (len(PROVIDERS)))
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {}, clear=True),
@@ -107,14 +105,13 @@ class TestRunnerTests(unittest.TestCase):
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result) as run,
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-            patch("run_live_tests.time.sleep"),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(run_live_tests.main(), 0)
 
         self.assertEqual(run.call_count, 1)
         self.assertTrue(run.call_args.args[0][1].endswith("run_tests.py"))
-        self.assertEqual(len(popen_cls.calls), len(PROVIDERS) * 2)
+        self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
         first_call = popen_cls.calls[0]
         self.assertEqual(first_call["args"][0][2:6], ["unittest", "discover", "-s", "tests/live"])
         self.assertEqual(first_call["args"][0][-3:], ["-p", "test_*.py", "-v"])
@@ -128,7 +125,7 @@ class TestRunnerTests(unittest.TestCase):
         }
         self.assertEqual(
             seen_pairs,
-            {(provider, api) for provider in PROVIDERS for api in ("sync", "async")},
+            {(provider, "async") for provider in PROVIDERS},
         )
         gate_files_by_provider = {
             p: {
@@ -139,11 +136,11 @@ class TestRunnerTests(unittest.TestCase):
             for p in PROVIDERS
         }
         for p, paths in gate_files_by_provider.items():
-            self.assertEqual(len(paths), 1, f"sync and async for {p} must share one gate state")
+            self.assertEqual(len(paths), 1, f"{p} must have one gate state")
 
     def test_live_runner_continues_api_matrix_after_failures(self) -> None:
         result = CompletedProcess([], 0)
-        popen_cls = _fake_popen_factory([1] + [0] * (len(PROVIDERS) * 2 - 1))
+        popen_cls = _fake_popen_factory([1] + [0] * (len(PROVIDERS) - 1))
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {}, clear=True),
@@ -151,13 +148,12 @@ class TestRunnerTests(unittest.TestCase):
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result),
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-            patch("run_live_tests.time.sleep"),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
         ):
             self.assertEqual(run_live_tests.main(), 1)
 
-        self.assertEqual(len(popen_cls.calls), len(PROVIDERS) * 2)
+        self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
         self.assertNotIn("-f", popen_cls.calls[0]["args"][0])
         seen_pairs = {
             (
@@ -168,25 +164,24 @@ class TestRunnerTests(unittest.TestCase):
         }
         self.assertEqual(
             seen_pairs,
-            {(provider, api) for provider in PROVIDERS for api in ("sync", "async")},
+            {(provider, "async") for provider in PROVIDERS},
         )
 
-    def test_live_matrix_can_be_narrowed_to_one_provider_and_api(self) -> None:
+    def test_live_matrix_can_be_narrowed_to_one_provider(self) -> None:
         with patch.dict(
             os.environ,
-            {"WEBAI_LIVE_PROVIDER": "GROK", "WEBAI_LIVE_API": "SYNC"},
+            {"WEBAI_LIVE_PROVIDER": "GROK"},
             clear=True,
         ):
-            self.assertEqual(run_live_tests._matrix(), (("grok", "sync"),))
+            self.assertEqual(run_live_tests._matrix(), (("grok", "async"),))
 
-    def test_recovery_matrix_requires_and_uses_one_explicit_api(self) -> None:
+    def test_recovery_matrix_requires_an_explicit_account(self) -> None:
         with patch.dict(
             os.environ,
             {
                 "WEBAI_LIVE_RECOVER": "1",
                 "WEBAI_LIVE_PROVIDER": "gemini",
                 "WEBAI_LIVE_ACCOUNT": "default-browser",
-                "WEBAI_LIVE_API": "async",
             },
             clear=True,
         ):
@@ -200,7 +195,6 @@ class TestRunnerTests(unittest.TestCase):
                 patch.dict(os.environ, {}, clear=True),
                 patch("run_live_tests.CLEANUP_FILE", cleanup_file),
                 patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)) as run,
-                patch("run_live_tests.time.sleep"),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 self.assertEqual(run_live_tests.main(), 2)
@@ -232,7 +226,6 @@ class TestRunnerTests(unittest.TestCase):
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result),
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-            patch("run_live_tests.time.sleep"),
             contextlib.redirect_stdout(stdout),
         ):
             code = run_live_tests.main()
@@ -270,7 +263,6 @@ class TestRunnerTests(unittest.TestCase):
                     patch("run_live_tests.supports_process_credentials_lock", return_value=True),
                     patch("run_live_tests.subprocess.run", return_value=result),
                     patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-                    patch("run_live_tests.time.sleep"),
                     contextlib.redirect_stdout(stdout),
                     contextlib.redirect_stderr(io.StringIO()),
                 ):
@@ -281,7 +273,7 @@ class TestRunnerTests(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor as RealExecutor
 
         result = CompletedProcess([], 0)
-        popen_cls = _fake_popen_factory([0] * (len(PROVIDERS) * 2))
+        popen_cls = _fake_popen_factory([0] * (len(PROVIDERS)))
         recorded_workers: list[int] = []
 
         def spy_executor(*, max_workers: int):
@@ -296,7 +288,6 @@ class TestRunnerTests(unittest.TestCase):
             patch("run_live_tests.ThreadPoolExecutor", side_effect=spy_executor),
             patch("run_live_tests.subprocess.run", return_value=result),
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
-            patch("run_live_tests.time.sleep"),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(run_live_tests.main(), 0)
