@@ -92,7 +92,12 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         session = self.provider
         async with session.runtime.activity():
             session._require_provider()
-            limit_arg = page_limit or self._default_page_size
+            if include_projects or page_limit is None or page_limit >= 25:
+                limit_arg = page_limit or self._default_page_size
+            elif cursor is None:
+                limit_arg = min(self._default_page_size, 25)
+            else:
+                limit_arg = self._default_page_size
             raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
             page = _require_conversation_page(raw_page)
             chats = tuple(
@@ -166,7 +171,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
                 return await collect_normal(limit=validated)
 
         async def project_chats():
-            projects = await session.projects._collect_items(limit=None)
+            project_limit = None if validated is None else max(validated, _PROJECT_CHAT_CONCURRENCY)
+            projects = await session.projects._collect_items(limit=project_limit)
             return await self._fetch_project_chats(projects, slots, per_project_limit=validated)
 
         async with session.runtime.activity():

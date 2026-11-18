@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass, replace
 
+from ...core.json import json_loads
 from ...errors import ProviderError
 from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError
@@ -23,7 +24,7 @@ def rpc_parts(text, rpc):
         if not line.startswith("[["):
             continue
         try:
-            rows = json.loads(line)
+            rows = json_loads(line)
         except (ValueError, TypeError) as error:
             raise GeminiCompatibilityError("Gemini RPC response format has changed") from error
         for row in rows:
@@ -31,7 +32,7 @@ def rpc_parts(text, rpc):
                 body = nested(row, 2)
                 if body is not None:
                     try:
-                        yield json.loads(body)
+                        yield json_loads(body)
                     except (ValueError, TypeError) as error:
                         raise GeminiCompatibilityError(
                             "Gemini RPC response format has changed"
@@ -69,7 +70,7 @@ class NotebookRPC:
             if not line.startswith('[["wrb.fr"'):
                 continue
             try:
-                rows = json.loads(line)
+                rows = json_loads(line)
             except (ValueError, TypeError) as error:
                 raise GeminiCompatibilityError("Gemini notebook RPC response changed") from error
             if not isinstance(rows, list):
@@ -83,7 +84,7 @@ class NotebookRPC:
                             return []
                         raise ProviderError("Gemini denied permission or the RPC contract changed.")
                     try:
-                        parts.append(json.loads(row[2]))
+                        parts.append(json_loads(row[2]))
                     except (ValueError, TypeError) as error:
                         raise GeminiCompatibilityError(
                             "Gemini notebook RPC response changed"

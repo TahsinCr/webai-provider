@@ -21,6 +21,12 @@ THINKING_VALUES = {
     "THINKING_LEVEL_DEEP_THINK": 3,
     "THINKING_LEVEL_MEDIUM": 4,
 }
+_EFFORT_ORDER = {
+    "standard": 0,
+    "medium": 1,
+    "extended": 2,
+    "deep_think": 3,
+}
 _LEADING_VERSION_RE = re.compile(r"^\d+(?:\.\d+)?\s+")
 
 
@@ -144,6 +150,7 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
             if identifier not in values:
                 efforts.append(EffortOption(identifier, identifier))
                 values[identifier] = THINKING_VALUES[level]
+        efforts.sort(key=lambda option: _EFFORT_ORDER.get(option.id, 99))
         implicit = item.get("implicitThinkingLevel") or ""
         default = implicit.removeprefix("THINKING_LEVEL_").lower()
         if default not in values:

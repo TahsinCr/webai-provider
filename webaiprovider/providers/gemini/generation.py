@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from ...core import gather_bounded
+from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...resources.message.attachment import GEMINI_ATTACHMENTS
 from ...resources.message.types import MessageAction
@@ -257,7 +258,7 @@ async def generate(
                 if not isinstance(payload, str):
                     continue
                 try:
-                    body = json.loads(payload)
+                    body = json_loads(payload)
                 except ValueError as error:
                     raise GeminiCompatibilityError(
                         "Gemini response body format has changed"

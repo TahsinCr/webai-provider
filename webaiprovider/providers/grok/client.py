@@ -2,13 +2,13 @@
 
 import asyncio
 import base64
-import json
 import mimetypes
 import os
 import stat
 from pathlib import Path
 from urllib.parse import quote
 
+from ...core.json import json_loads
 from ...errors import AccountPaused, ProviderError
 from ...resources.message.attachment import GROK_ATTACHMENTS, Attachment
 from ...resources.project.types import (
@@ -191,7 +191,7 @@ class GrokClient:
 
                 def parse(raw):
                     try:
-                        event = json.loads(raw)
+                        event = json_loads(raw)
                     except ValueError:
                         raise ProviderError("Grok stream response format has changed") from None
                     if not isinstance(event, dict):

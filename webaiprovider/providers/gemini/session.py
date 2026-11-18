@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ...accounts import read_session, read_session_async, save_session_async
 from ...accounts.credentials import CredentialStore
+from ...core.json import json_dumps, json_loads
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
@@ -199,10 +200,10 @@ class GeminiSession:
             params=params,
             headers={
                 **HEADERS,
-                "x-goog-ext-525001261-jspb": json.dumps(selector),
+                "x-goog-ext-525001261-jspb": json_dumps(selector),
                 "x-goog-ext-73010989-jspb": "[0]",
             },
-            data={"at": self.token, "f.req": json.dumps([[p.serialize() for p in payloads]])},
+            data={"at": self.token, "f.req": json_dumps([[p.serialize() for p in payloads]])},
             allow_redirects=False,
         )
         AsyncTransport.check(response)
@@ -249,7 +250,7 @@ class GeminiSession:
             "Content-Type": "application/json",
             "X-Framework-XSRF-Token": self.token,
         }
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        body = json_dumps(payload)
         request_options = {"headers": headers, "data": body, "allow_redirects": False}
         response = await self.request("POST", endpoint, **request_options)
         refreshed_token = False
@@ -327,7 +328,7 @@ class GeminiSession:
         if payload.startswith(")]}'"):
             payload = payload[4:].lstrip("\r\n")
         try:
-            results = json.loads(payload)
+            results = json_loads(payload)
         except (ValueError, TypeError) as error:
             raise ProviderError("Gemini web query response could not be parsed") from error
         if not isinstance(results, list):

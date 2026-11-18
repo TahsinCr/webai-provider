@@ -1,7 +1,6 @@
 """Account-scoped Claude HTTPS operations and completion streams."""
 
 import asyncio
-import json
 import mimetypes
 import os
 import stat
@@ -12,8 +11,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 from ...accounts import read_session_async
-from ...base import confirm_deleted
 from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
+from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS, Attachment
@@ -309,8 +308,7 @@ class ClaudeClient:
         path = base + "/chat_conversations/" + cid
         if mode == "delete_chat":
             self._continuations.remove(cid)
-            await call("DELETE", path)
-            return await confirm_deleted(lambda: call("GET", path))
+            return await call("DELETE", path)
         if mode == "rename_chat":
             updated = await call("PUT", path, json={"name": v["title"]})
             if (
@@ -443,7 +441,7 @@ class ClaudeClient:
         if not chunks:
             return []
         try:
-            inputs = json.loads("".join(chunks))
+            inputs = json_loads("".join(chunks))
         except ValueError:
             inputs = {}
         if not isinstance(inputs, dict):
@@ -537,7 +535,7 @@ class ClaudeClient:
                     if raw == "[DONE]":
                         continue
                     try:
-                        event = json.loads(raw)
+                        event = json_loads(raw)
                     except ValueError as error:
                         raise ClaudeCompatibilityError(
                             "Claude returned an invalid SSE event"

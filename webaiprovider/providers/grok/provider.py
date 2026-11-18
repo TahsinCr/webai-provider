@@ -268,8 +268,11 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
         self._continuations.put(conversation_id, response_id)
 
     async def _prepare_session(self) -> None:
-        await self.client.authenticate()
-        self._prime_models(await self._load_catalog())
+        _, catalog = await asyncio.gather(
+            self.client.authenticate(),
+            self._load_catalog(),
+        )
+        self._prime_models(catalog)
 
     async def _close_session(self) -> None:
         async with self._gate:
@@ -427,7 +430,7 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
             updated_project = updated.project.id if updated.project is not None else None
             if updated_project == project_id:
                 return
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         raise ProviderError(
             "Grok conversation project membership could not be confirmed by the server"
         )
