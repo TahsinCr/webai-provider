@@ -7,6 +7,7 @@ import os
 import stat
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from ...errors import AccountPaused, ProviderError
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS, Attachment
 from ...resources.message.types import MessageAction, target_message
 from ...resources.project.types import (
+    ProjectData,
     ProjectOptions,
     source_file,
 )
@@ -698,7 +700,20 @@ class ClaudeProjectEditor:
             fields = {"name": v["name"]} if "name" in v else {}
             if "instructions" in v:
                 fields["prompt_template"] = v["instructions"]
-            return await call("PUT", path, json=fields)
+            result = await call("PUT", path, json=fields)
+            current = v.get("current")
+            if (
+                isinstance(current, ProjectData)
+                and isinstance(result, dict)
+                and result.get("name", current.name) == v.get("name", current.name)
+                and result.get("prompt_template", current.instructions or "")
+                == v.get("instructions", current.instructions or "")
+            ):
+                return replace(
+                    current,
+                    **{k: v[k] for k in ("name", "instructions") if k in v},
+                )
+            return result
         if operation == "add_source":
             if v["kind"] == "text":
                 result = await call(
@@ -741,31 +756,54 @@ class ClaudeProjectEditor:
                 if resource is not None and isinstance(resource.metadata, dict)
                 else None
             )
+            result = None
+            handled = False
             if isinstance(native, dict):
                 native_id = native.get("uuid") or native.get("id")
                 file_uuid = native.get("file_uuid")
                 if file_uuid and (file_uuid == v["resource_id"] or native_id == v["resource_id"]):
-                    return await call(
+                    result = await call(
                         "POST", path + "/files/delete_many", json={"file_uuids": [file_uuid]}
                     )
-                if native_id == v["resource_id"] and "file_uuid" not in native:
-                    return await call("DELETE", path + "/docs/" + rid)
-            current = await self.client.request("project", project_id=project_id)
-            doc = next(
-                (x for x in current["docs"] if (x.get("uuid") or x.get("id")) == v["resource_id"]),
-                None,
-            )
-            if doc is not None:
-                return await call("DELETE", path + "/docs/" + rid)
-            file = next(
-                (x for x in current["files"] if (x.get("uuid") or x.get("id")) == v["resource_id"]),
-                None,
-            )
-            if file is None or not file.get("file_uuid"):
-                raise ValueError(
-                    "Resource does not belong to this project or its file ID is missing"
+                    handled = True
+                elif native_id == v["resource_id"] and "file_uuid" not in native:
+                    result = await call("DELETE", path + "/docs/" + rid)
+                    handled = True
+            if not handled:
+                current_remote = await self.client.request("project", project_id=project_id)
+                doc = next(
+                    (
+                        x
+                        for x in current_remote["docs"]
+                        if (x.get("uuid") or x.get("id")) == v["resource_id"]
+                    ),
+                    None,
                 )
-            return await call(
-                "POST", path + "/files/delete_many", json={"file_uuids": [file["file_uuid"]]}
-            )
+                if doc is not None:
+                    result = await call("DELETE", path + "/docs/" + rid)
+                else:
+                    file = next(
+                        (
+                            x
+                            for x in current_remote["files"]
+                            if (x.get("uuid") or x.get("id")) == v["resource_id"]
+                        ),
+                        None,
+                    )
+                    if file is None or not file.get("file_uuid"):
+                        raise ValueError(
+                            "Resource does not belong to this project or its file ID is missing"
+                        )
+                    result = await call(
+                        "POST",
+                        path + "/files/delete_many",
+                        json={"file_uuids": [file["file_uuid"]]},
+                    )
+            current = v.get("current")
+            if isinstance(current, ProjectData):
+                return replace(
+                    current,
+                    resources=tuple(r for r in current.resources if r.id != v["resource_id"]),
+                )
+            return result
         raise ValueError("Unknown project operation")

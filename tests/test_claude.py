@@ -680,6 +680,52 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await provider.close()
 
+    async def test_project_editor_update_and_remove_source_return_project_data(self):
+        from webaiprovider.providers.claude.client import ClaudeProjectEditor
+        from webaiprovider.resources.message.attachment import Attachment
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        current = NativeProject(
+            PROJECT,
+            "Old Name",
+            "Keep brief",
+            resources=(
+                Attachment(
+                    "d-1",
+                    "note.txt",
+                    metadata={"native": {"uuid": "d-1"}},
+                ),
+            ),
+        )
+        transport = SimpleNamespace(
+            base=AsyncMock(return_value="/api/organizations/org"),
+            request=AsyncMock(),
+            http=SimpleNamespace(
+                request=AsyncMock(
+                    side_effect=[
+                        {"name": "New Name", "prompt_template": "Keep brief"},
+                        {},
+                    ]
+                )
+            ),
+        )
+        editor = ClaudeProjectEditor(transport)
+
+        updated = await editor.write("update", PROJECT, current=current, name="New Name")
+        self.assertIsInstance(updated, NativeProject)
+        self.assertEqual(updated.name, "New Name")
+        self.assertEqual(updated.instructions, "Keep brief")
+
+        removed = await editor.write(
+            "remove_source",
+            PROJECT,
+            current=updated,
+            resource_id="d-1",
+            resource=updated.resources[0],
+        )
+        self.assertIsInstance(removed, NativeProject)
+        self.assertEqual(removed.resources, ())
+
     async def test_continuation_cache_normalizes_sources_files_and_handles_invalidations(self):
         from webaiprovider.providers.claude.errors import (
             ClaudeRequestNotSent,
