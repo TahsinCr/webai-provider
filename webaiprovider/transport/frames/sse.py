@@ -130,3 +130,43 @@ class SSEFrameDecoder:
                 yield frame
         for frame in self.feed(b"", final=True):
             yield frame
+
+
+async def aiter_bounded_lines(
+    chunks: AsyncIterable[bytes],
+    *,
+    max_line_bytes: int = 1_048_576,
+    max_stream_bytes: int = 64 * 1024 * 1024,
+    error_label: str = "Stream",
+) -> AsyncIterator[str]:
+    """Decode UTF-8 lines from async byte chunks within strict line and total byte caps."""
+    if max_line_bytes <= 0 or max_stream_bytes <= 0:
+        raise ValueError("Stream line and byte limits must be positive")
+    buffer = bytearray()
+    total = 0
+    async for chunk in chunks:
+        total += len(chunk)
+        if total > max_stream_bytes:
+            raise FrameDecodeError(f"{error_label} response exceeds the size limit")
+        start = 0
+        while (end := chunk.find(b"\n", start)) >= 0:
+            if len(buffer) + end - start > max_line_bytes:
+                raise FrameDecodeError(f"{error_label} response exceeds the size limit")
+            buffer.extend(chunk[start:end])
+            line = bytes(buffer)
+            buffer.clear()
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            try:
+                yield line.decode("utf-8")
+            except UnicodeDecodeError:
+                raise FrameDecodeError(f"{error_label} response format has changed") from None
+            start = end + 1
+        if len(buffer) + len(chunk) - start > max_line_bytes:
+            raise FrameDecodeError(f"{error_label} response exceeds the size limit")
+        buffer.extend(chunk[start:])
+    if buffer:
+        try:
+            yield bytes(buffer).decode("utf-8")
+        except UnicodeDecodeError:
+            raise FrameDecodeError(f"{error_label} response format has changed") from None

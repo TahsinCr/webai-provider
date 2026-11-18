@@ -21,7 +21,7 @@ from webaiprovider.providers.gemini.session import GeminiSession
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import EffortOption, Model
-from webaiprovider.transport import AsyncRequestTransport
+from webaiprovider.transport import AsyncHTTPTransport
 
 
 # Session, catalog, streaming, and optimization contracts
@@ -449,7 +449,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             session = SimpleNamespace(http=http, push_id="push")
-            session.upload_transport = AsyncRequestTransport(
+            session.upload_transport = AsyncHTTPTransport(
                 "https://content-push.googleapis.com", client_getter=lambda: session.http
             )
             with patch(
@@ -611,7 +611,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             persist=AsyncMock(),
         )
 
-        session.transport = AsyncRequestTransport(
+        session.transport = AsyncHTTPTransport(
             "https://gemini.google.com", client_getter=lambda: session.http
         )
         return session
@@ -732,7 +732,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         port = server.sockets[0].getsockname()[1]
         session = self.session(None)
         session.http = AsyncSession(trust_env=False)
-        session.transport = AsyncRequestTransport(
+        session.transport = AsyncHTTPTransport(
             f"http://127.0.0.1:{port}", client_getter=lambda: session.http
         )
         try:

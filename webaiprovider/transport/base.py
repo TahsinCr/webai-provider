@@ -88,7 +88,7 @@ def _is_positive_finite(value: object) -> bool:
 @dataclass(frozen=True)
 class TransportConfig:
     timeout: float | tuple[float, float] = (10.0, 50.0)
-    max_response_bytes: int = 16 * 1024 * 1024
+    max_response_bytes: int = 64 * 1024 * 1024
     max_stream_bytes: int | None = None
 
     def __post_init__(self):

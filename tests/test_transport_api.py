@@ -122,6 +122,10 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
     def test_http_transport_defaults_to_curl_session_and_validates_config(self):
         from curl_cffi.requests import Session as CurlSession
 
+        import webaiprovider.transport as transport_pkg
+
+        self.assertFalse(hasattr(transport_pkg, "AsyncRequestTransport"))
+        self.assertEqual(TransportConfig().max_response_bytes, 64 * 1024 * 1024)
         with self.assertRaises(ValueError):
             TransportConfig(timeout=(0.0, 5.0))
         with self.assertRaises(ValueError):

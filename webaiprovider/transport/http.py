@@ -468,7 +468,12 @@ class AsyncHTTPTransport(AsyncTransport):
     async def _send(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
         await self._prepare_curl(options, client=client)
-        return await client.request(method, url, **{self._redirect_option: False}, **options)
+        sender = getattr(client, "request", None)
+        if callable(sender):
+            return await sender(method, url, **{self._redirect_option: False}, **options)
+        return await getattr(client, method.lower())(
+            url, **{self._redirect_option: False}, **options
+        )
 
     async def _acquire_client_async(self):
         return self._acquire_client()
@@ -480,10 +485,8 @@ class AsyncHTTPTransport(AsyncTransport):
         try:
             for attempt in (0, 1):
                 client = await self._acquire_client_async()
-                streaming = (
-                    callable(getattr(client, "stream", None))
-                    or _is_curl_async_session(client)
-                    or type(self)._open_stream is not AsyncHTTPTransport._open_stream
+                streaming = callable(getattr(client, "stream", None)) or _is_curl_async_session(
+                    client
                 )
                 if not streaming:
                     try:
@@ -531,7 +534,7 @@ class AsyncHTTPTransport(AsyncTransport):
     async def _open_stream(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
         await self._prepare_curl(options, client=client)
-        if _is_curl_async_session(client):
+        if _is_curl_async_session(client) or not callable(getattr(client, "stream", None)):
             async with _open_curl_stream(client, method, url, options) as response:
                 yield response
             return
@@ -594,22 +597,6 @@ class AsyncHTTPTransport(AsyncTransport):
                 retired.append(client)
             for item in retired:
                 await getattr(item, self._close_method)()
-
-
-class AsyncRequestTransport(AsyncHTTPTransport):
-    """Clients that open streaming responses with request(stream=True)."""
-
-    async def _send(self, method, url, options, *, client=None):
-        client = client if client is not None else self._connect()
-        await self._prepare_curl(options, client=client)
-        return await getattr(client, method.lower())(url, allow_redirects=False, **options)
-
-    @asynccontextmanager
-    async def _open_stream(self, method, url, options, *, client=None):
-        client = client if client is not None else self._connect()
-        await self._prepare_curl(options, client=client)
-        async with _open_curl_stream(client, method, url, options) as response:
-            yield response
 
 
 class HTTPTransport(Transport):
