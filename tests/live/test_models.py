@@ -42,7 +42,12 @@ class AsyncModelApiTests(LiveAsyncTestCase):
             try:
                 if entry is not None:
                     self.context.record_chat_id(entry, chat)
-                op = chat.responses.create("Reply with OK.", model=model)
+                efforts = model.efforts.list()
+                op = chat.responses.create(
+                    "Reply with OK.",
+                    model=model,
+                    **({"effort": efforts[0]} if efforts else {}),
+                )
                 response = await self.call_or_skip_rate_limit(
                     f"models.send[{model.id}]", op.start, entry=entry, chat=chat
                 )

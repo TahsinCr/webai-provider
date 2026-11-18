@@ -12,12 +12,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, TypeVar
 
+from webaiprovider.errors import RateLimited
+
 from .config import lock_file_guard
 from .errors import SafetyError
 
 T = TypeVar("T")
 
-DEFAULT_ACTION_INTERVAL = 0.35
+DEFAULT_ACTION_INTERVAL = 0.15
 DEFAULT_SINGLE_API_LIMIT = 96
 DEFAULT_COMBINED_RUN_LIMIT = 180
 
@@ -38,6 +40,7 @@ class ActionGate:
         self.limit = limit
         self._local_calls = 0
         self._next_allowed = 0.0
+        self._adaptive_penalty = 0.0
         self._state_file = state_file
         self._sync_lock = threading.Lock()
         self._async_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
@@ -99,8 +102,26 @@ class ActionGate:
                 lock = self._async_locks[loop] = asyncio.Lock()
             return lock
 
+    def _effective_interval(self) -> float:
+        if self._adaptive_penalty > 0:
+            return self.interval + self._adaptive_penalty
+        return self.interval
+
+    def _record_outcome(self, *, rate_limited: RateLimited | None = None) -> None:
+        if rate_limited is not None:
+            retry = rate_limited.retry_after
+            capped = (
+                min(float(retry), 5.0) if isinstance(retry, (int, float)) and retry > 0 else 1.5
+            )
+            self._adaptive_penalty = max(self.interval, capped)
+        elif self._adaptive_penalty > 0:
+            self._adaptive_penalty = (
+                0.0 if self._adaptive_penalty < 0.05 else self._adaptive_penalty * 0.5
+            )
+
     def _reserve_slot(self) -> float:
         now_mono = time.monotonic()
+        interval = self._effective_interval()
         if self._state_file is None:
             if self._local_calls >= self.limit:
                 raise SafetyError("The live run reached its fixed API-action limit")
@@ -120,21 +141,22 @@ class ActionGate:
                 0.0,
             )
             state["calls"] += 1
-            state["next_allowed_epoch"] = now_epoch + delay + self.interval
+            state["next_allowed_epoch"] = now_epoch + delay + interval
             self._write_shared_state(state)
             self._local_calls += 1
             return delay
 
     def _complete_slot(self) -> None:
         now_mono = time.monotonic()
-        self._next_allowed = now_mono + self.interval
+        interval = self._effective_interval()
+        self._next_allowed = now_mono + interval
         if self._state_file is not None:
             gate_lock = self._state_file.with_name(f".{self._state_file.name}.lock")
             with lock_file_guard(gate_lock):
                 state = self._read_shared_state()
                 state["next_allowed_epoch"] = max(
                     float(state["next_allowed_epoch"]),
-                    time.time() + self.interval,
+                    time.time() + interval,
                 )
                 self._write_shared_state(state)
 
@@ -149,7 +171,13 @@ class ActionGate:
         with self._sync_lock:
             self._start()
             try:
-                return action()
+                result = action()
+            except RateLimited as exc:
+                self._record_outcome(rate_limited=exc)
+                raise
+            else:
+                self._record_outcome()
+                return result
             finally:
                 self._complete_slot()
 
@@ -162,7 +190,15 @@ class ActionGate:
                 while (remaining := deadline - time.monotonic()) > 0:
                     await asyncio.sleep(remaining)
             try:
-                return await asyncio.wait_for(action(), timeout=self.timeout)
+                result = await asyncio.wait_for(action(), timeout=self.timeout)
+            except RateLimited as exc:
+                with self._sync_lock:
+                    self._record_outcome(rate_limited=exc)
+                raise
+            else:
+                with self._sync_lock:
+                    self._record_outcome()
+                return result
             finally:
                 with self._sync_lock:
                     self._complete_slot()
