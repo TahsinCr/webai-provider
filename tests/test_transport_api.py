@@ -578,20 +578,35 @@ class BlockingTransportTests(unittest.TestCase):
     def test_chatgpt_native_and_public_transport_share_headers_without_refreshing_with_old_token(
         self,
     ):
-        requests = []
-        native = ChatGPTClient(SimpleNamespace(cdp_url="unused", save=Mock()), authenticate=False)
-        self.addCleanup(native.close)
-        native.http.close()
-        native.http = FakeHTTPClient(
-            lambda request: (
-                requests.append(request) or FakeHTTPResponse(200, json={"accessToken": "new"})
+        from tests.fakes import FakeAsyncHTTPClient
+
+        async def exercise():
+            requests = []
+            http = FakeAsyncHTTPClient(
+                lambda request: (
+                    requests.append(request) or FakeHTTPResponse(200, json={"accessToken": "new"})
+                )
             )
-        )
-        native.headers = {"authorization": "Bearer old"}
-        native.refresh_session()
-        native.transport.send("GET", "/backend-api/models")
-        self.assertNotIn("authorization", requests[0].headers)
-        self.assertEqual(requests[1].headers["authorization"], "Bearer new")
+            native = ChatGPTClient(
+                SimpleNamespace(cdp_url="unused", save=Mock()),
+                authenticate=False,
+                transport=AsyncHTTPTransport(
+                    "https://chatgpt.com",
+                    client_getter=lambda: http,
+                    headers=lambda method, path: native._transport_headers(method, path),
+                ),
+            )
+            try:
+                native.headers = {"authorization": "Bearer old"}
+                await native.refresh_session()
+                await native.transport.send("GET", "/backend-api/models")
+                self.assertNotIn("authorization", requests[0].headers)
+                self.assertEqual(requests[1].headers["authorization"], "Bearer new")
+            finally:
+                await native.close()
+                await http.aclose()
+
+        asyncio.run(exercise())
 
     def test_sync_facade_uses_one_portal_for_raw_requests_and_stream_cleanup(self):
         threads = set()

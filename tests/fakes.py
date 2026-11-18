@@ -1,7 +1,7 @@
 """Small transport and cookie fakes shared by offline provider tests."""
 
+import asyncio
 import json as _json
-import threading
 from contextlib import asynccontextmanager, contextmanager
 from http.cookiejar import Cookie, CookieJar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -250,13 +250,53 @@ class FakeHTTPClient:
         self.close()
 
 
+class FakeAsyncHTTPClient(FakeHTTPClient):
+    """Minimal async HTTP client backed by a ``handler(request) -> response``."""
+
+    async def _build_async_request(self, method: str, url: str, **kwargs) -> FakeHTTPRequest:
+        content = kwargs.get("content")
+        if content is not None and hasattr(content, "__aiter__"):
+            chunks = []
+            async for chunk in content:
+                chunks.append(chunk)
+            kwargs = {**kwargs, "content": b"".join(chunks)}
+        return self._build_request(method, url, **kwargs)
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeHTTPResponse:
+        if self.is_closed:
+            raise RuntimeError("FakeAsyncHTTPClient is closed")
+        req = await self._build_async_request(method, url, **kwargs)
+        response = self._handler(req)
+        if getattr(response, "request", None) is None:
+            response.request = req
+            response.url = req.url
+        return response
+
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, **kwargs):
+        response = await self.request(method, url, **kwargs)
+        try:
+            yield response
+        finally:
+            await response.aclose()
+
+    async def aclose(self) -> None:
+        self.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()
+
+
 class FakeClient:
-    """Controllable synchronous ChatGPT transport for provider tests."""
+    """Controllable async ChatGPT transport client for provider tests."""
 
     def __init__(self, session):
         self.session = session
-        self.closed = threading.Event()
-        self.started = threading.Event()
+        self.closed = asyncio.Event()
+        self.started = asyncio.Event()
         self.failure = None
         self.raw = {
             "id": "remote",
@@ -272,33 +312,35 @@ class FakeClient:
             ],
         }
 
-    def request(self, method, url, **kwargs):
+    async def request(self, method, url, **kwargs):
         self.deleted = (method, url)
         return None
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *args):
-        self.close()
+    async def __aexit__(self, *args):
+        await self.close()
 
-    def close(self):
+    async def aclose(self):
+        await self.close()
+
+    async def close(self):
         self.closed.set()
 
-    def verify(self):
+    async def verify(self):
         return {"items": []}
 
-    def list_page(self, offset, limit):
+    async def list_page(self, offset, limit):
         return {"items": [self.raw]}
 
-    def get_conversation(self, conversation_id):
+    async def get_conversation(self, conversation_id):
         return self.raw
 
-    def send_prompt(self, conversation_id, prompt, on_event):
+    async def send_prompt(self, conversation_id, prompt, on_event):
         on_event({"type": "delta", "text": "partial"})
         self.started.set()
-        if not self.closed.wait(2):
-            raise RuntimeError("test did not release stream")
+        await asyncio.wait_for(self.closed.wait(), timeout=2)
         if self.failure:
             raise self.failure
         on_event({"type": "replace", "text": "finished"})

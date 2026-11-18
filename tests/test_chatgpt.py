@@ -5,19 +5,18 @@ import base64
 import gc
 import json
 import tempfile
-import threading
 import time
 import unittest
 import weakref
 from collections import OrderedDict
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
-from tests.fakes import FakeClient, FakeHTTPClient, FakeHTTPRequest, FakeHTTPResponse, cookie
+from tests.fakes import FakeAsyncHTTPClient, FakeClient, FakeHTTPRequest, FakeHTTPResponse, cookie
 from tests.fixtures import CATALOG
 from tests.provider_fakes import provider_account
 from webaiprovider.accounts.status import SessionState
@@ -56,25 +55,27 @@ from webaiprovider.resources.message.protocol import (
 )
 from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import EffortOption, Model, ModelCatalog
+from webaiprovider.transport import AsyncHTTPTransport
 
 
 # Connection reuse and cancellation
 class PersistentClient:
     instances: ClassVar[list["PersistentClient"]] = []
 
-    def __init__(self, session):
+    def __init__(self, session, **_kwargs):
         self.session = session
-        self.closed = threading.Event()
+        self.closed = asyncio.Event()
         self.temporary_conversations = None
+        self.pending_branches = None
         type(self).instances.append(self)
 
-    def send_prompt(self, conversation_id, prompt, on_event, **_options):
+    async def send_prompt(self, conversation_id, prompt, on_event, **_options):
         on_event({"type": "delta", "text": "OK"})
         if prompt == "cancel me":
-            self.closed.wait(2)
+            await asyncio.wait_for(self.closed.wait(), timeout=2)
         return "temporary-chat", {"messages": []}, set()
 
-    def close(self):
+    async def close(self):
         self.closed.set()
 
 
@@ -86,14 +87,16 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
                 provider_account("chatgpt"), session=object(), client_factory=PersistentClient
             )
 
-        with provider._client_scope() as prepared_client:
+        async with provider._client_scope() as prepared_client:
             pass
         self.assertEqual(len(PersistentClient.instances), 1)
+        provider._persistent_client = True
+        provider._client = prepared_client
 
         request = ProviderRequest("hello", temporary=True)
         events = [event async for event in provider._stream_provider_events(request)]
         self.assertTrue(any(isinstance(event, ConversationBound) for event in events))
-        self.assertIs(provider._http_client, prepared_client)
+        self.assertIs(provider._client, prepared_client)
         self.assertFalse(prepared_client.closed.is_set())
 
         cancelled = provider._stream_provider_events(ProviderRequest("cancel me", temporary=True))
@@ -101,37 +104,34 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(first, TextDelta)
         await asyncio.wait_for(cancelled.aclose(), timeout=2)
         self.assertTrue(prepared_client.closed.is_set())
-        self.assertIsNone(provider._http_client)
+        self.assertIsNone(provider._client)
         self.assertEqual(len(PersistentClient.instances), 1)
         await provider.close()
 
     async def test_repeated_cancellation_waits_for_worker_cleanup_before_releasing_gate(self):
-        from contextlib import nullcontext
-
         class BlockingCloseClient(PersistentClient):
-            def __init__(self, session):
+            def __init__(self, session, **_kwargs):
                 super().__init__(session)
-                self.send_started = threading.Event()
-                self.close_started = threading.Event()
-                self.release_close = threading.Event()
+                self.send_started = asyncio.Event()
+                self.close_started = asyncio.Event()
+                self.release_close = asyncio.Event()
 
-            def send_prompt(self, conversation_id, prompt, on_event, **options):
+            async def send_prompt(self, conversation_id, prompt, on_event, **options):
                 self.send_started.set()
                 on_event({"type": "delta", "text": "started"})
-                self.close_started.wait(2)
-                self.release_close.wait(2)
+                await asyncio.wait_for(self.release_close.wait(), timeout=2)
                 return "temporary-chat", {"messages": []}, set()
 
-            def close(self):
+            async def close(self):
                 self.close_started.set()
-                self.release_close.wait(2)
-                super().close()
+                await asyncio.wait_for(self.release_close.wait(), timeout=2)
+                await super().close()
 
         client = BlockingCloseClient(object())
         provider = AsyncChatGPTProvider(
             provider_account("chatgpt"),
             session=object(),
-            client_factory=lambda _session: nullcontext(client),
+            client_factory=lambda _session, **_kwargs: client,
         )
         stream = provider._stream_provider_events(ProviderRequest("cancel me", temporary=True))
 
@@ -139,9 +139,9 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
             return [event async for event in stream]
 
         task = asyncio.create_task(consume())
-        self.assertTrue(await asyncio.to_thread(client.send_started.wait, 1))
+        await asyncio.wait_for(client.send_started.wait(), 1)
         task.cancel()
-        self.assertTrue(await asyncio.to_thread(client.close_started.wait, 1))
+        await asyncio.wait_for(client.close_started.wait(), 1)
         task.cancel()
         await asyncio.sleep(0)
         self.assertFalse(task.done())
@@ -169,15 +169,12 @@ PROJECT = {
 }
 
 
-class DiscoveryTests(unittest.TestCase):
-    def setUp(self):
+class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         self.session = BrowserSession(SessionPaths(root / "session", root / "profile"))
-        self.client = ChatGPTClient(self.session, authenticate=False)
-        self.client.http.close()
-        self.addCleanup(self.client.close)
         self.requests = []
 
         def respond(request):
@@ -198,32 +195,39 @@ class DiscoveryTests(unittest.TestCase):
                 value = PROJECT["gizmo"]
             return FakeHTTPResponse(200, json=value)
 
-        self.client.http = FakeHTTPClient(respond)
+        self._http_handler = respond
+        self.http = FakeAsyncHTTPClient(lambda req: self._http_handler(req))
+        self.transport = AsyncHTTPTransport(
+            "https://chatgpt.com",
+            client_getter=lambda: self.http,
+        )
+        self.client = ChatGPTClient(self.session, authenticate=False, transport=self.transport)
+        self.addAsyncCleanup(self.client.close)
+        self.addAsyncCleanup(self.transport.close)
+        self.addCleanup(self.http.close)
 
-    def test_rejected_session_uses_the_common_authentication_error(self):
-        from unittest.mock import patch
-
+    async def test_rejected_session_uses_the_common_authentication_error(self):
         from webaiprovider.errors import AuthenticationError
 
         request = FakeHTTPRequest("GET", "https://chatgpt.com/backend-api/models")
         response = FakeHTTPResponse(401, request=request)
         with (
             patch.object(self.client, "_transport_headers", return_value={}),
-            patch.object(self.client, "refresh_session"),
-            patch.object(self.client.transport, "send", return_value=response),
+            patch.object(self.client, "refresh_session", new_callable=AsyncMock),
+            patch.object(
+                self.client.transport, "send", new_callable=AsyncMock, return_value=response
+            ),
             self.assertRaises(AuthenticationError),
         ):
-            self.client.request("GET", str(request.url))
+            await self.client.request("GET", str(request.url))
 
-    def test_http_project_create_reads_back_and_never_launches_a_process(self):
-        from unittest.mock import Mock
-
-        self.client.request = Mock(
+    async def test_http_project_create_reads_back_and_never_launches_a_process(self):
+        self.client.request = AsyncMock(
             return_value=FakeHTTPResponse(
                 200, json={"resource": {"id": "g-p-created", "display": {"name": "Demo"}}}
             )
         )
-        self.client.get_project = Mock(
+        self.client.get_project = AsyncMock(
             return_value={
                 "id": "g-p-created",
                 "name": "Demo",
@@ -231,24 +235,24 @@ class DiscoveryTests(unittest.TestCase):
             }
         )
         with patch("subprocess.run", side_effect=AssertionError("browser")):
-            value = self.client.create_project("Demo", memory_share=False)
+            value = await self.client.create_project("Demo", memory_share=False)
         self.assertEqual(value["id"], "g-p-created")
         self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "project_v2")
-        self.client.get_project.assert_called_once_with("g-p-created")
+        self.client.get_project.assert_awaited_once_with("g-p-created")
         self.client.request.reset_mock()
-        self.client.create_project("x" * 50)
+        await self.client.create_project("x" * 50)
         self.assertEqual(len(self.client.request.call_args.kwargs["json"]["name"]), 50)
         self.client.request.reset_mock()
         with self.assertRaisesRegex(ValueError, "1–50"):
-            self.client.create_project("x" * 51)
-        self.client.request.assert_not_called()
+            await self.client.create_project("x" * 51)
+        self.client.request.assert_not_awaited()
 
-        self.client.create_project("Demo")
+        await self.client.create_project("Demo")
         self.assertEqual(self.client.request.call_args.kwargs["json"]["memory_scope"], "global")
         self.client.request.reset_mock()
         with self.assertRaises(TypeError):
-            self.client.create_project("Demo", memory_share=1)
-        self.client.request.assert_not_called()
+            await self.client.create_project("Demo", memory_share=1)
+        self.client.request.assert_not_awaited()
 
     def test_chat_picker_uses_categories_without_exposing_work_variants_or_pinning_versions(self):
         raw = {
@@ -276,40 +280,42 @@ class DiscoveryTests(unittest.TestCase):
         catalog = parse_model_catalog({"models": [{"slug": "normal"}, {"slug": "private-wm"}]})
         self.assertEqual([m.id for m in catalog.chat_models], ["normal"])
 
-    def test_project_sidebar_and_details_preserve_instructions_and_files(self):
-        listing = self.client.list_projects()
+    async def test_project_sidebar_and_details_preserve_instructions_and_files(self):
+        listing = await self.client.list_projects()
         self.assertEqual(len(listing["items"]), 1)
         self.assertEqual(listing["cursor"], "next")
         self.assertEqual(listing["items"][0]["name"], "Work")
-        detail = self.client.get_project("g-p-work")
+        detail = await self.client.get_project("g-p-work")
         self.assertEqual(detail["instructions"], "Use concise answers.")
         self.assertEqual(detail["resources"][0]["name"], "Reference.pdf")
         self.assertEqual(self.requests[0].url.params["conversations_per_gizmo"], "0")
         self.assertEqual(self.requests[0].url.params["owned_only"], "false")
-        self.client.list_projects("next")
+        await self.client.list_projects("next")
         self.assertEqual(self.requests[-1].url.params["cursor"], "next")
 
-    def test_project_chat_pagination_and_cache_preserve_membership(self):
-        page = self.client.list_project_chats("g-p-work", "next-chat")
+    async def test_project_chat_pagination_and_cache_preserve_membership(self):
+        page = await self.client.list_project_chats("g-p-work", "next-chat")
         self.assertEqual(page["items"][0]["project_id"], "g-p-work")
         self.assertEqual(self.requests[-1].url.params["cursor"], "next-chat")
         self.assertEqual(project_id({"id": "remote-chat", "gizmo_id": "g-p-work"}), "g-p-work")
 
-    def test_common_provider_exposes_the_same_real_catalog_and_project_records(self):
-        # The common provider owns client lifetime; give each call its own transport.
-        def factory(_session):
-            client = ChatGPTClient(self.session, authenticate=False)
-            client.http.close()
-            client.http = FakeHTTPClient(self.client.http._handler)
-            return client
-
+    async def test_common_provider_exposes_the_same_real_catalog_and_project_records(self):
+        transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: self.http)
         provider = AsyncChatGPTProvider(
-            provider_account("chatgpt"), session=self.session, client_factory=factory
+            provider_account("chatgpt"),
+            session=self.session,
+            client_factory=lambda _session, **kwargs: ChatGPTClient(
+                self.session, authenticate=False, transport=kwargs.get("transport", transport)
+            ),
+            transport=transport,
         )
-        catalog = asyncio.run(provider._load_catalog())
-        projects = asyncio.run(provider._list_projects_data())
-        detail = asyncio.run(provider._get_project_data("g-p-work"))
-        chats = asyncio.run(provider._list_project_chats_data("g-p-work"))
+        try:
+            catalog = await provider._load_catalog()
+            projects = await provider._list_projects_data()
+            detail = await provider._get_project_data("g-p-work")
+            chats = await provider._list_project_chats_data("g-p-work")
+        finally:
+            await provider.close()
         self.assertEqual(catalog.default_model, "account-thinking")
         self.assertEqual(projects.next_cursor, "next")
         self.assertEqual(detail.resources[0].id, "file-ref")
@@ -319,16 +325,15 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(chats.items[0].project.id, "g-p-work")
         self.assertEqual(chats.next_cursor, "next-chat")
 
-    def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):
+    async def test_changed_responses_fail_instead_of_claiming_an_empty_account(self):
         for value in ({}, {"models": {}}, {"models": [None]}, {"models": [{"title": "No slug"}]}):
             with self.subTest(value=value), self.assertRaises(ChatGPTError):
                 parse_model_catalog(value)
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(lambda _: FakeHTTPResponse(200, json={"unexpected": []}))
+        self._http_handler = lambda _: FakeHTTPResponse(200, json={"unexpected": []})
         with self.assertRaisesRegex(ChatGPTError, "items"):
-            self.client.list_projects()
+            await self.client.list_projects()
 
-    def test_direct_send_applies_selected_model_effort_and_keeps_project(self):
+    async def test_direct_send_applies_selected_model_effort_and_keeps_project(self):
         previous = {"id": "chat", "current_node": "parent", "gizmo_id": "g-p-work", "messages": []}
         body = self.client.create_conversation_body(previous, "hello")
         self.assertNotIn("thinking_effort", body)
@@ -338,36 +343,39 @@ class DiscoveryTests(unittest.TestCase):
             patch.object(
                 self.client,
                 "send_prompt_direct",
+                new_callable=AsyncMock,
                 return_value=("chat", "user-msg", {"id": "user-msg"}, []),
             ) as send,
             patch.object(
                 self.client,
                 "get_conversation",
+                new_callable=AsyncMock,
                 side_effect=[previous, {"messages": [{"id": "user-msg"}]}],
             ),
         ):
-            self.client.send_prompt("chat", "hello", model="account-thinking", effort="standard")
+            await self.client.send_prompt(
+                "chat", "hello", model="account-thinking", effort="standard"
+            )
         self.assertEqual(send.call_args.args[-2:], ("account-thinking", "standard"))
         with self.assertRaisesRegex(ChatGPTError, "not offered"):
-            self.client.send_prompt(None, "hello", model="account-instant", effort="extended")
+            await self.client.send_prompt(None, "hello", model="account-instant", effort="extended")
 
-    def test_truncated_or_malformed_chatgpt_stream_cannot_succeed(self):
+    async def test_truncated_or_malformed_chatgpt_stream_cannot_succeed(self):
         for payload in (
             'data: {"conversation_id":"chat"}\n\n',
             "data: {bad}\n\ndata: [DONE]\n\n",
             'data: {"error":{"message":"secret"}}\n\ndata: [DONE]\n\n',
         ):
-            self.client.http.close()
-            self.client.http = FakeHTTPClient(
-                lambda _, payload=payload: FakeHTTPResponse(
-                    200, headers={"content-type": "text/event-stream"}, text=payload
-                )
+            self._http_handler = lambda _, payload=payload: FakeHTTPResponse(
+                200, headers={"content-type": "text/event-stream"}, text=payload
             )
             with (
-                patch.object(self.client, "create_sentinel_headers", return_value={}),
+                patch.object(
+                    self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+                ),
                 self.assertRaises(ChatGPTError),
             ):
-                self.client.send_prompt_direct(None, "hello", [])
+                await self.client.send_prompt_direct(None, "hello", [])
 
     def test_timezone_uses_a_real_iana_name_or_omits_the_optional_field(self):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -387,14 +395,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertNotIn("timezone", body)
         self.assertIsInstance(body["timezone_offset_min"], int)
 
-    def test_empty_mutation_success_is_explicit_and_json_reads_remain_strict(self):
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(lambda _: FakeHTTPResponse(204))
-        self.client.delete_conversation("chat")
+    async def test_empty_mutation_success_is_explicit_and_json_reads_remain_strict(self):
+        self._http_handler = lambda _: FakeHTTPResponse(204)
+        await self.client.delete_conversation("chat")
         with self.assertRaises(ChatGPTError):
-            self.client.request("GET", "https://chatgpt.com/backend-api/test")
+            await self.client.request("GET", "https://chatgpt.com/backend-api/test")
 
-    def test_model_and_effort_reach_the_actual_stream_request(self):
+    async def test_model_and_effort_reach_the_actual_stream_request(self):
         sent = []
 
         def respond(request):
@@ -405,17 +412,18 @@ class DiscoveryTests(unittest.TestCase):
                 text='data: {"conversation_id":"chat","message":{"id":"a","author":{"role":"assistant"},"content":{"parts":["Answer"]}}}\n\ndata: [DONE]\n\n',
             )
 
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(respond)
-        with patch.object(self.client, "create_sentinel_headers", return_value={}):
-            self.client.send_prompt_direct(
+        self._http_handler = respond
+        with patch.object(
+            self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+        ):
+            await self.client.send_prompt_direct(
                 None, "hello", [], model="account-thinking", effort="standard"
             )
         self.assertEqual(
             (sent[0]["model"], sent[0]["thinking_effort"]), ("account-thinking", "standard")
         )
 
-    def test_chatgpt_stream_accepts_sse_data_without_space_and_multiline_json(self):
+    async def test_chatgpt_stream_accepts_sse_data_without_space_and_multiline_json(self):
         event = json.dumps(
             {
                 "conversation_id": "chat",
@@ -430,19 +438,18 @@ class DiscoveryTests(unittest.TestCase):
         payload = (
             f": keepalive\n\ndata:{event[:midpoint]}\ndata: {event[midpoint:]}\n\ndata:[DONE]\n\n"
         )
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(
-            lambda _: FakeHTTPResponse(
-                200, headers={"content-type": "text/event-stream"}, text=payload
-            )
+        self._http_handler = lambda _: FakeHTTPResponse(
+            200, headers={"content-type": "text/event-stream"}, text=payload
         )
-        with patch.object(self.client, "create_sentinel_headers", return_value={}):
-            result = self.client.send_prompt_direct(None, "hello", [])
+        with patch.object(
+            self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+        ):
+            result = await self.client.send_prompt_direct(None, "hello", [])
 
         self.assertEqual(result[0], "chat")
         self.assertEqual(result[3][0]["content"]["parts"], ["Answer"])
 
-    def test_chatgpt_stream_delivers_first_text_before_next_network_chunk(self):
+    async def test_chatgpt_stream_delivers_first_text_before_next_network_chunk(self):
         events = []
         case = self
         event = {
@@ -455,21 +462,20 @@ class DiscoveryTests(unittest.TestCase):
         }
 
         class Stream:
-            def __iter__(self):
+            async def __aiter__(self):
                 yield f"data: {json.dumps(event)}\n\n".encode()
                 case.assertTrue(any(item.get("text") == "Answer" for item in events))
                 yield b"data: [DONE]\n\n"
 
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(
-            lambda _: FakeHTTPResponse(
-                200, headers={"content-type": "text/event-stream"}, stream=Stream()
-            )
+        self._http_handler = lambda _: FakeHTTPResponse(
+            200, headers={"content-type": "text/event-stream"}, stream=Stream()
         )
-        with patch.object(self.client, "create_sentinel_headers", return_value={}):
-            self.client.send_prompt_direct(None, "hello", [], on_event=events.append)
+        with patch.object(
+            self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+        ):
+            await self.client.send_prompt_direct(None, "hello", [], on_event=events.append)
 
-    def test_failed_sse_releases_the_partial_message_buffer(self):
+    async def test_failed_sse_releases_the_partial_message_buffer(self):
         message = {
             "conversation_id": "chat",
             "message": {
@@ -479,11 +485,8 @@ class DiscoveryTests(unittest.TestCase):
             },
         }
         payload = f"data: {json.dumps(message)}\n\ndata: {json.dumps({'error': True})}\n\n"
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(
-            lambda _: FakeHTTPResponse(
-                200, headers={"content-type": "text/event-stream"}, text=payload
-            )
+        self._http_handler = lambda _: FakeHTTPResponse(
+            200, headers={"content-type": "text/event-stream"}, text=payload
         )
         buffers = []
 
@@ -497,17 +500,19 @@ class DiscoveryTests(unittest.TestCase):
 
         with (
             patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer),
-            patch.object(self.client, "create_sentinel_headers", return_value={}),
+            patch.object(
+                self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+            ),
             self.assertRaisesRegex(ChatGPTError, "stream failed"),
         ):
-            self.client.send_prompt_direct(None, "hello", [])
+            await self.client.send_prompt_direct(None, "hello", [])
 
         gc.collect()
         self.assertEqual(len(buffers), 1)
         self.assertIsNone(buffers[0]())
         self.assertFalse(hasattr(self.client, "_last_stream_messages"))
 
-    def test_chatgpt_reports_generated_text_before_sse_done(self):
+    async def test_chatgpt_reports_generated_text_before_sse_done(self):
         event = {
             "conversation_id": "chat",
             "message": {
@@ -518,39 +523,34 @@ class DiscoveryTests(unittest.TestCase):
             },
         }
         payload = "data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n"
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(
-            lambda _: FakeHTTPResponse(
-                200, headers={"content-type": "text/event-stream"}, text=payload
-            )
+        self._http_handler = lambda _: FakeHTTPResponse(
+            200, headers={"content-type": "text/event-stream"}, text=payload
         )
         received = []
-        with patch.object(self.client, "create_sentinel_headers", return_value={}):
-            self.client.send_prompt_direct(None, "hello", [], on_event=received.append)
+        with patch.object(
+            self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
+        ):
+            await self.client.send_prompt_direct(None, "hello", [], on_event=received.append)
 
         self.assertEqual([item["type"] for item in received], ["delta", "response_complete"])
 
-    def test_model_catalog_reuses_valid_cache_and_refreshes_expired_cache(self):
-        import time
-
+    async def test_model_catalog_reuses_valid_cache_and_refreshes_expired_cache(self):
         cached = parse_model_catalog(CATALOG)
         self.client._model_catalog = (time.monotonic(), cached)
-        with patch.object(self.client, "request") as request:
-            self.assertIs(self.client.model_catalog(), cached)
-            request.assert_not_called()
+        with patch.object(self.client, "request", new_callable=AsyncMock) as request:
+            self.assertIs(await self.client.model_catalog(), cached)
+            request.assert_not_awaited()
 
             response = Mock()
             response.json.return_value = CATALOG
             request.return_value = response
             self.client._model_catalog = (time.monotonic() - 301, cached)
-            refreshed = self.client.model_catalog()
+            refreshed = await self.client.model_catalog()
 
         self.assertIsNot(refreshed, cached)
-        request.assert_called_once()
+        request.assert_awaited_once()
 
     def test_system_timezone_caches_per_tz_environment(self):
-        from pathlib import Path
-
         from webaiprovider.providers.chatgpt.client import (
             _cached_system_timezone,
             system_timezone,
@@ -575,7 +575,7 @@ class DiscoveryTests(unittest.TestCase):
             with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}, clear=False):
                 self.assertEqual(system_timezone(), "Asia/Tokyo")
 
-    def test_move_conversation_validates_patch_and_updates_cache_without_get(self):
+    async def test_move_conversation_validates_patch_and_updates_cache_without_get(self):
         snapshot = {
             "id": "conv-move",
             "current_node": "node-1",
@@ -583,16 +583,19 @@ class DiscoveryTests(unittest.TestCase):
             "messages": [],
         }
         self.client._remember_conversation(snapshot)
-        self.client.get_conversation = Mock(side_effect=AssertionError("unexpected readback GET"))
+        self.client.get_conversation = AsyncMock(
+            side_effect=AssertionError("unexpected readback GET")
+        )
 
         with patch.object(
             self.client,
             "request",
+            new_callable=AsyncMock,
             return_value=FakeHTTPResponse(200, json={"success": True}),
         ) as req:
-            result = self.client.move_conversation("conv-move", "g-p-new")
+            result = await self.client.move_conversation("conv-move", "g-p-new")
 
-        req.assert_called_once()
+        req.assert_awaited_once()
         self.assertEqual(result["project_id"], "g-p-new")
         cached = self.client._cached_conversation("conv-move")
         self.assertIsNotNone(cached)
@@ -602,18 +605,18 @@ class DiscoveryTests(unittest.TestCase):
             patch.object(
                 self.client,
                 "request",
+                new_callable=AsyncMock,
                 return_value=FakeHTTPResponse(200, json={"success": False}),
             ),
             self.assertRaises(ChatGPTError),
         ):
-            self.client.move_conversation("conv-move", "g-p-other")
+            await self.client.move_conversation("conv-move", "g-p-other")
 
 
 # Profile and session bootstrap
-class ChatGPTProfileBootstrapTests(unittest.TestCase):
+class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
     def test_missing_saved_session_uses_the_common_authentication_error(self):
         from webaiprovider.errors import AuthenticationError
-        from webaiprovider.providers.chatgpt import BrowserSession, SessionPaths
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -623,8 +626,6 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
 
     def test_bootstrap_saves_provider_token_and_browser_headers_without_cdp(self):
         from unittest.mock import MagicMock
-
-        from webaiprovider.providers.chatgpt import BrowserSession, SessionPaths
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -655,36 +656,34 @@ class ChatGPTProfileBootstrapTests(unittest.TestCase):
             self.assertFalse(http.get.call_args.kwargs["allow_redirects"])
             self.assertEqual(http.get.call_args.args[0], "https://chatgpt.com/api/auth/session")
 
-    def test_provider_open_prepares_cookie_credentials_before_catalog(self):
-        import asyncio
-        from unittest.mock import AsyncMock, patch
-
+    async def test_provider_open_prepares_cookie_credentials_before_catalog(self):
         from webaiprovider.accounts.account import Account
         from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
-        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 
         cookie_name = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
         cookies = {f"{cookie_name}.0": "part-zero", f"{cookie_name}.1": "part-one"}
         provider = AsyncChatGPTProvider(Account.from_cookies("chatgpt", cookies))
 
-        with (
-            patch.object(provider.session, "import_cookies") as import_cookies,
-            patch.object(
-                provider,
-                "_load_catalog",
-                AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE)),
-            ) as load_catalog,
-        ):
-            asyncio.run(provider._prepare_session())
+        try:
+            with (
+                patch.object(
+                    provider.session, "import_cookies_async", new_callable=AsyncMock
+                ) as import_cookies,
+                patch.object(
+                    provider,
+                    "_load_catalog",
+                    AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE)),
+                ) as load_catalog,
+            ):
+                await provider._prepare_session()
 
-        import_cookies.assert_called_once_with(cookies)
-        load_catalog.assert_awaited_once_with()
+            import_cookies.assert_awaited_once_with(cookies)
+            load_catalog.assert_awaited_once_with()
+        finally:
+            await provider.close()
 
     def test_bootstrap_rejection_retains_previous_snapshot_and_does_not_follow_redirect(self):
         from unittest.mock import MagicMock
-
-        from webaiprovider.errors import ProviderError
-        from webaiprovider.providers.chatgpt import BrowserSession, SessionPaths
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -858,17 +857,16 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.assertEqual(memory_values, [True, False])
 
     async def test_request_waits_for_background_preparation(self):
-        ready, release = threading.Event(), threading.Event()
+        ready, release = asyncio.Event(), asyncio.Event()
 
-        def prepare_catalog():
+        async def prepare_catalog():
             ready.set()
-            if not release.wait(2):
-                raise TimeoutError("test warmup was not released")
+            await asyncio.wait_for(release.wait(), 2)
             return ModelCatalog(ModelCatalogState.AVAILABLE)
 
         self.client.model_catalog = prepare_catalog
         warmup = asyncio.create_task(self.provider._prepare_session())
-        self.assertTrue(await asyncio.to_thread(ready.wait, 2))
+        await asyncio.wait_for(ready.wait(), 2)
         history = asyncio.create_task(self.provider._get_chat_data("remote"))
         await asyncio.sleep(0.02)
         self.assertFalse(history.done())
@@ -879,25 +877,36 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
     async def test_default_http_client_is_reused_after_startup_warmup(self):
         from curl_cffi.requests import Session as CurlSession
 
-        from webaiprovider.transport import AsyncHTTPTransport
-
         raw = {"id": "remote", "title": "Example", "messages": []}
         catalog = ModelCatalog(ModelCatalogState.AVAILABLE)
-        self.session.load = lambda: ("https://chatgpt.com/", {"authorization": "Bearer test"})
+        self.session.load_async = AsyncMock(
+            return_value=("https://chatgpt.com/", {"authorization": "Bearer test"})
+        )
         with (
             patch(
                 "webaiprovider.providers.chatgpt.provider.AsyncHTTPTransport",
                 wraps=AsyncHTTPTransport,
             ) as transports,
             patch(
-                "webaiprovider.providers.chatgpt.client.CurlSession",
+                "curl_cffi.requests.Session",
                 wraps=CurlSession,
             ) as sync_sessions,
-            patch.object(ChatGPTClient, "model_catalog", return_value=catalog) as model_catalog,
+            patch.object(
+                ChatGPTClient, "model_catalog", new_callable=AsyncMock, return_value=catalog
+            ) as model_catalog,
             patch.object(ChatGPTClient, "trigger_sentinel_prewarm") as prewarm,
-            patch.object(ChatGPTClient, "list_page", return_value={"items": [raw]}),
-            patch.object(ChatGPTClient, "get_conversation", return_value=raw),
-            patch.object(ChatGPTClient, "get_project", return_value={"metadata": {}}),
+            patch.object(
+                ChatGPTClient, "list_page", new_callable=AsyncMock, return_value={"items": [raw]}
+            ),
+            patch.object(
+                ChatGPTClient, "get_conversation", new_callable=AsyncMock, return_value=raw
+            ),
+            patch.object(
+                ChatGPTClient,
+                "get_project",
+                new_callable=AsyncMock,
+                return_value={"metadata": {}},
+            ),
         ):
             provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
             try:
@@ -910,17 +919,17 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
                 await provider.project_options("project")
                 self.assertEqual(transports.call_count, 1)
                 self.assertEqual(sync_sessions.call_count, 0)
-                self.assertIsNotNone(provider._http_client)
+                self.assertIsNotNone(provider._client)
                 self.assertIsNotNone(provider._owned_transport)
                 self.assertIs(
-                    provider._http_client.temporary_conversations,
+                    provider._client.temporary_conversations,
                     provider._temporary_conversations,
                 )
-                model_catalog.assert_called_with(refresh=True)
+                model_catalog.assert_awaited_with(refresh=True)
             finally:
                 await provider.close()
             await provider.close()
-            self.assertIsNone(provider._http_client)
+            self.assertIsNone(provider._client)
 
     async def test_project_file_source_is_streamed_using_a_dedicated_client(self):
         from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
@@ -933,7 +942,12 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             else self.fail("expected a disk path")
         )
         requests = []
-        self.client.request = lambda method, url, **kwargs: requests.append((method, url, kwargs))
+
+        async def record_request(method, url, **kwargs):
+            requests.append((method, url, kwargs))
+            return None
+
+        self.client.request = record_request
         editor = ChatGPTProjectEditor(self.session, lambda _: self.client)
         with patch("pathlib.Path.read_bytes", side_effect=AssertionError("must stream")):
             await editor.write("add_source", "project", kind="file", path=path)
@@ -1009,16 +1023,22 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
     async def test_stream_uploads_inline_bytes_attachment_before_sending(self):
         uploaded = []
         sent = []
-        self.client.upload_file = lambda name, mime, data, **kwargs: (
-            uploaded.append((name, mime, data, kwargs))
-            or {"id": "chatgpt-file-1", "name": name, "mime_type": mime, "size_bytes": len(data)}
-        )
 
-        def send_prompt(conversation_id, prompt, on_event, **kwargs):
+        async def fake_upload(name, mime, data, **kwargs):
+            uploaded.append((name, mime, data, kwargs))
+            return {
+                "id": "chatgpt-file-1",
+                "name": name,
+                "mime_type": mime,
+                "size_bytes": len(data),
+            }
+
+        async def send_prompt(conversation_id, prompt, on_event, **kwargs):
             sent.append(kwargs)
             on_event({"type": "replace", "text": "finished"})
             return "remote", self.client.raw, set()
 
+        self.client.upload_file = fake_upload
         self.client.send_prompt = send_prompt
         request = ProviderRequest(
             "read",
@@ -1030,21 +1050,18 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.assertEqual(sent[0]["attachments"][0]["id"], "chatgpt-file-1")
 
     async def test_stream_inline_attachment_upload_honors_cancellation(self):
-        import threading
-
-        started = threading.Event()
+        started = asyncio.Event()
         saw_cancel = False
 
-        def slow_upload(name, mime, data, *, project_id=None, cancel_event=None):
+        async def slow_upload(name, mime, data, *, project_id=None):
             nonlocal saw_cancel
+            del name, mime, data, project_id
             started.set()
-            saw_cancel = bool(cancel_event and cancel_event.wait(1))
-            return {
-                "id": "chatgpt-file-1",
-                "name": name,
-                "mime_type": mime,
-                "size_bytes": len(data),
-            }
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                saw_cancel = True
+                raise
 
         self.client.upload_file = slow_upload
         self.client.send_prompt = lambda *_args, **_kwargs: self.fail(
@@ -1056,35 +1073,28 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         )
         stream = self.provider._stream_provider_events(request)
         task = asyncio.create_task(anext(stream))
-        await asyncio.to_thread(started.wait, 1)
+        await asyncio.wait_for(started.wait(), 1)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)
         self.assertTrue(saw_cancel)
 
     async def test_upload_cancellation_signals_transport_and_waits_for_worker(self):
-        import threading
-        import time
-
-        started, stopped = threading.Event(), threading.Event()
-        closed = threading.Event()
+        started, stopped = asyncio.Event(), asyncio.Event()
+        closed = asyncio.Event()
 
         class UploadClient:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                self.close()
-
-            def close(self):
+            async def close(self):
                 closed.set()
 
-            def upload_file(self, _name, _mime, _path, *, cancel_event=None):
+            async def upload_file(self, _name, _mime, _path, *, cancel_event=None):
+                del cancel_event
                 started.set()
-                while not (cancel_event and cancel_event.is_set()) and not closed.is_set():
-                    time.sleep(0.002)
-                stopped.set()
-                raise RuntimeError("upload stopped")
+                try:
+                    await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    stopped.set()
+                    raise
 
         client = UploadClient()
         provider = AsyncChatGPTProvider(
@@ -1092,17 +1102,11 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             session=self.session,
             client_factory=lambda _session: client,
         )
-        cancel_event = threading.Event()
-        task = asyncio.create_task(
-            provider._upload_file(
-                Path(self.directory.name) / "cancel.txt", cancel_event=cancel_event
-            )
-        )
-        self.assertTrue(await asyncio.to_thread(started.wait, 2))
+        task = asyncio.create_task(provider._upload_file(Path(self.directory.name) / "cancel.txt"))
+        await asyncio.wait_for(started.wait(), 2)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
-        self.assertTrue(cancel_event.is_set())
         self.assertTrue(stopped.is_set())
         self.assertTrue(closed.is_set())
 
@@ -1162,19 +1166,16 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
 class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTestCase):
     async def test_list_project_chats_bounds_concurrency_to_four_and_runs_outside_gate(self):
-        import time
-
-        lock = threading.Lock()
         active = 0
         max_active = 0
 
-        def fake_list_project_chats(project_id, cursor=None):
+        async def fake_list_project_chats(project_id, cursor=None):
+            del cursor
             nonlocal active, max_active
-            with lock:
-                active += 1
-                max_active = max(max_active, active)
+            active += 1
+            max_active = max(max_active, active)
             try:
-                time.sleep(0.03)
+                await asyncio.sleep(0.03)
                 return {
                     "items": [
                         {
@@ -1186,8 +1187,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                     "cursor": None,
                 }
             finally:
-                with lock:
-                    active -= 1
+                active -= 1
 
         self.client.list_project_chats = fake_list_project_chats
         async with self.provider._gate:
@@ -1201,7 +1201,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         )
 
     async def test_delete_chat_releases_gate_before_confirm_deleted(self):
-        self.client.delete_conversation = lambda _cid: None
+        self.client.delete_conversation = AsyncMock(return_value=None)
         confirm_started = asyncio.Event()
         release_confirm = asyncio.Event()
 
@@ -1222,7 +1222,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await task
 
     async def test_delete_chat_skips_confirm_deleted_when_server_confirms_patch(self):
-        self.client.delete_conversation = lambda _cid: True
+        self.client.delete_conversation = AsyncMock(return_value=True)
         with patch(
             "webaiprovider.providers.chatgpt.provider.confirm_deleted",
             side_effect=AssertionError("unexpected confirm_deleted polling"),
@@ -1230,20 +1230,17 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await self.provider._delete_chat_data("cid-1")
 
     async def test_project_update_reuses_staged_state_and_confirms_remote_result(self):
-        from contextlib import nullcontext
-        from unittest.mock import Mock
-
         from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         mock_client = Mock()
-        mock_client.request = Mock(return_value={})
-        mock_client.get_project = Mock(side_effect=AssertionError("unexpected"))
+        mock_client.request = AsyncMock(return_value={})
+        mock_client.get_project = AsyncMock(side_effect=AssertionError("unexpected"))
         editor = ChatGPTProjectEditor(
             self.session,
             lambda _session: mock_client,
-            client_scope=lambda: nullcontext(mock_client),
+            client_scope=lambda: mock_client,
         )
         current = NativeProject(
             "p-1",
@@ -1270,7 +1267,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.assertIsInstance(removed_res, NativeProject)
         self.assertEqual(removed_res.resources, ())
         self.assertEqual(mock_client.get_project.call_count, 0)
-        mock_client.get_project = Mock(return_value={"resources": []})
+        mock_client.get_project = AsyncMock(return_value={"resources": []})
         with self.assertRaises(ValueError):
             await editor.write(
                 "remove_source",
@@ -1299,16 +1296,17 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 "resources": [],
             },
         ]
-        self.client.list_projects = lambda cursor=None: {"items": [states[0]], "cursor": None}
+        self.client.list_projects = AsyncMock(return_value={"items": [states[0]], "cursor": None})
         get_calls = 0
 
-        def fake_get_project(project_id):
+        async def fake_get_project(project_id):
+            del project_id
             nonlocal get_calls
             get_calls += 1
             return states[1]
 
         self.client.get_project = fake_get_project
-        self.client.request = Mock(return_value={})
+        self.client.request = AsyncMock(return_value={})
         self.provider._prepare_session = AsyncMock()
         await self.provider.open()
         try:
@@ -1353,40 +1351,45 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.assertEqual(proj.id, "g-p-1")
         self.assertEqual(catalog.state, ModelCatalogState.AVAILABLE)
 
-    async def test_aux_client_reused_across_renames_and_project_uploads(self):
-        from webaiprovider.transport import HTTPTransport
-
+    async def test_persistent_client_reused_across_renames_and_project_uploads(self):
         created = []
 
-        class PersistentAuxClient:
-            def __init__(self, session):
+        class PersistentNativeClient:
+            def __init__(self, session, *, transport=None):
                 self.session = session
-                self.closed = threading.Event()
+                self.transport = transport
+                self.closed = asyncio.Event()
                 self.renamed = []
                 self.temporary_conversations = None
                 self.pending_branches = None
-                self.transport = HTTPTransport("https://chatgpt.com")
                 created.append(self)
 
-            def rename_conversation(self, cid, title):
+            async def rename_conversation(self, cid, title):
                 self.renamed.append((cid, title))
 
-            def upload_file(self, name, mime, data, **_kwargs):
-                return {"id": "file-aux", "name": name, "mime_type": mime, "size_bytes": len(data)}
-
-            def request(self, *_args, **_kwargs):
+            async def upload_file(self, name, mime, data, **_kwargs):
                 return {
-                    "files": [{"file_id": "file-aux", "name": "note.txt", "type": "text/plain"}]
+                    "id": "file-native",
+                    "name": name,
+                    "mime_type": mime,
+                    "size_bytes": len(data),
                 }
 
-            def close(self):
+            async def request(self, *_args, **_kwargs):
+                return {
+                    "files": [{"file_id": "file-native", "name": "note.txt", "type": "text/plain"}]
+                }
+
+            async def close(self):
                 self.closed.set()
 
-        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentAuxClient):
+        with patch(
+            "webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentNativeClient
+        ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
                 session=self.session,
-                client_factory=PersistentAuxClient,
+                client_factory=PersistentNativeClient,
             )
         try:
             await provider._rename_chat_data("c-1", "One")
@@ -1395,29 +1398,26 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 "add_source", "g-p-1", kind="text", name="note", text="hello"
             )
             self.assertEqual(len(created), 1)
-            self.assertIs(provider._aux_http_client, created[0])
-            await provider._discard_http_client()
+            self.assertIs(provider._client, created[0])
             self.assertFalse(created[0].closed.is_set())
         finally:
             await provider.close()
         self.assertTrue(created[0].closed.is_set())
-        self.assertIsNone(provider._aux_http_client)
+        self.assertIsNone(provider._client)
 
-    async def test_aux_client_inherits_primary_headers_without_reauthenticating(self):
+    async def test_editor_and_client_scope_share_one_authenticated_native_client(self):
         auth_flags: list[bool] = []
-        created_aux: list[ChatGPTClient] = []
+        created: list[ChatGPTClient] = []
 
         class InspectableClient(ChatGPTClient):
             def __init__(self, session, *, authenticate: bool = True, **kwargs):
                 auth_flags.append(authenticate)
                 super().__init__(session, authenticate=False, **kwargs)
-                if authenticate:
-                    self.list_url = "https://chatgpt.com/backend-api/conversations"
-                    self.headers = {"authorization": "Bearer primary-tok", "oai-device-id": "dev-1"}
-                    self._conversation_endpoint = "conversation"
-                    self._conversation_endpoint_verified = True
-                else:
-                    created_aux.append(self)
+                self.list_url = "https://chatgpt.com/backend-api/conversations"
+                self.headers = {"authorization": "Bearer primary-tok", "oai-device-id": "dev-1"}
+                self._conversation_endpoint = "conversation"
+                self._conversation_endpoint_verified = True
+                created.append(self)
 
         with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", InspectableClient):
             provider = AsyncChatGPTProvider(
@@ -1426,22 +1426,16 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             )
             self.assertIs(provider._factory, InspectableClient)
             try:
-                with provider._client_scope() as primary:
+                async with provider._client_scope() as primary:
                     self.assertEqual(primary.headers["authorization"], "Bearer primary-tok")
-                with provider._aux_client_scope() as aux:
-                    self.assertEqual(auth_flags, [True, False])
-                    self.assertIs(aux, created_aux[0])
-                    self.assertEqual(aux.headers, primary.headers)
-                    self.assertIsNot(aux.headers, primary.headers)
-                    self.assertEqual(aux.list_url, primary.list_url)
-                    self.assertEqual(aux._conversation_endpoint, "conversation")
-                    self.assertTrue(aux._conversation_endpoint_verified)
+                async with provider.editor._use_client() as editor_client:
+                    self.assertEqual(auth_flags, [True])
+                    self.assertIs(editor_client, primary)
+                    self.assertIs(created[0], primary)
             finally:
                 await provider.close()
 
     async def test_resolve_download_reuses_cached_snapshot_and_falls_back_on_miss(self):
-        from unittest.mock import Mock
-
         cached_file_chat = {
             "id": "chat-1",
             "messages": [
@@ -1455,7 +1449,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             ],
         }
         self.client._cached_conversation = lambda cid: cached_file_chat if cid == "chat-1" else None
-        self.client.get_conversation = Mock(
+        self.client.get_conversation = AsyncMock(
             return_value={
                 "id": "chat-1",
                 "messages": [
@@ -1463,7 +1457,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 ],
             }
         )
-        self.client.request = Mock(
+        self.client.request = AsyncMock(
             side_effect=[
                 Mock(json=lambda: {"download_url": "https://cdn.example/f", "file_name": "a.txt"}),
                 Mock(json=lambda: {"download_url": "https://cdn.example/r"}),
@@ -1473,22 +1467,30 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             "file-service://file-cached", "chat-1"
         )
         self.assertEqual(source_cached.filename, "a.txt")
-        self.client.get_conversation.assert_not_called()
+        self.client.get_conversation.assert_not_awaited()
 
         source_miss = await self.provider._resolve_download(
             "sandbox:/mnt/data/report.csv", "chat-1"
         )
         self.assertEqual(source_miss.url, "https://cdn.example/r")
-        self.client.get_conversation.assert_called_once_with("chat-1")
+        self.client.get_conversation.assert_awaited_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
         from webaiprovider.providers.chatgpt.provider import _prepare_chatgpt_attachments
 
-        barrier = threading.Barrier(2, timeout=1.0)
-        self.client.upload_file = lambda name, mime, data, **_kwargs: (
-            barrier.wait(),
-            {"id": f"id-{name}", "name": name},
-        )[1]
+        entered = 0
+        both_entered = asyncio.Event()
+
+        async def upload_file(name, mime, data, **_kwargs):
+            del mime, data
+            nonlocal entered
+            entered += 1
+            if entered == 2:
+                both_entered.set()
+            await asyncio.wait_for(both_entered.wait(), timeout=1.0)
+            return {"id": f"id-{name}", "name": name}
+
+        self.client.upload_file = upload_file
         request = ProviderRequest(
             "hi",
             attachments=(
@@ -1496,17 +1498,14 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 {"bytes": b"b", "name": "second.txt", "mime_type": "text/plain"},
             ),
         )
-        result = await asyncio.to_thread(
-            _prepare_chatgpt_attachments, self.client, request, threading.Event()
-        )
+        result = await _prepare_chatgpt_attachments(self.client, request)
         self.assertEqual([item["id"] for item in result], ["id-first.txt", "id-second.txt"])
 
     async def test_stream_request_emits_mid_stream_bound_once_and_skips_trailing_duplicate(self):
-        self.client.ensure_authenticated = Mock_auth = lambda *_a, **_kw: None
-        del Mock_auth
+        self.client.ensure_authenticated = AsyncMock()
         seen_callbacks = []
 
-        def fake_send_prompt(_cid, _prompt, *, on_event=None, **_kwargs):
+        async def fake_send_prompt(_cid, _prompt, *, on_event=None, **_kwargs):
             seen_callbacks.append(on_event)
             self.assertTrue(getattr(on_event, "_accepts_bound", False))
             on_event({"type": "bound", "conversation_id": "c_mid"})
@@ -1533,12 +1532,6 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.assertIn(ResponseComplete(), events)
 
     async def test_pending_branch_first_send_binds_real_id_without_get_conversation(self):
-        import json
-
-        from tests.fakes import FakeHTTPClient, FakeHTTPRequest, FakeHTTPResponse
-        from webaiprovider.resources.model import ModelCatalogState
-        from webaiprovider.transport import HTTPTransport
-
         requests_seen = []
         sent_payloads = []
         persisted_conversation = {
@@ -1639,21 +1632,22 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             (Model("gpt-4o-mini", "GPT-4o mini"),),
             default_model="gpt-4o-mini",
         )
+        mock_http = FakeAsyncHTTPClient(handler)
 
-        def make_client(session):
-            mock_http = FakeHTTPClient(handler)
+        def make_client(session, **_kwargs):
             client = ChatGPTClient(
                 session,
                 authenticate=False,
-                transport=HTTPTransport("https://chatgpt.com", client_getter=lambda: mock_http),
+                transport=AsyncHTTPTransport(
+                    "https://chatgpt.com", client_getter=lambda: mock_http
+                ),
             )
-            client.http = mock_http
             client.headers = {"authorization": "Bearer token", "cookie": "cf=ok"}
             client.list_url = "https://chatgpt.com/backend-api/conversations"
-            client.ensure_authenticated = lambda *_a, **_kw: None
-            client.create_sentinel_headers = dict
+            client.ensure_authenticated = AsyncMock()
+            client.create_sentinel_headers = AsyncMock(return_value={})
             client.trigger_sentinel_prewarm = lambda: None
-            client.model_catalog = lambda *_a, **_kw: catalog
+            client.model_catalog = AsyncMock(return_value=catalog)
             client._conversation_endpoint_verified = True
             return client
 
@@ -1684,19 +1678,15 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             self.assertEqual(sent_payloads[0]["branching_from_message_id"], "m_root_a")
         finally:
             await provider.close()
+            mock_http.close()
 
 
 # Send and continuation behavior
-class SendOptionsTests(unittest.TestCase):
-    def setUp(self):
+class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        self.client = ChatGPTClient(
-            BrowserSession(SessionPaths(root / "session", root / "profile")),
-            authenticate=False,
-        )
-        self.client.http.close()
         self.requests = []
 
         def handle(request):
@@ -1732,39 +1722,50 @@ class SendOptionsTests(unittest.TestCase):
                 + "\n\n",
             )
 
-        self.client.http = FakeHTTPClient(handle)
-        self.addCleanup(self.client.close)
-        self.client.create_sentinel_headers = Mock(return_value={})
+        self._http_handler = handle
+        self.http = FakeAsyncHTTPClient(lambda req: self._http_handler(req))
+        self.transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: self.http)
+        self.client = ChatGPTClient(
+            BrowserSession(SessionPaths(root / "session", root / "profile")),
+            authenticate=False,
+            transport=self.transport,
+        )
+        self.addAsyncCleanup(self.client.close)
+        self.addAsyncCleanup(self.transport.close)
+        self.addCleanup(self.http.close)
+        self.client.create_sentinel_headers = AsyncMock(return_value={})
         self.client.trigger_sentinel_prewarm = Mock()
-        self.client.model_catalog = Mock(return_value=parse_model_catalog(CATALOG))
+        self.client.model_catalog = AsyncMock(return_value=parse_model_catalog(CATALOG))
 
-    def test_temporary_multiturn_has_no_history_get(self):
-        self.client.get_conversation = Mock(side_effect=AssertionError("no temporary GET"))
+    async def test_temporary_multiturn_has_no_history_get(self):
+        self.client.get_conversation = AsyncMock(side_effect=AssertionError("no temporary GET"))
         events = []
-        remote, conv, _ = self.client.send_prompt(
+        remote, conv, _ = await self.client.send_prompt(
             None, "First", model="account-thinking", temporary=True, on_event=events.append
         )
-        self.client.send_prompt(remote, "Second", model="account-thinking", temporary=True)
+        await self.client.send_prompt(remote, "Second", model="account-thinking", temporary=True)
         self.assertTrue(conv["temporary"])
         self.assertTrue(all(b["history_and_training_disabled"] for b in self.requests))
         self.assertEqual(self.requests[1]["parent_message_id"], "a-1")
         self.assertEqual([e["channel"] for e in events if "channel" in e], ["analysis", "final"])
         self.assertEqual(events[-1]["type"], "response_complete")
         self.assertEqual(len(self.client.temporary_conversations["remote"]["messages"]), 6)
-        self.client.get_conversation.assert_not_called()
+        self.client.get_conversation.assert_not_awaited()
 
-    def test_conversation_history_uses_flat_message_endpoint(self):
+    async def test_conversation_history_uses_flat_message_endpoint(self):
         response = Mock()
         response.json.return_value = {"messages": []}
-        with patch.object(self.client, "request", return_value=response) as request:
-            result = self.client.get_conversation("remote")
+        with patch.object(
+            self.client, "request", new_callable=AsyncMock, return_value=response
+        ) as request:
+            result = await self.client.get_conversation("remote")
 
         self.assertEqual(result, {"messages": []})
-        request.assert_called_once_with(
+        request.assert_awaited_once_with(
             "GET", "https://chatgpt.com/backend-api/conversations/remote"
         )
 
-    def test_conversation_history_falls_back_to_alternate_endpoint_and_remembers_it(self):
+    async def test_conversation_history_falls_back_to_alternate_endpoint_and_remembers_it(self):
         first = Mock()
         first.json.return_value = {"messages": [{"id": "first"}]}
         second = Mock()
@@ -1772,10 +1773,11 @@ class SendOptionsTests(unittest.TestCase):
         with patch.object(
             self.client,
             "request",
+            new_callable=AsyncMock,
             side_effect=[RemoteNotFound("missing route"), first, second],
         ) as request:
-            initial = self.client.get_conversation("remote")
-            subsequent = self.client.get_conversation("remote")
+            initial = await self.client.get_conversation("remote")
+            subsequent = await self.client.get_conversation("remote")
 
         self.assertEqual(initial["messages"][0]["id"], "first")
         self.assertEqual(subsequent["messages"][0]["id"], "second")
@@ -1788,30 +1790,33 @@ class SendOptionsTests(unittest.TestCase):
             ],
         )
 
-    def test_missing_conversation_is_reported_after_both_endpoint_forms(self):
+    async def test_missing_conversation_is_reported_after_both_endpoint_forms(self):
         with (
             patch.object(
                 self.client,
                 "request",
+                new_callable=AsyncMock,
                 side_effect=[RemoteNotFound("plural"), RemoteNotFound("singular")],
             ) as request,
             self.assertRaisesRegex(RemoteNotFound, "singular"),
         ):
-            self.client.get_conversation("remote")
+            await self.client.get_conversation("remote")
 
-        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.await_count, 2)
 
-    def test_project_reaches_request_body(self):
-        self.client.get_conversation = Mock(
+    async def test_project_reaches_request_body(self):
+        self.client.get_conversation = AsyncMock(
             side_effect=lambda _: {
                 "id": "remote",
                 "messages": self.requests[-1]["messages"] + self.messages,
             }
         )
-        self.client.send_prompt(None, "Project", project_id="g-p-work", model="account-thinking")
+        await self.client.send_prompt(
+            None, "Project", project_id="g-p-work", model="account-thinking"
+        )
         self.assertEqual(self.requests[0]["gizmo_id"], "g-p-work")
 
-    def test_existing_continuation_uses_complete_stream_without_post_send_get(self):
+    async def test_existing_continuation_uses_complete_stream_without_post_send_get(self):
         previous = {
             "id": "remote",
             "conversation_id": "remote",
@@ -1822,14 +1827,14 @@ class SendOptionsTests(unittest.TestCase):
                 {"id": "old-assistant", "author": {"role": "assistant"}},
             ],
         }
-        self.client.get_conversation = Mock(return_value=previous)
+        self.client.get_conversation = AsyncMock(return_value=previous)
 
-        remote, conversation, previous_ids = self.client.send_prompt(
+        remote, conversation, previous_ids = await self.client.send_prompt(
             "remote", "Continue", model="account-thinking"
         )
 
         self.assertEqual(remote, "remote")
-        self.assertEqual(self.client.get_conversation.call_count, 1)
+        self.assertEqual(self.client.get_conversation.await_count, 1)
         self.assertEqual(previous_ids, {"old-user", "old-assistant"})
         self.assertEqual(conversation["title"], "Existing chat")
         self.assertEqual(conversation["current_node"], "a-1")
@@ -1838,7 +1843,7 @@ class SendOptionsTests(unittest.TestCase):
             ["old-user", "old-assistant", self.requests[0]["messages"][0]["id"], "r-1", "a-1"],
         )
 
-    def test_recent_verified_continuation_reuses_provider_snapshot(self):
+    async def test_recent_verified_continuation_reuses_provider_snapshot(self):
         previous = {
             "id": "remote",
             "conversation_id": "remote",
@@ -1852,11 +1857,13 @@ class SendOptionsTests(unittest.TestCase):
         response = Mock()
         response.json.return_value = previous
 
-        with patch.object(self.client, "request", return_value=response) as get_request:
-            self.client.send_prompt("remote", "First", model="account-thinking")
-            self.client.send_prompt("remote", "Second", model="account-thinking")
+        with patch.object(
+            self.client, "request", new_callable=AsyncMock, return_value=response
+        ) as get_request:
+            await self.client.send_prompt("remote", "First", model="account-thinking")
+            await self.client.send_prompt("remote", "Second", model="account-thinking")
 
-        self.assertEqual(get_request.call_count, 1)
+        self.assertEqual(get_request.await_count, 1)
         self.assertEqual(self.requests[1]["parent_message_id"], "a-1")
         self.assertGreater(self.client._continuation_cache.current_bytes, 0)
         self.assertEqual(self.client._continuation_cache.stats().entries, 1)
@@ -1874,35 +1881,36 @@ class SendOptionsTests(unittest.TestCase):
         with patch("webaiprovider.providers.chatgpt.client.time.monotonic", return_value=160.0):
             self.assertIsNone(self.client._cached_conversation("remote"))
 
-    def test_cached_send_failure_does_not_resubmit_after_streamed_content(self):
+    async def test_cached_send_failure_does_not_resubmit_after_streamed_content(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
         events = []
 
-        def fail_after_content(*args, **kwargs):
+        async def fail_after_content(*args, **kwargs):
+            del kwargs
             args[3]({"type": "delta", "text": "partial"})
             raise ChatGPTError("stream interrupted")
 
-        self.client.send_prompt_direct = Mock(side_effect=fail_after_content)
-        self.client.get_conversation = Mock()
+        self.client.send_prompt_direct = AsyncMock(side_effect=fail_after_content)
+        self.client.get_conversation = AsyncMock()
         with self.assertRaisesRegex(ChatGPTError, "stream interrupted"):
-            self.client.send_prompt(
+            await self.client.send_prompt(
                 "remote", "Continue", model="account-thinking", on_event=events.append
             )
 
-        self.client.send_prompt_direct.assert_called_once()
-        self.client.get_conversation.assert_not_called()
+        self.client.send_prompt_direct.assert_awaited_once()
+        self.client.get_conversation.assert_not_awaited()
         self.assertEqual(events, [{"type": "delta", "text": "partial"}])
         self.assertIsNone(self.client._cached_conversation("remote"))
 
-    def test_delete_invalidates_verified_continuation(self):
+    async def test_delete_invalidates_verified_continuation(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
         response = Mock(content=b"")
-        with patch.object(self.client, "request", return_value=response):
-            self.client.delete_conversation("remote")
+        with patch.object(self.client, "request", new_callable=AsyncMock, return_value=response):
+            await self.client.delete_conversation("remote")
 
         self.assertIsNone(self.client._cached_conversation("remote"))
 
-    def test_actions_bypass_reusable_snapshot(self):
+    async def test_actions_bypass_reusable_snapshot(self):
         previous = {
             "id": "remote",
             "current_node": "old-assistant",
@@ -1932,58 +1940,65 @@ class SendOptionsTests(unittest.TestCase):
                         side_effect=AssertionError("message actions must read the provider"),
                     ),
                     patch.object(
-                        self.client, "get_conversation", side_effect=[previous, updated]
+                        self.client,
+                        "get_conversation",
+                        new_callable=AsyncMock,
+                        side_effect=[previous, updated],
                     ) as get_conversation,
                     patch.object(
                         self.client,
                         "send_prompt_direct",
+                        new_callable=AsyncMock,
                         return_value=("remote", "submitted", submitted, []),
                     ),
                 ):
-                    self.client.send_prompt(
+                    await self.client.send_prompt(
                         "remote", "Continue", model="account-thinking", **operation
                     )
 
-                self.assertEqual(get_conversation.call_count, 2)
+                self.assertEqual(get_conversation.await_count, 2)
                 self.client._forget_conversation("remote")
 
-    def test_uncertain_send_invalidates_the_reusable_snapshot(self):
+    async def test_uncertain_send_invalidates_the_reusable_snapshot(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
         with (
             patch.object(
-                self.client, "send_prompt_direct", side_effect=RuntimeError("transport failed")
+                self.client,
+                "send_prompt_direct",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("transport failed"),
             ),
             self.assertRaisesRegex(RuntimeError, "transport failed"),
         ):
-            self.client.send_prompt("remote", "Continue", model="account-thinking")
+            await self.client.send_prompt("remote", "Continue", model="account-thinking")
 
         self.assertIsNone(self.client._cached_conversation("remote"))
 
-    def test_missing_temporary_context_never_falls_back_to_saved_chat(self):
-        self.client.get_conversation = Mock(side_effect=AssertionError("no fallback GET"))
+    async def test_missing_temporary_context_never_falls_back_to_saved_chat(self):
+        self.client.get_conversation = AsyncMock(side_effect=AssertionError("no fallback GET"))
         with self.assertRaises(ChatGPTError):
-            self.client.send_prompt("expired", "Q", temporary=True)
-        self.client.get_conversation.assert_not_called()
+            await self.client.send_prompt("expired", "Q", temporary=True)
+        self.client.get_conversation.assert_not_awaited()
         self.assertEqual(self.requests, [])
 
-    def test_temporary_sentinel_failure_stops_before_http_or_recipe_capture(self):
-        self.client.create_sentinel_headers = Mock(
+    async def test_temporary_sentinel_failure_stops_before_http_or_recipe_capture(self):
+        self.client.create_sentinel_headers = AsyncMock(
             side_effect=SentinelCompatibilityError("changed")
         )
         self.client.capture_send_recipe = Mock(
             side_effect=AssertionError("no private browser draft")
         )
         with self.assertRaises(ChatGPTError):
-            self.client.send_prompt(None, "Private", model="account-thinking", temporary=True)
+            await self.client.send_prompt(None, "Private", model="account-thinking", temporary=True)
         self.client.capture_send_recipe.assert_not_called()
         self.assertEqual(self.requests, [])
 
-    def test_temporary_project_fails_before_network(self):
+    async def test_temporary_project_fails_before_network(self):
         with self.assertRaises(ChatGPTError):
-            self.client.send_prompt(None, "Q", temporary=True, project_id="g-p-work")
+            await self.client.send_prompt(None, "Q", temporary=True, project_id="g-p-work")
         self.assertEqual(self.requests, [])
 
-    def test_get_conversation_stops_after_first_404_once_endpoint_verified(self):
+    async def test_get_conversation_stops_after_first_404_once_endpoint_verified(self):
         calls = []
 
         def handle(request):
@@ -1994,26 +2009,25 @@ class SendOptionsTests(unittest.TestCase):
                 )
             return FakeHTTPResponse(404, json={"detail": "Not found"})
 
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(handle)
+        self._http_handler = handle
         self.client._conversation_endpoint_verified = False
 
         with self.assertRaises(RemoteNotFound):
-            self.client.get_conversation("missing-1")
+            await self.client.get_conversation("missing-1")
         self.assertEqual(len(calls), 2)
 
         calls.clear()
-        self.client.get_conversation("c-ok")
+        await self.client.get_conversation("c-ok")
         self.assertTrue(self.client._conversation_endpoint_verified)
 
         calls.clear()
         with self.assertRaises(RemoteNotFound):
-            self.client.get_conversation("missing-2")
+            await self.client.get_conversation("missing-2")
         self.assertEqual(len(calls), 1)
 
-    def test_send_prompt_direct_gates_bound_event_on_callback_flag(self):
+    async def test_send_prompt_direct_gates_bound_event_on_callback_flag(self):
         plain = []
-        self.client.send_prompt_direct(None, "Hi", [], on_event=plain.append)
+        await self.client.send_prompt_direct(None, "Hi", [], on_event=plain.append)
         self.assertEqual([item["type"] for item in plain], ["delta", "delta", "response_complete"])
 
         opted = []
@@ -2022,20 +2036,19 @@ class SendOptionsTests(unittest.TestCase):
             opted.append(item)
 
         on_opt_in._accepts_bound = True
-        self.client.send_prompt_direct(None, "Hi", [], on_event=on_opt_in)
+        await self.client.send_prompt_direct(None, "Hi", [], on_event=on_opt_in)
         self.assertEqual(opted[0], {"type": "bound", "conversation_id": "remote"})
         self.assertEqual(
             [item["type"] for item in opted], ["bound", "delta", "delta", "response_complete"]
         )
 
-    def test_consume_chat_stream_maps_http_429_to_pre_send_rate_limited(self):
+    async def test_consume_chat_stream_maps_http_429_to_pre_send_rate_limited(self):
         def handle(_request):
             return FakeHTTPResponse(429, headers={"retry-after": "3"})
 
-        self.client.http.close()
-        self.client.http = FakeHTTPClient(handle)
+        self._http_handler = handle
         with self.assertRaises(RateLimited) as ctx:
-            self.client.send_prompt_direct(None, "Hi", [])
+            await self.client.send_prompt_direct(None, "Hi", [])
         self.assertEqual(ctx.exception.retry_after, 3.0)
         self.assertIs(ctx.exception.message_submitted, False)
 
@@ -2058,14 +2071,23 @@ def run_turnstile(runtime: SentinelRuntime, dx: str) -> str | None:
 def make_client() -> ChatGPTClient:
     client = ChatGPTClient.__new__(ChatGPTClient)
     client.headers = {"user-agent": "Mozilla/5.0 (X11; Linux x86_64)"}
-    client._sentinel_lock = threading.Lock()
+    client._authenticated = False
+    client._needs_initial_auth = False
+    client._sentinel_lock = None
+    client._refresh_lock = None
+    client._catalog_lock = None
     client._sentinel_runtime = None
     client._sentinel_runtime_key = None
     client._prewarmed_sentinel = None
-    client._prewarming = False
+    client._prewarm_task = None
     client._continuation_cache = OrderedDict()
     client.temporary_conversations = OrderedDict()
-    client.http = Mock()
+    client.pending_branches = OrderedDict()
+    client._active_streams = {}
+    client._upload_http = None
+    client._closed = False
+    client._owned_transport = False
+    client.transport = Mock()
     return client
 
 
@@ -2436,10 +2458,10 @@ class SentinelCompatibilityTests(unittest.TestCase):
         self.assertEqual(_js_number(-0.0), "0")
 
 
-class ChatGPTSentinelClientTests(unittest.TestCase):
-    def test_client_reuses_one_sentinel_runtime_and_handles_pow_and_turnstile_headers(self):
+class ChatGPTSentinelClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_reuses_one_sentinel_runtime_and_handles_pow_and_turnstile_headers(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         pow_requirements = {
             "prepare_token": "server-issued-1",
             "token": "sdk-requirements-token",
@@ -2452,9 +2474,9 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         }
         response = Mock()
         response.json.return_value = pow_requirements
-        client.request = Mock(return_value=response)
+        client.request = AsyncMock(return_value=response)
 
-        first = client.create_sentinel_headers()
+        first = await client.create_sentinel_headers()
         runtime = client._sentinel_runtime
         self.assertIsNotNone(runtime)
         self.assertEqual(
@@ -2464,7 +2486,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.assertTrue(first["openai-sentinel-proof-token"].startswith("gAAAAAB"))
         self.assertNotIn("openai-sentinel-turnstile-token", first)
 
-        def prepare_with_turnstile(_method, _url, **kwargs):
+        async def prepare_with_turnstile(_method, _url, **kwargs):
             initial_sent = kwargs["json"]["p"]
             stage3 = encode_vm_program(
                 [[15, 50, 50], [1, 50, 51], [7, 3, 50]],
@@ -2525,8 +2547,8 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             }
             return resp
 
-        client.request = Mock(side_effect=prepare_with_turnstile)
-        second = client.create_sentinel_headers()
+        client.request = AsyncMock(side_effect=prepare_with_turnstile)
+        second = await client.create_sentinel_headers()
         self.assertIs(client._sentinel_runtime, runtime)
         self.assertEqual(
             second["openai-sentinel-chat-requirements-prepare-token"],
@@ -2538,9 +2560,9 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             '{"k":"turnstile-solved"}',
         )
 
-    def test_client_rejects_unsupported_required_challenges_before_submission(self):
+    async def test_client_rejects_unsupported_required_challenges_before_submission(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         for unsupported in (
             {"future_required_challenge": {"required": True}},
             {"arkose": {"required": True}},
@@ -2553,28 +2575,28 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
                 "proofofwork": {"required": False},
                 **unsupported,
             }
-            client.request = Mock(return_value=bad_resp)
+            client.request = AsyncMock(return_value=bad_resp)
             with self.assertRaises(SentinelCompatibilityError) as raised:
-                client.create_sentinel_headers()
+                await client.create_sentinel_headers()
             self.assertFalse(raised.exception.message_submitted)
             self.assertEqual(raised.exception.code, "chatgpt_sentinel_incompatible")
 
-    def test_client_maps_prepare_rejection_to_pre_submit_compatibility_error(self):
+    async def test_client_maps_prepare_rejection_to_pre_submit_compatibility_error(self):
         client = make_client()
-        self.addCleanup(client.close)
-        client.request = Mock(
+        self.addAsyncCleanup(client.close)
+        client.request = AsyncMock(
             side_effect=ChatGPTError(
                 "ChatGPT returned HTTP 403 for POST /backend-api/sentinel/chat-requirements/prepare"
             )
         )
         with self.assertRaises(SentinelCompatibilityError) as rejected_prepare:
-            client.create_sentinel_headers()
+            await client.create_sentinel_headers()
         self.assertFalse(rejected_prepare.exception.message_submitted)
         self.assertEqual(rejected_prepare.exception.code, "chatgpt_sentinel_incompatible")
 
-    def test_client_allows_session_observer_requirements(self):
+    async def test_client_allows_session_observer_requirements(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         response = Mock()
         response.json.return_value = {
             "prepare_token": "server-issued-so",
@@ -2582,11 +2604,11 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             "turnstile": {"required": False},
             "so": {"required": True, "collector_dx": "dx1", "snapshot_dx": "dx2"},
         }
-        client.request = Mock(return_value=response)
+        client.request = AsyncMock(return_value=response)
         with patch.object(
             SentinelRuntime, "create_session_observer_token", return_value="so-token"
         ) as create_so:
-            headers = client.create_sentinel_headers()
+            headers = await client.create_sentinel_headers()
         create_so.assert_called_once()
         self.assertEqual(create_so.call_args.args, (response.json.return_value["so"],))
         self.assertTrue(create_so.call_args.kwargs["initial_proof"].startswith("gAAAAAC"))
@@ -2596,47 +2618,45 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         )
         self.assertEqual(headers["openai-sentinel-so-token"], "so-token")
 
-    def test_client_rejects_malformed_session_observer_requirements(self):
+    async def test_client_rejects_malformed_session_observer_requirements(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         response = Mock()
         response.json.return_value = {
             "prepare_token": "server-issued-so",
             "proofofwork": {"required": False},
             "so": {"required": True},
         }
-        client.request = Mock(return_value=response)
+        client.request = AsyncMock(return_value=response)
         with self.assertRaises(SentinelCompatibilityError):
-            client.create_sentinel_headers()
+            await client.create_sentinel_headers()
 
-    def test_client_prewarm_caches_headers_and_reuses_them(self):
+    async def test_client_prewarm_caches_headers_and_reuses_them(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         response = Mock()
         response.json.return_value = {
             "prepare_token": "server-issued-prewarm",
             "proofofwork": {"required": False},
             "turnstile": {"required": False},
         }
-        client.request = Mock(return_value=response)
+        client.request = AsyncMock(return_value=response)
         client.trigger_sentinel_prewarm()
-        for _ in range(50):
-            if client._prewarmed_sentinel is not None:
-                break
-            time.sleep(0.01)
+        assert client._prewarm_task is not None
+        await asyncio.wait_for(client._prewarm_task, 1.0)
         self.assertIsNotNone(client._prewarmed_sentinel)
-        headers = client.create_sentinel_headers()
+        headers = await client.create_sentinel_headers()
         self.assertEqual(
             headers["openai-sentinel-chat-requirements-prepare-token"],
             "server-issued-prewarm",
         )
         self.assertIsNone(client._prewarmed_sentinel)
 
-    def test_prewarm_exchange_is_serialized_with_a_foreground_send(self):
+    async def test_prewarm_exchange_is_serialized_with_a_foreground_send(self):
         client = make_client()
-        self.addCleanup(client.close)
-        started = threading.Event()
-        release = threading.Event()
+        self.addAsyncCleanup(client.close)
+        started = asyncio.Event()
+        release = asyncio.Event()
         response = Mock()
         response.json.return_value = {
             "prepare_token": "server-issued-prewarm",
@@ -2644,31 +2664,26 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             "turnstile": {"required": False},
         }
 
-        def prepare(*_args, **_kwargs):
+        async def prepare(*_args, **_kwargs):
             started.set()
-            release.wait(1)
+            await asyncio.wait_for(release.wait(), 1)
             return response
 
-        client.request = Mock(side_effect=prepare)
+        client.request = AsyncMock(side_effect=prepare)
         client.trigger_sentinel_prewarm()
-        self.assertTrue(started.wait(1))
-        result = []
-        foreground = threading.Thread(
-            target=lambda: result.append(client.create_sentinel_headers())
-        )
-        foreground.start()
-        time.sleep(0.01)
-        self.assertFalse(result)
+        await asyncio.wait_for(started.wait(), 1)
+        foreground = asyncio.create_task(client.create_sentinel_headers())
+        await asyncio.sleep(0.01)
+        self.assertFalse(foreground.done())
         release.set()
-        foreground.join(1)
-        self.assertFalse(foreground.is_alive())
-        self.assertEqual(client.request.call_count, 1)
+        fg_headers = await asyncio.wait_for(foreground, 1)
+        self.assertEqual(client.request.await_count, 1)
         self.assertEqual(
-            result[0]["openai-sentinel-chat-requirements-prepare-token"],
+            fg_headers["openai-sentinel-chat-requirements-prepare-token"],
             "server-issued-prewarm",
         )
 
-    def test_client_close_releases_its_sentinel_runtime(self):
+    async def test_client_close_releases_its_sentinel_runtime(self):
         client = make_client()
         client._continuation_cache["conversation"] = object()
         client.temporary_conversations["temporary"] = object()
@@ -2678,10 +2693,10 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             "proofofwork": {"required": False},
             "turnstile": {"required": False},
         }
-        client.request = Mock(return_value=response)
-        client.create_sentinel_headers()
+        client.request = AsyncMock(return_value=response)
+        await client.create_sentinel_headers()
         self.assertIsNotNone(client._sentinel_runtime)
-        client.close()
+        await client.close()
         self.assertIsNone(client._sentinel_runtime)
         self.assertFalse(client._continuation_cache)
         self.assertFalse(client.temporary_conversations)
@@ -2716,12 +2731,9 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         with self.assertRaises(SentinelCompatibilityError):
             _solve_pow(["a"] * 10, seed, "xyz")
 
-    def test_temporary_turn_triggers_sentinel_prewarm(self):
-        from webaiprovider.resources.model import ModelCatalogState
-        from webaiprovider.resources.model.model import EffortOption, Model, ModelCatalog
-
+    async def test_temporary_turn_triggers_sentinel_prewarm(self):
         client = make_client()
-        self.addCleanup(client.close)
+        self.addAsyncCleanup(client.close)
         client._model_catalog = (
             time.monotonic(),
             ModelCatalog(
@@ -2729,7 +2741,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
                 (Model("gpt-5", "GPT-5", (EffortOption("standard", "Standard"),), "standard"),),
             ),
         )
-        client.send_prompt_direct = Mock(
+        client.send_prompt_direct = AsyncMock(
             return_value=(
                 "temp-conv-1",
                 "user-1",
@@ -2738,7 +2750,7 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             )
         )
         with patch.object(client, "trigger_sentinel_prewarm") as prewarm:
-            resolved_id, conversation, previous_ids = client.send_prompt(
+            resolved_id, conversation, previous_ids = await client.send_prompt(
                 None, "Hello temporary", model="gpt-5", temporary=True
             )
 
@@ -2748,45 +2760,39 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
         self.assertEqual(conversation["id"], "temp-conv-1")
         prewarm.assert_called_once_with()
 
-    def test_rate_limit_cooldown_blocks_subsequent_calls_and_closed_skips_prewarm(self):
-        from webaiprovider.errors import RateLimited
-        from webaiprovider.transport import HTTPTransport
-
+    async def test_rate_limit_cooldown_blocks_subsequent_calls_and_closed_skips_prewarm(self):
         client = make_client()
-        self.addCleanup(client.close)
-        client.http = Mock()
-        client.http.is_closed = False
-        client.http.stream = None
-        client.http.request = Mock(
-            return_value=FakeHTTPResponse(429, headers={"retry-after": "30"})
+        self.addAsyncCleanup(client.close)
+        http = FakeAsyncHTTPClient(
+            lambda _req: FakeHTTPResponse(429, headers={"retry-after": "30"})
         )
-        client.transport = HTTPTransport(
+        http.request = AsyncMock(return_value=FakeHTTPResponse(429, headers={"retry-after": "30"}))
+        client.transport = AsyncHTTPTransport(
             "https://chatgpt.com",
-            client_getter=lambda: client.http,
+            client_getter=lambda: http,
             headers=client._transport_headers,
         )
+        self.addAsyncCleanup(client.transport.close)
+        self.addCleanup(http.close)
 
         with self.assertRaises(RateLimited):
-            client.request("GET", "https://chatgpt.com/backend-api/conversations")
-        self.assertEqual(client.http.request.call_count, 1)
+            await client.request("GET", "https://chatgpt.com/backend-api/conversations")
+        self.assertEqual(http.request.await_count, 1)
 
         with self.assertRaises(RateLimited):
-            client.request("GET", "https://chatgpt.com/backend-api/conversations")
-        self.assertEqual(client.http.request.call_count, 1)
+            await client.request("GET", "https://chatgpt.com/backend-api/conversations")
+        self.assertEqual(http.request.await_count, 1)
 
         with self.assertRaises(RateLimited):
-            client.create_sentinel_headers()
-        self.assertEqual(client.http.request.call_count, 1)
+            await client.create_sentinel_headers()
+        self.assertEqual(http.request.await_count, 1)
 
-        client.close()
+        await client.close()
         client.trigger_sentinel_prewarm()
         self.assertIsNone(client._prewarmed_sentinel)
-        self.assertFalse(client._prewarming)
+        self.assertIsNone(client._prewarm_task)
 
-    def test_close_does_not_wait_for_inflight_prewarm_and_guards_unsafe_vm_regex(self):
-        import threading
-
-        from webaiprovider.providers.chatgpt.sentinel.spec import SentinelSpec
+    async def test_close_does_not_wait_for_inflight_prewarm_and_guards_unsafe_vm_regex(self):
         from webaiprovider.providers.chatgpt.sentinel.vm import _compile_vm_regex
 
         with self.assertRaisesRegex(SentinelCompatibilityError, "unsafe"):
@@ -2802,30 +2808,40 @@ class ChatGPTSentinelClientTests(unittest.TestCase):
             )
 
         client = make_client()
-        started = threading.Event()
-        release = threading.Event()
-        closed_runtime = threading.Event()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        cancelled_prewarm = asyncio.Event()
+        closed_runtime = asyncio.Event()
         runtime = Mock()
         runtime.close.side_effect = closed_runtime.set
 
-        def slow_exchange(_rt, _timing):
+        async def slow_exchange(_rt, _timing):
             started.set()
-            release.wait(timeout=5.0)
+            try:
+                await asyncio.wait_for(release.wait(), timeout=5.0)
+            except asyncio.CancelledError:
+                cancelled_prewarm.set()
+                raise
             return {"openai-sentinel-proof-token": "gAAAAAB"}
 
+        def create_runtime(*_args):
+            client._sentinel_runtime = runtime
+            return runtime
+
         with (
-            patch.object(client, "_get_or_create_sentinel_runtime", return_value=runtime),
+            patch.object(client, "_get_or_create_sentinel_runtime", side_effect=create_runtime),
             patch.object(client, "_create_sentinel_headers_direct", side_effect=slow_exchange),
         ):
             client.trigger_sentinel_prewarm()
-            self.assertTrue(started.wait(timeout=2.0))
+            prewarm_task = client._prewarm_task
+            assert prewarm_task is not None
+            await asyncio.wait_for(started.wait(), timeout=2.0)
             t0 = time.monotonic()
-            client.close()
+            await client.close()
             elapsed = time.monotonic() - t0
             self.assertLess(elapsed, 0.5)
-            self.assertFalse(closed_runtime.is_set())
-            release.set()
-            self.assertTrue(closed_runtime.wait(timeout=2.0))
+            self.assertTrue(closed_runtime.is_set())
+            await asyncio.wait_for(cancelled_prewarm.wait(), timeout=2.0)
 
     def test_native_c99_extension_matches_pure_python_fallback_and_solves_live_clock(self):
         from webaiprovider.providers.chatgpt.sentinel import proof
@@ -2913,8 +2929,13 @@ class AttachmentPolicyContractTests(unittest.TestCase):
         self.assertIsNone(policy_for("unknown"))
 
 
-class ChatGPTStreamingUploadTests(unittest.TestCase):
-    def test_project_upload_validates_processing_events_before_finalization(self):
+async def _aiter_chunks(chunks):
+    for chunk in chunks:
+        yield chunk
+
+
+class ChatGPTStreamingUploadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_upload_validates_processing_events_before_finalization(self):
         ready = b'{"type":"file.processing.file_ready"}\n'
         completed = b'{"type":"file.processing.completed"}'
         cases = (
@@ -2934,25 +2955,34 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         for label, chunks, error in cases:
             with self.subTest(case=label):
                 client = object.__new__(ChatGPTClient)
-                client.request = Mock(
+                client._active_streams = {}
+                client._closed = False
+                client.request = AsyncMock(
                     return_value=SimpleNamespace(
                         json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
                     )
                 )
-                client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
+                client._upload_request = AsyncMock(
+                    return_value=SimpleNamespace(raise_for_status=Mock())
+                )
                 response = SimpleNamespace(
                     status_code=200,
                     headers={"content-type": "text/event-stream"},
-                    iter_bytes=lambda chunks=chunks: iter(chunks),
+                    aiter_bytes=lambda chunks=chunks: _aiter_chunks(chunks),
                 )
-                client.transport = SimpleNamespace(stream=Mock(return_value=nullcontext(response)))
+
+                @asynccontextmanager
+                async def fake_stream(_response=response):
+                    yield _response
+
+                client.transport = SimpleNamespace(stream=Mock(return_value=fake_stream()))
                 with self.assertRaisesRegex(ChatGPTError, error) if error else nullcontext():
-                    result = client.upload_file(
+                    result = await client.upload_file(
                         "source.txt", "text/plain", b"source", project_id="project-id"
                     )
                     self.assertEqual(result["id"], "file-id")
 
-                client.request.assert_called_once()
+                client.request.assert_awaited_once()
                 client.transport.stream.assert_called_once_with(
                     "POST",
                     "/backend-api/files/process_upload_stream",
@@ -2969,12 +2999,14 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                     timeout=ANY,
                 )
 
-    def test_path_upload_streams_chunks_instead_of_reading_the_whole_file(self):
+    async def test_path_upload_streams_chunks_instead_of_reading_the_whole_file(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "large.txt"
             path.write_bytes(b"a" * (2 * 1024 * 1024 + 7))
             client = object.__new__(ChatGPTClient)
-            client.request = Mock(
+            client._active_streams = {}
+            client._closed = False
+            client.request = AsyncMock(
                 side_effect=[
                     SimpleNamespace(
                         json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
@@ -2984,67 +3016,69 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             )
             uploaded = []
 
-            def put(_method, _url, *, content, **_kwargs):
-                uploaded.extend(content)
+            async def put(_method, _url, *, content, **_kwargs):
+                async for chunk in content:
+                    uploaded.append(chunk)
                 return SimpleNamespace(raise_for_status=Mock(), content=b"", status_code=200)
 
-            client.http = SimpleNamespace(is_closed=False)
-            client._upload_http = SimpleNamespace(is_closed=False, request=Mock(side_effect=put))
+            client._upload_http = SimpleNamespace(
+                is_closed=False, request=AsyncMock(side_effect=put)
+            )
             with patch.object(Path, "read_bytes", side_effect=AssertionError("full file read")):
-                result = client.upload_file(path.name, "text/plain", path)
+                result = await client.upload_file(path.name, "text/plain", path)
             self.assertEqual(b"".join(uploaded), b"a" * (2 * 1024 * 1024 + 7))
-            client._upload_http.request.assert_called_once()
+            client._upload_http.request.assert_awaited_once()
             self.assertEqual(result["size_bytes"], path.stat().st_size)
 
-    def test_path_upload_cancel_stops_later_chunks_and_skips_finalization(self):
-        import threading
-
+    async def test_path_upload_cancel_stops_later_chunks_and_skips_finalization(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "cancel.txt"
             path.write_bytes(b"a" * (512 * 1024))
-            cancel_event = threading.Event()
+            cancel_event = asyncio.Event()
             client = object.__new__(ChatGPTClient)
-            client.request = Mock(
+            client._active_streams = {}
+            client._closed = False
+            client.request = AsyncMock(
                 return_value=SimpleNamespace(
                     json=lambda: {"file_id": "file-id", "upload_url": "https://upload"}
                 )
             )
 
-            def put(_method, _url, *, content, **_kwargs):
-                chunks = iter(content)
-                self.assertEqual(len(next(chunks)), 256 * 1024)
+            async def put(_method, _url, *, content, **_kwargs):
+                chunks = aiter(content)
+                self.assertEqual(len(await anext(chunks)), 256 * 1024)
                 cancel_event.set()
                 with self.assertRaisesRegex(ChatGPTError, "cancelled"):
-                    next(chunks)
+                    await anext(chunks)
                 return SimpleNamespace(raise_for_status=Mock(), content=b"", status_code=200)
 
-            client.http = SimpleNamespace(is_closed=False)
-            client._upload_http = SimpleNamespace(is_closed=False, request=Mock(side_effect=put))
+            client._upload_http = SimpleNamespace(
+                is_closed=False, request=AsyncMock(side_effect=put)
+            )
             with self.assertRaisesRegex(ChatGPTError, "cancelled"):
-                client.upload_file(path.name, "text/plain", path, cancel_event=cancel_event)
-            self.assertEqual(client.request.call_count, 1)
-            client._upload_http.request.assert_called_once()
+                await client.upload_file(path.name, "text/plain", path, cancel_event=cancel_event)
+            self.assertEqual(client.request.await_count, 1)
+            client._upload_http.request.assert_awaited_once()
 
-    def test_chatgpt_client_rejects_files_above_documented_ceiling_before_network(self):
+    async def test_chatgpt_client_rejects_files_above_documented_ceiling_before_network(self):
         client = object.__new__(ChatGPTClient)
-        client.request = Mock()
+        client._active_streams = {}
+        client._closed = False
+        client.request = AsyncMock()
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "too-large.txt"
             with path.open("wb") as stream:
                 stream.truncate(512 * 1024 * 1024 + 1)
             with self.assertRaisesRegex(ChatGPTError, "size limit"):
-                client.upload_file(path.name, "text/plain", path)
-        client.request.assert_not_called()
+                await client.upload_file(path.name, "text/plain", path)
+        client.request.assert_not_awaited()
 
-    def test_upload_uses_cookie_isolated_client_and_sanitizes_sas_errors(self):
+    async def test_upload_uses_cookie_isolated_client_and_sanitizes_sas_errors(self):
         from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
 
-        from tests.fakes import FakeHTTPClient, FakeHTTPResponse
-
         client = ChatGPTClient.__new__(ChatGPTClient)
+        client._closed = False
         client.headers = {"authorization": "Bearer secret-tok", "cookie": "session=supersecret"}
-        client.http = FakeHTTPClient(lambda _req: FakeHTTPResponse(200))
-        self.addCleanup(client.http.close)
 
         seen_calls = []
 
@@ -3052,12 +3086,12 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             seen_calls.append(dict(request.headers))
             return FakeHTTPResponse(403, request=request)
 
-        client._upload_http = FakeHTTPClient(fake_send)
+        client._upload_http = FakeAsyncHTTPClient(fake_send)
         self.addCleanup(client._upload_http.close)
 
         sas_url = "https://blob.example/container/file?sig=VERYSECRETSIG"
         with self.assertRaisesRegex(ChatGPTError, "HTTP 403") as ctx:
-            client._upload_request(sas_url, content=b"abc")
+            await client._upload_request(sas_url, content=b"abc")
         self.assertNotIn("VERYSECRETSIG", str(ctx.exception))
         self.assertNotIn("cookie", seen_calls[0])
         self.assertNotIn("authorization", seen_calls[0])
@@ -3065,20 +3099,20 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         def failing_send(request) -> FakeHTTPResponse:
             raise CurlConnectionError(f"failed reaching {request.url}")
 
-        failing_http = FakeHTTPClient(failing_send)
+        failing_http = FakeAsyncHTTPClient(failing_send)
         self.addCleanup(failing_http.close)
         client._upload_http = failing_http
         with self.assertRaisesRegex(ChatGPTError, "upload request failed") as ctx:
-            client._upload_request(sas_url, content=b"abc")
+            await client._upload_request(sas_url, content=b"abc")
         self.assertNotIn("VERYSECRETSIG", str(ctx.exception))
 
-    def test_tracked_stream_injects_transport_headers_for_headerless_transport(self):
+    async def test_tracked_stream_injects_transport_headers_for_headerless_transport(self):
         captured = []
 
         class HeaderlessTransport:
             origin = "https://chatgpt.com"
 
-            def send(self, method, path, **options):
+            async def send(self, method, path, **options):
                 captured.append(("send", method, path, dict(options.get("headers") or {})))
                 return SimpleNamespace(
                     status_code=200,
@@ -3086,14 +3120,15 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
                     json=lambda: {"file_id": "file-id", "upload_url": "https://upload.example/put"},
                 )
 
-            def stream(self, method, path, **options):
+            @asynccontextmanager
+            async def stream(self, method, path, **options):
                 captured.append(("stream", method, path, dict(options.get("headers") or {})))
                 response = SimpleNamespace(
                     status_code=200,
                     headers={"content-type": "text/event-stream"},
-                    iter_bytes=lambda: iter((b'{"type":"file.processing.completed"}\n',)),
+                    aiter_bytes=lambda: _aiter_chunks((b'{"type":"file.processing.completed"}\n',)),
                 )
-                return nullcontext(response)
+                yield response
 
         session = SimpleNamespace(cdp_url=None, load=lambda: {}, headers={})
         client = ChatGPTClient(session, transport=HeaderlessTransport(), authenticate=False)
@@ -3102,9 +3137,9 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             "cookie": "__Secure-next-auth.session-token=secret",
             "user-agent": "UA",
         }
-        client._upload_request = Mock(return_value=SimpleNamespace(raise_for_status=Mock()))
+        client._upload_request = AsyncMock(return_value=SimpleNamespace(raise_for_status=Mock()))
 
-        result = client.upload_file("note.txt", "text/plain", b"hello", project_id="g-p-1")
+        result = await client.upload_file("note.txt", "text/plain", b"hello", project_id="g-p-1")
         self.assertEqual(result["id"], "file-id")
         self.assertEqual(captured[1][0], "stream")
         self.assertEqual(captured[1][2], "/backend-api/files/process_upload_stream")
@@ -3138,13 +3173,13 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
             session.close()
         self.assertEqual([w for w in recorded if "CurlCffiWarning" in w.category.__name__], [])
 
-    def test_upload_file_and_image_accept_real_transport_response(self):
+    async def test_upload_file_and_image_accept_real_transport_response(self):
         from webaiprovider.transport.base import _BufferedResponse
 
         class SlotTransport:
             origin = "https://chatgpt.com"
 
-            def send(self, method, path, **options):
+            async def send(self, method, path, **options):
                 del method, options
                 if path == "/backend-api/files":
                     payload = {"file_id": "f-real", "upload_url": "https://upload.example/put"}
@@ -3161,10 +3196,10 @@ class ChatGPTStreamingUploadTests(unittest.TestCase):
         client = ChatGPTClient(session, transport=SlotTransport(), authenticate=False)
         buffered = _BufferedResponse(SimpleNamespace(status_code=201, headers={}), b"")
         self.assertFalse(hasattr(buffered, "raise_for_status"))
-        client._upload_request = Mock(return_value=buffered)
+        client._upload_request = AsyncMock(return_value=buffered)
 
-        file_res = client.upload_file("doc.txt", "text/plain", b"hello")
-        image_res = client.upload_file("img.png", "image/png", png_header)
+        file_res = await client.upload_file("doc.txt", "text/plain", b"hello")
+        image_res = await client.upload_file("img.png", "image/png", png_header)
         self.assertEqual(file_res["id"], "f-real")
         self.assertEqual(image_res["id"], "f-real")
-        self.assertEqual(client._upload_request.call_count, 2)
+        self.assertEqual(client._upload_request.await_count, 2)

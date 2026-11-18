@@ -450,38 +450,30 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.state.value, "CANCELLED")
 
     async def test_repeated_upload_cancellation_waits_for_blocking_close(self):
-        import threading
-
         from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
 
-        started = threading.Event()
-        closing = threading.Event()
-        release = threading.Event()
+        started = asyncio.Event()
+        closing = asyncio.Event()
+        release = asyncio.Event()
 
         class Client:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                pass
-
-            def upload_file(self, *_args, cancel_event):
+            async def upload_file(self, *_args, **_kwargs):
                 started.set()
-                release.wait(3)
+                await asyncio.wait_for(release.wait(), 3)
                 return None
 
-            def close(self):
+            async def close(self):
                 closing.set()
-                release.wait(3)
+                await asyncio.wait_for(release.wait(), 3)
 
         provider = AsyncChatGPTProvider(
             Account.from_cookies("chatgpt", {}), client_factory=lambda _session: Client()
         )
         task = asyncio.create_task(provider.upload_file("fixture.txt"))
         try:
-            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            await asyncio.wait_for(started.wait(), 1)
             task.cancel()
-            self.assertTrue(await asyncio.to_thread(closing.wait, 1))
+            await asyncio.wait_for(closing.wait(), 1)
             task.cancel()
             await asyncio.sleep(0)
             self.assertFalse(task.done())

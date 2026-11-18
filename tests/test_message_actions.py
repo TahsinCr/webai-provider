@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
-from tests.fakes import FakeHTTPClient, FakeHTTPResponse, bind_stream
+from tests.fakes import FakeAsyncHTTPClient, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude.client import ClaudeClient
@@ -18,10 +18,10 @@ from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import Model
 from webaiprovider.resources.response.artifact import files_from
 from webaiprovider.resources.response.source import sources_from
-from webaiprovider.transport import HTTPTransport
+from webaiprovider.transport import AsyncHTTPTransport
 
 
-class ChatGPTActionsTests(unittest.TestCase):
+class ChatGPTActionsTests(unittest.IsolatedAsyncioTestCase):
     def test_download_metadata_supports_native_resources_and_ignores_web_page_links(self):
         cases = (
             (
@@ -72,7 +72,7 @@ class ChatGPTActionsTests(unittest.TestCase):
             (),
         )
 
-    def run_request(self, action, target, *, model="account-model"):
+    async def run_request(self, action, target, *, model="account-model"):
         sent = []
 
         def accept(request):
@@ -117,10 +117,10 @@ class ChatGPTActionsTests(unittest.TestCase):
         }
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {}
-        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
-        client.create_sentinel_headers = dict
-        with FakeHTTPClient(accept) as client.http:
-            result = client.send_prompt_direct(
+        client.create_sentinel_headers = AsyncMock(return_value={})
+        async with FakeAsyncHTTPClient(accept) as http:
+            client.transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: http)
+            result = await client.send_prompt_direct(
                 conversation,
                 "Edited",
                 [],
@@ -130,8 +130,8 @@ class ChatGPTActionsTests(unittest.TestCase):
             )
         return sent, result
 
-    def test_retry_reuses_the_user_parent_without_submitting_a_second_user_message(self):
-        sent, result = self.run_request(MessageAction.RETRY, "answer")
+    async def test_retry_reuses_the_user_parent_without_submitting_a_second_user_message(self):
+        sent, result = await self.run_request(MessageAction.RETRY, "answer")
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["action"], "variant")
         self.assertEqual(sent[0]["parent_message_id"], "user")
@@ -140,8 +140,8 @@ class ChatGPTActionsTests(unittest.TestCase):
         self.assertEqual(result[:3], ("chat", "user", None))
         self.assertEqual(result[3][0]["id"], "new-answer")
 
-    def test_edit_replaces_the_prompt_but_keeps_native_image_and_attachment_references(self):
-        sent, result = self.run_request(MessageAction.EDIT, "user")
+    async def test_edit_replaces_the_prompt_but_keeps_native_image_and_attachment_references(self):
+        sent, result = await self.run_request(MessageAction.EDIT, "user")
         body = sent[0]
         self.assertEqual(body["parent_message_id"], "root")
         self.assertEqual(body["messages"][0]["content"]["parts"][-1], "Edited")
@@ -151,11 +151,11 @@ class ChatGPTActionsTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["metadata"]["attachments"][0]["id"], "file-image")
         self.assertNotEqual(result[1], "user")
 
-    def test_foreign_or_removed_message_cannot_trigger_a_generation(self):
+    async def test_foreign_or_removed_message_cannot_trigger_a_generation(self):
         with self.assertRaisesRegex(Exception, "no longer editable"):
-            self.run_request(MessageAction.EDIT, "other-conversation-message")
+            await self.run_request(MessageAction.EDIT, "other-conversation-message")
 
-    def test_pending_branch_first_turn_uses_source_identities_without_preview_id(self):
+    async def test_pending_branch_first_turn_uses_source_identities_without_preview_id(self):
         sent = []
 
         def accept(request):
@@ -186,10 +186,10 @@ class ChatGPTActionsTests(unittest.TestCase):
         }
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {}
-        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
-        client.create_sentinel_headers = dict
-        with FakeHTTPClient(accept) as client.http:
-            resolved_id, _, _, _ = client.send_prompt_direct(
+        client.create_sentinel_headers = AsyncMock(return_value={})
+        async with FakeAsyncHTTPClient(accept) as http:
+            client.transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: http)
+            resolved_id, _, _, _ = await client.send_prompt_direct(
                 conversation,
                 "Branch prompt",
                 [],
@@ -202,7 +202,7 @@ class ChatGPTActionsTests(unittest.TestCase):
         self.assertEqual(sent[0]["branching_from_message_id"], "branch-point")
         self.assertEqual(sent[0]["parent_message_id"], "branch-point")
 
-    def test_edit_first_turn_without_root_node_fetches_mapping_parent(self):
+    async def test_edit_first_turn_without_root_node_fetches_mapping_parent(self):
         from webaiprovider.providers.chatgpt.client import ChatGPTError
 
         requests_seen = []
@@ -243,10 +243,10 @@ class ChatGPTActionsTests(unittest.TestCase):
         }
         client = ChatGPTClient.__new__(ChatGPTClient)
         client.headers = {}
-        client.transport = HTTPTransport("https://chatgpt.com", client_getter=lambda: client.http)
-        client.create_sentinel_headers = dict
-        with FakeHTTPClient(accept) as client.http:
-            client.send_prompt_direct(
+        client.create_sentinel_headers = AsyncMock(return_value={})
+        async with FakeAsyncHTTPClient(accept) as http:
+            client.transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: http)
+            await client.send_prompt_direct(
                 conversation,
                 "Edited first turn",
                 [],
@@ -260,7 +260,7 @@ class ChatGPTActionsTests(unittest.TestCase):
 
             mapping_status = 404
             with self.assertRaisesRegex(ChatGPTError, "parent is unavailable"):
-                client.send_prompt_direct(
+                await client.send_prompt_direct(
                     conversation,
                     "Edited first turn",
                     [],
