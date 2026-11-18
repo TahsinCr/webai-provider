@@ -1,7 +1,7 @@
 """Live checks for project listing and a disposable project lifecycle."""
 
 from webaiprovider.base import Capability
-from webaiprovider.errors import UnsupportedOperationError
+from webaiprovider.errors import RemoteNotFound, UnsupportedOperationError
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
 from webaiprovider.resources.model.types import Models
 
@@ -168,24 +168,19 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                     with self.assertRaises(UnsupportedOperationError):
                         await loose_chat.move_to(project)
 
-                    without_projects = await self.call_api(
-                        "chats.search_without_projects",
-                        lambda: self.context.session.chats.search(loose_title),
+                    with self.assertRaises(RemoteNotFound):
+                        await self.call_api(
+                            "chats.get_without_projects",
+                            lambda: self.context.session.chats.get(
+                                loose_chat.remote_id, metadata_only=True
+                            ),
+                            expected_errors=(RemoteNotFound,),
+                        )
+                    found = await self.call_api(
+                        "projects.chats.get", lambda: project.chats.get(loose_chat.remote_id)
                     )
-                    self.assertEqual(without_projects, [])
-                    with_projects = await self.call_api(
-                        "chats.search_with_projects",
-                        lambda: self.context.session.chats.search(
-                            loose_title, include_projects=True
-                        ),
-                    )
-                    found = next(
-                        (item for item in with_projects if item.remote_id == loose_chat.remote_id),
-                        None,
-                    )
-                    self.assertIsNotNone(found)
-                    assert found is not None and found.project is not None
-                    self.assertEqual(found.project.remote_id, project.remote_id)
+                    self.assertIsNotNone(found.project)
+                    self.assertTrue(found.project.remote_id == project.remote_id)
 
                     if isinstance(self.context.session, AsyncChatGPTProvider):
                         second_marker = f"{self.context.marker}-p2"
@@ -209,9 +204,6 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                 else:
                     self.context.skip("projects.chat.move_to: unsupported")
             finally:
-                if chat_entry is not None:
-                    await self.context.cleanup_entry_async(chat_entry)
-                if second_project_entry is not None:
-                    await self.context.cleanup_entry_async(second_project_entry)
+                await self.context.cleanup_entries_async(chat_entry, second_project_entry)
         finally:
             await self.context.cleanup_entry_async(entry)

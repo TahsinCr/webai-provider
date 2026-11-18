@@ -13,6 +13,8 @@ from .config import LiveAccount
 from .errors import CleanupError, LiveApiError, SafetyError
 from .journal import _DEFAULT_CLEANUP_FILE, CLEANUP_FILE, cleanup_file, write_cleanup_state
 
+_CLEANUP_RATE_LIMIT = "The provider rate limited cleanup; the journal was retained"
+
 
 def _safe_error_label(exc: Exception) -> str:
     if isinstance(exc, CurlTimeout):
@@ -78,7 +80,7 @@ class LiveContext:
             ) from None
         elapsed = round((time.monotonic() - started) * 1000)
         self.results.append((label, elapsed))
-        print(f"PASS  {label}  {elapsed} ms", flush=True)
+        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
         return value
 
     async def call_async(
@@ -98,7 +100,7 @@ class LiveContext:
             ) from None
         elapsed = round((time.monotonic() - started) * 1000)
         self.results.append((label, elapsed))
-        print(f"PASS  {label}  {elapsed} ms", flush=True)
+        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
         return value
 
     def skip(self, label: str) -> None:
@@ -175,8 +177,20 @@ class LiveContext:
         self._cleanup_attempted.add(id(entry))
         await self._cleanup_one_async(entry)
 
+    async def cleanup_entries_async(self, *entries: dict[str, Any] | None) -> None:
+        error: Exception | None = None
+        for entry in entries:
+            if entry is None:
+                continue
+            try:
+                await self.cleanup_entry_async(entry)
+            except Exception as exc:
+                error = error or exc
+        if error is not None:
+            raise error
+
     async def _cleanup_one_async(self, entry: dict[str, Any]) -> None:
-        from webaiprovider.errors import ProviderError, RemoteNotFound
+        from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 
         kind = entry["kind"]
         if kind not in {"chat", "project"}:
@@ -189,6 +203,9 @@ class LiveContext:
         get_remote = getattr(provider, f"get_{kind}", None) or getattr(
             provider, f"_get_{kind}_data"
         )
+        get_details = get_remote
+        if kind == "chat" and self.account.provider == "grok":
+            get_remote = getattr(provider, "_get_chat_metadata", get_remote)
         delete_remote = getattr(provider, f"delete_{kind}", None) or getattr(
             provider, f"_delete_{kind}_data"
         )
@@ -230,6 +247,8 @@ class LiveContext:
         except RemoteNotFound:
             self._remove_entry(entry)
             return
+        except RateLimited:
+            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
         except ProviderError:
             remote = await listed_remote()
         if remote is None:
@@ -237,17 +256,30 @@ class LiveContext:
             return
         if str(remote_id) in exclude_ids:
             raise CleanupError("The remote object is excluded from cleanup deletion")
-        if str(self._remote_id(remote)) != str(remote_id) or not self._matches_marker(
-            remote, kind, tuple(entry["markers"])
+        markers = tuple(entry["markers"])
+        matches = str(self._remote_id(remote)) == str(remote_id)
+        if (
+            matches
+            and get_remote is not get_details
+            and not self._matches_marker(remote, kind, markers)
         ):
+            remote = await self.call_async(
+                f"cleanup.get_{kind}_details", lambda: get_details(str(remote_id))
+            )
+            matches = str(self._remote_id(remote)) == str(remote_id)
+        if not matches or not self._matches_marker(remote, kind, markers):
             raise CleanupError("The remote object does not match this run's unique test marker")
 
-        with suppress(ProviderError):
+        try:
             await self.call_async(
                 f"cleanup.delete_{kind}",
                 lambda: delete_remote(str(remote_id)),
                 expected_errors=(ProviderError,),
             )
+        except RateLimited:
+            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
+        except ProviderError:
+            pass
         try:
             remaining = await self.call_async(
                 f"cleanup.verify_{kind}_deleted",
@@ -256,6 +288,8 @@ class LiveContext:
             )
         except RemoteNotFound:
             remaining = None
+        except RateLimited:
+            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
         except ProviderError:
             remaining = await listed_remote()
         if remaining is not None:

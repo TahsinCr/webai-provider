@@ -421,6 +421,12 @@ class _LiveReportingMixin(unittest.TestCase):
             feature_skips = list(getattr(ctx, "skipped", ())[before_feature_skips:])
         else:
             feature_skips = list(getattr(ctx, "skipped", ()))
+        if status == "passed" and feature_skips:
+            status = "partial"
+        if status == "skipped_rate_limited":
+            feature_skips = [
+                label for label in feature_skips if not label.endswith(": rate_limited")
+            ]
         _append_report_entry(self._live_api, self.id(), status, feature_skips)
         return returned
 

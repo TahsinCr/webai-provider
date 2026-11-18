@@ -38,7 +38,7 @@ python run_tests.py
 python run_live_tests.py
 ```
 
-The first script excludes `tests/live` entirely. The second stops if any offline test fails, then runs live checks serially. By default it tests ChatGPT, Claude, Gemini, and Grok with both API styles, pausing one second between provider/API sessions. Limit the run when needed:
+The first script excludes `tests/live` entirely. The second stops if any offline test fails. It runs the sync and async phases in sequence for each provider. Different providers can run concurrently where the credential store supports process locking. Limit the run with `WEBAI_LIVE_PROVIDER` and `WEBAI_LIVE_API`:
 
 ```sh
 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_API=async python run_live_tests.py
@@ -59,11 +59,19 @@ Use `WEBAI_LIVE_API=sync` to test the synchronous API. The test base class skips
 
 ## Coverage and limits
 
-The live suite checks the public session, model, chat, project, and message flows: session opening/capabilities, model listing, chat/project metadata, temporary project create/rename/instruction update/text resource add/remove/delete, and one short message stream plus history/rename/delete in a temporary chat. Provider capabilities determine which optional project actions run. This is a safe integration smoke suite, not a live call of every public method: offline tests cover deterministic API contracts, while upload/download and additional-generation operations remain excluded to limit quota and remote side effects.
+| Scenario | Remote behavior exercised |
+| --- | --- |
+| Sessions and models | Open a session, read the authenticated account catalog, explicitly refresh it, and send a short message to each available model in the async phase. |
+| Chats and messages | List chats, stream and read back a marked conversation, and rename and delete it. The async phase also checks incognito mode, a small message attachment, a sourced response when the model returns sources, retry, edit, and branch where supported. Chat opening with history is checked when reading back a retry. |
+| Projects and resources | List, create, rename, update instructions, add/list/remove a text resource, and delete. The async phase checks remote chat membership after a move through the project-scoped collection. |
 
-Calls are serialized with a one-second cooldown between public API actions and a 32-action limit per provider/API run. The only harness retry is the single default-browser cookie refresh described above; session opens count toward the action limit, while closes release local resources. Each feature opens and closes its own session so async clients stay on their isolated test loop. Providers may make multiple HTTP requests inside one API action, so the harness cannot pace every internal request. Async calls have a 90-second timeout; sync calls use the provider transport timeout. The report contains action names and durations only, never prompts, responses, credentials, or remote IDs.
+The suite uses disposable data and the account's advertised capabilities. Raw transport endpoints, arbitrary downloads, destructive account operations, and provider-specific combinations outside these scenarios have deterministic offline coverage where applicable. A model that returns no sources leaves source coverage partial.
 
-Before creating a remote test object, the suite writes a private cleanup journal. It deletes only an object whose remote title contains the run's unique random marker, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
+The gate keeps a one-second cooldown between API actions on the same account. It caps a single API phase at 64 actions and a combined run at 120. Async actions time out after 300 seconds. Sync actions use provider transport timeouts. Providers may issue multiple requests within an API action. The harness only retries setup once for a typed authentication error on the default-browser account.
+
+`ACTION OK` confirms the API call returned. Its duration includes gate wait time. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. The report contains no prompt, response, credential, or remote ID values.
+
+Before creating a remote test object, the suite writes a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
 
 ```sh
 WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal WEBAI_LIVE_API=async \
@@ -71,5 +79,3 @@ WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_A
 ```
 
 Recovery performs no new API tests. If the provider remains unavailable or deletion cannot be confirmed, inspect its UI for the `webai-live-...` marker and resolve the pending object before running the suite again. No test harness can guarantee remote deletion while a provider is unavailable.
-
-Uploads, downloads, retries, edits, and branching are excluded from live execution because they consume additional quota or can leave provider-side artifacts without a universal reversible operation. Their behavior remains covered by offline tests; a green live run does not claim these operations were exercised against the provider.

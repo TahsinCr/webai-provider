@@ -12,7 +12,7 @@ class ModelApiTests(LiveSyncTestCase):
     def test_available_models_are_listed(self) -> None:
         if Capability.MODELS not in self.context.session.capabilities:
             self.skipTest("Provider does not expose model catalogs")
-        models = self.call_api("models.list", self.context.session.models.list)
+        models = self.context.session.models.list()
         self.assertTrue(models, "Authenticated account returned an empty model catalog")
         catalog = self.context.session.models
         model = models[0]
@@ -25,12 +25,14 @@ class ModelApiTests(LiveSyncTestCase):
 
 
 class AsyncModelApiTests(LiveAsyncTestCase):
-    async def test_available_models_are_listed(self) -> None:
-        if Capability.MODELS not in self.context.session.capabilities:
+    async def test_catalog_and_model_execution(self) -> None:
+        capabilities = self.context.session.capabilities
+        if Capability.MODELS not in capabilities:
             self.skipTest("Provider does not expose model catalogs")
-        models = await self.call_api("models.list", self.context.session.models.list)
-        self.assertTrue(models, "Authenticated account returned an empty model catalog")
+
         catalog = self.context.session.models
+        models = await self.call_api("models.refresh", catalog.refresh)
+        self.assertTrue(models, "Authenticated account returned an empty model catalog")
         model = models[0]
         self.assertEqual(await catalog.get(model.id), model)
         self.assertEqual(await catalog.find(model.id), model)
@@ -39,17 +41,13 @@ class AsyncModelApiTests(LiveAsyncTestCase):
         if efforts := model.efforts.list():
             self.assertEqual((await catalog.resolve(efforts[0])).effort, efforts[0])
 
-    async def test_every_model_responds_with_standard_effort(self) -> None:
-        capabilities = self.context.session.capabilities
-        if Capability.MODELS not in capabilities or Capability.CHAT not in capabilities:
-            self.skipTest("Provider does not expose chat model execution")
-
         use_temporary = Capability.TEMPORARY in capabilities
-        if not use_temporary and Capability.DELETE not in capabilities:
-            self.skipTest("Provider cannot safely isolate or clean up model verification chats")
+        if Capability.CHAT not in capabilities or (
+            not use_temporary and Capability.DELETE not in capabilities
+        ):
+            self.context.skip("models.send: unavailable_or_cannot_safely_clean_up")
+            return
 
-        models = await self.call_api("models.refresh_all", self.context.session.models.refresh)
-        self.assertTrue(models)
         for model in models:
             efforts = model.efforts.list()
             by_id = {effort.id: effort for effort in efforts}

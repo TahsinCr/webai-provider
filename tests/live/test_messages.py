@@ -11,6 +11,23 @@ from webaiprovider.resources.model.types import Models
 from .support.case import LiveAsyncTestCase, LiveSyncTestCase
 
 
+def _assert_streamed_turn_in_history(case, response, history) -> None:
+    case.assertTrue(history, "Provider returned an empty response history")
+    case.assertTrue(all(isinstance(item, Response) for item in history))
+    response_id = getattr(response, "remote_id", None) or response.id
+    verified = next(
+        (
+            item
+            for item in reversed(history)
+            if item.remote_id == response_id and item.metadata.get("from_history")
+        ),
+        None,
+    )
+    case.assertIsNotNone(verified, "Streamed response was not found in provider history")
+    if isinstance(response, Response) and verified.timing is not None:
+        case.assertIs(verified.timing, response.timing)
+
+
 class MessageApiTests(LiveSyncTestCase):
     def test_temporary_message_stream_history_and_cleanup(self) -> None:
         capabilities = self.context.session.capabilities
@@ -32,7 +49,8 @@ class MessageApiTests(LiveSyncTestCase):
                 try:
                     for _event in operation.stream():
                         events += 1
-                        self.context.record_chat_id(entry, chat)
+                        if not entry.get("remote_id"):
+                            self.context.record_chat_id(entry, chat)
                     return events
                 finally:
                     self.context.record_chat_id(entry, chat)
@@ -52,9 +70,7 @@ class MessageApiTests(LiveSyncTestCase):
             responses = self.call_api(
                 "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
             )
-            self.assertGreaterEqual(len(responses), 1)
-            self.assertTrue(all(isinstance(item, Response) for item in responses))
-            self.assertIsNone(responses[-1].timing)
+            _assert_streamed_turn_in_history(self, response, responses)
 
             if Capability.RENAME in capabilities:
                 renamed = f"{marker}-renamed"
@@ -137,7 +153,8 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 try:
                     async for _event in operation.stream():
                         events += 1
-                        self.context.record_chat_id(entry, chat)
+                        if not entry.get("remote_id"):
+                            self.context.record_chat_id(entry, chat)
                     return events
                 finally:
                     self.context.record_chat_id(entry, chat)
@@ -163,6 +180,8 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 "responses.create.web_followup", web_op.start, entry=entry, chat=chat
             )
             self.assertTrue(getattr(web_response, "text", ""))
+            if not web_response.sources:
+                self.context.skip("responses.sources: no sources returned")
             for source in web_response.sources:
                 if source.url:
                     self.assertTrue(source.url.startswith(("http://", "https://")))
@@ -178,9 +197,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             responses = await self.call_api(
                 "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
             )
-            self.assertGreaterEqual(len(responses), 1)
-            self.assertTrue(all(isinstance(item, Response) for item in responses))
-            self.assertIsNone(responses[-1].timing)
+            _assert_streamed_turn_in_history(self, followup_response, responses)
 
             if Capability.MESSAGE_RETRY in capabilities:
                 self.assertGreaterEqual(len(responses), 3)
@@ -191,9 +208,12 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     chat=chat,
                 )
                 self.assertTrue(getattr(retried_last, "text", ""))
-                responses = await self.call_api(
-                    "responses.list_after_retry_last", lambda: chat.responses.list(limit=50)
+                reopened, responses = await self.call_api(
+                    "chats.get_with_responses_after_retry",
+                    lambda: self.context.session.chats.get_with_responses(chat.remote_id, limit=50),
                 )
+                self.assertTrue(reopened.remote_id == chat.remote_id)
+                _assert_streamed_turn_in_history(self, retried_last, responses)
             else:
                 self.context.skip("responses.retry: unsupported")
 
@@ -210,6 +230,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 responses = await self.call_api(
                     "responses.list_after_edit_last", lambda: chat.responses.list(limit=50)
                 )
+                _assert_streamed_turn_in_history(self, edited_last, responses)
             else:
                 self.context.skip("responses.edit: unsupported")
 
@@ -309,16 +330,4 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             else:
                 self.context.skip("chats.rename: unsupported")
         finally:
-            first_cleanup_error: Exception | None = None
-            if branch_entry is not None:
-                try:
-                    await self.context.cleanup_entry_async(branch_entry)
-                except Exception as exc:
-                    first_cleanup_error = exc
-            try:
-                await self.context.cleanup_entry_async(entry)
-            except Exception as exc:
-                if first_cleanup_error is None:
-                    first_cleanup_error = exc
-            if first_cleanup_error is not None:
-                raise first_cleanup_error
+            await self.context.cleanup_entries_async(branch_entry, entry)

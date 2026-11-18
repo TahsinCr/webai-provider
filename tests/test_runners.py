@@ -241,17 +241,20 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("rate_limited=1", output)
         self.assertIn("unsupported=1", output)
-        self.assertIn("passed=1", output)
+        self.assertIn("passed=0 partial=1", output)
         self.assertNotIn("all live scenarios passed without skips", output.lower())
         self.assertIn("partial verification only", output.lower())
 
-    def test_live_runner_fails_when_report_is_missing_or_zero_scenarios_ran(self) -> None:
+    def test_live_runner_fails_without_a_verified_scenario(self) -> None:
         result = CompletedProcess([], 0)
-        for scenario_reports, write_report in (
-            (None, False),
-            ({("grok", "async"): {"provider": "grok", "api": "async", "tests": []}}, True),
-        ):
-            with self.subTest(write_report=write_report):
+        for scenarios in (None, [], [{"id": "t1", "status": "skipped_rate_limited"}]):
+            write_report = scenarios is not None
+            scenario_reports = (
+                {("grok", "async"): {"provider": "grok", "api": "async", "tests": scenarios}}
+                if write_report
+                else None
+            )
+            with self.subTest(scenarios=scenarios):
                 popen_cls = _fake_popen_factory(
                     [0], reports=scenario_reports, write_report=write_report
                 )

@@ -542,16 +542,36 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.provider.delete_project.assert_not_awaited()
         self.assertEqual(self.provider.list_projects.await_count, 1)
 
+    async def test_rate_limited_cleanup_keeps_journal_and_does_not_scan_or_retry(self) -> None:
+        entry, remote = self.track()
+        self.provider.get_project = AsyncMock(return_value=remote)
+        self.provider.delete_project = AsyncMock(side_effect=RateLimited(30))
+        self.provider.list_projects = AsyncMock()
+        with self.assertRaisesRegex(CleanupError, "rate limited cleanup"):
+            await self.context.cleanup_entry_async(entry)
+        self.provider.get_project.assert_awaited_once_with(self.remote_id)
+        self.provider.delete_project.assert_awaited_once_with(self.remote_id)
+        self.provider.list_projects.assert_not_awaited()
+        self.assertTrue(self.journal.exists())
+
     async def test_chat_marker_in_history_allows_exact_cleanup(self) -> None:
-        entry, remote = self.track("chat")
+        self.context.account = LiveAccount(
+            alias=self.context.account.alias, provider="grok", credentials={}
+        )
+        entry, _ = self.track("chat")
         remote = Conversation(
             self.remote_id,
             "Automatic title",
             (MessageData("user-id", "user", (Content("text", entry["markers"][0]),)),),
         )
-        self.provider.get_chat = AsyncMock(side_effect=(remote, RemoteNotFound("missing")))
+        self.provider._get_chat_metadata = AsyncMock(
+            side_effect=(Conversation(self.remote_id, "Automatic title"), RemoteNotFound("missing"))
+        )
+        self.provider.get_chat = AsyncMock(return_value=remote)
         self.provider.delete_chat = AsyncMock()
         await self.context.cleanup_entry_async(entry)
+        self.provider.get_chat.assert_awaited_once_with(self.remote_id)
+        self.assertEqual(self.provider._get_chat_metadata.await_count, 2)
         self.provider.delete_chat.assert_awaited_once_with(self.remote_id)
         self.assertFalse(self.journal.exists())
 
@@ -1532,9 +1552,9 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 [(item["status"], item["feature_skips"]) for item in report["tests"]],
                 [
-                    ("passed", ["optional: unsupported"]),
+                    ("partial", ["optional: unsupported"]),
                     ("skipped_unsupported", []),
-                    ("skipped_rate_limited", ["sample.op: rate_limited"]),
+                    ("skipped_rate_limited", []),
                     ("failed", []),
                     ("skipped_setup_failed", []),
                 ],
@@ -1619,7 +1639,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     title = branched.title if cid == "c_branch_real" else root_chat.title
                     return Conversation(cid, title)
 
-                from webaiprovider import AsyncMessage, Response
+                from webaiprovider import AsyncMessage, Response, TimingMetrics
 
                 root_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
                 branch_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
@@ -1680,7 +1700,8 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         remote_id=f"m-{cid}",
                         message=branch_user if cid == "preview-1" else root_user,
                         chat=chat_obj,
-                        metadata={"actions": ("retry", "branch")},
+                        metadata={"actions": ("retry", "branch"), "from_history": True},
+                        timing=TimingMetrics(duration_ms=50),
                     )
                     chat_obj.responses = SimpleNamespace(
                         create=lambda *_a, **_kw: make_op(
@@ -1760,7 +1781,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         remote_id="m-c_branch_real",
                         message=branch_user,
                         chat=real,
-                        metadata={"actions": ("retry", "branch")},
+                        metadata={"actions": ("retry", "branch"), "from_history": True},
                     )
                     real.responses = SimpleNamespace(
                         create=lambda *_a, **_kw: make_op(
@@ -1885,7 +1906,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
 
                 return _FakeOp()
 
-            from webaiprovider import AsyncMessage, Response
+            from webaiprovider import AsyncMessage, Response, TimingMetrics
 
             root_turn = Response(
                 "ROOT",
@@ -1893,7 +1914,8 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 remote_id="m-c_root",
                 message=AsyncMessage("u1", role="user", id="u-1", remote_id="u-1"),
                 chat=root_chat,
-                metadata={"actions": ("branch",)},
+                metadata={"actions": ("branch",), "from_history": True},
+                timing=TimingMetrics(duration_ms=50),
             )
             root_chat.responses = SimpleNamespace(
                 create=lambda *_a, **_kw: make_fake_op(root_chat, "c_root", "m-c_root", "ROOT"),

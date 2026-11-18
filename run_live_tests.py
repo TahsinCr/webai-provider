@@ -33,6 +33,7 @@ class _PhaseOutcome:
     returncode: int
     total: int = 0
     passed: int = 0
+    partial: int = 0
     skipped_unsupported: int = 0
     skipped_rate_limited: int = 0
     skipped_setup_failed: int = 0
@@ -49,13 +50,14 @@ class _PhaseOutcome:
             or self.skipped_setup_failed > 0
             or self.report_missing
             or self.cleanup_pending
-            or self.total == 0
+            or self.passed + self.partial == 0
         )
 
     @property
     def has_skips(self) -> bool:
         return (
-            self.skipped_unsupported > 0
+            self.partial > 0
+            or self.skipped_unsupported > 0
             or self.skipped_rate_limited > 0
             or self.skipped_setup_failed > 0
             or self.feature_skips > 0
@@ -151,6 +153,7 @@ def _read_phase_report(
 
     counts = {
         "passed": 0,
+        "partial": 0,
         "skipped_unsupported": 0,
         "skipped_rate_limited": 0,
         "skipped_setup_failed": 0,
@@ -161,10 +164,12 @@ def _read_phase_report(
         if not isinstance(item, dict):
             return _PhaseOutcome(provider, api, returncode, report_missing=True)
         status = item.get("status")
-        if status not in counts:
+        if not isinstance(status, str) or status not in counts:
             return _PhaseOutcome(provider, api, returncode, report_missing=True)
-        counts[status] += 1
         skips = item.get("feature_skips")
+        if status == "passed" and skips:
+            status = "partial"
+        counts[status] += 1
         if isinstance(skips, list):
             feature_skips += len(skips)
     return _PhaseOutcome(
@@ -173,6 +178,7 @@ def _read_phase_report(
         returncode=returncode,
         total=len(tests),
         passed=counts["passed"],
+        partial=counts["partial"],
         skipped_unsupported=counts["skipped_unsupported"],
         skipped_rate_limited=counts["skipped_rate_limited"],
         skipped_setup_failed=counts["skipped_setup_failed"],
@@ -314,7 +320,7 @@ def main() -> int:
             continue
         extra = f" feature_skips={item.feature_skips}" if item.feature_skips else ""
         print(
-            f"  {item.provider}/{item.api}: ran={item.total} passed={item.passed} "
+            f"  {item.provider}/{item.api}: scenarios={item.total} passed={item.passed} partial={item.partial} "
             f"unsupported={item.skipped_unsupported} rate_limited={item.skipped_rate_limited} "
             f"setup_skipped={item.skipped_setup_failed} failed={item.failed}{extra}",
             flush=True,
