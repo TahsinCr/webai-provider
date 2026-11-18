@@ -19,7 +19,7 @@ from ...accounts.credentials import read_session_async
 from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectEditorMixin, confirm_deleted
+from ...base import Capability, ProjectMutationsMixin, confirm_deleted
 from ...collections import Page, _publish_collection_change
 from ...core.files import DownloadSource
 from ...core.operations import execute_with_hooks
@@ -184,7 +184,7 @@ class _Stopped(Exception):
     pass
 
 
-class AsyncChatGPTProvider(ProjectEditorMixin, AsyncProvider):
+class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CHATGPT
 
     _chat_type = AsyncChatGPTChat

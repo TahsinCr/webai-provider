@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ...accounts import delete_session, session_exists
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectEditorMixin
+from ...base import Capability, ProjectMutationsMixin
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
@@ -194,7 +194,7 @@ def _grok_attachment_entry(metadata: dict) -> dict | str:
     return metadata
 
 
-class AsyncGrokProvider(ProjectEditorMixin, AsyncProvider):
+class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.GROK
 
     _chat_type = AsyncGrokChat

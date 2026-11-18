@@ -125,8 +125,10 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
+        self.provider._get_project_data.reset_mock()
         await project.attachments.delete("resource-2")
         self.provider._remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
+        self.provider._get_project_data.assert_not_awaited()
         state["project"] = original
         loaded_projects = await self.provider.projects.list(limit=None)
         loaded = loaded_projects[0]

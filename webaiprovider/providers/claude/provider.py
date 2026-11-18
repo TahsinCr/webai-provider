@@ -9,7 +9,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectEditorMixin
+from ...base import Capability, ProjectMutationsMixin
 from ...collections import Page
 from ...core import gather_bounded
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from ...accounts.account import Account
 
 
-class AsyncClaudeProvider(ProjectEditorMixin, AsyncProvider):
+class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CLAUDE
 
     _chat_type = AsyncClaudeChat

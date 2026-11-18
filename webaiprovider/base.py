@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -10,6 +11,8 @@ from .errors import ProviderError, RemoteNotFound
 if TYPE_CHECKING:
     from .accounts.account import Account
     from .resources.project.types import ProjectData, ProjectOptions
+
+_STAGED_PROJECT: ContextVar[ProjectData | None] = ContextVar("_staged_project", default=None)
 
 
 class ProviderType(str, Enum):
@@ -82,7 +85,7 @@ class BaseProvider:
         return f"<{type(self).__name__} type={self.type.value!r} account={self.account.id!r}>"
 
 
-class ProjectEditorMixin:
+class ProjectMutationsMixin:
     """Shared project mutations backed by a provider editor and concurrency gate."""
 
     if TYPE_CHECKING:
@@ -123,22 +126,25 @@ class ProjectEditorMixin:
         *,
         name: str | None = None,
         instructions: str | None = None,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         from .resources.project.types import ProjectData
 
         if name is not None and not name.strip():
             raise ValueError("Project name is required")
-        current = await self._get_project_data(project_id)
+        staged = current if current is not None else _STAGED_PROJECT.get()
+        if staged is None or staged.id != project_id:
+            staged = await self._get_project_data(project_id)
         changes: dict[str, Any] = {}
-        if name is not None and current.name != name:
+        if name is not None and staged.name != name:
             changes["name"] = name
-        if instructions is not None and (current.instructions or "") != instructions:
+        if instructions is not None and (staged.instructions or "") != instructions:
             changes["instructions"] = instructions
         if not changes:
-            return current
+            return staged
         editor = self._get_project_editor()
         async with self._get_project_gate():
-            result = await editor.write("update", project_id, current=current, **changes)
+            result = await editor.write("update", project_id, current=staged, **changes)
         if isinstance(result, ProjectData):
             self._invalidate_project_cache(project_id)
             return result
@@ -153,12 +159,19 @@ class ProjectEditorMixin:
         self,
         project_id: str,
         kind: str,
+        *,
+        current: ProjectData | None = None,
         **values: Any,
     ) -> ProjectData:
         from .resources.message.attachment import Attachment
         from .resources.project.types import ProjectData
 
-        before = await self._get_project_data(project_id)
+        staged = current if current is not None else _STAGED_PROJECT.get()
+        before = (
+            staged
+            if staged is not None and staged.id == project_id
+            else await self._get_project_data(project_id)
+        )
         ids = {resource.id for resource in before.resources}
         editor = self._get_project_editor()
         async with self._get_project_gate():
@@ -183,10 +196,17 @@ class ProjectEditorMixin:
         self,
         project_id: str,
         resource_id: str,
+        *,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         from .resources.project.types import ProjectData
 
-        before = await self._get_project_data(project_id)
+        staged = current if current is not None else _STAGED_PROJECT.get()
+        before = (
+            staged
+            if staged is not None and staged.id == project_id
+            else await self._get_project_data(project_id)
+        )
         source = next(
             (resource for resource in before.resources if resource.id == resource_id),
             None,
@@ -198,6 +218,7 @@ class ProjectEditorMixin:
             result = await editor.write(
                 "remove_source",
                 project_id,
+                current=before,
                 resource_id=resource_id,
                 resource_name=source.name,
                 resource=source,

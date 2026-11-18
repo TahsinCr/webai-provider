@@ -166,7 +166,10 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
                     self.provider._require_provider()
                     previous = (target.title, target.instruction._text)
                     updated = await self.provider._patch_project_data(
-                        target.remote_id, name=new_title, instructions=new_instruction
+                        target.remote_id,
+                        name=new_title,
+                        instructions=new_instruction,
+                        current=lambda: target._provider_project,
                     )
                     target._apply_provider_project(updated, replace_resources=False)
                     ctx.metadata["remote_update"] = previous != (
@@ -439,7 +442,10 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 async with provider.runtime.activity():
                     provider._require_provider()
                     updated = await provider._add_project_resource_data(
-                        self.project.remote_id, kind, **send_options
+                        self.project.remote_id,
+                        kind,
+                        current=lambda: self.project._provider_project,
+                        **send_options,
                     )
                 if not isinstance(updated, ProviderProject):
                     raise ProviderError("Provider returned an invalid project")
@@ -506,7 +512,8 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 
     async def delete(self, attachment: Attachment | str) -> None:
         file_id = attachment.id if isinstance(attachment, Attachment) else str(attachment)
-        await self._load_attachments()
+        if not any(item.id == file_id for item in self._items):
+            await self._load_attachments()
         provider = self.project.provider
         runtime = provider.runtime if provider is not None else None
 
@@ -519,7 +526,9 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 async with provider.runtime.activity():
                     provider._require_provider()
                     updated = await provider._remove_project_resource_data(
-                        self.project.remote_id, file_id
+                        self.project.remote_id,
+                        file_id,
+                        current=lambda: self.project._provider_project,
                     )
                 if isinstance(updated, ProviderProject):
                     self.project._provider_project = updated

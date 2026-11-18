@@ -1129,11 +1129,11 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import ProjectEditorMixin
+        from webaiprovider.base import ProjectMutationsMixin
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConfirmingProvider(ProjectEditorMixin, AsyncProvider):
+        class ConfirmingProvider(ProjectMutationsMixin, AsyncProvider):
             def __init__(self, account: Account) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()
@@ -1197,10 +1197,10 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import ProjectEditorMixin
+        from webaiprovider.base import ProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConcurrentProvider(ProjectEditorMixin, AsyncProvider):
+        class ConcurrentProvider(ProjectMutationsMixin, AsyncProvider):
             def __init__(self, account: Account) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()

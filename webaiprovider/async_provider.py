@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 from eventflow import AsyncEventBus, EventEnvelope
@@ -449,22 +449,55 @@ class AsyncProvider(BaseProvider):
         *,
         name: str | None = None,
         instructions: str | None = None,
+        current: ProjectData | Callable[[], ProjectData | None] | None = None,
     ) -> ProjectData:
+        from .base import _STAGED_PROJECT
+
         async with self.runtime.project_lock(project_id):
-            return await self._patch_project(project_id, name=name, instructions=instructions)
+            staged = current() if callable(current) else current
+            token = _STAGED_PROJECT.set(staged)
+            try:
+                return await self._patch_project(project_id, name=name, instructions=instructions)
+            finally:
+                _STAGED_PROJECT.reset(token)
 
     async def _delete_project_data(self, project_id: str) -> None:
         raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
 
     async def _add_project_resource_data(
-        self, project_id: str, kind: str, **values: Any
+        self,
+        project_id: str,
+        kind: str,
+        *,
+        current: ProjectData | Callable[[], ProjectData | None] | None = None,
+        **values: Any,
     ) -> ProjectData:
-        async with self.runtime.project_lock(project_id):
-            return await self._add_project_resource(project_id, kind, **values)
+        from .base import _STAGED_PROJECT
 
-    async def _remove_project_resource_data(self, project_id: str, resource_id: str) -> ProjectData:
         async with self.runtime.project_lock(project_id):
-            return await self._remove_project_resource(project_id, resource_id)
+            staged = current() if callable(current) else current
+            token = _STAGED_PROJECT.set(staged)
+            try:
+                return await self._add_project_resource(project_id, kind, **values)
+            finally:
+                _STAGED_PROJECT.reset(token)
+
+    async def _remove_project_resource_data(
+        self,
+        project_id: str,
+        resource_id: str,
+        *,
+        current: ProjectData | Callable[[], ProjectData | None] | None = None,
+    ) -> ProjectData:
+        from .base import _STAGED_PROJECT
+
+        async with self.runtime.project_lock(project_id):
+            staged = current() if callable(current) else current
+            token = _STAGED_PROJECT.set(staged)
+            try:
+                return await self._remove_project_resource(project_id, resource_id)
+            finally:
+                _STAGED_PROJECT.reset(token)
 
     async def _resolve_download_data(
         self,

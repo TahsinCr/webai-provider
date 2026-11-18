@@ -11,7 +11,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectEditorMixin, confirm_deleted
+from ...base import Capability, ProjectMutationsMixin, confirm_deleted
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 _CHAT_METADATA_TTL_SECONDS = 1800.0
 
 
-class AsyncGeminiProvider(ProjectEditorMixin, AsyncProvider):
+class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.GEMINI
     stream_idle_timeout = 120
     stream_total_timeout = 600

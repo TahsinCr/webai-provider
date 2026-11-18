@@ -1301,7 +1301,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             loaded = await self.provider.projects.list(limit=None)
             result = await self.provider.projects.update(loaded[0], title="Updated Name")
             self.assertEqual(result.title, "Updated Name")
-            self.assertEqual(get_calls, 1)
+            self.assertEqual(get_calls, 0)
         finally:
             await self.provider.close()
 
