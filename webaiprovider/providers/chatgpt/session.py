@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ...accounts import CredentialStore, read_session, save_session
+from ...accounts import (
+    CredentialStore,
+    read_session,
+    read_session_async,
+    save_session,
+    save_session_async,
+)
 from ...accounts.cdp import DevToolsError, capture_chatgpt_auth, is_devtools_available
 from ...errors import AccountPaused
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
@@ -37,22 +43,35 @@ class BrowserSession:
         self.paths = paths
         self.cdp_url = cdp_url
 
-    def save(self, url: str, headers: dict[str, str]) -> None:
+    def _prepare_save_target(self) -> CredentialStore | Path:
         path = self.paths.session_file
         if not isinstance(path, CredentialStore):
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             _private(path.parent, 0o700)
-        save_session(
-            path, {"version": 1, "url": url, "headers": headers}, ensure_ascii=True, newline=True
-        )
+        return path
+
+    def _finalize_save_target(self, path: CredentialStore | Path) -> None:
         if not isinstance(path, CredentialStore):
             _private(path, 0o600)
 
-    def import_cookies(self, cookies: dict[str, str]) -> None:
-        """Bootstrap a profile's web session without CDP or a running browser."""
+    def save(self, url: str, headers: dict[str, str]) -> None:
+        path = self._prepare_save_target()
+        save_session(
+            path, {"version": 1, "url": url, "headers": headers}, ensure_ascii=True, newline=True
+        )
+        self._finalize_save_target(path)
+
+    async def save_async(self, url: str, headers: dict[str, str]) -> None:
+        path = self._prepare_save_target()
+        await save_session_async(
+            path, {"version": 1, "url": url, "headers": headers}, ensure_ascii=True, newline=True
+        )
+        self._finalize_save_target(path)
+
+    @staticmethod
+    def _bootstrap_headers(cookies: dict[str, str]) -> dict[str, str]:
         import re
 
-        from curl_cffi.requests import Session
         from curl_cffi.requests.impersonate import DEFAULT_CHROME
 
         # Follow the maintained HTTP transport's browser version, not a frozen
@@ -74,20 +93,47 @@ class BrowserSession:
         }
         if cookies.get("oai-did"):
             headers["oai-device-id"] = cookies["oai-did"]
-        from ...transport.http import curl_cookie_jar
+        return headers
 
+    @staticmethod
+    def _finalize_imported_headers(
+        headers: dict[str, str], cookies: dict[str, str], response: object, jar: object
+    ) -> dict[str, str]:
+        if response.status_code != 200:
+            raise ChatGPTError(f"ChatGPT profile verification returned HTTP {response.status_code}")
+        try:
+            token = response.json().get("accessToken")
+        except (ValueError, AttributeError):
+            token = None
+        if not isinstance(token, str) or not token:
+            raise ChatGPTError("Session could not be verified")
+        values = dict(cookies)
+        for cookie in jar:
+            domain = (cookie.domain or "").lstrip(".")
+            if domain == "chatgpt.com" and cookie.path == "/":
+                values[cookie.name] = cookie.value
+        headers["authorization"] = "Bearer " + token
+        headers["cookie"] = "; ".join(f"{name}={value}" for name, value in values.items())
+        return headers
+
+    def import_cookies(self, cookies: dict[str, str]) -> None:
+        """Bootstrap a profile's web session without CDP or a running browser."""
+        from curl_cffi.requests import Session
+
+        from ...transport.http import (
+            _invalidate_host_dns,
+            _is_curl_timeout,
+            _prepare_curl_session_sync,
+            curl_cookie_jar,
+        )
+
+        headers = self._bootstrap_headers(cookies)
         with Session(
             impersonate="chrome",
             cookies=curl_cookie_jar(cookies),
             timeout=30,
             trust_env=False,
         ) as client:
-            from ...transport.http import (
-                _invalidate_host_dns,
-                _is_curl_timeout,
-                _prepare_curl_session_sync,
-            )
-
             _prepare_curl_session_sync(client, "chatgpt.com", 443)
             try:
                 response = client.get(
@@ -97,36 +143,49 @@ class BrowserSession:
                 if _is_curl_timeout(exc):
                     _invalidate_host_dns("chatgpt.com", 443, client)
                 raise
-            if response.status_code != 200:
-                raise ChatGPTError(
-                    f"ChatGPT profile verification returned HTTP {response.status_code}"
-                )
-            try:
-                token = response.json().get("accessToken")
-            except (ValueError, AttributeError):
-                token = None
-            if not isinstance(token, str) or not token:
-                raise ChatGPTError("Session could not be verified")
-            values = dict(cookies)
-            for cookie in client.cookies.jar:
-                domain = (cookie.domain or "").lstrip(".")
-                if domain == "chatgpt.com" and cookie.path == "/":
-                    values[cookie.name] = cookie.value
-        headers["authorization"] = "Bearer " + token
-        headers["cookie"] = "; ".join(f"{name}={value}" for name, value in values.items())
-        self.save("https://chatgpt.com/backend-api/conversations", headers)
+            final_headers = self._finalize_imported_headers(
+                headers, cookies, response, client.cookies.jar
+            )
+        self.save("https://chatgpt.com/backend-api/conversations", final_headers)
 
-    def load(self) -> tuple[str, dict[str, str]]:
-        path = self.paths.session_file
+    async def import_cookies_async(self, cookies: dict[str, str]) -> None:
+        """Bootstrap a profile's web session natively on the active event loop."""
+        from curl_cffi.requests import AsyncSession
+
+        from ...transport.http import (
+            _invalidate_host_dns,
+            _is_curl_timeout,
+            _prepare_curl_session,
+            curl_cookie_jar,
+        )
+
+        headers = self._bootstrap_headers(cookies)
+        async with AsyncSession(
+            impersonate="chrome",
+            cookies=curl_cookie_jar(cookies),
+            timeout=(10.0, 30.0),
+            trust_env=False,
+        ) as client:
+            await _prepare_curl_session(client, "chatgpt.com", 443, timeout=10.0)
+            try:
+                response = await client.get(
+                    "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
+                )
+            except Exception as exc:
+                if _is_curl_timeout(exc):
+                    _invalidate_host_dns("chatgpt.com", 443, client)
+                raise
+            final_headers = self._finalize_imported_headers(
+                headers, cookies, response, client.cookies.jar
+            )
+        await self.save_async("https://chatgpt.com/backend-api/conversations", final_headers)
+
+    @staticmethod
+    def _validate_loaded_record(value: dict) -> tuple[str, dict[str, str]]:
         try:
-            value = read_session(path)
             url = value["url"]
             headers = value["headers"]
-        except (FileNotFoundError, AccountPaused) as error:
-            raise ChatGPTAuthenticationError(
-                "No saved ChatGPT session; authenticate the account"
-            ) from error
-        except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+        except (KeyError, TypeError) as error:
             raise ChatGPTAuthenticationError(
                 "Saved ChatGPT session is invalid; verify the account"
             ) from error
@@ -150,7 +209,35 @@ class BrowserSession:
             raise ChatGPTAuthenticationError(
                 "Saved ChatGPT session has invalid headers; verify the account"
             )
-        return url, {key.lower(): value for key, value in headers.items()}
+        return url, {key.lower(): item for key, item in headers.items()}
+
+    def load(self) -> tuple[str, dict[str, str]]:
+        path = self.paths.session_file
+        try:
+            value = read_session(path)
+        except (FileNotFoundError, AccountPaused) as error:
+            raise ChatGPTAuthenticationError(
+                "No saved ChatGPT session; authenticate the account"
+            ) from error
+        except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session is invalid; verify the account"
+            ) from error
+        return self._validate_loaded_record(value)
+
+    async def load_async(self) -> tuple[str, dict[str, str]]:
+        path = self.paths.session_file
+        try:
+            value = await read_session_async(path)
+        except (FileNotFoundError, AccountPaused) as error:
+            raise ChatGPTAuthenticationError(
+                "No saved ChatGPT session; authenticate the account"
+            ) from error
+        except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+            raise ChatGPTAuthenticationError(
+                "Saved ChatGPT session is invalid; verify the account"
+            ) from error
+        return self._validate_loaded_record(value)
 
     def capture_auth(self) -> tuple[str, dict[str, str]]:
         try:

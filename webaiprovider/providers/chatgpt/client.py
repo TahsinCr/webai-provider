@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Standalone synchronous ChatGPT web client with injected browser session."""
+"""Native asynchronous ChatGPT web client with injected or owned async transport."""
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import stat
-import threading
 import time
 import uuid
 from collections import OrderedDict
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -18,13 +20,14 @@ from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from curl_cffi.requests import Session as CurlSession
+from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core import MultiDimensionBoundedCache
+from ...core.json import json_loads
 from ...core.timing import SendTiming, current_send_timing
 from ...errors import RateLimited
-from ...transport import HTTPTransport, Transport, TransportConfig
+from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.frames import SSEFrameDecoder
 from ...transport.http import _is_ip_literal
 from ...transport.retry import parse_retry_after
@@ -76,18 +79,26 @@ def system_timezone():
     return _cached_system_timezone(os.environ.get("TZ", ""))
 
 
+async def _maybe_await(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 class ChatGPTClient:
     def __init__(
         self,
         session: BrowserSession,
         *,
         authenticate: bool = True,
-        transport: Transport | None = None,
+        transport: AsyncTransport | None = None,
     ) -> None:
         self.session = session
         self.cdp_url = session.cdp_url
         self.list_url = ""
         self.headers: dict[str, str] = {}
+        self._authenticated = False
+        self._needs_initial_auth = authenticate
         self._conversation_endpoint = "conversations"
         self._conversation_endpoint_verified = False
         self.temporary_conversations: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -100,98 +111,107 @@ class ChatGPTClient:
             default_ttl=_CONTINUATION_CACHE_TTL_SECONDS,
             getsizeof=lambda key, value: len(key) + value[2],
         )
-        self._sentinel_lock = threading.Lock()
-        self._state_lock = threading.RLock()
-        self._refresh_lock = threading.Lock()
+        self._sentinel_lock = asyncio.Lock()
+        self._refresh_lock = asyncio.Lock()
+        self._catalog_lock = asyncio.Lock()
         self._sentinel_runtime: SentinelRuntime | None = None
         self._sentinel_runtime_key: str | None = None
         self._prewarmed_sentinel: tuple[float, str, dict[str, str]] | None = None
-        self._prewarming = False
-        self._sentinel_inflight: threading.Event | None = None
-        self._upload_http: CurlSession | None = None
+        self._prewarm_task: asyncio.Task[None] | None = None
+        self._upload_http: AsyncSession | None = None
         self._active_streams: dict[int, Any] = {}
         self._closed = False
+        self._owned_transport = transport is None
         timing = current_send_timing()
         http_started = time.perf_counter_ns() if timing is not None else None
         if transport is None:
-            self.http = CurlSession(
-                impersonate="chrome",
-                trust_env=False,
-                timeout=30.0,
-                discard_cookies=True,
-            )
-            self.transport = HTTPTransport(
+            self.transport: AsyncTransport = AsyncHTTPTransport(
                 CHATGPT_ORIGIN,
-                client_getter=lambda: self.http,
-                config=TransportConfig(timeout=30),
+                client_factory=lambda timeout=(10.0, 30.0): AsyncSession(
+                    impersonate="chrome",
+                    trust_env=False,
+                    timeout=timeout,
+                    discard_cookies=True,
+                ),
+                config=TransportConfig(timeout=(10.0, 30.0)),
                 headers=self._transport_headers,
             )
             if http_started is not None:
                 timing.record("http_client_construct_ms", time.perf_counter_ns() - http_started)
         else:
-            self.http = None
             self.transport = transport
-        if authenticate:
-            try:
-                auth_started = time.perf_counter_ns() if timing is not None else None
-                self.refresh_auth()
-                if auth_started is not None:
-                    timing.record("provider_auth_refresh_ms", time.perf_counter_ns() - auth_started)
-            except BaseException:
-                if self.http is not None:
-                    self.http.close()
-                raise
 
-    def close(self) -> None:
-        inflight: threading.Event | None = None
-        runtime_to_close: SentinelRuntime | None = None
-        with self._sentinel_lock:
-            self._closed = True
-            self._prewarmed_sentinel = None
-            self._prewarming = False
-            inflight = getattr(self, "_sentinel_inflight", None)
-            if inflight is None or inflight.is_set():
-                runtime_to_close = self._sentinel_runtime
-            self._sentinel_runtime = None
-            self._sentinel_runtime_key = None
-        if inflight is not None:
-            inflight.set()
+    def _async_lock(self, attr: str) -> asyncio.Lock:
+        lock = getattr(self, attr, None)
+        if lock is None:
+            lock = asyncio.Lock()
+            setattr(self, attr, lock)
+        return lock
+
+    async def __aenter__(self) -> ChatGPTClient:
+        await self.ensure_auth()
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        self._closed = True
+        self._prewarmed_sentinel = None
+        prewarm_task = getattr(self, "_prewarm_task", None)
+        self._prewarm_task = None
+        if prewarm_task is not None and not prewarm_task.done():
+            prewarm_task.cancel()
+        runtime_to_close = getattr(self, "_sentinel_runtime", None)
+        self._sentinel_runtime = None
+        self._sentinel_runtime_key = None
         if runtime_to_close is not None:
             runtime_to_close.close()
-        with self._state_guard:
-            self._continuation_cache.clear()
-            owned_temps = getattr(
-                self, "_owned_temporary_conversations", self.temporary_conversations
-            )
-            if self.temporary_conversations is owned_temps:
-                self.temporary_conversations.clear()
+
+        self._continuation_cache.clear()
+        owned_temps = getattr(
+            self, "_owned_temporary_conversations", getattr(self, "temporary_conversations", None)
+        )
+        temp_map = getattr(self, "temporary_conversations", None)
+        if isinstance(temp_map, dict):
+            if temp_map is owned_temps:
+                temp_map.clear()
             else:
                 self.temporary_conversations = OrderedDict()
-            pending = getattr(self, "pending_branches", None)
-            owned_pending = getattr(self, "_owned_pending_branches", pending)
-            if isinstance(pending, dict):
-                if pending is owned_pending:
-                    pending.clear()
-                else:
-                    self.pending_branches = OrderedDict()
-            upload_http = getattr(self, "_upload_http", None)
-            self._upload_http = None
-            raw_streams = getattr(self, "_active_streams", None)
-            active_streams = (
-                list(raw_streams.values())
-                if isinstance(raw_streams, dict)
-                else list(raw_streams or ())
-            )
-            http_client = getattr(self, "http", None)
+        pending = getattr(self, "pending_branches", None)
+        owned_pending = getattr(self, "_owned_pending_branches", pending)
+        if isinstance(pending, dict):
+            if pending is owned_pending:
+                pending.clear()
+            else:
+                self.pending_branches = OrderedDict()
+
+        raw_streams = getattr(self, "_active_streams", None)
+        active_streams = (
+            list(raw_streams.values()) if isinstance(raw_streams, dict) else list(raw_streams or ())
+        )
         for stream in active_streams:
-            with suppress(Exception):
-                stream.close()
+            aclose = getattr(stream, "aclose", None)
+            if callable(aclose):
+                with suppress(Exception):
+                    await aclose()
+                continue
+            close = getattr(stream, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    await _maybe_await(close())
+
+        upload_http = getattr(self, "_upload_http", None)
+        self._upload_http = None
         if upload_http is not None:
             with suppress(Exception):
-                upload_http.close()
-        if http_client is not None:
-            with suppress(Exception):
-                http_client.close()
+                await upload_http.close()
+
+        if getattr(self, "_owned_transport", False):
+            transport = getattr(self, "transport", None)
+            if transport is not None:
+                with suppress(Exception):
+                    await transport.close()
 
     @staticmethod
     def _conversation_text_size(conversation: dict[str, Any]) -> int:
@@ -212,60 +232,42 @@ class ChatGPTClient:
                             return total
         return total
 
-    @property
-    def _state_guard(self) -> threading.RLock:
-        lock = getattr(self, "_state_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            self._state_lock = lock
-        return lock
-
-    @property
-    def _refresh_guard(self) -> threading.Lock:
-        lock = getattr(self, "_refresh_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._refresh_lock = lock
-        return lock
-
     def _is_closed(self) -> bool:
-        http_client = getattr(self, "http", None)
-        return (
-            getattr(self, "_closed", False) is True
-            or getattr(http_client, "_closed", False) is True
-            or getattr(http_client, "is_closed", False) is True
-        )
+        return getattr(self, "_closed", False) is True
 
-    @contextmanager
-    def _tracked_stream(self, method: str, path: str, **options):
+    @asynccontextmanager
+    async def _tracked_stream(self, method: str, path: str, **options):
         if (
             options.get("inherit_headers", True)
             and "headers" not in options
             and getattr(self, "headers", None) is not None
         ):
             options["headers"] = self._transport_headers(method, path)
-        with self.transport.stream(method, path, **options) as stream:
+        async with self.transport.stream(method, path, **options) as stream:
             stream_key = id(stream)
-            with self._state_guard:
-                active = getattr(self, "_active_streams", None)
-                if not isinstance(active, dict):
-                    active = {}
-                    self._active_streams = active
-                active[stream_key] = stream
+            active = getattr(self, "_active_streams", None)
+            if not isinstance(active, dict):
+                active = {}
+                self._active_streams = active
+            active[stream_key] = stream
             try:
                 if self._is_closed():
-                    with suppress(Exception):
-                        stream.close()
+                    aclose = getattr(stream, "aclose", None)
+                    close = getattr(stream, "close", None)
+                    if callable(aclose):
+                        with suppress(Exception):
+                            await aclose()
+                    elif callable(close):
+                        with suppress(Exception):
+                            await _maybe_await(close())
                 yield stream
             finally:
-                with self._state_guard:
-                    active = getattr(self, "_active_streams", None)
-                    if isinstance(active, dict):
-                        active.pop(stream_key, None)
+                active = getattr(self, "_active_streams", None)
+                if isinstance(active, dict):
+                    active.pop(stream_key, None)
 
     def _sentinel_user_agent(self) -> str:
-        with self._state_guard:
-            return self.headers.get("user-agent") or "Mozilla/5.0"
+        return (getattr(self, "headers", None) or {}).get("user-agent") or "Mozilla/5.0"
 
     def _record_rate_limit(self, delay: float | None) -> None:
         record = getattr(self.transport, "record_rate_limit", None)
@@ -290,60 +292,67 @@ class ChatGPTClient:
         if text_size > _CONTINUATION_CACHE_MAX_TEXT_CHARS:
             self._forget_conversation(conversation_id)
             return
-        with self._state_guard:
-            self._continuation_cache.put(
-                conversation_id, (time.monotonic(), conversation, text_size)
-            )
+        self._continuation_cache.put(conversation_id, (time.monotonic(), conversation, text_size))
 
     def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
-        with self._state_guard:
-            cached = self._continuation_cache.get(conversation_id)
-            if cached is None:
-                return None
-            checked_at, conversation, _text_size = cached
-            if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
-                self._forget_conversation(conversation_id)
-                return None
-            return conversation
+        cached = self._continuation_cache.get(conversation_id)
+        if cached is None:
+            return None
+        checked_at, conversation, _text_size = cached
+        if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
+            self._forget_conversation(conversation_id)
+            return None
+        return conversation
 
     def _forget_conversation(self, conversation_id: str) -> None:
-        with self._state_guard:
-            pending = getattr(self, "pending_branches", None)
-            if isinstance(pending, dict):
-                pending.pop(conversation_id, None)
-            self._continuation_cache.pop(conversation_id, None)
+        pending = getattr(self, "pending_branches", None)
+        if isinstance(pending, dict):
+            pending.pop(conversation_id, None)
+        self._continuation_cache.pop(conversation_id, None)
 
-    def __enter__(self) -> ChatGPTClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def refresh_auth(self):
+    async def refresh_auth(self) -> None:
         try:
-            list_url, headers = self.session.load()
-            with self._state_guard:
-                self.list_url, self.headers = list_url, headers
+            load_async = getattr(self.session, "load_async", None)
+            if callable(load_async):
+                list_url, headers = await load_async()
+            else:
+                list_url, headers = self.session.load()
+            self.list_url, self.headers = list_url, headers
+            self._authenticated = True
+            self._needs_initial_auth = False
         except ChatGPTError:
             raise ChatGPTError(
                 "No saved session; verify the account in the Accounts section"
             ) from None
 
-    def _transport_headers(self, method, path):
-        with self._state_guard:
-            headers = dict(self.headers)
+    async def ensure_auth(self) -> None:
+        if not getattr(self, "_needs_initial_auth", False) or getattr(
+            self, "_authenticated", False
+        ):
+            return
+        async with self._async_lock("_refresh_lock"):
+            if getattr(self, "_needs_initial_auth", False) and not getattr(
+                self, "_authenticated", False
+            ):
+                timing = current_send_timing()
+                started = time.perf_counter_ns() if timing is not None else None
+                await self.refresh_auth()
+                if started is not None:
+                    timing.record("provider_auth_refresh_ms", time.perf_counter_ns() - started)
+
+    def _transport_headers(self, method: str, path: str) -> dict[str, str]:
+        headers = dict(self.headers)
         headers["accept-encoding"] = "gzip, deflate"
         target = urlsplit(path).path
         headers["x-openai-target-path"] = target
         headers["x-openai-target-route"] = target
         return headers
 
-    def refresh_session(self) -> None:
-        with self._state_guard:
-            headers = self.headers.copy()
+    async def refresh_session(self) -> None:
+        headers = self.headers.copy()
         headers.pop("authorization", None)
         headers["accept-encoding"] = "gzip, deflate"
-        response = self.transport.send(
+        response = await self.transport.send(
             "GET",
             "/api/auth/session",
             check_status=False,
@@ -364,31 +373,39 @@ class ChatGPTClient:
             raise ChatGPTError("ChatGPT session refresh returned invalid data") from error
         if not isinstance(token, str) or not token:
             raise ChatGPTError("Saved ChatGPT session expired; re-authenticate the account")
-        with self._state_guard:
-            self.headers["authorization"] = f"Bearer {token}"
-            cookie_map: dict[str, str] = {}
-            for pair in self.headers.get("cookie", "").split(";"):
-                name, sep, item = pair.strip().partition("=")
-                name = name.strip()
-                if sep and name:
-                    cookie_map[name] = item.strip()
-            for cookie in response.cookies.jar:
+        self.headers["authorization"] = f"Bearer {token}"
+        cookie_map: dict[str, str] = {}
+        for pair in self.headers.get("cookie", "").split(";"):
+            name, sep, item = pair.strip().partition("=")
+            name = name.strip()
+            if sep and name:
+                cookie_map[name] = item.strip()
+        cookies_attr = getattr(response, "cookies", None)
+        jar = getattr(cookies_attr, "jar", None)
+        if jar is not None:
+            for cookie in jar:
                 domain = (cookie.domain or "").lstrip(".")
                 if cookie.name and (not domain or domain == "chatgpt.com"):
                     cookie_map[cookie.name] = cookie.value or ""
-            self.headers["cookie"] = "; ".join(f"{name}={val}" for name, val in cookie_map.items())
-            list_url = self.list_url
-            snapshot = dict(self.headers)
-        self.session.save(list_url, snapshot)
+        self.headers["cookie"] = "; ".join(f"{name}={val}" for name, val in cookie_map.items())
+        snapshot = dict(self.headers)
+        save_async = getattr(self.session, "save_async", None)
+        if callable(save_async):
+            await save_async(self.list_url, snapshot)
+        else:
+            self.session.save(self.list_url, snapshot)
 
-    def request(self, method: str, url: str, *, expect_json: bool = True, **kwargs: Any) -> Any:
+    async def request(
+        self, method: str, url: str, *, expect_json: bool = True, **kwargs: Any
+    ) -> Any:
         target = urlsplit(url)
         if target.scheme != "https" or target.netloc != "chatgpt.com":
             raise ChatGPTError("authenticated requests must stay on the ChatGPT origin")
+        await self.ensure_auth()
         for attempt in range(2):
             request_headers = self._transport_headers(method, target.path)
             path = target.path + ("?" + target.query if target.query else "")
-            response = self.transport.send(
+            response = await self.transport.send(
                 method, path, headers=request_headers, check_status=False, **kwargs
             )
             if (
@@ -398,12 +415,11 @@ class ChatGPTClient:
             ):
                 break
             failed_auth = request_headers.get("authorization")
-            with self._refresh_guard:
-                with self._state_guard:
-                    current_auth = self.headers.get("authorization")
+            async with self._async_lock("_refresh_lock"):
+                current_auth = self.headers.get("authorization")
                 if not current_auth or current_auth == failed_auth:
                     try:
-                        self.refresh_session()
+                        await self.refresh_session()
                     except ChatGPTError:
                         raise ChatGPTAuthenticationError(
                             "The session could not be refreshed; verify it again in the Accounts section."
@@ -443,86 +459,103 @@ class ChatGPTClient:
             )
         return response
 
-    def verify(self) -> dict[str, Any]:
-        return self.request(
-            "GET",
-            urljoin(CHATGPT_ORIGIN, "/backend-api/conversations"),
-            params={
-                "offset": 0,
-                "limit": DEFAULT_PAGE_SIZE,
-                "order": "updated",
-                "is_archived": "false",
-                "is_starred": "false",
-            },
+    async def verify(self) -> dict[str, Any]:
+        return (
+            await self.request(
+                "GET",
+                urljoin(CHATGPT_ORIGIN, "/backend-api/conversations"),
+                params={
+                    "offset": 0,
+                    "limit": DEFAULT_PAGE_SIZE,
+                    "order": "updated",
+                    "is_archived": "false",
+                    "is_starred": "false",
+                },
+            )
         ).json()
 
-    def model_catalog(self, *, refresh: bool = False):
-        with self._state_guard:
+    async def model_catalog(self, *, refresh: bool = False):
+        cached = getattr(self, "_model_catalog", None)
+        if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        async with self._async_lock("_catalog_lock"):
             cached = getattr(self, "_model_catalog", None)
             if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
                 return cached[1]
-        raw = self.request(
-            "GET",
-            urljoin(CHATGPT_ORIGIN, "/backend-api/models"),
-            params={
-                "iim": "false",
-                "is_gizmo": "false",
-                "supports_model_picker_upgrade_presets": "true",
-            },
-        ).json()
-        catalog = parse_model_catalog(raw)
-        with self._state_guard:
+            raw = (
+                await self.request(
+                    "GET",
+                    urljoin(CHATGPT_ORIGIN, "/backend-api/models"),
+                    params={
+                        "iim": "false",
+                        "is_gizmo": "false",
+                        "supports_model_picker_upgrade_presets": "true",
+                    },
+                )
+            ).json()
+            catalog = parse_model_catalog(raw)
             self._model_catalog = (time.monotonic(), catalog)
-        return catalog
+            return catalog
 
-    def list_projects(self, cursor: str | None = None) -> dict[str, Any]:
+    async def list_projects(self, cursor: str | None = None) -> dict[str, Any]:
         params = {"conversations_per_gizmo": 0, "limit": 20, "owned_only": "false"}
         if cursor is not None:
             params["cursor"] = cursor
-        raw = self.request(
-            "GET", urljoin(CHATGPT_ORIGIN, "/backend-api/gizmos/snorlax/sidebar"), params=params
+        raw = (
+            await self.request(
+                "GET", urljoin(CHATGPT_ORIGIN, "/backend-api/gizmos/snorlax/sidebar"), params=params
+            )
         ).json()
         items, next_cursor = parse_page(raw)
         projects = [value for item in items if (value := parse_project(item)) is not None]
         return {"items": projects, "cursor": next_cursor}
 
-    def create_project(self, name, instructions="", *, memory_share=True):
+    async def create_project(self, name, instructions="", *, memory_share=True):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 50:
             raise ValueError("project name must contain 1–50 characters")
         if type(memory_share) is not bool:
             raise TypeError("memory_share must be a bool")
-        raw = self.request(
-            "POST",
-            urljoin(CHATGPT_ORIGIN, "/backend-api/projects"),
-            json={
-                "name": name.strip(),
-                "instructions": instructions,
-                "memory_scope": "global" if memory_share else "project_v2",
-            },
+        raw = (
+            await self.request(
+                "POST",
+                urljoin(CHATGPT_ORIGIN, "/backend-api/projects"),
+                json={
+                    "name": name.strip(),
+                    "instructions": instructions,
+                    "memory_scope": "global" if memory_share else "project_v2",
+                },
+            )
         ).json()
         if raw.get("error") or not isinstance(raw.get("resource"), dict):
             raise ChatGPTError("Project creation response changed; request was not replayed")
         project = parse_project(raw["resource"])
         if project is None:
             raise ChatGPTError("Project creation returned no project")
-        return self.get_project(project["id"])
+        return await self.get_project(project["id"])
 
-    def get_project(self, project_id: str) -> dict[str, Any]:
-        raw = self.request(
-            "GET", urljoin(CHATGPT_ORIGIN, f"/backend-api/gizmos/{quote(project_id, safe='')}")
+    async def get_project(self, project_id: str) -> dict[str, Any]:
+        raw = (
+            await self.request(
+                "GET", urljoin(CHATGPT_ORIGIN, f"/backend-api/gizmos/{quote(project_id, safe='')}")
+            )
         ).json()
         value = parse_project(raw)
         if value is None:
             raise ChatGPTError("Requested gizmo is not a project")
         return value
 
-    def list_project_chats(self, project_id: str, cursor: str | None = None) -> dict[str, Any]:
-        raw = self.request(
-            "GET",
-            urljoin(
-                CHATGPT_ORIGIN, f"/backend-api/gizmos/{quote(project_id, safe='')}/conversations"
-            ),
-            params={"cursor": cursor or "0", "limit": 30, "owned_only": "false"},
+    async def list_project_chats(
+        self, project_id: str, cursor: str | None = None
+    ) -> dict[str, Any]:
+        raw = (
+            await self.request(
+                "GET",
+                urljoin(
+                    CHATGPT_ORIGIN,
+                    f"/backend-api/gizmos/{quote(project_id, safe='')}/conversations",
+                ),
+                params={"cursor": cursor or "0", "limit": 30, "owned_only": "false"},
+            )
         ).json()
         items, next_cursor = parse_page(raw)
         return {
@@ -530,27 +563,28 @@ class ChatGPTClient:
             "cursor": next_cursor,
         }
 
-    def list_page(self, offset: int = 0, limit: int = DEFAULT_PAGE_SIZE) -> dict[str, Any]:
+    async def list_page(self, offset: int = 0, limit: int = DEFAULT_PAGE_SIZE) -> dict[str, Any]:
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("invalid conversation page")
-        return self.request(
-            "GET",
-            urljoin(CHATGPT_ORIGIN, "/backend-api/conversations"),
-            params={
-                "offset": offset,
-                "limit": limit,
-                "order": "updated",
-                "is_archived": "false",
-                "is_starred": "false",
-            },
+        return (
+            await self.request(
+                "GET",
+                urljoin(CHATGPT_ORIGIN, "/backend-api/conversations"),
+                params={
+                    "offset": offset,
+                    "limit": limit,
+                    "order": "updated",
+                    "is_archived": "false",
+                    "is_starred": "false",
+                },
+            )
         ).json()
 
-    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         from ...errors import RemoteNotFound
 
-        with self._state_guard:
-            endpoint = self._conversation_endpoint
-            verified = self._conversation_endpoint_verified
+        endpoint = self._conversation_endpoint
+        verified = self._conversation_endpoint_verified
         alternate = "conversation" if endpoint == "conversations" else "conversations"
         # ChatGPT accounts currently expose either route; learn the working
         # form after the first 404 so later history reads need only one request.
@@ -561,14 +595,13 @@ class ChatGPTClient:
                 f"/backend-api/{candidate}/{quote(conversation_id, safe='')}",
             )
             try:
-                response = self.request("GET", url)
+                response = await self.request("GET", url)
             except RemoteNotFound:
                 if index == 0 and not verified:
                     continue
                 raise
-            with self._state_guard:
-                self._conversation_endpoint = candidate
-                self._conversation_endpoint_verified = True
+            self._conversation_endpoint = candidate
+            self._conversation_endpoint_verified = True
             result = response.json()
             break
         if not isinstance(result, dict):
@@ -576,34 +609,47 @@ class ChatGPTClient:
         self._remember_conversation(result)
         return result
 
-    def rename_conversation(self, conversation_id: str, title: str) -> None:
-        self.request(
+    async def rename_conversation(self, conversation_id: str, title: str) -> None:
+        await self.request(
             "PATCH",
             urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"),
             json={"title": title},
             expect_json=False,
         )
 
-    def delete_conversation(self, conversation_id: str) -> bool:
+    async def delete_conversation(self, conversation_id: str) -> bool:
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ValueError("conversation ID is required")
-        response = self.request(
-            "PATCH",
-            urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"),
-            json={"is_visible": False},
-            expect_json=False,
+        url = urljoin(
+            CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"
         )
-        payload = response.json() if response.content else None
+        for attempt in (0, 1):
+            try:
+                response = await self.request(
+                    "PATCH",
+                    url,
+                    json={"is_visible": False},
+                    expect_json=False,
+                )
+                break
+            except ChatGPTError as error:
+                if attempt == 0 and any(f"HTTP {code} " in str(error) for code in (502, 503, 504)):
+                    await asyncio.sleep(0.25)
+                    continue
+                raise
+        payload = response.json() if getattr(response, "content", None) else None
         if isinstance(payload, dict) and payload.get("success") is False:
             raise ChatGPTError("ChatGPT refused to delete the conversation.")
         self._forget_conversation(conversation_id)
-        if getattr(response, "status_code", None) == 204:
+        if getattr(response, "status_code", None) in (200, 202, 204):
             return True
         return isinstance(payload, dict) and (
             payload.get("success") is True or payload.get("is_visible") is False
         )
 
-    def move_conversation(self, conversation_id: str, project_id: str | None) -> dict[str, Any]:
+    async def move_conversation(
+        self, conversation_id: str, project_id: str | None
+    ) -> dict[str, Any]:
         """Update native project membership without an extra conversation readback GET."""
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ValueError("conversation ID is required")
@@ -611,13 +657,13 @@ class ChatGPTClient:
             not isinstance(project_id, str) or not project_id.startswith("g-p-")
         ):
             raise ValueError("invalid project ID")
-        response = self.request(
+        response = await self.request(
             "PATCH",
             urljoin(CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"),
             json={"gizmo_id": project_id},
             expect_json=False,
         )
-        payload = response.json() if response.content else None
+        payload = response.json() if getattr(response, "content", None) else None
         if isinstance(payload, dict):
             if payload.get("success") is False:
                 raise ChatGPTError(
@@ -632,20 +678,19 @@ class ChatGPTClient:
                 raise ChatGPTError(
                     "Server did not confirm project membership; refresh this conversation"
                 )
-        with self._state_guard:
-            cached = self._cached_conversation(conversation_id)
-            if isinstance(cached, dict):
-                updated_snapshot = dict(cached)
-                updated_snapshot["gizmo_id"] = project_id
-                updated_snapshot["project_id"] = project_id
-                self._remember_conversation(updated_snapshot)
+        cached = self._cached_conversation(conversation_id)
+        if isinstance(cached, dict):
+            updated_snapshot = dict(cached)
+            updated_snapshot["gizmo_id"] = project_id
+            updated_snapshot["project_id"] = project_id
+            self._remember_conversation(updated_snapshot)
         result = dict(payload) if isinstance(payload, dict) else {}
         result.setdefault("conversation_id", conversation_id)
         result["project_id"] = project_id
         result["gizmo_id"] = project_id
         return result
 
-    def _resolve_send_previous(
+    async def _resolve_send_previous(
         self,
         conversation_id: str | None,
         project_id: str | None,
@@ -657,18 +702,14 @@ class ChatGPTClient:
         is_pending_branch = False
         if conversation_id:
             if temporary:
-                with self._state_guard:
-                    previous = self.temporary_conversations.get(conversation_id)
+                previous = self.temporary_conversations.get(conversation_id)
                 if previous is None:
                     raise ChatGPTError(
                         "temporary conversation expired locally; start a new temporary chat"
                     )
             else:
-                with self._state_guard:
-                    pending = getattr(self, "pending_branches", None)
-                    pending_entry = (
-                        pending.get(conversation_id) if isinstance(pending, dict) else None
-                    )
+                pending = getattr(self, "pending_branches", None)
+                pending_entry = pending.get(conversation_id) if isinstance(pending, dict) else None
                 if pending_entry is not None:
                     previous = pending_entry
                     is_pending_branch = isinstance(previous.get("pending_branch"), dict)
@@ -694,7 +735,7 @@ class ChatGPTClient:
                             timing.increment("pre_send_conversation_cache_hit")
                     else:
                         started = time.perf_counter_ns() if timing is not None else None
-                        previous = self.get_conversation(conversation_id)
+                        previous = await self.get_conversation(conversation_id)
                         if started is not None:
                             timing.record(
                                 "pre_send_get_conversation_ms", time.perf_counter_ns() - started
@@ -759,14 +800,13 @@ class ChatGPTClient:
             raise ChatGPTError(
                 "temporary conversation reached the local memory limit; start a new one"
             )
-        with self._state_guard:
-            self.temporary_conversations[resolved_id] = conversation
-            self.temporary_conversations.move_to_end(resolved_id)
-            while len(self.temporary_conversations) > 32:
-                self.temporary_conversations.popitem(last=False)
+        self.temporary_conversations[resolved_id] = conversation
+        self.temporary_conversations.move_to_end(resolved_id)
+        while len(self.temporary_conversations) > 32:
+            self.temporary_conversations.popitem(last=False)
         return conversation
 
-    def send_prompt(
+    async def send_prompt(
         self,
         conversation_id: str | None,
         prompt: str,
@@ -786,12 +826,12 @@ class ChatGPTClient:
             raise ChatGPTError("invalid conversation options")
         if temporary and project_id:
             raise ChatGPTError("temporary conversations cannot belong to a project")
-        previous, previous_ids, is_pending_branch = self._resolve_send_previous(
+        previous, previous_ids, is_pending_branch = await self._resolve_send_previous(
             conversation_id, project_id, temporary, action
         )
         timing = current_send_timing()
         started = time.perf_counter_ns() if timing is not None else None
-        catalog = self.model_catalog()
+        catalog = await self.model_catalog()
         if started is not None:
             timing.record("model_catalog_ms", time.perf_counter_ns() - started)
         model = (
@@ -806,17 +846,20 @@ class ChatGPTClient:
             raise ChatGPTError(f"Effort '{effort}' is not offered for model '{model}'")
 
         try:
-            resolved_id, submitted_message_id, submitted_message, streamed_messages = (
-                self.send_prompt_direct(
-                    previous,
-                    prompt,
-                    attachments or [],
-                    on_event,
-                    model,
-                    effort,
-                    **({"temporary": True} if temporary else {}),
-                    **({"action": action, "message_id": message_id} if action else {}),
-                )
+            (
+                resolved_id,
+                submitted_message_id,
+                submitted_message,
+                streamed_messages,
+            ) = await self.send_prompt_direct(
+                previous,
+                prompt,
+                attachments or [],
+                on_event,
+                model,
+                effort,
+                **({"temporary": True} if temporary else {}),
+                **({"action": action, "message_id": message_id} if action else {}),
             )
         except Exception:
             if conversation_id and not temporary and not is_pending_branch:
@@ -872,7 +915,7 @@ class ChatGPTClient:
                 timing = current_send_timing()
                 started = time.perf_counter_ns() if timing is not None else None
                 try:
-                    conversation = self.get_conversation(resolved_id)
+                    conversation = await self.get_conversation(resolved_id)
                 except Exception:
                     self._forget_conversation(resolved_id)
                     raise
@@ -904,7 +947,7 @@ class ChatGPTClient:
         self.trigger_sentinel_prewarm()
         return resolved_id, conversation, previous_ids
 
-    def _edit_parent_id(
+    async def _edit_parent_id(
         self,
         conversation: dict[str, Any] | None,
         conversation_id: str | None,
@@ -938,7 +981,7 @@ class ChatGPTClient:
                 f"/backend-api/conversation/{quote(conversation_id, safe='')}",
             )
             try:
-                response = self.request("GET", url)
+                response = await self.request("GET", url)
             except RemoteNotFound:
                 raise ChatGPTError("The original message parent is unavailable") from None
             try:
@@ -952,7 +995,7 @@ class ChatGPTClient:
                     return parent
         raise ChatGPTError("The original message parent is unavailable")
 
-    def _apply_message_action(
+    async def _apply_message_action(
         self,
         body: dict[str, Any],
         conversation: dict[str, Any] | None,
@@ -989,7 +1032,7 @@ class ChatGPTClient:
             body.update(action="variant", messages=[], parent_message_id=user["id"])
             return user["id"]
         if action == MessageAction.EDIT:
-            body["parent_message_id"] = self._edit_parent_id(
+            body["parent_message_id"] = await self._edit_parent_id(
                 conversation,
                 conversation_id,
                 items,
@@ -1011,7 +1054,7 @@ class ChatGPTClient:
             return body["messages"][0]["id"]
         raise ChatGPTError("Unsupported message action")
 
-    def _consume_chat_stream(
+    async def _consume_chat_stream(
         self,
         method: str,
         url: str,
@@ -1031,7 +1074,8 @@ class ChatGPTClient:
         sse_connect_started = time.perf_counter_ns() if timing is not None else None
         first_sse_event = False
         first_assistant_text = False
-        with self._tracked_stream(
+        await self.ensure_auth()
+        async with self._tracked_stream(
             method,
             url.removeprefix(CHATGPT_ORIGIN),
             check_status=False,
@@ -1040,7 +1084,7 @@ class ChatGPTClient:
             timeout=(30.0, 300.0),
         ) as response:
             response_opened = time.perf_counter_ns() if timing is not None else None
-            if response_opened is not None:
+            if response_opened is not None and sse_connect_started is not None:
                 timing.record("sse_connect_ms", response_opened - sse_connect_started)
             if response.status_code == 429:
                 delay = parse_retry_after(response.headers.get("retry-after"), now=time.time())
@@ -1051,26 +1095,31 @@ class ChatGPTClient:
             content_type = response.headers.get("content-type", "")
             if "text/event-stream" not in content_type:
                 raise ChatGPTError(
-                    f"ChatGPT returned unexpected content type {content_type or '<missing>'}"
+                    f"ChatGPT stream returned unexpected content type {content_type or '<missing>'}"
                 )
-            for frame in SSEFrameDecoder().decode(response.iter_bytes()):
-                payload = frame.data
+            decoder = SSEFrameDecoder(max_event_bytes=16 * 1024 * 1024)
+            async for frame in decoder.decode_async(response.aiter_bytes()):
+                payload = frame.data.strip()
+                if not payload:
+                    continue
                 event_at = time.perf_counter_ns() if timing is not None else None
-                if timing is not None and not first_sse_event:
+                if timing is not None and not first_sse_event and event_at is not None:
                     first_sse_event = True
-                    timing.record("sse_first_event_ms", event_at - response_opened)
+                    if response_opened is not None:
+                        timing.record("sse_first_event_ms", event_at - response_opened)
                     timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
                 if payload == "[DONE]":
                     terminal_seen = True
                     if final_seen and not completion_notified and on_event is not None:
-                        on_event({"type": "response_complete"})
+                        await _maybe_await(on_event({"type": "response_complete"}))
                         completion_notified = True
-                    if timing is not None:
-                        timing.record("sse_last_event_ms", event_at - response_opened)
+                    if timing is not None and event_at is not None:
+                        if response_opened is not None:
+                            timing.record("sse_last_event_ms", event_at - response_opened)
                         timing.record("button_to_last_sse_event_ms", event_at - timing.started_ns)
                     break
                 try:
-                    event = json.loads(payload)
+                    event = json_loads(payload)
                 except json.JSONDecodeError:
                     raise ChatGPTError(
                         "ChatGPT stream protocol changed; request not retried"
@@ -1085,7 +1134,9 @@ class ChatGPTClient:
                     if event_id != bound_id:
                         bound_id = event_id
                         if on_event is not None and getattr(on_event, "_accepts_bound", False):
-                            on_event({"type": "bound", "conversation_id": event_id})
+                            await _maybe_await(
+                                on_event({"type": "bound", "conversation_id": event_id})
+                            )
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
@@ -1117,22 +1168,27 @@ class ChatGPTClient:
                         and text.strip()
                     ):
                         first_assistant_text = True
-                        timing.record(
-                            "sse_first_assistant_text_ms", time.perf_counter_ns() - response_opened
-                        )
-                        timing.record(
-                            "button_to_first_assistant_text_ms", event_at - timing.started_ns
-                        )
+                        if response_opened is not None:
+                            timing.record(
+                                "sse_first_assistant_text_ms",
+                                time.perf_counter_ns() - response_opened,
+                            )
+                        if event_at is not None:
+                            timing.record(
+                                "button_to_first_assistant_text_ms", event_at - timing.started_ns
+                            )
                     if on_event is not None:
-                        on_event(
-                            {
-                                "type": "delta" if text.startswith(rendered) else "replace",
-                                "text": text[len(rendered) :]
-                                if text.startswith(rendered)
-                                else text,
-                                "channel": channel,
-                                "message_id": identity,
-                            }
+                        await _maybe_await(
+                            on_event(
+                                {
+                                    "type": "delta" if text.startswith(rendered) else "replace",
+                                    "text": text[len(rendered) :]
+                                    if text.startswith(rendered)
+                                    else text,
+                                    "channel": channel,
+                                    "message_id": identity,
+                                }
+                            )
                         )
                     rendered_by_channel[identity] = text
                 if (
@@ -1141,7 +1197,7 @@ class ChatGPTClient:
                     and not completion_notified
                     and on_event is not None
                 ):
-                    on_event({"type": "response_complete"})
+                    await _maybe_await(on_event({"type": "response_complete"}))
                     completion_notified = True
         if not terminal_seen or not final_seen:
             raise ChatGPTError(
@@ -1151,7 +1207,7 @@ class ChatGPTClient:
             raise ChatGPTError("ChatGPT did not return a conversation ID")
         return resolved_id, list(streamed_messages.values())
 
-    def send_prompt_direct(
+    async def send_prompt_direct(
         self,
         conversation: dict[str, Any] | None,
         prompt: str,
@@ -1163,6 +1219,7 @@ class ChatGPTClient:
         action=None,
         message_id: str | None = None,
     ) -> tuple[str, str, dict[str, Any] | None, list[dict[str, Any]]]:
+        await self.ensure_auth()
         conversation_id = None
         if conversation:
             candidate = conversation.get("conversation_id") or conversation.get("id")
@@ -1189,7 +1246,7 @@ class ChatGPTClient:
             )
         submitted_message_id = body["messages"][0]["id"]
         if action:
-            submitted_message_id = self._apply_message_action(
+            submitted_message_id = await self._apply_message_action(
                 body, conversation, conversation_id, action, message_id, prompt
             )
         # Apply the provider-owned choices to this request; never retain an
@@ -1216,8 +1273,8 @@ class ChatGPTClient:
             if body.get("messages") and isinstance(body["messages"][0], dict)
             else None
         )
-        headers.update(self.create_sentinel_headers())
-        resolved_id, streamed_messages = self._consume_chat_stream(
+        headers.update(await self.create_sentinel_headers())
+        resolved_id, streamed_messages = await self._consume_chat_stream(
             method, url, headers, body, conversation_id, on_event
         )
         return (
@@ -1228,8 +1285,8 @@ class ChatGPTClient:
         )
 
     def _get_or_create_sentinel_runtime(self, user_agent: str) -> SentinelRuntime:
-        runtime = self._sentinel_runtime
-        if runtime is None or self._sentinel_runtime_key != user_agent:
+        runtime = getattr(self, "_sentinel_runtime", None)
+        if runtime is None or getattr(self, "_sentinel_runtime_key", None) != user_agent:
             replacement = SentinelRuntime(user_agent=user_agent)
             previous_runtime = runtime
             self._sentinel_runtime = replacement
@@ -1239,7 +1296,7 @@ class ChatGPTClient:
                 previous_runtime.close()
         return runtime
 
-    def _create_sentinel_headers_direct(
+    async def _create_sentinel_headers_direct(
         self, runtime: SentinelRuntime, timing: SendTiming | None
     ) -> dict[str, str]:
         local_started = time.perf_counter_ns() if timing is not None else None
@@ -1248,7 +1305,7 @@ class ChatGPTClient:
             timing.record("local_validation_prepare_ms", time.perf_counter_ns() - local_started)
         prepare_started = time.perf_counter_ns() if timing is not None else None
         try:
-            prepare_response = self.request(
+            prepare_response = await self.request(
                 "POST",
                 urljoin(CHATGPT_ORIGIN, "/backend-api/sentinel/chat-requirements/prepare"),
                 json={"p": initial},
@@ -1308,112 +1365,76 @@ class ChatGPTClient:
             result["openai-sentinel-so-token"] = so_token
         return result
 
-    def create_sentinel_headers(self) -> dict[str, str]:
+    async def create_sentinel_headers(self) -> dict[str, str]:
         timing = current_send_timing()
+        await self.ensure_auth()
         user_agent = self._sentinel_user_agent()
-        while True:
-            wait_event: threading.Event | None = None
-            runtime: SentinelRuntime | None = None
-            inflight: threading.Event | None = None
-            with self._sentinel_lock:
-                if self._is_closed():
-                    raise ChatGPTError("ChatGPT client is closed")
-                prewarmed = getattr(self, "_prewarmed_sentinel", None)
-                if prewarmed is not None:
-                    created_at, prewarm_key, headers = prewarmed
-                    self._prewarmed_sentinel = None
-                    if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
-                        if timing is not None:
-                            timing.record("sentinel_prewarmed_hit_ms", 0)
-                        return headers
-                current = getattr(self, "_sentinel_inflight", None)
-                if current is not None and not current.is_set():
-                    wait_event = current
-                else:
-                    inflight = threading.Event()
-                    self._sentinel_inflight = inflight
-                    runtime = self._get_or_create_sentinel_runtime(user_agent)
-            if wait_event is not None:
-                wait_event.wait()
-                continue
-            try:
-                assert runtime is not None and inflight is not None
-                return self._create_sentinel_headers_direct(runtime, timing)
-            finally:
-                with self._sentinel_lock:
-                    if getattr(self, "_sentinel_inflight", None) is inflight:
-                        self._sentinel_inflight = None
-                    if inflight is not None:
-                        inflight.set()
-                    if (
-                        runtime is not None
-                        and self._is_closed()
-                        and runtime is not getattr(self, "_sentinel_runtime", None)
-                    ):
-                        runtime.close()
-
-    def trigger_sentinel_prewarm(self) -> None:
-        if (
-            self._is_closed()
-            or getattr(self.create_sentinel_headers, "__func__", None)
-            is not ChatGPTClient.create_sentinel_headers
-        ):
-            return
-        user_agent = self._sentinel_user_agent()
-        with self._sentinel_lock:
-            current = getattr(self, "_sentinel_inflight", None)
-            if (
-                self._is_closed()
-                or getattr(self, "_prewarming", False)
-                or (current is not None and not current.is_set())
-            ):
-                return
+        async with self._async_lock("_sentinel_lock"):
+            if self._is_closed():
+                raise ChatGPTError("ChatGPT client is closed")
+            prewarm_task = getattr(self, "_prewarm_task", None)
+            if prewarm_task is not None and not prewarm_task.done():
+                with suppress(Exception):
+                    await prewarm_task
             prewarmed = getattr(self, "_prewarmed_sentinel", None)
             if prewarmed is not None:
-                created_at, prewarm_key, _ = prewarmed
+                created_at, prewarm_key, headers = prewarmed
+                self._prewarmed_sentinel = None
                 if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
-                    return
-            self._prewarming = True
-            inflight = threading.Event()
-            self._sentinel_inflight = inflight
+                    if timing is not None:
+                        timing.record("sentinel_prewarmed_hit_ms", 0)
+                    return headers
+            runtime = self._get_or_create_sentinel_runtime(user_agent)
+            return await self._create_sentinel_headers_direct(runtime, timing)
 
-        def _worker() -> None:
-            runtime: SentinelRuntime | None = None
-            try:
-                with self._sentinel_lock:
-                    if self._is_closed():
-                        return
-                    ua = self._sentinel_user_agent()
-                    runtime = self._get_or_create_sentinel_runtime(ua)
-                # Serialize runtime proof/enforcement outside _sentinel_lock via
-                # _sentinel_inflight so foreground close() never stalls on network I/O.
-                headers = self._create_sentinel_headers_direct(runtime, None)
-                with self._sentinel_lock:
-                    if not self._is_closed():
-                        self._prewarmed_sentinel = (time.monotonic(), ua, headers)
-            except Exception:
-                pass
-            finally:
-                with self._sentinel_lock:
-                    self._prewarming = False
-                    if getattr(self, "_sentinel_inflight", None) is inflight:
-                        self._sentinel_inflight = None
-                    inflight.set()
-                    if (
-                        runtime is not None
-                        and self._is_closed()
-                        and runtime is not getattr(self, "_sentinel_runtime", None)
-                    ):
-                        runtime.close()
-
+    async def _run_sentinel_prewarm(self) -> None:
         try:
-            threading.Thread(target=_worker, daemon=True).start()
+            async with self._async_lock("_sentinel_lock"):
+                if self._is_closed():
+                    return
+                await self.ensure_auth()
+                ua = self._sentinel_user_agent()
+                prewarmed = getattr(self, "_prewarmed_sentinel", None)
+                if (
+                    prewarmed is not None
+                    and prewarmed[1] == ua
+                    and (time.monotonic() - prewarmed[0]) < 540.0
+                ):
+                    return
+                runtime = self._get_or_create_sentinel_runtime(ua)
+                headers = await self._create_sentinel_headers_direct(runtime, None)
+                if not self._is_closed():
+                    self._prewarmed_sentinel = (time.monotonic(), ua, headers)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            with self._sentinel_lock:
-                self._prewarming = False
-                if getattr(self, "_sentinel_inflight", None) is inflight:
-                    self._sentinel_inflight = None
-                inflight.set()
+            pass
+        finally:
+            if getattr(self, "_prewarm_task", None) is asyncio.current_task():
+                self._prewarm_task = None
+
+    def trigger_sentinel_prewarm(self) -> None:
+        if self._is_closed():
+            return
+        create_fn = getattr(type(self), "create_sentinel_headers", None)
+        if create_fn is not ChatGPTClient.create_sentinel_headers:
+            return
+        if self._async_lock("_sentinel_lock").locked():
+            return
+        prewarm_task = getattr(self, "_prewarm_task", None)
+        if prewarm_task is not None and not prewarm_task.done():
+            return
+        user_agent = self._sentinel_user_agent()
+        prewarmed = getattr(self, "_prewarmed_sentinel", None)
+        if prewarmed is not None:
+            created_at, prewarm_key, _ = prewarmed
+            if prewarm_key == user_agent and (time.monotonic() - created_at) < 540.0:
+                return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._prewarm_task = loop.create_task(self._run_sentinel_prewarm())
 
     def create_conversation_body(
         self,
@@ -1501,20 +1522,16 @@ class ChatGPTClient:
                 }
             ],
             "parent_message_id": parent,
-            "client_prepare_state": "sent",
+            **({"model": model} if model else {}),
             "timezone_offset_min": offset_minutes,
             **({"timezone": zone} if zone else {}),
             "conversation_mode": {"kind": "primary_assistant"},
-            "enable_message_followups": True,
-            "system_hints": [],
-            "supports_buffering": False,
+            "force_paragen": False,
+            "force_rate_limit": False,
+            "reset_rate_limits": False,
             "supported_encodings": [],
-            "paragen_cot_summary_display_override": "allow",
-            "force_parallel_switch": "auto",
-            "local_function_names": ["local.continue_in_work"],
+            "supports_buffering": False,
         }
-        if model:
-            body["model"] = model
         if conversation:
             project_id = extract_project_id(conversation)
             if project_id:
@@ -1524,22 +1541,21 @@ class ChatGPTClient:
                 body["conversation_id"] = conversation_id
         return body
 
-    def _get_upload_http(self) -> CurlSession:
-        with self._state_guard:
-            existing = getattr(self, "_upload_http", None)
-            if (
-                existing is not None
-                and not getattr(existing, "_closed", False)
-                and not getattr(existing, "is_closed", False)
-            ):
-                return existing
-            if self._is_closed():
-                raise ChatGPTError("ChatGPT client is closed")
-            client = CurlSession(trust_env=False, timeout=30.0, discard_cookies=True)
-            self._upload_http = client
-            return client
+    def _get_upload_http(self) -> AsyncSession:
+        existing = getattr(self, "_upload_http", None)
+        if (
+            existing is not None
+            and not getattr(existing, "_closed", False)
+            and not getattr(existing, "is_closed", False)
+        ):
+            return existing
+        if self._is_closed():
+            raise ChatGPTError("ChatGPT client is closed")
+        client = AsyncSession(trust_env=False, timeout=30.0, discard_cookies=True)
+        self._upload_http = client
+        return client
 
-    def _upload_request(self, url, **options):
+    async def _upload_request(self, url: str, **options):
         target = urlsplit(url)
         if (
             target.scheme != "https"
@@ -1550,9 +1566,11 @@ class ChatGPTClient:
         ):
             raise ChatGPTError("Upload URL must be an HTTPS origin without credentials")
         path = (target.path or "/") + ("?" + target.query if target.query else "")
-        transport = HTTPTransport(f"https://{target.netloc}", client_getter=self._get_upload_http)
+        transport = AsyncHTTPTransport(
+            f"https://{target.netloc}", client_getter=self._get_upload_http
+        )
         try:
-            response = transport.send("PUT", path, check_status=False, **options)
+            response = await transport.send("PUT", path, check_status=False, **options)
         except ChatGPTError:
             raise
         except CurlRequestException:
@@ -1569,7 +1587,7 @@ class ChatGPTClient:
         if not line.strip():
             return False
         try:
-            event = json.loads(line)
+            event = json_loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise ChatGPTError("ChatGPT returned an invalid project source event") from None
         if not isinstance(event, dict):
@@ -1579,13 +1597,13 @@ class ChatGPTClient:
             raise ChatGPTError("ChatGPT could not process the project source")
         return event_type == "file.processing.completed"
 
-    def _process_project_upload_stream(
+    async def _process_project_upload_stream(
         self,
         file_id: str,
         file_name: str,
         mime_type: str,
         project_id: str,
-        ensure_active,
+        ensure_active: Callable[[], None],
     ) -> None:
         payload = {
             "entry_surface": "project_sources",
@@ -1596,7 +1614,7 @@ class ChatGPTClient:
             "mime_type": mime_type,
             "use_case": "gizmo",
         }
-        with self._tracked_stream(
+        async with self._tracked_stream(
             "POST",
             "/backend-api/files/process_upload_stream",
             check_status=False,
@@ -1620,7 +1638,7 @@ class ChatGPTClient:
 
             pending = bytearray()
             completed = False
-            for chunk in processing.iter_bytes():
+            async for chunk in processing.aiter_bytes():
                 ensure_active()
                 pending.extend(chunk)
                 offset = 0
@@ -1639,13 +1657,18 @@ class ChatGPTClient:
             if not completed:
                 raise ChatGPTError("ChatGPT ended project source processing without completion")
 
-    def upload_file(
+    async def upload_file(
         self, file_name: str, mime_type: str, data, *, project_id=None, cancel_event=None
     ) -> dict[str, Any]:
         path = data if isinstance(data, Path) else None
-        stream = path.open("rb") if path is not None else None
+
+        def _open_local():
+            handle = path.open("rb")
+            info = os.fstat(handle.fileno())
+            return handle, info
+
+        stream, before = await asyncio.to_thread(_open_local) if path is not None else (None, None)
         try:
-            before = os.fstat(stream.fileno()) if stream is not None else None
             if before is not None and not stat.S_ISREG(before.st_mode):
                 raise ChatGPTError("upload source must be a regular file")
             size = before.st_size if before is not None else len(data)
@@ -1665,19 +1688,19 @@ class ChatGPTClient:
                 if time.monotonic() >= deadline:
                     raise ChatGPTError("file upload timed out")
 
-            def stream_chunks():
+            async def stream_chunks() -> AsyncIterator[bytes]:
                 assert stream is not None
                 while True:
                     ensure_active()
-                    block = stream.read(256 * 1024)
+                    block = await asyncio.to_thread(stream.read, 256 * 1024)
                     if not block:
                         return
                     yield block
 
-            def verify_unchanged():
-                if stream is None:
+            async def verify_unchanged():
+                if stream is None or before is None:
                     return
-                after = os.fstat(stream.fileno())
+                after = await asyncio.to_thread(os.fstat, stream.fileno())
                 if (
                     before.st_dev,
                     before.st_ino,
@@ -1695,13 +1718,20 @@ class ChatGPTClient:
 
             ensure_active()
             if mime_type == "image/png" and project_id is None:
-                header = stream.read(24) if stream is not None else data[:24]
                 if stream is not None:
-                    stream.seek(0)
+
+                    def _read_png_header():
+                        header_bytes = stream.read(24)
+                        stream.seek(0)
+                        return header_bytes
+
+                    header = await asyncio.to_thread(_read_png_header)
+                else:
+                    header = data[:24]
                 ensure_active()
                 if not header.startswith(b"\x89PNG\r\n\x1a\n") or len(header) < 24:
                     raise ChatGPTError("invalid PNG file")
-                result = self.upload_image(
+                result = await self.upload_image(
                     file_name,
                     mime_type,
                     stream_chunks() if stream is not None else data,
@@ -1711,19 +1741,21 @@ class ChatGPTClient:
                     ensure_active=ensure_active,
                 )
                 ensure_active()
-                verify_unchanged()
+                await verify_unchanged()
                 return result
 
             ensure_active()
-            slot = self.request(
-                "POST",
-                urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
-                json={
-                    "file_name": file_name,
-                    "file_size": size,
-                    "use_case": "gizmo" if project_id else "ace_upload",
-                    **({"gizmo_id": project_id, "mime_type": mime_type} if project_id else {}),
-                },
+            slot = (
+                await self.request(
+                    "POST",
+                    urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
+                    json={
+                        "file_name": file_name,
+                        "file_size": size,
+                        "use_case": "gizmo" if project_id else "ace_upload",
+                        **({"gizmo_id": project_id, "mime_type": mime_type} if project_id else {}),
+                    },
+                )
             ).json()
             ensure_active()
             file_id, upload_url = slot.get("file_id"), slot.get("upload_url")
@@ -1736,31 +1768,33 @@ class ChatGPTClient:
             else:
                 content = data
 
-            self._upload_request(
+            await self._upload_request(
                 upload_url, content=content, headers=headers, timeout=(30.0, 270.0)
             )
             ensure_active()
-            verify_unchanged()
+            await verify_unchanged()
             if project_id:
-                self._process_project_upload_stream(
+                await self._process_project_upload_stream(
                     file_id, file_name, mime_type, project_id, ensure_active
                 )
             else:
-                result = self.request(
-                    "POST",
-                    urljoin(
-                        CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"
-                    ),
-                    json={},
+                result = (
+                    await self.request(
+                        "POST",
+                        urljoin(
+                            CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"
+                        ),
+                        json={},
+                    )
                 ).json()
                 if result.get("status") != "success":
                     raise ChatGPTError("provider did not finalize the file upload")
             return {"id": file_id, "name": file_name, "mime_type": mime_type, "size_bytes": size}
         finally:
             if stream is not None:
-                stream.close()
+                await asyncio.to_thread(stream.close)
 
-    def upload_image(
+    async def upload_image(
         self,
         file_name: str,
         mime_type: str,
@@ -1779,14 +1813,16 @@ class ChatGPTClient:
             raise ChatGPTError("clipboard image must be smaller than 20 MiB")
         if is_bytes and bytes(data[:8]) != b"\x89PNG\r\n\x1a\n":
             raise ChatGPTError("only PNG clipboard images are currently supported")
-        slot = self.request(
-            "POST",
-            urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
-            json={
-                "file_name": file_name,
-                "file_size": byte_size,
-                "use_case": "multimodal",
-            },
+        slot = (
+            await self.request(
+                "POST",
+                urljoin(CHATGPT_ORIGIN, "/backend-api/files"),
+                json={
+                    "file_name": file_name,
+                    "file_size": byte_size,
+                    "use_case": "multimodal",
+                },
+            )
         ).json()
         if ensure_active is not None:
             ensure_active()
@@ -1797,7 +1833,7 @@ class ChatGPTClient:
         headers = {"content-type": mime_type, "x-ms-blob-type": "BlockBlob"}
         if not is_bytes:
             headers["content-length"] = str(byte_size)
-        self._upload_request(
+        await self._upload_request(
             upload_url,
             content=data,
             headers=headers,
@@ -1805,10 +1841,12 @@ class ChatGPTClient:
         )
         if ensure_active is not None:
             ensure_active()
-        finalized = self.request(
-            "POST",
-            urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
-            json={},
+        finalized = (
+            await self.request(
+                "POST",
+                urljoin(CHATGPT_ORIGIN, f"/backend-api/files/{quote(file_id, safe='')}/uploaded"),
+                json={},
+            )
         ).json()
         if finalized.get("status") != "success":
             raise ChatGPTError("ChatGPT did not finalize the image upload")
