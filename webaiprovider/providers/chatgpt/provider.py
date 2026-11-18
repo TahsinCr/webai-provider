@@ -59,6 +59,7 @@ from ...transport import (
 )
 from .client import ChatGPTClient
 from .collections import AsyncChatGPTProjectsCollection
+from .constants import DEFAULT_PAGE_SIZE
 from .discovery import project_id
 from .errors import ChatGPTAuthenticationError, ChatGPTError
 from .formats import message_files, message_parts, text_from_parts
@@ -187,6 +188,7 @@ class _Stopped(Exception):
 class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CHATGPT
 
+    _chat_page_size = DEFAULT_PAGE_SIZE
     _chat_type = AsyncChatGPTChat
     _projects_collection_type = AsyncChatGPTProjectsCollection
 
@@ -262,6 +264,12 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         return self.session_state
 
     def _active_transport(self) -> AsyncTransport | None:
+        if self._provided_transport is None and self._factory is ChatGPTClient:
+            if self._owned_transport is not None:
+                return self._owned_transport
+            loop = self._ensure_loop()
+            if loop is not None and loop.is_running():
+                return self._ensure_owned_transport()
         return self._effective_transport
 
     def _get_project_editor(self) -> ChatGPTProjectEditor:
@@ -325,7 +333,20 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                         lambda t=owned: t,
                         close_transport=False,
                     )
+                primary = self._http_client if slot == "_aux_http_client" else None
+                inherit_auth = (
+                    primary is not None
+                    and self._factory is ChatGPTClient
+                    and bool(getattr(primary, "headers", None))
+                )
+                if inherit_auth:
+                    options["authenticate"] = False
                 client = self._factory(self.session_state, **options)
+                if inherit_auth and primary is not None:
+                    client.list_url = primary.list_url
+                    client.headers = dict(primary.headers)
+                    client._conversation_endpoint = primary._conversation_endpoint
+                    client._conversation_endpoint_verified = primary._conversation_endpoint_verified
                 if attach_state:
                     client.temporary_conversations = self._temporary_conversations
                     client.pending_branches = self._pending_branches
@@ -395,7 +416,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         self._ensure_loop()
         if self._read_loop is not loop or self._read_semaphore is None:
             self._read_loop = loop
-            self._read_semaphore = asyncio.Semaphore(2)
+            self._read_semaphore = asyncio.Semaphore(4)
         return self._read_semaphore
 
     def _project(self, raw: dict[str, Any]) -> ProjectData:
@@ -627,7 +648,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
             return await self._to_thread(read)
 
     async def _list_chats_data(
-        self, *, cursor: str | None = None, limit: int = 28
+        self, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_SIZE
     ) -> Page[Conversation]:
         offset = int(cursor or "0")
         if offset < 0 or not 1 <= limit <= 100:
@@ -738,9 +759,12 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
             def remove():
                 with self._client_scope() as client:
-                    client.delete_conversation(conversation_id)
+                    return client.delete_conversation(conversation_id)
 
-            await self._to_thread(remove)
+            confirmed = await self._to_thread(remove)
+
+        if confirmed is True:
+            return
 
         async def readback():
             def read():

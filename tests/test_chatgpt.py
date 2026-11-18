@@ -1161,7 +1161,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
 
 class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_list_project_chats_bounds_concurrency_to_two_and_runs_outside_gate(self):
+    async def test_list_project_chats_bounds_concurrency_to_four_and_runs_outside_gate(self):
         import time
 
         lock = threading.Lock()
@@ -1192,12 +1192,12 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.list_project_chats = fake_list_project_chats
         async with self.provider._gate:
             pages = await asyncio.gather(
-                *(self.provider._list_project_chats_data(f"p-{i}") for i in range(4))
+                *(self.provider._list_project_chats_data(f"p-{i}") for i in range(6))
             )
-        self.assertEqual(max_active, 2)
+        self.assertEqual(max_active, 4)
         self.assertEqual(
             [page.items[0].id for page in pages],
-            ["c-p-0", "c-p-1", "c-p-2", "c-p-3"],
+            ["c-p-0", "c-p-1", "c-p-2", "c-p-3", "c-p-4", "c-p-5"],
         )
 
     async def test_delete_chat_releases_gate_before_confirm_deleted(self):
@@ -1221,6 +1221,14 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             release_confirm.set()
             await task
 
+    async def test_delete_chat_skips_confirm_deleted_when_server_confirms_patch(self):
+        self.client.delete_conversation = lambda _cid: True
+        with patch(
+            "webaiprovider.providers.chatgpt.provider.confirm_deleted",
+            side_effect=AssertionError("unexpected confirm_deleted polling"),
+        ):
+            await self.provider._delete_chat_data("cid-1")
+
     async def test_project_update_reuses_staged_state_and_confirms_remote_result(self):
         from contextlib import nullcontext
         from unittest.mock import Mock
@@ -1241,6 +1249,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             "p-1",
             "Old Name",
             "Old inst",
+            resources=(Attachment("file-1", "doc.txt", "file"),),
             metadata={
                 "gizmo": {
                     "display": {"emoji": "sparkles", "theme": "slate"},
@@ -1248,13 +1257,18 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 }
             },
         )
-        await editor.write("update", "p-1", name="New Name", current=current)
-        await editor.write(
+        updated_res = await editor.write("update", "p-1", name="New Name", current=current)
+        self.assertIsInstance(updated_res, NativeProject)
+        self.assertEqual(updated_res.name, "New Name")
+        removed_res = await editor.write(
             "remove_source",
             "p-1",
+            current=updated_res,
             resource_id="file-1",
             resource=Attachment("file-1", "doc.txt", "file"),
         )
+        self.assertIsInstance(removed_res, NativeProject)
+        self.assertEqual(removed_res.resources, ())
         self.assertEqual(mock_client.get_project.call_count, 0)
         mock_client.get_project = Mock(return_value={"resources": []})
         with self.assertRaises(ValueError):
@@ -1388,6 +1402,42 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await provider.close()
         self.assertTrue(created[0].closed.is_set())
         self.assertIsNone(provider._aux_http_client)
+
+    async def test_aux_client_inherits_primary_headers_without_reauthenticating(self):
+        auth_flags: list[bool] = []
+        created_aux: list[ChatGPTClient] = []
+
+        class InspectableClient(ChatGPTClient):
+            def __init__(self, session, *, authenticate: bool = True, **kwargs):
+                auth_flags.append(authenticate)
+                super().__init__(session, authenticate=False, **kwargs)
+                if authenticate:
+                    self.list_url = "https://chatgpt.com/backend-api/conversations"
+                    self.headers = {"authorization": "Bearer primary-tok", "oai-device-id": "dev-1"}
+                    self._conversation_endpoint = "conversation"
+                    self._conversation_endpoint_verified = True
+                else:
+                    created_aux.append(self)
+
+        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", InspectableClient):
+            provider = AsyncChatGPTProvider(
+                provider_account("chatgpt"),
+                session=self.session,
+            )
+            self.assertIs(provider._factory, InspectableClient)
+            try:
+                with provider._client_scope() as primary:
+                    self.assertEqual(primary.headers["authorization"], "Bearer primary-tok")
+                with provider._aux_client_scope() as aux:
+                    self.assertEqual(auth_flags, [True, False])
+                    self.assertIs(aux, created_aux[0])
+                    self.assertEqual(aux.headers, primary.headers)
+                    self.assertIsNot(aux.headers, primary.headers)
+                    self.assertEqual(aux.list_url, primary.list_url)
+                    self.assertEqual(aux._conversation_endpoint, "conversation")
+                    self.assertTrue(aux._conversation_endpoint_verified)
+            finally:
+                await provider.close()
 
     async def test_resolve_download_reuses_cached_snapshot_and_falls_back_on_miss(self):
         from unittest.mock import Mock

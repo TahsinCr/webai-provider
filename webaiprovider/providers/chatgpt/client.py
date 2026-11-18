@@ -584,7 +584,7 @@ class ChatGPTClient:
             expect_json=False,
         )
 
-    def delete_conversation(self, conversation_id: str) -> None:
+    def delete_conversation(self, conversation_id: str) -> bool:
         if not isinstance(conversation_id, str) or not conversation_id:
             raise ValueError("conversation ID is required")
         response = self.request(
@@ -593,9 +593,15 @@ class ChatGPTClient:
             json={"is_visible": False},
             expect_json=False,
         )
-        if response.content and response.json().get("success") is False:
+        payload = response.json() if response.content else None
+        if isinstance(payload, dict) and payload.get("success") is False:
             raise ChatGPTError("ChatGPT refused to delete the conversation.")
         self._forget_conversation(conversation_id)
+        if getattr(response, "status_code", None) == 204:
+            return True
+        return isinstance(payload, dict) and (
+            payload.get("success") is True or payload.get("is_visible") is False
+        )
 
     def move_conversation(self, conversation_id: str, project_id: str | None) -> dict[str, Any]:
         """Update native project membership without an extra conversation readback GET."""

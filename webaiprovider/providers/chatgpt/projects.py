@@ -3,10 +3,12 @@
 import asyncio
 import mimetypes
 import time
+from dataclasses import replace
 from urllib.parse import quote
 
 from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
+    ProjectData,
     ProjectOption,
     ProjectOptions,
     source_file,
@@ -108,6 +110,12 @@ class ChatGPTProjectEditor:
                             "memory_scope": native.get("memory_scope"),
                         },
                     )
+                    if isinstance(provided, ProjectData):
+                        return replace(
+                            provided,
+                            name=values.get("name", current_name),
+                            instructions=values.get("instructions", current_instructions),
+                        )
                 elif operation == "add_source":
                     last_modified = int(time.time() * 1000)
                     if values["kind"] == "text":
@@ -138,6 +146,10 @@ class ChatGPTProjectEditor:
                         path + "/files",
                         json={"files": [file_payload]},
                     )
+                    if callable(getattr(attached, "json", None)) and getattr(
+                        attached, "content", None
+                    ):
+                        attached = attached.json()
                     attached_item = (
                         attached["files"][0]
                         if isinstance(attached, dict)
@@ -177,6 +189,12 @@ class ChatGPTProjectEditor:
                     client.request(
                         "DELETE", path + "/files/" + quote(rid, safe=""), expect_json=False
                     )
+                    current_project = values.get("current")
+                    if isinstance(current_project, ProjectData):
+                        return replace(
+                            current_project,
+                            resources=tuple(r for r in current_project.resources if r.id != rid),
+                        )
                 else:
                     raise ValueError("Unknown project operation")
 
