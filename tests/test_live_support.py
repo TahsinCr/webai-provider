@@ -373,7 +373,7 @@ class ActionGateTests(unittest.TestCase):
 
 class LiveContextErrorTests(unittest.TestCase):
     def test_edit_readback_uses_the_new_prompt_and_requires_a_remote_answer(self) -> None:
-        from tests.live.test_messages import _assert_edited_turn_in_history
+        from tests.live.test_messages import _has_edited_turn
         from webaiprovider import AsyncMessage, Response
 
         response = Response(
@@ -382,12 +382,22 @@ class LiveContextErrorTests(unittest.TestCase):
             message=AsyncMessage("Edited prompt"),
             metadata={"from_history": True},
         )
-        _assert_edited_turn_in_history(self, "Edited prompt", [response])
-        with self.assertRaisesRegex(AssertionError, "Edited prompt and its answer"):
-            _assert_edited_turn_in_history(self, "Original prompt", [response])
+        self.assertTrue(_has_edited_turn("Edited prompt", [response]))
+        self.assertFalse(_has_edited_turn("Original prompt", [response]))
         response.metadata.clear()
-        with self.assertRaisesRegex(AssertionError, "Edited prompt and its answer"):
-            _assert_edited_turn_in_history(self, "Edited prompt", [response])
+        self.assertFalse(_has_edited_turn("Edited prompt", [response]))
+
+    def test_setup_diagnostics_show_only_typed_status_or_known_workspace_error(self) -> None:
+        from tests.live.support.context import _safe_error_label
+
+        cases = {
+            "Provider denied access (HTTP 403); the request was not retried": "ProviderError (HTTP 403)",
+            "Provider request failed (HTTP 503)": "ProviderError (HTTP 503)",
+            "Claude workspace selection is invalid; reverify the account": "Claude workspace selection could not be verified",
+            "Provider request failed (HTTP 503) private route": "ProviderError",
+        }
+        for message, expected in cases.items():
+            self.assertEqual(_safe_error_label(ProviderError(message)), expected)
 
     def test_chat_id_is_persisted_only_when_it_changes(self) -> None:
         context = LiveContext.__new__(LiveContext)
@@ -791,6 +801,8 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 ProviderError("Provider denied access (HTTP 403); the request was not retried")
             ),
             wrapped(RateLimited(5)),
+            wrapped(ProviderError("Provider request failed (HTTP 400)")),
+            wrapped(ProviderError("Claude workspace selection is invalid; reverify the account")),
         ):
             with patch.object(
                 live, "_open_async_once", AsyncMock(side_effect=non_retryable)

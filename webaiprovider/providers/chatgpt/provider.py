@@ -436,6 +436,7 @@ class AsyncChatGPTProvider(ProjectEditorMixin, AsyncProvider):
             blocks,
             "analysis"
             if content.get("content_type") in ("thoughts", "reasoning_recap", "reasoning_summary")
+            or (role == "assistant" and item.get("recipient") not in (None, "all"))
             else item.get("channel"),
             dict(item),
             actions=actions_for(
@@ -455,12 +456,10 @@ class AsyncChatGPTProvider(ProjectEditorMixin, AsyncProvider):
 
     @staticmethod
     def _active_messages(raw: dict[str, Any]) -> list[dict[str, Any]]:
-        raw_messages = raw.get("messages")
-        if isinstance(raw_messages, list):
-            return raw_messages
         mapping = raw.get("mapping")
         if not isinstance(mapping, dict) or not mapping:
-            return []
+            messages = raw.get("messages")
+            return messages if isinstance(messages, list) else []
         node_id = raw.get("current_node")
         if not isinstance(node_id, str) or node_id not in mapping:
             raise ValueError("ChatGPT conversation has no active message path")

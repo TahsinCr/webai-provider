@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from contextlib import suppress
@@ -16,6 +17,18 @@ from .journal import _DEFAULT_CLEANUP_FILE, CLEANUP_FILE, cleanup_file, write_cl
 _CLEANUP_RATE_LIMIT = "The provider rate limited cleanup; the journal was retained"
 
 
+def _provider_http_status(exc: Exception) -> str | None:
+    if type(exc).__name__ == "ProviderError":
+        match = re.fullmatch(
+            r"Provider request failed \(HTTP ([0-9]{3})\)|"
+            r"Provider denied access \(HTTP (403)\); the request was not retried",
+            str(exc),
+        )
+        if match:
+            return match.group(1) or match.group(2)
+    return None
+
+
 def _safe_error_label(exc: Exception) -> str:
     if isinstance(exc, CurlTimeout):
         message = str(exc)
@@ -27,6 +40,13 @@ def _safe_error_label(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         return "operation timeout"
     kind = type(exc).__name__
+    if status := _provider_http_status(exc):
+        return f"{kind} (HTTP {status})"
+    if (
+        kind == "ProviderError"
+        and str(exc) == "Claude workspace selection is invalid; reverify the account"
+    ):
+        return "Claude workspace selection could not be verified"
     message = str(exc)
     if kind == "ChatGPTError":
         for prefix in ("ChatGPT returned HTTP ", "ChatGPT submission returned HTTP "):

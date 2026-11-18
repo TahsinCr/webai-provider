@@ -14,7 +14,12 @@ from ...core.timing import current_send_timing
 from ...resources.message.attachment import GEMINI_ATTACHMENTS
 from ...resources.message.types import MessageAction
 from ...transport.frames import JSPBFrameDecoder
-from .errors import GeminiCompatibilityError, GeminiError, GeminiStreamError
+from .errors import (
+    GeminiCompatibilityError,
+    GeminiError,
+    GeminiGenerationRejected,
+    GeminiStreamError,
+)
 from .history import candidate_metadata, published_activity, published_thoughts
 from .media import candidate_files
 from .rpc import nested
@@ -247,9 +252,7 @@ async def generate(
                         timing.record("sse_first_event_ms", event_at - response_opened)
                         timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
                 if nested(frame, 5, 2, 0, 1, 0):
-                    raise GeminiError(
-                        "Gemini rejected the request; check your quota or model availability."
-                    )
+                    raise GeminiGenerationRejected("Gemini rejected the generation request")
                 payload = nested(frame, 2)
                 if not isinstance(payload, str):
                     continue

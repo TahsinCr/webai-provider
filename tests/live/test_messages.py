@@ -28,16 +28,13 @@ def _assert_streamed_turn_in_history(case, response, history) -> None:
         case.assertIs(verified.timing, response.timing)
 
 
-def _assert_edited_turn_in_history(case, prompt: str, history: list[Response]) -> None:
-    case.assertTrue(
-        any(
-            item.metadata.get("from_history")
-            and item.message is not None
-            and item.message.content == prompt
-            and item.text.strip()
-            for item in history
-        ),
-        "Edited prompt and its answer were not found in provider history",
+def _has_edited_turn(prompt: str, history: list[Response]) -> bool:
+    return any(
+        item.metadata.get("from_history")
+        and item.message is not None
+        and item.message.content == prompt
+        and item.text.strip()
+        for item in history
     )
 
 
@@ -189,7 +186,15 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                 responses = await self.call_api(
                     "responses.list_after_edit_last", lambda: chat.responses.list(limit=50)
                 )
-                _assert_edited_turn_in_history(self, edit_prompt, responses)
+                if not _has_edited_turn(edit_prompt, responses):
+                    responses = await self.call_api(
+                        "responses.verify_edit_after_delay",
+                        lambda: chat.responses.list(limit=50, fresh=True),
+                    )
+                self.assertTrue(
+                    _has_edited_turn(edit_prompt, responses),
+                    "Edited prompt and its answer were not found in provider history",
+                )
             else:
                 self.context.skip("responses.edit: unsupported")
 

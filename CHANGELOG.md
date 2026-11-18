@@ -38,6 +38,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Preserve the triggering user message across visible assistant segments in conversation history and keep tool or system records out of response turns. Prefer ChatGPT's active branch when a history payload contains both a branch map and a flat list.
+- Report Gemini server-side generation rejections distinctly from transport errors. Use the model's default effort in live availability probes and report safe HTTP status codes for known session failures.
+
 - Verify sent responses by remote history identity and edits by the revised prompt and its persisted answer in the live suite. Report partial coverage separately and avoid repeat model setup and account-wide searches during project moves.
 
 - Cancel and drain the sibling listing when either top-level chat or project listing fails during `include_projects=True` queries.

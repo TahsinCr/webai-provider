@@ -698,6 +698,31 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             await close
         self.assertEqual(provider.close_calls, 1)
 
+    async def test_history_keeps_the_edited_prompt_across_tools_and_assistant_blocks(self):
+        def record(id_, role, text):
+            return MessageData(id_, role, (Content("text", text),))
+
+        async with _ScriptedAsyncProvider(_account()) as provider:
+            cid = "edited-chat"
+            provider.conversations[cid] = Conversation(
+                cid,
+                "Edited",
+                (
+                    record("prompt", "user", "Revised prompt"),
+                    record("tool", "tool", "Tool output"),
+                    record("intro", "assistant", "Looking it up"),
+                    record("system", "system", "Internal instruction"),
+                    record("answer", "assistant", "Revised answer"),
+                    record("unanswered", "user", "Next question"),
+                ),
+            )
+            _, history = await provider.chats.get_with_responses(cid)
+            self.assertEqual([r.text for r in history], ["Looking it up", "Revised answer", ""])
+            self.assertIs(history[0].message, history[1].message)
+            self.assertEqual(history[1].message.content, "Revised prompt")
+            self.assertIs(history[1].message.response, history[1])
+            self.assertEqual(history[2].message.content, "Next question")
+
     async def test_shared_history_fetch_separates_messages_and_responses_with_sources_and_artifacts(
         self,
     ) -> None:

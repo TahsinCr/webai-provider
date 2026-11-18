@@ -61,15 +61,15 @@ WEBAI_LIVE_TESTS=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal \
 
 | Scenario | Remote behavior exercised |
 | --- | --- |
-| Sessions and models | Open a session, read the authenticated account catalog, explicitly refresh it, and send a short message to each available model in the async phase. |
+| Sessions and models | Open a session, read the authenticated account catalog, explicitly refresh it, and send a short message to each available model at its default effort. |
 | Chats and messages | List chats, stream and read back a marked conversation, and rename and delete it. The async phase also checks incognito mode, a small message attachment, a sourced response when the model returns sources, retry, edit, and branch where supported. Chat opening with history is checked when reading back a retry. |
 | Projects and resources | List, create, rename, update instructions, add/list/remove a text resource, and delete. The async phase checks remote chat membership after a move through the project-scoped collection. |
 
 The suite uses disposable data and the account's advertised capabilities. Raw transport endpoints, arbitrary downloads, destructive account operations, and provider-specific combinations outside these scenarios have deterministic offline coverage where applicable. A model that returns no sources leaves source coverage partial.
 
-The gate keeps a one-second cooldown between API actions on the same account. It caps each provider at 64 actions. Actions time out after 300 seconds. Providers may issue multiple requests within an API action. The harness only retries setup once for a typed authentication error on the default-browser account.
+The gate keeps a one-second cooldown between API actions on the same account. It caps each provider at 64 actions. Actions time out after 300 seconds. Providers may issue multiple requests within an API action. The harness can retry session opening once after a network timeout or a recognized transient HTTP status. For a typed authentication error, it can refresh a default-browser account once. A denied request, a rate limit, or a generation rejection cannot trigger a resend.
 
-`ACTION OK` confirms the API call returned. Its duration includes gate wait time. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. The report contains no prompt, response, credential, or remote ID values.
+`ACTION OK` confirms the API call returned. Its duration includes gate wait time. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. Known HTTP statuses, workspace-selection failures, and Gemini generation rejections appear as sanitized error labels. The report contains no prompt, response, credential, or remote ID values.
 
 Before creating a remote test object, the suite writes a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
 

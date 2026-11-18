@@ -15,7 +15,7 @@ from .actions import (
     ActionGate,
 )
 from .config import LiveAccount, load_or_import_account, lock_file_guard
-from .context import LiveContext
+from .context import LiveContext, _provider_http_status
 from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_journal
 
@@ -185,16 +185,17 @@ class LiveSession:
     def _retryable_open_error(error: LiveApiError) -> bool:
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
-        from webaiprovider.errors import ProviderError
-
         if not str(error).startswith("session.open failed after "):
             return False
         cause = error.__context__
         if isinstance(cause, (CurlTimeout, TimeoutError)):
             return True
-        # Retry transient edge/5xx bootstrap errors once, but never auth, rate-limit,
-        # compatibility, network-unavailable, or HTTP 403 rejections.
-        return type(cause) is ProviderError and "HTTP 403" not in str(cause)
+        return isinstance(cause, Exception) and _provider_http_status(cause) in {
+            "500",
+            "502",
+            "503",
+            "504",
+        }
 
     def open_sync(self) -> LiveContext:
         try:

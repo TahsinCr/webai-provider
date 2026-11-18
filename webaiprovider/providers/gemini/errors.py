@@ -5,6 +5,10 @@ class GeminiError(ProviderError):
     code = "gemini_error"
 
 
+class GeminiGenerationRejected(GeminiError):
+    code = "gemini_generation_rejected"
+
+
 class GeminiNotFoundError(RemoteNotFound, GeminiError):
     code = "gemini_not_found"
 

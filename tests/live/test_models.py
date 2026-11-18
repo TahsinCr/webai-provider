@@ -33,16 +33,6 @@ class AsyncModelApiTests(LiveAsyncTestCase):
             return
 
         for model in models:
-            efforts = model.efforts.list()
-            by_id = {effort.id: effort for effort in efforts}
-            default_id = getattr(model.efforts, "DEFAULT_EFFORT_ID", None)
-            effort = (
-                by_id.get("standard")
-                or by_id.get("medium")
-                or (by_id.get(default_id) if default_id else None)
-                or (efforts[0] if efforts else None)
-            )
-            selection = model.select(effort) if effort is not None else model
             marker = f"{self.context.marker}-m-{model.id}"
             entry = None if use_temporary else self.context.new_remote("chat", marker)
             if entry is not None:
@@ -52,7 +42,7 @@ class AsyncModelApiTests(LiveAsyncTestCase):
             try:
                 if entry is not None:
                     self.context.record_chat_id(entry, chat)
-                op = chat.responses.create("Reply with OK.", model=selection)
+                op = chat.responses.create("Reply with OK.", model=model)
                 response = await self.call_or_skip_rate_limit(
                     f"models.send[{model.id}]", op.start, entry=entry, chat=chat
                 )

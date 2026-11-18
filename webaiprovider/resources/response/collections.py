@@ -325,6 +325,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         seen_user_ids: set[str] = set()
         seen_resp_ids: set[str] = set()
         pending_user: AsyncMessage | None = None
+        answered = False
 
         def build_unanswered(user_msg: AsyncMessage) -> Response:
             resp_id = f"unanswered:{user_msg.id}"
@@ -346,7 +347,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             return resp
 
         for item in conversation.messages:
-            if item.channel == "analysis":
+            if item.channel == "analysis" or item.role not in ("user", "assistant"):
                 continue
             parts = item.content
             if len(parts) == 1 and parts[0].kind == "text":
@@ -356,7 +357,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                     part.text for part in parts if part.kind == "text" and part.text
                 )
             if item.role == "user":
-                if pending_user is not None:
+                if pending_user is not None and not answered:
                     responses.append(build_unanswered(pending_user))
                 seen_user_ids.add(item.id)
                 user_msg = existing_messages.get(item.id)
@@ -366,6 +367,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 user_msg.content = content
                 user_msg.metadata = {**item.metadata, "actions": item.actions}
                 pending_user = user_msg
+                answered = False
                 continue
 
             seen_resp_ids.add(item.id)
@@ -408,10 +410,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 resp.chat = self.chat
             if pending_user is not None:
                 pending_user.response = resp
-                pending_user = None
+                answered = True
             responses.append(resp)
 
-        if pending_user is not None:
+        if pending_user is not None and not answered:
             responses.append(build_unanswered(pending_user))
 
         for item in self._turns:

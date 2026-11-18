@@ -630,6 +630,20 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             content=b"",
         )
 
+    async def test_generation_rejection_is_typed_and_does_not_replay_the_request(self):
+        from webaiprovider.providers.gemini.errors import GeminiGenerationRejected
+        from webaiprovider.providers.gemini.generation import generate
+
+        frame = [None] * 6
+        frame[5] = [None, None, [[None, [1]]]]
+        payload = json.dumps([frame])
+        size = len(payload) + 1
+        response = self.response([f")]}}'\n\n{size}\n{payload}".encode()])
+        session = self.session(response)
+        with self.assertRaises(GeminiGenerationRejected):
+            _ = [chunk async for chunk in generate(session, ProviderRequest("test"), [])]
+        session.http.request.assert_awaited_once()
+
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
         from webaiprovider.core.timing import SendTiming, use_send_timing
         from webaiprovider.providers.gemini.generation import generate

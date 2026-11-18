@@ -767,6 +767,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             "id": "remote",
             "title": "Mapped chat",
             "current_node": "answer",
+            "messages": [{"id": "stale-flat-message"}],
             "mapping": {
                 "root": {"parent": None, "message": None},
                 "user": {
