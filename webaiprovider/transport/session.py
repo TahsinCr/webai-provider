@@ -53,6 +53,7 @@ class HttpSession(AsyncHTTPTransport):
         self.client = None
         self.authenticated = False
         self._saved_cookies = None
+        self._connect_lock = asyncio.Lock()
         self._save_lock = asyncio.Lock()
         self._last_persisted_at: float | None = None
         self._dirty = False
@@ -99,11 +100,18 @@ class HttpSession(AsyncHTTPTransport):
         return self.client
 
     async def _ensure_connected(self):
-        if self.client is None:
-            values = await read_session_async(self.path)
+        if self.client is not None:
+            return self.client
+        async with self._connect_lock:
             if self.client is None:
-                self.client = self._build_client(self._load_initial_cookies(values))
+                values = await read_session_async(self.path)
+                if self.client is None:
+                    self.client = self._build_client(self._load_initial_cookies(values))
         return self.client
+
+    async def get_saved_cookies(self) -> dict[str, str]:
+        await self._ensure_connected()
+        return dict(self._saved_cookies or {})
 
     async def _acquire_client_async(self):
         await self._ensure_connected()

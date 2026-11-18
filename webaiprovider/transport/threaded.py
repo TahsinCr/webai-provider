@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import queue
 import threading
 from contextlib import asynccontextmanager, contextmanager, suppress
 
@@ -40,22 +41,26 @@ class ThreadedTransport(AsyncTransport):
         self.url(path)
         options = self._options(options, method, path)
         loop = asyncio.get_running_loop()
-        queue = asyncio.Queue(maxsize=32)
+        slots = threading.Semaphore(32)
+        chunk_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
         stopped = threading.Event()
         responses = []
 
         def publish(kind, value=None):
             if stopped.is_set():
                 return False
-            pending = asyncio.run_coroutine_threadsafe(queue.put((kind, value)), loop)
-            while not stopped.is_set():
-                try:
-                    pending.result(timeout=0.1)
-                    return True
-                except concurrent.futures.TimeoutError:
-                    pass
-            pending.cancel()
-            return False
+            while not slots.acquire(timeout=0.1):
+                if stopped.is_set():
+                    return False
+            if stopped.is_set():
+                slots.release()
+                return False
+            try:
+                loop.call_soon_threadsafe(chunk_queue.put_nowait, (kind, value))
+                return True
+            except RuntimeError:
+                slots.release()
+                return False
 
         def run():
             try:
@@ -73,9 +78,10 @@ class ThreadedTransport(AsyncTransport):
                 publish("error", error)
 
         async def receive():
-            kind, value = await queue.get()
+            kind, value = await chunk_queue.get()
+            slots.release()
             if kind == "error":
-                raise value
+                raise value  # type: ignore[misc]
             return kind, value
 
         async def chunks():
@@ -132,8 +138,15 @@ class PortalTransport(Transport):
         call = self._call
         state_lock = threading.Lock()
         closed = False
+        reader_done = False
+        chunk_queue: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
         active_task: asyncio.Task | None = None
         task_loop: asyncio.AbstractEventLoop | None = None
+        send_event: asyncio.Event | None = None
+        done_event: asyncio.Event | None = None
+        pending_count = 0
+        waiting = False
+        max_pending = 64
 
         def finish(exc_type=None, error=None, traceback=None):
             nonlocal closed
@@ -143,10 +156,18 @@ class PortalTransport(Transport):
                 closed = True
                 task = active_task
                 loop = task_loop
+                done = done_event
             if task is not None and loop is not None:
                 with suppress(RuntimeError):
                     loop.call_soon_threadsafe(task.cancel)
-            return call(manager.__aexit__(exc_type, error, traceback))
+            chunk_queue.put(("closed", None))
+
+            async def finish_async():
+                if done is not None:
+                    await done.wait()
+                return await manager.__aexit__(exc_type, error, traceback)
+
+            return call(finish_async())
 
         class Stream:
             status_code = response.status_code
@@ -156,45 +177,107 @@ class PortalTransport(Transport):
                 finish()
 
             def iter_bytes(self):
+                nonlocal reader_done, pending_count, waiting
                 iterator = response.aiter_bytes()
 
-                async def next_chunk():
-                    nonlocal active_task, task_loop
+                async def run_pump(can_send: asyncio.Event, done: asyncio.Event):
+                    nonlocal active_task, task_loop, pending_count, waiting
+                    try:
+                        async for chunk in iterator:
+                            with state_lock:
+                                if closed or reader_done:
+                                    break
+                                pending_count += 1
+                                wait_needed = pending_count >= max_pending
+                                if wait_needed:
+                                    can_send.clear()
+                                    waiting = True
+                            chunk_queue.put(("chunk", chunk))
+                            if wait_needed:
+                                await can_send.wait()
+                        else:
+                            chunk_queue.put(("end", None))
+                    except asyncio.CancelledError as exc:
+                        with state_lock:
+                            was_stopped = closed or reader_done
+                        if not was_stopped:
+                            chunk_queue.put(("error", exc))
+                    except BaseException as exc:
+                        chunk_queue.put(("error", exc))
+                    finally:
+                        try:
+                            with suppress(
+                                asyncio.CancelledError,
+                                concurrent.futures.CancelledError,
+                                StopAsyncIteration,
+                            ):
+                                await iterator.aclose()
+                        finally:
+                            with state_lock:
+                                if active_task is asyncio.current_task():
+                                    active_task = None
+                                    task_loop = None
+                            done.set()
+
+                async def start_pump() -> bool:
+                    nonlocal active_task, task_loop, send_event, done_event
                     loop = asyncio.get_running_loop()
-                    task = asyncio.current_task()
                     with state_lock:
                         if closed:
-                            raise StopAsyncIteration
+                            return False
                         if active_task is not None:
                             raise RuntimeError("Concurrent reads from one stream are unsupported")
-                        active_task = task
+                        can_send = asyncio.Event()
+                        can_send.set()
+                        done = asyncio.Event()
+                        send_event = can_send
+                        done_event = done
                         task_loop = loop
-                    try:
-                        return await anext(iterator)
-                    finally:
-                        with state_lock:
-                            if active_task is task:
-                                active_task = None
-                                task_loop = None
+                        active_task = loop.create_task(run_pump(can_send, done))
+                    return True
+
+                async def wait_pump_done():
+                    with state_lock:
+                        done = done_event
+                    if done is not None:
+                        await done.wait()
+
+                if not call(start_pump()):
+                    return
 
                 try:
                     while True:
-                        try:
-                            yield call(next_chunk())
-                        except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                        kind, payload = chunk_queue.get()
+                        if kind == "chunk":
                             with state_lock:
-                                if closed:
-                                    return
-                            raise
-                        except StopAsyncIteration:
+                                pending_count -= 1
+                                should_wake = waiting and pending_count <= max_pending // 2
+                                if should_wake:
+                                    waiting = False
+                                can_send = send_event
+                                loop = task_loop
+                            if should_wake and can_send is not None and loop is not None:
+                                with suppress(RuntimeError):
+                                    loop.call_soon_threadsafe(can_send.set)
+                            yield payload
+                        elif kind in ("end", "closed"):
                             return
+                        elif kind == "error":
+                            raise payload  # type: ignore[misc]
                 finally:
+                    with state_lock:
+                        reader_done = True
+                        task = active_task
+                        loop = task_loop
+                    if task is not None and loop is not None:
+                        with suppress(RuntimeError):
+                            loop.call_soon_threadsafe(task.cancel)
                     with suppress(
                         asyncio.CancelledError,
                         concurrent.futures.CancelledError,
                         StopAsyncIteration,
                     ):
-                        call(iterator.aclose())
+                        call(wait_pump_done())
 
         try:
             yield Stream()

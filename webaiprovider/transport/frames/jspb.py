@@ -1,11 +1,11 @@
 """Length-prefixed UTF-16-counted JSON/JSPB framing."""
 
 import codecs
-import json
 import re
 from collections.abc import Iterator
 from typing import Any
 
+from ...core.json import json_loads
 from ...errors import FrameDecodeError
 
 
@@ -50,7 +50,7 @@ class JSPBFrameDecoder:
             payload, self.pending = self.pending[self.payload_start : end], self.pending[end:]
             self._reset_frame()
             try:
-                rows = json.loads(payload)
+                rows = json_loads(payload)
             except ValueError as error:
                 raise FrameDecodeError("JSPB stream format has changed") from error
             yield rows

@@ -15,6 +15,7 @@ from io import BytesIO
 from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit
 
+from ..core.json import json_loads
 from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from .retry import parse_retry_after
 
@@ -64,6 +65,8 @@ class _BufferedResponse:
             return self.content.decode("utf-8", errors="replace")
 
     def json(self, **options):
+        if not options:
+            return json_loads(self.content)
         return json.loads(self.content, **options)
 
 
