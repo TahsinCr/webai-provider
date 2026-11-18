@@ -423,6 +423,7 @@ class _LiveReportingMixin(unittest.TestCase):
             return super().run(result)
         self._live_ignore_skip = False
         self._live_skip_kind: str | None = None
+        self._live_feature_skips_start: int | None = None
         ctx_before = getattr(self, "context", None)
         before_feature_skips = (
             len(getattr(ctx_before, "skipped", ())) if ctx_before is not None else 0
@@ -451,6 +452,8 @@ class _LiveReportingMixin(unittest.TestCase):
         ctx = getattr(self, "context", None)
         if ctx is None:
             feature_skips: list[str] = []
+        elif self._live_feature_skips_start is not None:
+            feature_skips = list(getattr(ctx, "skipped", ())[self._live_feature_skips_start :])
         elif ctx is ctx_before:
             feature_skips = list(getattr(ctx, "skipped", ())[before_feature_skips:])
         else:
@@ -597,6 +600,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
                 _SHARED_ASYNC_SESSION = (live, context)
             self.live, self.context = _SHARED_ASYNC_SESSION
             self._owns_live_session = False
+            self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
             return
         self.live = LiveSession("async")
         self._owns_live_session = True
@@ -605,6 +609,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
         except Exception:
             _record_session_open_failure("async")
             raise
+        self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
 
     async def asyncTearDown(self) -> None:
         if getattr(self, "_owns_live_session", True) and hasattr(self, "live"):

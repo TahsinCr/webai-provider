@@ -136,7 +136,7 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             self.assertTrue(getattr(followup_response, "text", ""))
 
             web_op = chat.responses.create(
-                f"{marker} Search the web for python.org and reply with only the URL.",
+                f"{marker} Search the web for the latest Python release version and cite the official link.",
                 model=Models.LOW,
             )
             web_response = await self.call_or_skip_rate_limit(
@@ -168,6 +168,15 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     lambda: self.context.session.chats.get_with_responses(chat.remote_id, limit=50),
                 )
                 self.assertTrue(reopened.remote_id == chat.remote_id)
+                retried_id = getattr(retried_last, "remote_id", None) or retried_last.id
+                if not any(
+                    item.remote_id == retried_id and item.metadata.get("from_history")
+                    for item in responses
+                ):
+                    responses = await self.call_api(
+                        "responses.verify_retry_after_delay",
+                        lambda: chat.responses.list(limit=50, fresh=True),
+                    )
                 _assert_streamed_turn_in_history(self, retried_last, responses)
             else:
                 self.context.skip("responses.retry: unsupported")
