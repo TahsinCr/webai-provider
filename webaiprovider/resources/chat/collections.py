@@ -94,8 +94,6 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             session._require_provider()
             if include_projects or page_limit is None or page_limit >= 25:
                 limit_arg = page_limit or self._default_page_size
-            elif cursor is None:
-                limit_arg = min(self._default_page_size, 25)
             else:
                 limit_arg = self._default_page_size
             raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
