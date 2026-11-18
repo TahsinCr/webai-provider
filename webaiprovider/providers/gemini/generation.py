@@ -203,7 +203,7 @@ def generation_request(session, request, metadata, files, notebook=None):
 
 
 async def generate(
-    session, request, metadata, notebook=None, *, files=None, request_timeout=(15, 130)
+    session, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
 ):
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException

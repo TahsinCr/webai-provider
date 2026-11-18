@@ -12,7 +12,7 @@ from ...accounts import read_session, read_session_async, save_session_async
 from ...accounts.credentials import CredentialStore
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
-from ...transport import AsyncRequestTransport, AsyncTransport, TransportConfig
+from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.retry import parse_retry_after
 
 _ORIGINAL_READ_SESSION = read_session
@@ -49,17 +49,17 @@ class GeminiSession:
         self.http_factory = http_factory
         self._provided_transport = transport
         self.http = None
-        self.transport = transport or AsyncRequestTransport(
+        self.transport = transport or AsyncHTTPTransport(
             ORIGIN, client_getter=lambda: self.http, config=TransportConfig(timeout=(10.0, 35.0))
         )
         if self.transport.origin != ORIGIN:
             raise ValueError("Gemini transport must use the Gemini origin")
-        self.auth_transport = AsyncRequestTransport(
+        self.auth_transport = AsyncHTTPTransport(
             "https://accounts.google.com",
             client_getter=lambda: self.http,
             config=TransportConfig(timeout=(10.0, 35.0)),
         )
-        self.upload_transport = AsyncRequestTransport(
+        self.upload_transport = AsyncHTTPTransport(
             "https://content-push.googleapis.com",
             client_getter=lambda: self.http,
             config=TransportConfig(timeout=(10.0, 35.0)),
@@ -252,6 +252,7 @@ class GeminiSession:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         request_options = {"headers": headers, "data": body, "allow_redirects": False}
         response = await self.request("POST", endpoint, **request_options)
+        refreshed_token = False
         if response.status_code == 400 and self._has_xsrf_error(response):
             token_response = await self.request(
                 "GET",
@@ -264,9 +265,12 @@ class GeminiSession:
             if not token:
                 raise ProviderError("Gemini session validation token could not be refreshed")
             self.token = token
+            refreshed_token = True
             request_options["headers"] = {**headers, "X-Framework-XSRF-Token": token}
             response = await self.request("POST", endpoint, **request_options)
         AsyncTransport.check(response)
+        if refreshed_token:
+            await self.persist(force=False)
         return response
 
     async def rename_conversation(self, conversation_id, title):

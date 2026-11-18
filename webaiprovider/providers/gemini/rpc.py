@@ -2,9 +2,10 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ...errors import ProviderError
+from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError
 from .notebooks import notebook_id
 
@@ -197,7 +198,14 @@ class NotebookEditor:
                 None,
                 None,
             ]
-            return await self.rpc.call("kHv0Vd", [remote, detail], path, allow_empty=True)
+            result = await self.rpc.call("kHv0Vd", [remote, detail], path, allow_empty=True)
+            if isinstance(values.get("current"), ProjectData):
+                return replace(
+                    current,
+                    name=values.get("name", current.name),
+                    instructions=values.get("instructions", current.instructions or ""),
+                )
+            return result
         if operation == "add_source":
             if values["kind"] != "text":
                 raise ValueError("Unsupported notebook source type")
@@ -217,5 +225,12 @@ class NotebookEditor:
             resource = values["resource_id"]
             if not resource.startswith(remote + "/sources/"):
                 raise ValueError("Source belongs to another notebook")
-            return await self.rpc.call("AptDmf", [resource, [1, 3]], path, allow_empty=True)
+            result = await self.rpc.call("AptDmf", [resource, [1, 3]], path, allow_empty=True)
+            current = values.get("current")
+            if isinstance(current, ProjectData):
+                return replace(
+                    current,
+                    resources=tuple(r for r in current.resources if r.id != resource),
+                )
+            return result
         raise ValueError("Unknown notebook operation")

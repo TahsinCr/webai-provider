@@ -54,7 +54,7 @@ _CHAT_METADATA_TTL_SECONDS = 1800.0
 
 class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.GEMINI
-    stream_idle_timeout = 120
+    stream_idle_timeout = 300
     stream_total_timeout = 600
 
     _chat_type = AsyncGeminiChat
@@ -251,7 +251,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             offset = int(cursor or 0)
         except (ValueError, TypeError):
             raise ValueError("invalid Gemini conversation cursor") from None
-        if offset < 0 or offset > 5000 or not 1 <= limit <= 100:
+        if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("invalid Gemini conversation page")
         await self._connect()
         parts = await self.rpc.call(

@@ -1110,10 +1110,12 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 text=json.dumps([["wrb.fr", "otAQ7b", json.dumps(legacy)]]) + "\n"
             )
         )
+        session.persist = AsyncMock()
 
         models = await session.discover_models()
 
         self.assertEqual(session.token, "fresh-token")
+        session.persist.assert_awaited_once_with(force=False)
         self.assertEqual([m.title for m in models], ["Provider model"])
         self.assertEqual(session.request.await_count, 3)
         self.assertEqual(
@@ -1362,6 +1364,41 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         notebooks.get.assert_not_awaited()
         rpc.call.assert_awaited_once()
+
+    async def test_notebook_editor_returns_project_data_for_update_and_remove_source(self):
+        from webaiprovider.providers.gemini.rpc import NotebookEditor
+        from webaiprovider.resources.message.attachment import Attachment
+        from webaiprovider.resources.project.types import ProjectData as NativeProject
+
+        detail = [None] * 13
+        detail[12] = [2, None, None, None, 1]
+        source_id = "notebooks/abcdef/sources/src-1"
+        current = NativeProject(
+            "notebooks/abcdef",
+            "Old Name",
+            "Old inst",
+            resources=(Attachment(source_id, "Note", "text/plain"),),
+            metadata={"native": ["notebooks/abcdef", detail], "description": ""},
+        )
+        rpc = SimpleNamespace(call=AsyncMock(return_value=[]))
+        notebooks = SimpleNamespace(get=AsyncMock())
+        editor = NotebookEditor(rpc, notebooks)
+
+        updated = await editor.write("update", "notebooks/abcdef", name="New Name", current=current)
+        self.assertIsInstance(updated, NativeProject)
+        self.assertEqual(updated.name, "New Name")
+        self.assertEqual(updated.instructions, "Old inst")
+
+        removed = await editor.write(
+            "remove_source",
+            "notebooks/abcdef",
+            current=updated,
+            resource_id=source_id,
+            resource=updated.resources[0],
+        )
+        self.assertIsInstance(removed, NativeProject)
+        self.assertEqual(removed.resources, ())
+        notebooks.get.assert_not_awaited()
 
     async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
         from webaiprovider.providers.gemini import provider as gemini_provider_mod
