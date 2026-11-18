@@ -303,6 +303,39 @@ class _OriginDNS:
         _invalidate_host_dns(self.host, self.port, client)
 
 
+async def _prepare_curl_session_async(
+    client,
+    hostname: str,
+    port: int,
+    options: dict | None = None,
+    *,
+    dns_state: _OriginDNS | None = None,
+    timeout: float = 10.0,
+) -> None:
+    if not _is_curl_async_session(client):
+        return
+    from curl_cffi import CurlOpt
+
+    ipv6 = await _check_ipv6_connectivity()
+    if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
+        client.curl_options[CurlOpt.IPRESOLVE] = 1
+    if not hostname:
+        return
+    if dns_state.is_ip if dns_state is not None else _is_ip_literal(hostname):
+        _validate_ip_literal(hostname)
+        return
+    if _has_proxy_configured(client, options or {}, hostname=hostname):
+        return
+    ips = await _resolve_host_ips(hostname, port, use_ipv6=ipv6, timeout=timeout)
+    prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
+    entry = (
+        dns_state.resolve_entry(ips)
+        if dns_state is not None
+        else _format_resolve_entry(prefix, ips)
+    )
+    _apply_curl_resolve(client, prefix, entry)
+
+
 def _prepare_curl_session_sync(
     client,
     hostname: str,
@@ -423,28 +456,14 @@ class AsyncHTTPTransport(AsyncTransport):
 
     async def _prepare_curl(self, options, *, client=None):
         client = client if client is not None else self._connect()
-        if not _is_curl_async_session(client):
-            return
-        from curl_cffi import CurlOpt
-
-        ipv6 = await _check_ipv6_connectivity()
-        if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
-            client.curl_options[CurlOpt.IPRESOLVE] = 1
-        hostname = self._dns.host
-        if not hostname:
-            return
-        if self._dns.is_ip:
-            _validate_ip_literal(hostname)
-            return
-        if _has_proxy_configured(client, options, hostname=hostname):
-            return
-        ips = await _resolve_host_ips(
-            hostname,
+        await _prepare_curl_session_async(
+            client,
+            self._dns.host,
             self._dns.port,
-            use_ipv6=ipv6,
+            options,
+            dns_state=self._dns,
             timeout=_connect_timeout(options.get("timeout", self.config.timeout)),
         )
-        _apply_curl_resolve(client, self._dns.prefix, self._dns.resolve_entry(ips))
 
     def _invalidate_curl_dns(self, failed_client=None):
         client = (

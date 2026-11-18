@@ -155,7 +155,7 @@ class BrowserSession:
         from ...transport.http import (
             _invalidate_host_dns,
             _is_curl_timeout,
-            _prepare_curl_session,
+            _prepare_curl_session_async,
             curl_cookie_jar,
         )
 
@@ -166,7 +166,7 @@ class BrowserSession:
             timeout=(10.0, 30.0),
             trust_env=False,
         ) as client:
-            await _prepare_curl_session(client, "chatgpt.com", 443, timeout=10.0)
+            await _prepare_curl_session_async(client, "chatgpt.com", 443, timeout=10.0)
             try:
                 response = await client.get(
                     "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False

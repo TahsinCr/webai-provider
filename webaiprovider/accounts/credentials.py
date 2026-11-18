@@ -184,8 +184,11 @@ def save_session(
     FileCredentialStore(path).save(value, ensure_ascii=ensure_ascii, newline=newline)
 
 
-async def save_session_async(path: Any, value: dict) -> None:
-    worker = asyncio.create_task(asyncio.to_thread(save_session, path, value))
+async def save_session_async(
+    path: Any, value: dict, *, ensure_ascii: bool = False, newline: bool = False
+) -> None:
+    kwargs = {"ensure_ascii": ensure_ascii, "newline": newline} if ensure_ascii or newline else {}
+    worker = asyncio.create_task(asyncio.to_thread(save_session, path, value, **kwargs))
     try:
         await asyncio.shield(worker)
     except asyncio.CancelledError:

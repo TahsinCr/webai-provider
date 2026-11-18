@@ -701,6 +701,31 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.paths.session_file.read_bytes(), before)
             http.get.assert_called_once()
 
+    async def test_async_bootstrap_saves_provider_token_and_browser_headers(self):
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {"accessToken": "async-verified-token"}
+            http = MagicMock()
+            http.get = AsyncMock(return_value=response)
+            http.cookies.jar = [cookie("__cf_bm", "fresh", domain=".chatgpt.com")]
+            factory = MagicMock()
+            factory.return_value.__aenter__ = AsyncMock(return_value=http)
+            factory.return_value.__aexit__ = AsyncMock(return_value=None)
+            with patch("curl_cffi.requests.AsyncSession", factory):
+                await session.import_cookies_async(
+                    {"__Secure-next-auth.session-token": "login", "oai-did": "device"}
+                )
+            url, headers = await session.load_async()
+            self.assertEqual(url, "https://chatgpt.com/backend-api/conversations")
+            self.assertEqual(headers["authorization"], "Bearer async-verified-token")
+            self.assertEqual(headers["oai-device-id"], "device")
+            self.assertIn("__cf_bm=fresh", headers["cookie"])
+
 
 class _ChatGPTProviderFixture:
     def setUp(self):
