@@ -145,8 +145,7 @@ async def _run_blocking(action, *args, **kwargs):
 class LiveSession:
     """Own one real provider session and its guarded cleanup lifecycle."""
 
-    def __init__(self, api: str) -> None:
-        self.api = api
+    def __init__(self) -> None:
         self.lock: RunLock | None = None
         self.context: LiveContext | None = None
         self.session: Any = None
@@ -154,8 +153,6 @@ class LiveSession:
     def _prepare(self) -> LiveContext:
         provider = os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold()
         alias = os.environ.get("WEBAI_LIVE_ACCOUNT", "")
-        if self.api not in {"async", "sync"}:
-            raise SafetyError("WEBAI_LIVE_API must be sync or async")
         self.lock = RunLock(provider)
         self.lock.__enter__()
         try:
@@ -187,7 +184,6 @@ class LiveSession:
         self.context = LiveContext(
             self.session,
             account,
-            self.api,
             state=state,
             gate=_resolve_action_gate(),
             journal_path=journal_path,
@@ -196,6 +192,7 @@ class LiveSession:
 
     def _create_provider_session(self, account: LiveAccount) -> Any:
         from webaiprovider.accounts.account import Account
+        from webaiprovider.async_provider import AsyncProvider
 
         account_object = Account(
             id=account.alias,
@@ -203,19 +200,13 @@ class LiveSession:
             credentials=account.credentials,
             name="Live API test",
         )
-        if self.api == "async":
-            from webaiprovider.async_provider import AsyncProvider
-
-            return AsyncProvider(account_object)
-        from webaiprovider.provider import Provider
-
-        return Provider(account_object)
+        return AsyncProvider(account_object)
 
     @staticmethod
     def _retryable_open_error(error: LiveApiError) -> bool:
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
-        if not str(error).startswith("session.open failed after "):
+        if not str(error).startswith("session.open failed: "):
             return False
         cause = error.__context__
         if isinstance(cause, (CurlTimeout, TimeoutError)):
@@ -226,52 +217,6 @@ class LiveSession:
             "503",
             "504",
         }
-
-    def open_sync(self) -> LiveContext:
-        try:
-            return self._open_sync_once()
-        except LiveApiError as error:
-            if not self._retryable_open_error(error):
-                raise
-            print("Retrying session.open once after a transient failure", flush=True)
-            return self._open_sync_once()
-
-    def _open_sync_once(self) -> LiveContext:
-        from webaiprovider.errors import AuthenticationError
-
-        context = self._prepare()
-        try:
-            try:
-                context.call(
-                    "session.open",
-                    self.session.open,
-                    expected_errors=(AuthenticationError,),
-                )
-            except AuthenticationError:
-                account, state = context.account, context.state
-                self._close_sync()
-                refreshed = load_or_import_account(
-                    account.provider,
-                    account.alias,
-                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
-                    refresh=True,
-                )
-                context = self._new_context(refreshed, state, journal_path=context._journal_path)
-                try:
-                    context.call(
-                        "session.open.after_cookie_refresh",
-                        self.session.open,
-                        expected_errors=(AuthenticationError,),
-                    )
-                except AuthenticationError:
-                    raise SafetyError(
-                        f"{account.provider} browser cookies remain invalid after one refresh"
-                    ) from None
-        except BaseException:
-            self._close_sync(suppress=True)
-            self._release_lock()
-            raise
-        return context
 
     async def open_async(self) -> LiveContext:
         try:
@@ -325,16 +270,6 @@ class LiveSession:
             raise
         return context
 
-    def _close_sync(self, *, suppress: bool = False) -> None:
-        context, self.context = self.context, None
-        self.session = None
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                if not suppress:
-                    raise
-
     async def _close_async(self, *, suppress: bool = False) -> None:
         context, self.context = self.context, None
         self.session = None
@@ -344,35 +279,6 @@ class LiveSession:
             except Exception:
                 if not suppress:
                     raise
-
-    def close_sync(self) -> None:
-        error: Exception | None = None
-        try:
-            if self.context is not None:
-                resources = self.context.state["resources"]
-                attempted = getattr(self.context, "_cleanup_attempted", None)
-                should_cleanup = (
-                    any(id(entry) not in attempted for entry in resources)
-                    if isinstance(attempted, (set, frozenset))
-                    else bool(resources)
-                )
-                if should_cleanup:
-                    try:
-                        self.context.cleanup_pending()
-                    except Exception as exc:
-                        error = exc
-                try:
-                    self.context.print_report()
-                except Exception as exc:
-                    error = error or exc
-                try:
-                    self.context.close()
-                except Exception as exc:
-                    error = error or exc
-        finally:
-            self._release_lock()
-        if error is not None:
-            raise error
 
     async def close_async(self) -> None:
         error: Exception | None = None
@@ -485,64 +391,6 @@ class _LiveReportingMixin(unittest.TestCase):
         self.skipTest("Provider rate limit reached")
 
 
-class LiveSyncTestCase(_LiveReportingMixin):
-    """Base for one synchronous live feature scenario."""
-
-    _live_api = "sync"
-    recovery_only = False
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        if os.environ.get("WEBAI_LIVE_TESTS") != "1":
-            raise unittest.SkipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
-        if os.environ.get("WEBAI_LIVE_API", "async").casefold() != "sync":
-            raise unittest.SkipTest("This run selected the asynchronous API")
-        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
-        if recovering != cls.recovery_only:
-            raise unittest.SkipTest("Recovery mode runs only cleanup recovery tests")
-        try:
-            _skip_after_session_open_failure("sync")
-        except unittest.SkipTest:
-            _append_report_entry(
-                "sync", f"{cls.__module__}.{cls.__qualname__}", "skipped_setup_failed", []
-            )
-            raise
-        cls.live = LiveSession("sync")
-        try:
-            cls.context = cls.live.open_sync()
-        except Exception:
-            _record_session_open_failure("sync")
-            _append_report_entry("sync", f"{cls.__module__}.{cls.__qualname__}", "failed", [])
-            raise
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        try:
-            if hasattr(cls, "live"):
-                cls.live.close_sync()
-        finally:
-            super().tearDownClass()
-
-    def call_api(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
-        return self.context.call(label, action, expected_errors=expected_errors)
-
-    def call_or_skip_rate_limit(
-        self,
-        label: str,
-        action,
-        *,
-        entry: dict[str, Any] | None = None,
-        chat: Any = None,
-    ):
-        from webaiprovider.errors import RateLimited
-
-        try:
-            return self.call_api(label, action, expected_errors=(RateLimited,))
-        except RateLimited as exc:
-            self._skip_on_rate_limit(label, exc, entry, chat)
-
-
 class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     """Base for one asynchronous live feature scenario."""
 
@@ -592,7 +440,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
             raise
         if self._uses_shared_session():
             if _SHARED_ASYNC_SESSION is None:
-                live = LiveSession("async")
+                live = LiveSession()
                 try:
                     context = await live.open_async()
                 except Exception:
@@ -603,7 +451,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
             self._owns_live_session = False
             self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
             return
-        self.live = LiveSession("async")
+        self.live = LiveSession()
         self._owns_live_session = True
         try:
             self.context = await self.live.open_async()

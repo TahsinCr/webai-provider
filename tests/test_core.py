@@ -44,7 +44,7 @@ class CoreConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         async def worker() -> str:
             nonlocal executions
             executions += 1
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
             return "computed_result"
 
         results = await asyncio.gather(
@@ -154,6 +154,8 @@ class CoreTelemetryTests(unittest.TestCase):
         self.assertEqual(snap["successful"], 1)
         self.assertEqual(snap["failed"], 0)
         self.assertAlmostEqual(snap["median_ttft"], 0.12)
+        telemetry.record_ttft(0.32)
+        self.assertAlmostEqual(telemetry.median_ttft, 0.16)
 
     def test_correlation_context_isolation(self) -> None:
         self.assertIsNone(current_correlation_id())

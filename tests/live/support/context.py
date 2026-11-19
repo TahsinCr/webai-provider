@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import secrets
-import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -62,7 +61,6 @@ class LiveContext:
         self,
         session: Any,
         account: LiveAccount,
-        api: str,
         *,
         state=None,
         gate=None,
@@ -70,8 +68,6 @@ class LiveContext:
     ):
         self.session = session
         self.account = account
-        self.api = api
-        self.asynchronous = api == "async"
         self.gate = gate or ActionGate()
         self._journal_path = journal_path
         self.marker = state["run_id"] if state else f"webai-live-{secrets.token_hex(16)}"
@@ -82,32 +78,12 @@ class LiveContext:
             "run_id": self.marker,
             "resources": [],
         }
-        self.results: list[tuple[str, int]] = []
         self.skipped: list[str] = []
         self._cleanup_attempted: set[int] = set()
-
-    def call(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
-        started = time.monotonic()
-        try:
-            value = self.gate.call_sync(action)
-        except SafetyError:
-            raise
-        except Exception as exc:
-            if isinstance(exc, expected_errors):
-                raise
-            raise LiveApiError(
-                f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
-                f"{_safe_error_label(exc)}; provider details suppressed"
-            ) from None
-        elapsed = round((time.monotonic() - started) * 1000)
-        self.results.append((label, elapsed))
-        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
-        return value
 
     async def call_async(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
     ):
-        started = time.monotonic()
         try:
             value = await self.gate.call_async(action)
         except SafetyError:
@@ -116,12 +92,9 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed after {round((time.monotonic() - started) * 1000)} ms: "
-                f"{_safe_error_label(exc)}; provider details suppressed"
+                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
             ) from None
-        elapsed = round((time.monotonic() - started) * 1000)
-        self.results.append((label, elapsed))
-        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
+        print(f"ACTION OK  {label}", flush=True)
         return value
 
     def skip(self, label: str) -> None:
@@ -165,12 +138,6 @@ class LiveContext:
         if remote_id and remote_id not in excluded and entry.get("remote_id") != remote_id:
             entry["remote_id"] = remote_id
             self.save()
-
-    def cleanup_pending(self) -> None:
-        self.session._call(self.cleanup_pending_async())
-
-    def cleanup_entry(self, entry: dict[str, Any]) -> None:
-        self.session._call(self.cleanup_entry_async(entry))
 
     async def cleanup_pending_async(self) -> None:
         failures = 0
@@ -220,7 +187,7 @@ class LiveContext:
             self._remove_entry(entry)
             return
 
-        provider = self.session if self.asynchronous else self.session._provider
+        provider = self.session
         get_remote = getattr(provider, f"get_{kind}", None) or getattr(
             provider, f"_get_{kind}_data"
         )
@@ -333,7 +300,7 @@ class LiveContext:
         return getattr(value, "remote_id", None) or getattr(value, "id", None)
 
     async def _all_records(self, kind: str) -> list[Any]:
-        provider = self.session if self.asynchronous else self.session._provider
+        provider = self.session
         attr = "list_chats" if kind == "chat" else "list_projects"
         if hasattr(provider, attr):
             list_remote = getattr(provider, attr)
@@ -402,14 +369,6 @@ class LiveContext:
         else:
             with suppress(FileNotFoundError):
                 self._cleanup_path().unlink()
-
-    def close(self) -> None:
-        try:
-            self.session.close()
-        except Exception as exc:
-            raise LiveApiError(
-                f"session.close failed: {type(exc).__name__}; provider details suppressed"
-            ) from None
 
     async def aclose(self) -> None:
         try:

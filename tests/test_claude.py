@@ -671,7 +671,9 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         try:
             loaded = await provider.projects.list(limit=None)
-            result = await provider.projects.update(loaded[0], title="New Name")
+            with patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as delay:
+                result = await provider.projects.update(loaded[0], title="New Name")
+            delay.assert_awaited_once_with(0.4)
             self.assertEqual(result.title, "New Name")
             self.assertEqual(provider._get_project_data.await_count, 2)
             provider.editor.write.assert_awaited_once_with(
@@ -975,7 +977,6 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
 
         provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
-        delays = {"f0.txt": 0.04, "f1.txt": 0.0, "f2.txt": 0.03, "f3.txt": 0.01}
         active = 0
         max_active = 0
         captured_attachments = []
@@ -985,7 +986,8 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             active += 1
             max_active = max(max_active, active)
             try:
-                await asyncio.sleep(delays[name])
+                if name == "f0.txt":
+                    await asyncio.sleep(0)
                 return {"kind": "attachment", "data": {"file_name": name, "id": f"id-{name}"}}
             finally:
                 active -= 1

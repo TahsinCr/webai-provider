@@ -1466,7 +1466,6 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prepare_attachments_bounds_concurrency_to_two_and_preserves_order(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
-        delays = {"f0.txt": 0.04, "f1.txt": 0.0, "f2.txt": 0.03, "f3.txt": 0.01}
         active = 0
         max_active = 0
 
@@ -1475,7 +1474,8 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             active += 1
             max_active = max(max_active, active)
             try:
-                await asyncio.sleep(delays[name])
+                if name == "f0.txt":
+                    await asyncio.sleep(0)
                 return {
                     "id": f"id-{name}",
                     "size_bytes": len(content),

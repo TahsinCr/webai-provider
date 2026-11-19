@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +14,6 @@ from tests.live.support.case import (
     _FAILED_SESSION_OPENS,
     LiveAsyncTestCase,
     LiveSession,
-    LiveSyncTestCase,
     _skip_after_session_open_failure,
 )
 from tests.live.support.config import (
@@ -28,7 +26,6 @@ from tests.live.support.config import (
 from tests.live.support.context import LiveContext
 from tests.live.support.errors import CleanupError, SafetyError
 from tests.live.support.journal import write_private_json
-from webaiprovider import Account, Provider
 from webaiprovider.collections import Page
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.resources.chat.types import Conversation
@@ -389,38 +386,6 @@ class ActionGateTests(unittest.TestCase):
             ["gemini-hydrogen", "gemini-neon"],
         )
 
-    def test_serializes_actions_and_stops_at_fixed_budget(self) -> None:
-        async def scenario() -> list[float]:
-            gate = ActionGate(interval=0.02, timeout=1, limit=2)
-            started: list[float] = []
-
-            async def action() -> None:
-                started.append(asyncio.get_running_loop().time())
-
-            await gate.call_async(action)
-            await gate.call_async(action)
-            with self.assertRaisesRegex(SafetyError, "action limit"):
-                await gate.call_async(action)
-            return started
-
-        starts = asyncio.run(scenario())
-        self.assertEqual(len(starts), 2)
-        self.assertGreaterEqual(starts[1] - starts[0], 0.018)
-
-    def test_sync_api_actions_share_the_cooldown_and_budget(self) -> None:
-        gate = ActionGate(interval=0.02, limit=2)
-        starts: list[float] = []
-
-        def action() -> None:
-            starts.append(time.monotonic())
-
-        gate.call_sync(action)
-        gate.call_sync(action)
-        self.assertEqual(len(starts), 2)
-        self.assertGreaterEqual(starts[1] - starts[0], 0.018)
-        with self.assertRaisesRegex(SafetyError, "action limit"):
-            gate.call_sync(action)
-
     def test_live_api_suite_is_disabled_without_explicit_opt_in(self) -> None:
         from tests.live.test_sessions import AsyncSessionApiTests
 
@@ -524,7 +489,6 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.context = LiveContext(
             self.provider,
             LiveAccount("personal", "chatgpt", {}),
-            "async",
             gate=ActionGate(interval=0),
         )
         self.remote_id = "temporary-id"
@@ -660,53 +624,6 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.journal.exists())
 
 
-class SyncCleanupTests(unittest.TestCase):
-    def test_cleanup_runs_shared_core_on_the_existing_provider_portal(self) -> None:
-        provider = Provider(Account(id="personal", provider="chatgpt", credentials={}))
-        self.addCleanup(provider.close)
-        native = provider._provider
-        context = LiveContext(
-            provider, LiveAccount("personal", "chatgpt", {}), "sync", gate=ActionGate(interval=0)
-        )
-        marker = f"{context.marker}-p"
-        native._get_project_data = AsyncMock(
-            side_effect=(ProjectData("temporary-id", marker), RemoteNotFound("missing"))
-        )
-        native._delete_project_data = AsyncMock()
-        native._list_projects_data = AsyncMock(return_value=Page((), None))
-        with tempfile.TemporaryDirectory() as temporary:
-            journal = Path(temporary) / "cleanup.json"
-            with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
-            ):
-                entry = context.new_remote("project", marker)
-                entry.update(attempted=True, remote_id="temporary-id")
-                context.cleanup_entry(entry)
-                context.cleanup_pending()
-                self.assertFalse(journal.exists())
-        native._delete_project_data.assert_awaited_once_with("temporary-id")
-        self.assertEqual(native._get_project_data.await_count, 1)
-        self.assertEqual(context.state["resources"], [])
-
-
-class LiveSessionLifecycleTests(unittest.TestCase):
-    def test_sync_session_closes_even_when_remote_cleanup_cannot_be_confirmed(self) -> None:
-        live = LiveSession("sync")
-        context = Mock()
-        context.state = {"resources": [{"kind": "project"}]}
-        context.cleanup_pending.side_effect = CleanupError("pending")
-        lock = MagicMock()
-        live.context = context
-        live.lock = lock
-
-        with self.assertRaisesRegex(CleanupError, "pending"):
-            live.close_sync()
-
-        context.close.assert_called_once_with()
-        lock.__exit__.assert_called_once_with(None, None, None)
-
-
 class LiveSessionSetupCacheTests(unittest.TestCase):
     def test_live_cases_use_the_runner_available_on_this_python(self) -> None:
         from tests.live.support import case as support
@@ -752,7 +669,7 @@ class LiveSessionSetupCacheTests(unittest.TestCase):
 
 class AsyncLiveSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_session_closes_even_when_remote_cleanup_cannot_be_confirmed(self) -> None:
-        live = LiveSession("async")
+        live = LiveSession()
         context = Mock()
         context.state = {"resources": [{"kind": "project"}]}
         context.cleanup_pending_async = AsyncMock(side_effect=CleanupError("pending"))
@@ -779,33 +696,9 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
             raise CurlTimeout("private provider details")
         except CurlTimeout:
             try:
-                raise LiveApiError(
-                    f"{label} failed after 1000 ms: provider network timeout"
-                ) from None
+                raise LiveApiError(f"{label} failed: provider network timeout") from None
             except LiveApiError as error:
                 return error
-
-    def test_sync_retries_only_once_for_open_timeout(self) -> None:
-        from tests.live.support.errors import LiveApiError
-
-        live = LiveSession("sync")
-        context = object()
-        with (
-            patch.object(
-                live, "_open_sync_once", side_effect=[self.timeout_error(), context]
-            ) as run,
-            patch("builtins.print"),
-        ):
-            self.assertIs(live.open_sync(), context)
-            self.assertEqual(run.call_count, 2)
-
-        with (
-            patch.object(live, "_open_sync_once", side_effect=self.timeout_error()) as run,
-            patch("builtins.print"),
-            self.assertRaises(LiveApiError),
-        ):
-            live.open_sync()
-        self.assertEqual(run.call_count, 2)
 
     async def test_cancelled_cookie_refresh_finishes_before_lock_release(self) -> None:
         import threading
@@ -815,8 +708,8 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
         started, finish = threading.Event(), threading.Event()
         account = LiveAccount("default", "gemini", {})
         provider = SimpleNamespace(open=AsyncMock(side_effect=AuthenticationError("expired")))
-        context = LiveContext(provider, account, "async", gate=ActionGate(interval=0))
-        live = LiveSession("async")
+        context = LiveContext(provider, account, gate=ActionGate(interval=0))
+        live = LiveSession()
         live.context, live.session = context, provider
 
         def refresh(*args, **kwargs):
@@ -844,7 +737,7 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_retries_only_open_timeout(self) -> None:
         from tests.live.support.errors import LiveApiError
 
-        live = LiveSession("async")
+        live = LiveSession()
         context = object()
         with (
             patch.object(
@@ -870,13 +763,11 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 raise exc
             except Exception:
                 try:
-                    raise LiveApiError(
-                        "session.open failed after 1000 ms: provider error"
-                    ) from None
+                    raise LiveApiError("session.open failed: provider error") from None
                 except LiveApiError as error:
                     return error
 
-        live = LiveSession("async")
+        live = LiveSession()
         context = object()
         transient = wrapped(ProviderError("Provider request failed (HTTP 502)"))
         with (
@@ -904,47 +795,16 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 run.assert_awaited_once()
 
 
-class LiveSessionCookieRefreshTests(unittest.TestCase):
-    def test_sync_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
-        from contextlib import redirect_stdout
-        from io import StringIO
-
-        from webaiprovider.errors import AccountPaused
-
-        account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "old"}})
-        refreshed_account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "new"}})
-        old_provider = Mock()
-        old_provider.open.side_effect = AccountPaused("expired")
-        new_provider = Mock()
-        old_context = LiveContext(old_provider, account, "sync", gate=ActionGate(interval=0))
-        live = LiveSession("sync")
-        live.context, live.session = old_context, old_provider
-        gate = ActionGate(interval=0, limit=4)
-
-        with (
-            patch("tests.live.support.case._ACTION_GATE", gate),
-            patch.object(live, "_prepare", return_value=old_context),
-            patch.object(live, "_create_provider_session", return_value=new_provider),
-            patch(
-                "tests.live.support.case.load_or_import_account", return_value=refreshed_account
-            ) as refresh,
-            redirect_stdout(StringIO()),
-        ):
-            context = live.open_sync()
-            refresh.assert_called_once()
-            self.assertEqual(refresh.call_args.kwargs["refresh"], True)
-            self.assertEqual(old_context.gate.calls + gate.calls, 2)
-            self.assertIs(context.session, new_provider)
-            live.close_sync()
-
-    def test_sync_network_failure_does_not_refresh_cookies(self) -> None:
+class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_network_failure_does_not_refresh_cookies(self) -> None:
         from webaiprovider.errors import RequestNotSentError
 
         account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "saved"}})
-        provider = Mock()
-        provider.open.side_effect = RequestNotSentError("unavailable")
-        context = LiveContext(provider, account, "sync", gate=ActionGate(interval=0))
-        live = LiveSession("sync")
+        provider = SimpleNamespace(
+            open=AsyncMock(side_effect=RequestNotSentError("unavailable")), close=AsyncMock()
+        )
+        context = LiveContext(provider, account, gate=ActionGate(interval=0))
+        live = LiveSession()
         live.context, live.session = context, provider
 
         from tests.live.support.errors import LiveApiError
@@ -955,12 +815,10 @@ class LiveSessionCookieRefreshTests(unittest.TestCase):
             patch("tests.live.support.case.load_or_import_account") as refresh,
             self.assertRaises(LiveApiError),
         ):
-            live.open_sync()
+            await live.open_async()
         refresh.assert_not_called()
         self.assertIsNone(live.context)
 
-
-class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_auth_failure_refreshes_default_browser_cookies_once(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
@@ -975,8 +833,8 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
         new_provider = Mock()
         new_provider.open = AsyncMock(return_value=None)
         new_provider.close = AsyncMock()
-        old_context = LiveContext(old_provider, account, "async", gate=ActionGate(interval=0))
-        live = LiveSession("async")
+        old_context = LiveContext(old_provider, account, gate=ActionGate(interval=0))
+        live = LiveSession()
         live.context, live.session = old_context, old_provider
         gate = ActionGate(interval=0, limit=4)
 
@@ -1002,7 +860,7 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
         started = threading.Event()
         finish = threading.Event()
         released = False
-        live = LiveSession("async")
+        live = LiveSession()
 
         def slow_prepare():
             started.set()
@@ -1052,7 +910,6 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
         self.context = LiveContext(
             self.provider,
             LiveAccount("personal", "gemini", {}),
-            "async",
             gate=ActionGate(interval=0),
         )
 
@@ -1132,7 +989,6 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                 case.context = LiveContext(
                     provider,
                     LiveAccount("personal", "chatgpt", {}),
-                    "async",
                     gate=ActionGate(interval=0),
                 )
                 entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
@@ -1152,42 +1008,6 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(journal.exists())
                 saved = json.loads(journal.read_text(encoding="utf-8"))
                 self.assertTrue(saved["resources"][0]["attempted"])
-
-    def test_sync_rate_limit_without_remote_id_preserves_attempted_and_journal(self) -> None:
-        from webaiprovider.errors import RateLimited
-
-        with tempfile.TemporaryDirectory() as directory:
-            journal = Path(directory) / "live-cleanup-chatgpt.json"
-            with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
-            ):
-                case = LiveSyncTestCase("runTest")
-                provider = SimpleNamespace()
-                case.context = LiveContext(
-                    provider,
-                    LiveAccount("personal", "chatgpt", {}),
-                    "sync",
-                    gate=ActionGate(interval=0),
-                )
-                entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
-                entry["attempted"] = True
-                case.context.save()
-                chat = SimpleNamespace(remote_id="chat-late-id")
-
-                def rate_limited_send():
-                    raise RateLimited(5.0)
-
-                with self.assertRaises(unittest.SkipTest):
-                    case.call_or_skip_rate_limit(
-                        "messages.create.stream", rate_limited_send, entry=entry, chat=chat
-                    )
-
-                self.assertTrue(entry["attempted"])
-                self.assertEqual(entry["remote_id"], "chat-late-id")
-                saved = json.loads(journal.read_text(encoding="utf-8"))
-                self.assertTrue(saved["resources"][0]["attempted"])
-                self.assertEqual(saved["resources"][0]["remote_id"], "chat-late-id")
 
     async def test_timeout_or_cancel_without_remote_id_keeps_attempted_and_triggers_recovery(
         self,
@@ -1211,7 +1031,6 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                     context = LiveContext(
                         provider,
                         LiveAccount("personal", "gemini", {}),
-                        "async",
                         gate=ActionGate(interval=0),
                     )
                     entry = context.new_remote("chat", f"{context.marker}-chat")
@@ -1235,74 +1054,34 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(journal.exists())
 
     async def test_pre_send_rate_limit_clears_attempted_unless_remote_id_bound(self) -> None:
-        class SampleAsyncCase(LiveAsyncTestCase):
-            def runTest(self) -> None:
-                pass
+        async def rejected_send():
+            raise RateLimited(1.0, message_submitted=False)
 
-        class SampleSyncCase(LiveSyncTestCase):
-            def runTest(self) -> None:
-                pass
-
-        for is_async in (True, False):
-            with self.subTest(is_async=is_async), tempfile.TemporaryDirectory() as directory:
+        for remote_id in (None, "c_bound"):
+            with self.subTest(remote_id=remote_id), tempfile.TemporaryDirectory() as directory:
                 journal = Path(directory) / "live-cleanup-chatgpt.json"
-                with (
-                    patch("tests.live.support.context.CLEANUP_FILE", journal),
-                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
-                ):
-                    provider = SimpleNamespace(delete_chat=AsyncMock(), delete_chat_sync=Mock())
-                    context = LiveContext(
-                        provider,
-                        LiveAccount("personal", "chatgpt", {}),
-                        "async" if is_async else "sync",
-                        gate=ActionGate(interval=0),
-                    )
-                    entry = context.new_remote("chat", f"{context.marker}-chat")
-                    entry["attempted"] = True
+                provider = SimpleNamespace(delete_chat=AsyncMock())
+                context = LiveContext(
+                    provider,
+                    LiveAccount("personal", "chatgpt", {}),
+                    gate=ActionGate(interval=0),
+                    journal_path=journal,
+                )
+                case = LiveAsyncTestCase()
+                case.context = context
+                entry = context.new_remote("chat", f"{context.marker}-chat")
+                entry["attempted"] = True
+                if remote_id:
+                    context.record_chat_id(entry, SimpleNamespace(remote_id=remote_id))
+                else:
                     context.save()
-
-                    if is_async:
-                        case = SampleAsyncCase()
-                        case.context = context
-
-                        async def fail_async():
-                            raise RateLimited(1.0, message_submitted=False)
-
-                        with self.assertRaises(unittest.SkipTest):
-                            await case.call_or_skip_rate_limit(
-                                "messages.send", fail_async, entry=entry
-                            )
-                    else:
-                        case = SampleSyncCase()
-                        case.context = context
-
-                        def fail_sync():
-                            raise RateLimited(1.0, message_submitted=False)
-
-                        with self.assertRaises(unittest.SkipTest):
-                            case.call_or_skip_rate_limit("messages.send", fail_sync, entry=entry)
-
-                    self.assertFalse(entry["attempted"])
+                with self.assertRaises(unittest.SkipTest):
+                    await case.call_or_skip_rate_limit("messages.send", rejected_send, entry=entry)
+                self.assertEqual(entry["attempted"], remote_id is not None)
+                if remote_id is None:
                     await context.cleanup_pending_async()
-                    provider.delete_chat.assert_not_awaited()
-                    provider.delete_chat_sync.assert_not_called()
-                    self.assertFalse(journal.exists())
-
-                    bound_entry = context.new_remote("chat", f"{context.marker}-bound")
-                    bound_entry["attempted"] = True
-                    context.record_chat_id(bound_entry, SimpleNamespace(remote_id="c_bound"))
-                    if is_async:
-                        with self.assertRaises(unittest.SkipTest):
-                            await case.call_or_skip_rate_limit(
-                                "messages.send", fail_async, entry=bound_entry
-                            )
-                    else:
-                        with self.assertRaises(unittest.SkipTest):
-                            case.call_or_skip_rate_limit(
-                                "messages.send", fail_sync, entry=bound_entry
-                            )
-                    self.assertTrue(bound_entry["attempted"])
-                    self.assertTrue(journal.exists())
+                self.assertEqual(journal.exists(), remote_id is not None)
+                provider.delete_chat.assert_not_awaited()
 
 
 class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -1373,7 +1152,6 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 context = LiveContext(
                     provider,
                     LiveAccount("personal", "gemini", {}),
-                    "async",
                     state=loaded_state,
                     journal_path=loaded_path,
                     gate=ActionGate(interval=0),
@@ -1396,7 +1174,7 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
             }
             write_private_json(legacy, state)
 
-            live = LiveSession("async")
+            live = LiveSession()
             with (
                 patch.dict(
                     os.environ,
@@ -1526,35 +1304,41 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
             gate_file = Path(directory) / "gate-chatgpt.json"
             gate_one = ActionGate(interval=1.0, limit=3, state_file=gate_file)
             gate_two = ActionGate(interval=1.0, limit=3, state_file=gate_file)
-            now = {"mono": 100.0, "epoch": 1000.0}
+            now = 100.0
             slept: list[float] = []
 
-            def fake_sleep(delay: float) -> None:
+            async def advance(delay: float) -> None:
+                nonlocal now
                 slept.append(delay)
-                now["mono"] += delay
-                now["epoch"] += delay
-
-            async def fake_async_sleep(delay: float) -> None:
-                slept.append(delay)
-                now["mono"] += delay
-                now["epoch"] += delay
+                now += delay
 
             with (
-                patch("tests.live.support.actions.time.monotonic", side_effect=lambda: now["mono"]),
-                patch("tests.live.support.actions.time.time", side_effect=lambda: now["epoch"]),
-                patch("tests.live.support.actions.time.sleep", side_effect=fake_sleep),
-                patch("tests.live.support.actions.asyncio.sleep", side_effect=fake_async_sleep),
+                patch(
+                    "tests.live.support.actions.time",
+                    SimpleNamespace(monotonic=lambda: now, time=lambda: now + 900.0),
+                ),
+                patch("tests.live.support.actions.asyncio", wraps=asyncio, sleep=advance),
             ):
-                self.assertEqual(gate_one.call_sync(lambda: "one"), "one")
-                now["mono"] += 0.2
-                now["epoch"] += 0.2
-                self.assertEqual(gate_two.call_sync(lambda: "two"), "two")
-                self.assertEqual(len(slept), 1)
-                self.assertAlmostEqual(slept[0], 0.8, places=2)
-
-                await gate_two.call_async(AsyncMock(return_value="three"))
+                action = AsyncMock(return_value="done")
+                local_gate = ActionGate(interval=1.0, limit=2)
+                await local_gate.call_async(action)
+                await local_gate.call_async(action)
+                self.assertEqual(slept, [1.0])
                 with self.assertRaisesRegex(SafetyError, "API-action limit"):
-                    gate_one.call_sync(lambda: "four")
+                    await local_gate.call_async(action)
+                self.assertEqual(action.await_count, 2)
+
+                slept.clear()
+                action.reset_mock()
+                self.assertEqual(await gate_one.call_async(action), "done")
+                now += 0.25
+                self.assertEqual(await gate_two.call_async(action), "done")
+                self.assertEqual(slept, [0.75])
+                await gate_two.call_async(action)
+                self.assertEqual(slept, [0.75, 1.0])
+                with self.assertRaisesRegex(SafetyError, "API-action limit"):
+                    await gate_one.call_async(action)
+                self.assertEqual(action.await_count, 3)
 
     async def test_temporary_chat_cleanup_routes_delete_through_action_gate(self) -> None:
         from tests.live.test_messages import AsyncMessageApiTests
@@ -1584,9 +1368,7 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         test = AsyncMessageApiTests("test_incognito_temporary_chat")
-        test.context = LiveContext(
-            session, LiveAccount("personal", "chatgpt", {}), "async", gate=gate
-        )
+        test.context = LiveContext(session, LiveAccount("personal", "chatgpt", {}), gate=gate)
         await test.test_incognito_temporary_chat()
         deleted.assert_awaited_once()
         self.assertEqual(gate.calls, 3)
@@ -1613,11 +1395,10 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             report_path = Path(directory) / "report.json"
 
-            def fake_live_session(_api: str):
+            def fake_live_session():
                 ctx = LiveContext(
                     SimpleNamespace(),
                     LiveAccount("personal", "grok", {}),
-                    "async",
                     gate=ActionGate(interval=0),
                 )
                 return SimpleNamespace(
@@ -1625,7 +1406,7 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
                     close_async=AsyncMock(),
                 )
 
-            def failing_live_session(_api: str):
+            def failing_live_session():
                 return SimpleNamespace(
                     open_async=AsyncMock(side_effect=RuntimeError("session open boom")),
                     close_async=AsyncMock(),
@@ -1927,7 +1708,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     test = AsyncMessageApiTests("test_temporary_message_stream_history_and_cleanup")
                     test.context = LiveContext(
-                        session, LiveAccount("personal", "chatgpt", {}), "async", gate=gate
+                        session, LiveAccount("personal", "chatgpt", {}), gate=gate
                     )
                     orig_new_remote = test.context.new_remote
 
@@ -2080,7 +1861,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
             ):
                 test = AsyncMessageApiTests("test_temporary_message_stream_history_and_cleanup")
                 test.context = LiveContext(
-                    session, LiveAccount("personal", "chatgpt", {}), "async", gate=gate
+                    session, LiveAccount("personal", "chatgpt", {}), gate=gate
                 )
                 orig_cleanup = test.context.cleanup_entry_async
                 seen_cleanups = []

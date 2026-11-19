@@ -817,7 +817,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 self.active_fetches += 1
                 self.max_active_fetches = max(self.max_active_fetches, self.active_fetches)
                 try:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0)
                 finally:
                     self.active_fetches -= 1
 

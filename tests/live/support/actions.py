@@ -10,14 +10,12 @@ import weakref
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from webaiprovider.errors import RateLimited
 
 from .config import lock_file_guard
 from .errors import SafetyError
-
-T = TypeVar("T")
 
 DEFAULT_ACTION_INTERVAL = 0.15
 DEFAULT_SINGLE_API_LIMIT = 96
@@ -25,7 +23,7 @@ DEFAULT_COMBINED_RUN_LIMIT = 180
 
 
 class ActionGate:
-    """Serialize live calls per account, spacing them >= 1.0s and enforcing a total run cap."""
+    """Serialize live calls per account and enforce pacing and a total run cap."""
 
     def __init__(
         self,
@@ -159,27 +157,6 @@ class ActionGate:
                     time.time() + interval,
                 )
                 self._write_shared_state(state)
-
-    def _start(self) -> None:
-        delay = self._reserve_slot()
-        if delay > 0:
-            deadline = time.monotonic() + delay
-            while (remaining := deadline - time.monotonic()) > 0:
-                time.sleep(remaining)
-
-    def call_sync(self, action: Callable[[], T]) -> T:
-        with self._sync_lock:
-            self._start()
-            try:
-                result = action()
-            except RateLimited as exc:
-                self._record_outcome(rate_limited=exc)
-                raise
-            else:
-                self._record_outcome()
-                return result
-            finally:
-                self._complete_slot()
 
     async def call_async(self, action: Callable[[], Any]) -> Any:
         async with self._async_lock():

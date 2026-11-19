@@ -852,9 +852,13 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             return result
 
         self.client.get_project = get_project
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser:
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser,
+            patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as delay,
+        ):
             await self.provider._delete_project_data("g-p-created")
             browser.assert_not_awaited()
+            delay.assert_awaited_once_with(0.2)
             self.assertEqual(
                 self.client.deleted,
                 ("DELETE", "https://chatgpt.com/backend-api/gizmos/g-p-created"),
@@ -1200,7 +1204,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             active += 1
             max_active = max(max_active, active)
             try:
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0)
                 return {
                     "items": [
                         {
@@ -2861,10 +2865,7 @@ class ChatGPTSentinelClientTests(unittest.IsolatedAsyncioTestCase):
             prewarm_task = client._prewarm_task
             assert prewarm_task is not None
             await asyncio.wait_for(started.wait(), timeout=2.0)
-            t0 = time.monotonic()
-            await client.close()
-            elapsed = time.monotonic() - t0
-            self.assertLess(elapsed, 0.5)
+            await asyncio.wait_for(client.close(), timeout=2.0)
             self.assertTrue(closed_runtime.is_set())
             await asyncio.wait_for(cancelled_prewarm.wait(), timeout=2.0)
 

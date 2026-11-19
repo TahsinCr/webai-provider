@@ -15,7 +15,6 @@ from webaiprovider import (
     OutputDelta,
     ProviderError,
 )
-from webaiprovider.core.telemetry import ProviderTelemetry
 from webaiprovider.providers.claude.provider import AsyncClaudeProvider
 from webaiprovider.resources.message.operation import ThinkingEnd, ThinkingReplace
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
@@ -35,12 +34,6 @@ class IsolationTests(unittest.TestCase):
         loaded = store.load()
         loaded["cookies"]["session"] = "outside"
         self.assertEqual(account.store().load()["cookies"]["session"], "new")
-
-    def test_even_sample_median(self):
-        telemetry = ProviderTelemetry()
-        for value in (1, 3):
-            telemetry.record_ttft(value)
-        self.assertEqual(telemetry.median_ttft, 2)
 
 
 class StreamCompletionTests(unittest.IsolatedAsyncioTestCase):
