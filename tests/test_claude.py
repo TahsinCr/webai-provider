@@ -34,6 +34,53 @@ PROJECT = "87654321-abcd-1234-abcd-123456789abc"
 
 
 class ClaudeRecordsTests(unittest.TestCase):
+    def test_stream_block_index_can_differ_from_persisted_message(self):
+        from tests.live.test_messages import _find_streamed_turn
+        from webaiprovider.providers.claude.records import action_target
+        from webaiprovider.resources.message.types import MessageAction
+        from webaiprovider.resources.response.response import Response
+
+        history = conversation(
+            {
+                "uuid": CHAT,
+                "chat_messages": [
+                    {
+                        "uuid": "native-turn",
+                        "sender": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Summary"},
+                            {"type": "text", "text": "New answer"},
+                            {"type": "text", "text": ""},
+                        ],
+                    }
+                ],
+            },
+            "",
+        )
+        visible = history.messages[-1]
+        self.assertEqual(visible.id, "native-turn:1")
+        target = action_target(history.messages, "native-turn:4", MessageAction.RETRY)
+        self.assertIs(target, visible)
+
+        saved = Response(
+            "New answer",
+            remote_id=visible.id,
+            metadata={**visible.metadata, "from_history": True},
+        )
+        self.assertIs(
+            _find_streamed_turn(
+                "claude", Response("New answer", remote_id="native-turn:4"), [saved]
+            ),
+            saved,
+        )
+        for remote_id, text in (("other:4", "New answer"), ("native-turn:4", "Old answer")):
+            self.assertIsNone(
+                _find_streamed_turn("claude", Response(text, remote_id=remote_id), [saved])
+            )
+        for remote_id in ("other:4", "native-turn:0"):
+            with self.assertRaises(ProviderError):
+                action_target(history.messages, remote_id, MessageAction.RETRY)
+
     def test_history_separates_public_thinking_and_retains_resources(self):
         data = {
             "uuid": CHAT,

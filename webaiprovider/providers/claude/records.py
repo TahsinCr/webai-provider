@@ -2,12 +2,15 @@
 
 import re
 
+from ...errors import ProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
     Content,
+    MessageAction,
     MessageData,
     actions_for,
+    target_message,
 )
 from ...resources.project.types import ProjectData
 from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
@@ -136,7 +139,11 @@ def conversation(value, account_id):
             [{"type": "text", "text": item["text"]}] if item.get("text") else []
         )
         last_text_index = next(
-            (i for i in range(len(content) - 1, -1, -1) if content[i].get("type") == "text"),
+            (
+                i
+                for i in range(len(content) - 1, -1, -1)
+                if content[i].get("type") == "text" and content[i].get("text")
+            ),
             None,
         )
         if role == "assistant":
@@ -233,6 +240,33 @@ def conversation(value, account_id):
         _project_data(value, account_id),
         {"native": {k: v for k, v in value.items() if k != "chat_messages"}},
     )
+
+
+def stream_message_uuid(message_id: str) -> str | None:
+    uuid, separator, block = message_id.rpartition(":")
+    return uuid if uuid and separator and block.isascii() and block.isdecimal() else None
+
+
+def action_target(
+    messages: tuple[MessageData, ...], message_id: str, action: MessageAction
+) -> MessageData:
+    role = "user" if action == MessageAction.EDIT else "assistant"
+    try:
+        return target_message(messages, message_id, role)[1]
+    except ProviderError:
+        if any(item.id == message_id for item in messages):
+            raise
+        native_id = stream_message_uuid(message_id)
+        if native_id is not None:
+            for item in reversed(messages):
+                if (
+                    item.role == role
+                    and item.channel != "analysis"
+                    and action.value in item.actions
+                    and item.metadata.get("native_message", {}).get("uuid") == native_id
+                ):
+                    return item
+        raise
 
 
 def project(value, account_id):

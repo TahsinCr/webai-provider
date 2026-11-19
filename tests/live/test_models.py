@@ -89,8 +89,7 @@ class AsyncModelApiTests(LiveAsyncTestCase):
                 )
                 op = chat.responses.create(
                     "Reply with only: OK" if entry is None else f"{marker} Reply with only: OK",
-                    model=model,
-                    **({"effort": selected_effort} if selected_effort is not None else {}),
+                    model=selected_effort if selected_effort is not None else model,
                 )
                 response = await self.call_or_skip_rate_limit(
                     f"models.send[{model.id}]", op.start, entry=entry, chat=chat

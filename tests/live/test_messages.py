@@ -11,18 +11,35 @@ from webaiprovider.resources.model.types import Models
 from .support.case import LiveAsyncTestCase
 
 
+def _find_streamed_turn(provider, response, history):
+    response_id = getattr(response, "remote_id", None) or response.id
+    for item in reversed(history):
+        if item.remote_id == response_id and item.metadata.get("from_history"):
+            return item
+    if provider != "claude":
+        return None
+
+    from webaiprovider.providers.claude.records import stream_message_uuid
+
+    native_id = stream_message_uuid(response_id)
+    if native_id is not None:
+        response_text = response.text.rstrip()
+        for item in reversed(history):
+            text = item.text.strip()
+            if (
+                item.metadata.get("from_history")
+                and item.metadata.get("native_message", {}).get("uuid") == native_id
+                and text
+                and response_text.endswith(text)
+            ):
+                return item
+    return None
+
+
 def _assert_streamed_turn_in_history(case, response, history) -> None:
     case.assertTrue(history, "Provider returned an empty response history")
     case.assertTrue(all(isinstance(item, Response) for item in history))
-    response_id = getattr(response, "remote_id", None) or response.id
-    verified = next(
-        (
-            item
-            for item in reversed(history)
-            if item.remote_id == response_id and item.metadata.get("from_history")
-        ),
-        None,
-    )
+    verified = _find_streamed_turn(case.context.account.provider, response, history)
     case.assertIsNotNone(verified, "Streamed response was not found in provider history")
     if isinstance(response, Response) and verified.timing is not None:
         case.assertIs(verified.timing, response.timing)
@@ -166,13 +183,12 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                     lambda: self.context.session.chats.get_with_responses(chat.remote_id, limit=50),
                 )
                 self.assertTrue(reopened.remote_id == chat.remote_id)
-                retried_id = getattr(retried_last, "remote_id", None) or retried_last.id
-                if not any(
-                    item.remote_id == retried_id and item.metadata.get("from_history")
-                    for item in responses
+                if (
+                    _find_streamed_turn(self.context.account.provider, retried_last, responses)
+                    is None
                 ):
                     responses = await self.call_api(
-                        "responses.verify_retry_after_delay",
+                        "responses.verify_retry_fresh",
                         lambda: chat.responses.list(limit=50, fresh=True),
                     )
                 _assert_streamed_turn_in_history(self, retried_last, responses)

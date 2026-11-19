@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Resolve Claude retry and edit targets by their active native message identity when stream and history block indexes differ.
+
 - Reduce history normalization work across providers and parse only the selected Gemini turn when preparing a retry or edit.
 
 - Use concrete provider types consistently for chats, projects, messages, responses, sources, artifacts, and project attachments across the blocking and async APIs.

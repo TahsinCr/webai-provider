@@ -1,5 +1,8 @@
 """Live checks for project listing and a disposable project lifecycle."""
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound, UnsupportedOperationError
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider
@@ -47,20 +50,43 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                 self.context.skip("projects.rename/instructions.edit: unsupported")
 
             if Capability.RESOURCES in capabilities:
-                attachment = await self.call_api(
-                    "projects.attachments.create",
-                    lambda: project.attachments.create(marker, "text", name=f"{marker}-resource"),
+                options = await self.call_or_skip_rate_limit(
+                    "projects.options",
+                    lambda: self.context.session.project_options(project.remote_id),
                 )
-                attachment_id = getattr(attachment, "id", None)
-                self.assertTrue(attachment_id, "Created project attachment has no verifiable ID")
-                attachments = await self.call_api(
-                    "projects.attachments.list", lambda: project.attachments.list(limit=None)
-                )
-                self.assertIn(attachment_id, {item.id for item in attachments})
-                await self.call_api(
-                    "projects.attachments.delete",
-                    lambda: project.attachments.delete(str(attachment_id)),
-                )
+                source_types = {item["id"] for item in options.sources}
+                created_ids: set[str] = set()
+                if "text" in source_types:
+                    attachment = await self.call_or_skip_rate_limit(
+                        "projects.attachments.create",
+                        lambda: project.attachments.create(
+                            marker, "text", name=f"{marker}-resource"
+                        ),
+                    )
+                    self.assertTrue(attachment.id, "Created text source has no verifiable ID")
+                    created_ids.add(attachment.id)
+                if "file" in source_types:
+                    with TemporaryDirectory() as directory:
+                        file = Path(directory) / "sample.txt"
+                        file.write_text(marker, encoding="utf-8")
+                        attachment = await self.call_or_skip_rate_limit(
+                            "projects.attachments.upload_file",
+                            lambda: project.attachments.create(file, "file"),
+                        )
+                    self.assertTrue(attachment.id, "Uploaded project file has no verifiable ID")
+                    created_ids.add(attachment.id)
+                if created_ids:
+                    attachments = await self.call_api(
+                        "projects.attachments.list", lambda: project.attachments.list(limit=None)
+                    )
+                    self.assertLessEqual(created_ids, {item.id for item in attachments})
+                    for attachment_id in sorted(created_ids):
+                        await self.call_or_skip_rate_limit(
+                            "projects.attachments.delete",
+                            lambda: project.attachments.delete(attachment_id),
+                        )
+                else:
+                    self.context.skip("projects.attachments: no supported source types")
             else:
                 self.context.skip("projects.attachments.create/delete: unsupported")
 

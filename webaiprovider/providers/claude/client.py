@@ -15,14 +15,14 @@ from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS
-from ...resources.message.types import MessageAction, target_message
+from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
 from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
-from .records import conversation, presented_files
+from .records import action_target, conversation, presented_files
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}
 _ALLOWED_UPLOAD_SUFFIXES = frozenset(CLAUDE_ATTACHMENTS.allowed_extensions)
@@ -370,8 +370,7 @@ class ClaudeClient:
         parent = history.get("current_leaf_message_uuid")
         if v.get("action"):
             self._continuations.remove(cid)
-            role = "user" if v["action"] == MessageAction.EDIT else "assistant"
-            _, target = target_message(conversation(history, "").messages, v["message_id"], role)
+            target = action_target(conversation(history, "").messages, v["message_id"], v["action"])
             if v["action"].value not in target.actions:
                 raise ProviderError("This Claude message action is unavailable")
             original = target.metadata["native_message"]
@@ -558,10 +557,10 @@ class ClaudeClient:
                             if isinstance(results, list) and results:
                                 raw_source_roots.append({"sources": results})
                         elif block_type == "text":
-                            final_index = block_index
                             if block:
                                 raw_source_roots.append(block)
                         if block_type == "text" and block.get("text"):
+                            final_index = block_index
                             if block["text"].strip():
                                 record_first_assistant_text()
                             yield {"type": "delta", "text": block["text"]}
@@ -604,6 +603,8 @@ class ClaudeClient:
                             }
                         elif delta_type == "text_delta" and channel == "text":
                             text = delta.get("text", "")
+                            if text:
+                                final_index = index
                             if text.strip():
                                 record_first_assistant_text()
                             yield {"type": "delta", "text": text}
