@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Mapping
+from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
 
 
 class AsyncMessage:
+    _attachment_type = Attachment
+
     def __init__(
         self,
         content: str = "",
@@ -47,10 +50,8 @@ class AsyncMessage:
 
         if isinstance(attachments, Attachments):
             self.attachments = attachments
-        elif attachments is not None:
-            self.attachments = Attachments(attachments)
         else:
-            self.attachments = Attachments()
+            self.attachments = Attachments(attachments, attachment_type=self._attachment_type)
 
     @property
     def text(self) -> str:
@@ -201,7 +202,11 @@ class Message:
         raw = self._resource.response
         if raw is None:
             return None
-        return self._owner._wrap_response(raw) if self._owner is not None else raw
+        if self._owner is not None:
+            return self._owner._wrap_response(raw)
+        snapshot = copy(raw)
+        snapshot.metadata = dict(raw.metadata)
+        return snapshot
 
     @property
     def sources(self) -> SourcesCollection:

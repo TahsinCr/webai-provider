@@ -29,8 +29,13 @@ class GrokProject(Project):
     __slots__ = ()
 
 
+class GrokAttachment(Attachment):
+    __slots__ = ()
+
+
 class AsyncGrokMessage(AsyncMessage):
     __slots__ = ()
+    _attachment_type = GrokAttachment
 
 
 class GrokMessage(Message):
@@ -39,10 +44,6 @@ class GrokMessage(Message):
 
 
 class GrokResponse(Response):
-    __slots__ = ()
-
-
-class GrokAttachment(Attachment):
     __slots__ = ()
 
 

@@ -31,8 +31,13 @@ class ChatGPTProject(Project):
     __slots__ = ()
 
 
+class ChatGPTAttachment(Attachment):
+    __slots__ = ()
+
+
 class AsyncChatGPTMessage(AsyncMessage):
     __slots__ = ()
+    _attachment_type = ChatGPTAttachment
 
 
 class ChatGPTMessage(Message):
@@ -41,10 +46,6 @@ class ChatGPTMessage(Message):
 
 
 class ChatGPTResponse(Response):
-    __slots__ = ()
-
-
-class ChatGPTAttachment(Attachment):
     __slots__ = ()
 
 

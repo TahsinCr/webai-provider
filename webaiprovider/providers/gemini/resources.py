@@ -29,8 +29,13 @@ class GeminiProject(Project):
     __slots__ = ()
 
 
+class GeminiAttachment(Attachment):
+    __slots__ = ()
+
+
 class AsyncGeminiMessage(AsyncMessage):
     __slots__ = ()
+    _attachment_type = GeminiAttachment
 
 
 class GeminiMessage(Message):
@@ -39,10 +44,6 @@ class GeminiMessage(Message):
 
 
 class GeminiResponse(Response):
-    __slots__ = ()
-
-
-class GeminiAttachment(Attachment):
     __slots__ = ()
 
 

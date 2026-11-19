@@ -621,7 +621,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
             content=new_content,
             model=model if model is not None else msg_target.model,
-            attachments=Attachments(copy(item) for item in msg_target.attachments),
+            attachments=(copy(item) for item in msg_target.attachments),
             metadata={
                 **msg_target.metadata,
                 **options,
@@ -642,9 +642,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
     ) -> AsyncMessageOperation:
         action_id, prompt_msg, default_model = self._resolve_retry_target(target)
         attachments = (
-            Attachments(copy(item) for item in prompt_msg.attachments)
-            if prompt_msg is not None
-            else Attachments()
+            (copy(item) for item in prompt_msg.attachments) if prompt_msg is not None else None
         )
         msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
             content=prompt_msg.content if prompt_msg is not None else "",

@@ -29,8 +29,13 @@ class ClaudeProject(Project):
     __slots__ = ()
 
 
+class ClaudeAttachment(Attachment):
+    __slots__ = ()
+
+
 class AsyncClaudeMessage(AsyncMessage):
     __slots__ = ()
+    _attachment_type = ClaudeAttachment
 
 
 class ClaudeMessage(Message):
@@ -39,10 +44,6 @@ class ClaudeMessage(Message):
 
 
 class ClaudeResponse(Response):
-    __slots__ = ()
-
-
-class ClaudeAttachment(Attachment):
     __slots__ = ()
 
 

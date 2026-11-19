@@ -154,8 +154,14 @@ class Attachment:
 class Attachments(Collection[Attachment]):
     """In-memory collection of attachments bound to a message or draft."""
 
-    def __init__(self, items: Iterable[Attachment] | None = None) -> None:
+    def __init__(
+        self,
+        items: Iterable[Attachment] | None = None,
+        *,
+        attachment_type: type[Attachment] = Attachment,
+    ) -> None:
         super().__init__(list(items) if items is not None else None)
+        self._attachment_type = attachment_type
 
     def create(
         self,
@@ -171,11 +177,11 @@ class Attachments(Collection[Attachment]):
         if isinstance(item, bytes):
             if not name:
                 raise ValueError("A filename is required when attaching byte data")
-            att = Attachment.from_bytes(item, name, mime_type=mime_type)
+            att = self._attachment_type.from_bytes(item, name, mime_type=mime_type)
             self._items.append(att)
             return att
         if isinstance(item, (Path, str)):
-            att = Attachment.from_path(item, name=name, mime_type=mime_type)
+            att = self._attachment_type.from_path(item, name=name, mime_type=mime_type)
             self._items.append(att)
             return att
         raise TypeError(f"Unsupported attachment type: {type(item)}")

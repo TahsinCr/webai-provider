@@ -495,10 +495,7 @@ class MessageOperation:
     @property
     def response(self) -> Response | None:
         response = self._operation._response
-        return self._wrap_response(response) if response is not None else None
-
-    def _wrap_response(self, response: Response) -> Response:
-        return self._owner._wrap_response(response)
+        return self._owner._wrap_response(response) if response is not None else None
 
     @property
     def state(self) -> OperationState:
@@ -538,7 +535,7 @@ class MessageOperation:
                 return
 
     def start(self) -> Response:
-        return self._wrap_response(self._owner._call(self._operation.start()))
+        return self._owner._wrap_response(self._owner._call(self._operation.start()))
 
     def wait(self) -> Response:
-        return self._wrap_response(self._owner._call(self._operation.wait()))
+        return self._owner._wrap_response(self._owner._call(self._operation.wait()))

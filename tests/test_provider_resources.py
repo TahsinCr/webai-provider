@@ -439,6 +439,9 @@ class ProviderResourceFamilyTests(unittest.TestCase):
                     self.assertIs(
                         type(project.attachments.list()[0]), getattr(module, f"{name}Attachment")
                     )
+                    draft = chat.responses.create("With attachment")
+                    attachment = draft.message.attachments.create(b"note", name="draft.txt")
+                    self.assertIs(type(attachment), getattr(module, f"{name}Attachment"))
                     sent = chat.ask("Next question")
                     self.assertIs(type(sent), type(response))
                     self.assertIs(type(sent.message), type(response.message))
