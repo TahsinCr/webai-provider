@@ -1,8 +1,11 @@
 import asyncio
 import mimetypes
+from dataclasses import replace
 
+from ...errors import ProviderError
 from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
+    ProjectData,
     ProjectOptions,
     source_file,
 )
@@ -39,7 +42,35 @@ class GrokProjectEditor:
             body["customPersonality"] = values["instructions"]
         if not body:
             raise ValueError("A Grok project change is required")
-        return await self.client.request("PUT", project_path, json=body)
+        result = await self.client.request("PUT", project_path, json=body)
+        current = values.get("current")
+        if (
+            isinstance(current, ProjectData)
+            and isinstance(result, dict)
+            and (result.get("workspaceId") or result.get("id") or project_id) == project_id
+            and all(result.get(key) == value for key, value in body.items())
+        ):
+            return self._apply_metadata(current, result)
+        return result
+
+    @staticmethod
+    def _apply_metadata(current, data):
+        metadata = dict(current.metadata)
+        for key, native in (("preferred_model", "preferredModel"), ("kind", "kind")):
+            if native in data:
+                metadata[key] = data[native]
+        return replace(
+            current,
+            name=data.get("name", current.name),
+            instructions=data.get("customPersonality", current.instructions),
+            metadata=metadata,
+        )
+
+    async def read_metadata(self, project_id, current):
+        data = await self.client.request("GET", "/rest/workspaces/" + remote_id(project_id))
+        if not isinstance(data, dict) or (data.get("workspaceId") or data.get("id")) != project_id:
+            raise ProviderError("Grok workspace response contract changed")
+        return self._apply_metadata(current, data)
 
     async def add_source(self, project_id, **values):
         project_path = "/rest/workspaces/" + remote_id(project_id)

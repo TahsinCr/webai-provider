@@ -927,12 +927,13 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             "isPublic": False,
         }
         files = []
+        complete_metadata = True
         path = "/rest/workspaces/workspace"
 
         def request(method, target, **options):
             if method == "PUT" and target == path:
                 workspace.update(options["json"])
-                return dict(workspace)
+                return dict(workspace) if complete_metadata else {"workspaceId": "workspace"}
             if method == "GET" and target == path:
                 return dict(workspace)
             if method == "GET" and target == path + "/files":
@@ -952,9 +953,23 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             provider.client.request.reset_mock()
             updated = await provider.update_project(replace(current, instructions="New"))
             self.assertEqual(updated.instructions, "New")
-            self.assertEqual(provider.client.request.await_count, 5)
+            self.assertEqual(
+                [entry.args for entry in provider.client.request.await_args_list],
+                [("GET", path), ("GET", path + "/files"), ("PUT", path)],
+            )
             self.assertEqual(workspace["preferredModel"], "keep")
             self.assertFalse(workspace["isPublic"])
+
+            complete_metadata = False
+            provider.client.request.reset_mock()
+            renamed = await provider._patch_project_data(
+                "workspace", name="Renamed", current=updated
+            )
+            self.assertEqual(renamed.name, "Renamed")
+            self.assertEqual(
+                [entry.args for entry in provider.client.request.await_args_list],
+                [("PUT", path), ("GET", path)],
+            )
 
             added = await provider._add_project_resource_data(
                 "workspace", "text", name="notes.txt", text="Notes"

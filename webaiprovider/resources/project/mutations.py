@@ -21,13 +21,16 @@ class ProjectMutationsMixin:
 
         def _invalidate_project_cache(self, project_id: str) -> None: ...
 
-    async def _project_after_write(self, project_id: str, confirmed: Any) -> ProjectData:
+    async def _project_after_write(
+        self, project_id: str, confirmed: Any, *, read=None
+    ) -> ProjectData:
         self._invalidate_project_cache(project_id)
-        for _ in range(12):
-            project = await self._get_project_data(project_id)
+        for attempt in range(12):
+            if attempt:
+                await asyncio.sleep(0.4)
+            project = await (self._get_project_data(project_id) if read is None else read())
             if confirmed(project):
                 return project
-            await asyncio.sleep(0.4)
         raise ProviderError(
             "Project change could not be confirmed by the server; sync before retrying"
         )
@@ -38,8 +41,7 @@ class ProjectMutationsMixin:
         editor = self.editor
         if editor is None:
             return ProjectOptions()
-        async with self._gate:
-            return await editor.options(project_id)
+        return await editor.options(project_id)
 
     async def _patch_project(
         self,
@@ -69,11 +71,13 @@ class ProjectMutationsMixin:
         if isinstance(result, ProjectData):
             self._invalidate_project_cache(project_id)
             return result
+        read_metadata = getattr(editor, "read_metadata", None)
         return await self._project_after_write(
             project_id,
             lambda saved: all(
                 (getattr(saved, field) or "") == value for field, value in changes.items()
             ),
+            read=(lambda: read_metadata(project_id, staged)) if callable(read_metadata) else None,
         )
 
     async def _add_project_resource(

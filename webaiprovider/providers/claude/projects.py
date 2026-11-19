@@ -1,6 +1,7 @@
 from dataclasses import replace
 from urllib.parse import quote
 
+from ...errors import ProviderError
 from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
     ProjectData,
@@ -37,15 +38,25 @@ class ClaudeProjectEditor:
         if (
             isinstance(current, ProjectData)
             and isinstance(result, dict)
-            and result.get("name", current.name) == v.get("name", current.name)
-            and result.get("prompt_template", current.instructions or "")
-            == v.get("instructions", current.instructions or "")
+            and (result.get("uuid") or project_id) == project_id
+            and all(key in result and result[key] == value for key, value in fields.items())
         ):
             return replace(
                 current,
                 **{k: v[k] for k in ("name", "instructions") if k in v},
             )
         return result
+
+    async def read_metadata(self, project_id, current):
+        path = await self.client.base() + "/projects/" + remote_id(project_id)
+        data = await self.client.http.request("GET", path)
+        if not isinstance(data, dict) or (data.get("uuid") or data.get("id")) != project_id:
+            raise ProviderError("Claude project response contract changed")
+        return replace(
+            current,
+            name=data.get("name", current.name),
+            instructions=data.get("prompt_template", current.instructions),
+        )
 
     async def add_source(self, project_id, **v):
         path = await self.client.base() + "/projects/" + remote_id(project_id)

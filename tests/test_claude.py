@@ -696,11 +696,17 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
         initial = NativeProject(PROJECT, "Old Name", "Keep brief", metadata={"native": {}})
-        updated = NativeProject(PROJECT, "New Name", "Keep brief", metadata={"native": {}})
         provider._prepare_session = AsyncMock()
         provider._list_projects_data = AsyncMock(return_value=Page((initial,), None))
-        provider._get_project_data = AsyncMock(side_effect=[initial, updated])
+        provider._get_project_data = AsyncMock()
         provider.editor.update = AsyncMock()
+        provider.client.base = AsyncMock(return_value="/api/organizations/org")
+        provider.client.http.request = AsyncMock(
+            side_effect=[
+                {"uuid": PROJECT, "name": "Old Name"},
+                {"uuid": PROJECT, "name": "New Name"},
+            ]
+        )
         await provider.open()
         try:
             loaded = await provider.projects.list(limit=None)
@@ -708,7 +714,11 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 result = await provider.projects.update(loaded[0], title="New Name")
             delay.assert_awaited_once_with(0.4)
             self.assertEqual(result.title, "New Name")
-            self.assertEqual(provider._get_project_data.await_count, 2)
+            provider._get_project_data.assert_not_awaited()
+            self.assertEqual(
+                [call.args for call in provider.client.http.request.await_args_list],
+                [("GET", f"/api/organizations/org/projects/{PROJECT}")] * 2,
+            )
             provider.editor.update.assert_awaited_once_with(
                 PROJECT, current=initial, name="New Name"
             )
