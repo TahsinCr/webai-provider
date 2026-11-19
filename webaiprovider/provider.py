@@ -8,7 +8,7 @@ from eventflow import EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
 from .base import BaseProvider, Capability, ProviderType
-from .core.bridges import SharedPortalBridge
+from .core.bridges import PortalBridge
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
@@ -85,7 +85,7 @@ class Provider(BaseProvider):
         if transport is not None:
             options["transport"] = transport
         self._provider = provider_type(account, **options)
-        self._portal = SharedPortalBridge()
+        self._portal = PortalBridge()
         self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
         self._portal_started = False
         self._opened = False
