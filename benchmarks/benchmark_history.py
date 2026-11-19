@@ -65,13 +65,16 @@ def _provider(messages: int):
         yield provider
 
 
-def _open_case(*, blocking: bool, combined: bool) -> Case:
+def _open_case(*, blocking: bool, combined: bool, messages: int = 2_000) -> Case:
     name = (
         f"history.open.{'sync' if blocking else 'async'}.{'combined' if combined else 'separate'}"
     )
 
+    if messages != 2_000:
+        name = f"{name}.{messages}"
+
     async def measure_async(loops: int) -> float:
-        async with _async_provider(2_000) as provider:
+        async with _async_provider(messages) as provider:
 
             async def open_chat():
                 if combined:
@@ -87,7 +90,7 @@ def _open_case(*, blocking: bool, combined: bool) -> Case:
     def measure(loops: int) -> float:
         if not blocking:
             return asyncio.run(measure_async(loops))
-        with _provider(2_000) as provider:
+        with _provider(messages) as provider:
 
             def open_chat():
                 if combined:
@@ -100,7 +103,7 @@ def _open_case(*, blocking: bool, combined: bool) -> Case:
 
             return time_sync(loops, open_chat)
 
-    return Case(name, measure, {"fixture_messages": 2_000, "response_limit": _RECENT})
+    return Case(name, measure, {"fixture_messages": messages, "response_limit": _RECENT})
 
 
 def _reload_case(*, concurrent: bool, messages: int) -> Case:
@@ -130,6 +133,7 @@ def cases() -> tuple[Case, ...]:
             for blocking in (False, True)
             for combined in (False, True)
         ),
+        _open_case(blocking=False, combined=True, messages=20_000),
         _reload_case(concurrent=False, messages=20_000),
         _reload_case(concurrent=True, messages=2_000),
     )

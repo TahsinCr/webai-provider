@@ -11,7 +11,7 @@ python run_benchmarks.py --list-cases
 
 | Suite | Workloads |
 | --- | --- |
-| `history` | Blocking and async chat opening with one or two history reads, eight overlapping reads of one chat, and a fresh read of an already opened 20,000-message history. |
+| `history` | Blocking and async chat opening with one or two history reads, opening the last 25 responses from a 20,000-message history, eight overlapping reads of one chat, and a fresh read of an already opened history. |
 | `collections` | Listings of 100, 1,000, and 10,000 chats, a 1,000-chat listing with an event subscriber, project fanout, and 10,000 jobs on four workers. |
 | `transport` | 16 KiB and 8 MiB buffered reads through sync and async HTTP transports, 4,000 stream chunks through a persistent blocking portal, and split SSE and JSPB frames. |
 
