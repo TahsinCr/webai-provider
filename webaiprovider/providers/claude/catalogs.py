@@ -19,6 +19,29 @@ def _effort(model_id: str, effort_id: str, name: str | None = None) -> EffortRef
     return effort_ref("claude", model_id, effort_id, name)
 
 
+class ClaudeOpus46Efforts(EffortSet):
+    LOW: ClassVar[EffortRef] = _effort("claude-opus-4-6", "low")
+    MEDIUM: ClassVar[EffortRef] = _effort("claude-opus-4-6", "medium")
+    HIGH: ClassVar[EffortRef] = _effort("claude-opus-4-6", "high")
+    MAX: ClassVar[EffortRef] = _effort("claude-opus-4-6", "max")
+
+
+class ClaudeOpus47Efforts(EffortSet):
+    LOW: ClassVar[EffortRef] = _effort("claude-opus-4-7", "low")
+    MEDIUM: ClassVar[EffortRef] = _effort("claude-opus-4-7", "medium")
+    HIGH: ClassVar[EffortRef] = _effort("claude-opus-4-7", "high")
+    XHIGH: ClassVar[EffortRef] = _effort("claude-opus-4-7", "xhigh")
+    MAX: ClassVar[EffortRef] = _effort("claude-opus-4-7", "max")
+
+
+class ClaudeOpus48Efforts(EffortSet):
+    LOW: ClassVar[EffortRef] = _effort("claude-opus-4-8", "low")
+    MEDIUM: ClassVar[EffortRef] = _effort("claude-opus-4-8", "medium")
+    HIGH: ClassVar[EffortRef] = _effort("claude-opus-4-8", "high")
+    XHIGH: ClassVar[EffortRef] = _effort("claude-opus-4-8", "xhigh")
+    MAX: ClassVar[EffortRef] = _effort("claude-opus-4-8", "max")
+
+
 class ClaudeOpus5Efforts(EffortSet):
     LOW: ClassVar[EffortRef] = _effort("claude-opus-5", "low")
     MEDIUM: ClassVar[EffortRef] = _effort("claude-opus-5", "medium")
@@ -33,6 +56,15 @@ class ClaudeOpus55Efforts(EffortSet):
     HIGH: ClassVar[EffortRef] = _effort("claude-opus-5-5", "high")
     XHIGH: ClassVar[EffortRef] = _effort("claude-opus-5-5", "xhigh")
     MAX: ClassVar[EffortRef] = _effort("claude-opus-5-5", "max")
+
+
+class ClaudeFable52Efforts(EffortSet):
+    DEFAULT_EFFORT_ID: ClassVar[str | None] = "medium"
+    LOW: ClassVar[EffortRef] = _effort("claude-fable-5-2", "low")
+    MEDIUM: ClassVar[EffortRef] = _effort("claude-fable-5-2", "medium")
+    HIGH: ClassVar[EffortRef] = _effort("claude-fable-5-2", "high")
+    XHIGH: ClassVar[EffortRef] = _effort("claude-fable-5-2", "xhigh")
+    MAX: ClassVar[EffortRef] = _effort("claude-fable-5-2", "max")
 
 
 class ClaudeFable51Efforts(EffortSet):
@@ -100,35 +132,14 @@ class ClaudeSonnet46Efforts(EffortSet):
 class ClaudeModels(StaticModelCatalog):
     provider = "claude"
 
-    OPUS_4_5: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-opus-4-5-20251101", "Claude Opus 4.5", efforts=EffortSet
-    )
-    OPUS_4_6: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-opus-4-6", "Claude Opus 4.6", efforts=EffortSet
-    )
-    OPUS_4_7: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-opus-4-7", "Claude Opus 4.7", efforts=EffortSet
-    )
-    OPUS_4_8: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-opus-4-8", "Claude Opus 4.8", efforts=EffortSet
-    )
-    OPUS_5: ClassVar[ModelRef[ClaudeOpus5Efforts]] = ModelRef(
-        "claude", "claude-opus-5", "Claude Opus 5", efforts=ClaudeOpus5Efforts
+    FABLE_5_2: ClassVar[ModelRef[ClaudeFable52Efforts]] = ModelRef(
+        "claude",
+        "claude-fable-5-2",
+        "Claude Fable 5.2",
+        efforts=ClaudeFable52Efforts,
     )
     OPUS_5_5: ClassVar[ModelRef[ClaudeOpus55Efforts]] = ModelRef(
         "claude", "claude-opus-5-5", "Claude Opus 5.5", efforts=ClaudeOpus55Efforts
-    )
-    FABLE_5_1: ClassVar[ModelRef[ClaudeFable51Efforts]] = ModelRef(
-        "claude",
-        "claude-fable-5-1",
-        "Claude Fable 5.1",
-        efforts=ClaudeFable51Efforts,
-    )
-    FABLE_5: ClassVar[ModelRef[ClaudeFable5Efforts]] = ModelRef(
-        "claude",
-        "claude-fable-5",
-        "Claude Fable 5",
-        efforts=ClaudeFable5Efforts,
     )
     SONNET_5_5: ClassVar[ModelRef[ClaudeSonnet55Efforts]] = ModelRef(
         "claude",
@@ -142,11 +153,32 @@ class ClaudeModels(StaticModelCatalog):
         "Claude Haiku 5.5",
         efforts=ClaudeHaiku55Efforts,
     )
-    HAIKU_4_5: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-haiku-4-5-20251001", "Claude Haiku 4.5", efforts=EffortSet
+    FABLE_5_1: ClassVar[ModelRef[ClaudeFable51Efforts]] = ModelRef(
+        "claude",
+        "claude-fable-5-1",
+        "Claude Fable 5.1",
+        efforts=ClaudeFable51Efforts,
     )
-    SONNET_4_5: ClassVar[ModelRef[EffortSet]] = ModelRef(
-        "claude", "claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", efforts=EffortSet
+    FABLE_5: ClassVar[ModelRef[ClaudeFable5Efforts]] = ModelRef(
+        "claude",
+        "claude-fable-5",
+        "Claude Fable 5",
+        efforts=ClaudeFable5Efforts,
+    )
+    OPUS_5: ClassVar[ModelRef[ClaudeOpus5Efforts]] = ModelRef(
+        "claude", "claude-opus-5", "Claude Opus 5", efforts=ClaudeOpus5Efforts
+    )
+    OPUS_4_8: ClassVar[ModelRef[ClaudeOpus48Efforts]] = ModelRef(
+        "claude", "claude-opus-4-8", "Claude Opus 4.8", efforts=ClaudeOpus48Efforts
+    )
+    OPUS_4_7: ClassVar[ModelRef[ClaudeOpus47Efforts]] = ModelRef(
+        "claude", "claude-opus-4-7", "Claude Opus 4.7", efforts=ClaudeOpus47Efforts
+    )
+    OPUS_4_6: ClassVar[ModelRef[ClaudeOpus46Efforts]] = ModelRef(
+        "claude", "claude-opus-4-6", "Claude Opus 4.6", efforts=ClaudeOpus46Efforts
+    )
+    OPUS_3: ClassVar[ModelRef[EffortSet]] = ModelRef(
+        "claude", "claude-3-opus-20240229", "Claude Opus 3", efforts=EffortSet
     )
     SONNET_5: ClassVar[ModelRef[ClaudeSonnet5Efforts]] = ModelRef(
         "claude",

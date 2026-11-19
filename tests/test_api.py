@@ -580,18 +580,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     def test_catalogs_and_selection_resolver(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_6_INSTANT.id, "gpt-6-instant")
         self.assertEqual(ClaudeModels.SONNET_5_5.id, "claude-sonnet-5-5")
-        self.assertEqual(GeminiModels.FLASH.id, "gemini-flash")
         self.assertEqual(GeminiModels.HYDROGEN.id, "gemini-hydrogen")
         self.assertEqual(GeminiModels.NEON.id, "gemini-neon")
         self.assertEqual(GeminiModels.CARBON.id, "gemini-carbon")
         self.assertEqual(
             [model.id for model in GeminiModels.list()],
             [
-                "gemini-flash-lite",
-                "gemini-flash",
                 "gemini-hydrogen",
-                "gemini-pro",
-                "gemini-argon",
                 "gemini-neon",
                 "gemini-carbon",
             ],

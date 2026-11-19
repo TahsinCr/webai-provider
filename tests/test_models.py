@@ -163,24 +163,27 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(ChatGPTModels.GPT_6_THINKING.select(medium).effort, medium)
 
         claude_ids = {model.id for model in ClaudeModels.list()}
-        self.assertTrue(
+        self.assertEqual(
+            claude_ids,
             {
+                "claude-fable-5-2",
                 "claude-opus-5-5",
-                "claude-fable-5-1",
                 "claude-sonnet-5-5",
                 "claude-haiku-5-5",
+                "claude-fable-5-1",
+                "claude-fable-5",
                 "claude-opus-5",
                 "claude-opus-4-8",
                 "claude-opus-4-7",
                 "claude-opus-4-6",
-                "claude-opus-4-5-20251101",
+                "claude-3-opus-20240229",
                 "claude-sonnet-5",
                 "claude-sonnet-4-6",
-                "claude-sonnet-4-5-20250929",
-                "claude-haiku-4-5-20251001",
-            }.issubset(claude_ids)
+            },
         )
         self.assertEqual(ClaudeModels.FABLE_5_1.efforts.MEDIUM.id, "medium")
+        self.assertEqual(ClaudeModels.OPUS_4_6.efforts.MAX.id, "max")
+        self.assertEqual(ClaudeModels.OPUS_4_8.efforts.XHIGH.id, "xhigh")
         self.assertEqual(ClaudeModels.SONNET_5.efforts.MEDIUM_AUTO.id, "medium:auto")
 
         for catalog in (ChatGPTModels, ClaudeModels, GeminiModels, GrokModels):
@@ -194,11 +197,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(
             tuple(model.id for model in GeminiModels.list()),
             (
-                "gemini-flash-lite",
-                "gemini-flash",
                 "gemini-hydrogen",
-                "gemini-pro",
-                "gemini-argon",
                 "gemini-neon",
                 "gemini-carbon",
             ),
