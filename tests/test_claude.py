@@ -231,15 +231,6 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.provider.client.authenticated = True
         self.provider.client.request = AsyncMock()
 
-    async def test_close_releases_transport_when_editor_cleanup_fails(self):
-        self.provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
-        self.provider.client.close = AsyncMock()
-
-        with self.assertRaisesRegex(RuntimeError, "editor close failed"):
-            await self.provider.close()
-
-        self.provider.client.close.assert_awaited_once_with()
-
     async def test_attachment_count_uses_the_compact_history_operation(self):
         self.provider.client.request.return_value = {
             "uuid": CHAT,
@@ -608,7 +599,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["files"], [{"uuid": "file-1", "file_uuid": "fu-1"}])
 
     async def test_project_editor_remove_source_with_resource_skips_project_get(self):
-        from webaiprovider.providers.claude.client import ClaudeProjectEditor
+        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
 
         transport = SimpleNamespace(
@@ -618,8 +609,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         editor = ClaudeProjectEditor(transport)
 
-        await editor.write(
-            "remove_source",
+        await editor.remove_source(
             PROJECT,
             resource_id="f-1",
             resource=Attachment(
@@ -634,8 +624,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         transport.request.assert_not_awaited()
 
         transport.http.request.reset_mock()
-        await editor.write(
-            "remove_source",
+        await editor.remove_source(
             PROJECT,
             resource_id="d-1",
             resource=Attachment("d-1", "doc.txt", metadata={"native": {"uuid": "d-1"}}),
@@ -647,8 +636,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         transport.request = AsyncMock(return_value={"docs": [], "files": []})
         with self.assertRaises(ValueError):
-            await editor.write(
-                "remove_source",
+            await editor.remove_source(
                 PROJECT,
                 resource_id="foreign-id",
                 resource=Attachment(
@@ -667,7 +655,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         provider._prepare_session = AsyncMock()
         provider._list_projects_data = AsyncMock(return_value=Page((initial,), None))
         provider._get_project_data = AsyncMock(side_effect=[initial, updated])
-        provider.editor.write = AsyncMock()
+        provider.editor.update = AsyncMock()
         await provider.open()
         try:
             loaded = await provider.projects.list(limit=None)
@@ -676,14 +664,14 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             delay.assert_awaited_once_with(0.4)
             self.assertEqual(result.title, "New Name")
             self.assertEqual(provider._get_project_data.await_count, 2)
-            provider.editor.write.assert_awaited_once_with(
-                "update", PROJECT, current=initial, name="New Name"
+            provider.editor.update.assert_awaited_once_with(
+                PROJECT, current=initial, name="New Name"
             )
         finally:
             await provider.close()
 
     async def test_project_editor_update_and_remove_source_return_project_data(self):
-        from webaiprovider.providers.claude.client import ClaudeProjectEditor
+        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -713,13 +701,12 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         editor = ClaudeProjectEditor(transport)
 
-        updated = await editor.write("update", PROJECT, current=current, name="New Name")
+        updated = await editor.update(PROJECT, current=current, name="New Name")
         self.assertIsInstance(updated, NativeProject)
         self.assertEqual(updated.name, "New Name")
         self.assertEqual(updated.instructions, "Keep brief")
 
-        removed = await editor.write(
-            "remove_source",
+        removed = await editor.remove_source(
             PROJECT,
             current=updated,
             resource_id="d-1",

@@ -11,7 +11,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectMutationsMixin
+from ...base import Capability
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
@@ -31,6 +31,7 @@ from ...resources.message.protocol import (
 from ...resources.message.types import MessageAction, target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
@@ -41,6 +42,7 @@ from .history import conversations as parse_conversations
 from .history import history as parse_history
 from .media import PLACEHOLDER, resolve_image_links, valid_media_url
 from .notebooks import Notebooks, field, notebook_id
+from .projects import GeminiProjectEditor
 from .resources import (
     AsyncGeminiChat,
     AsyncGeminiMessage,
@@ -53,7 +55,7 @@ from .resources import (
     GeminiResponse,
     GeminiSource,
 )
-from .rpc import NotebookEditor, NotebookRPC, nested
+from .rpc import NotebookRPC, nested
 from .session import GeminiSession
 
 if TYPE_CHECKING:
@@ -138,16 +140,10 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         self.rpc: NotebookRPC = NotebookRPC(self._connect)
         self.notebooks: Notebooks = notebooks or Notebooks(account.id)
         self.notebooks.reader = self.rpc.read
-        self.editor: NotebookEditor = NotebookEditor(self.rpc, self.notebooks)
+        self.editor: GeminiProjectEditor = GeminiProjectEditor(self.rpc, self.notebooks)
 
     def _active_transport(self) -> AsyncTransport | None:
         return self._connected_transport
-
-    def _get_project_editor(self) -> NotebookEditor | None:
-        return self.editor
-
-    def _get_project_gate(self) -> asyncio.Lock:
-        return self._gate
 
     def _invalidate_project_cache(self, project_id: str) -> None:
         self._project_contexts.remove(notebook_id(project_id))
@@ -178,29 +174,16 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         return client
 
     async def _close_unlocked(self) -> None:
-        editor_error = None
-        try:
-            await self.editor.close()
-        except BaseException as error:
-            editor_error = error
         client = self._client
-        try:
-            if client is not None:
-                await client.close()
-        except BaseException as close_error:
-            if editor_error is not None:
-                raise editor_error from close_error
-            raise
-        else:
-            if self._client is client:
-                self._client = None
-                if self._provided_transport is None:
-                    self._connected_transport = None
-            if self._client is None:
-                self._chat_metadata.clear()
-                self._project_contexts.clear()
-        if editor_error is not None:
-            raise editor_error
+        if client is not None:
+            await client.close()
+        if self._client is client:
+            self._client = None
+            if self._provided_transport is None:
+                self._connected_transport = None
+        if self._client is None:
+            self._chat_metadata.clear()
+            self._project_contexts.clear()
 
     @staticmethod
     def _usable_chat_metadata(metadata: Any, conversation_id: str | None) -> bool:
@@ -370,13 +353,13 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
                 "Provide only a name when creating a notebook; edit instructions afterward"
             )
         async with self._gate:
-            remote = await self.editor.write("create", name=name.strip())
+            remote = await self.editor.create(name=name.strip())
         return await self._get_project_data(remote)
 
     async def _delete_project_data(self, project_id: str) -> None:
         remote = notebook_id(project_id)
         async with self._gate:
-            await self.editor.write("delete", remote)
+            await self.editor.delete(remote)
         self._project_contexts.remove(remote)
 
     async def _stream_provider_events(

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ...accounts import delete_session, session_exists
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectMutationsMixin
+from ...base import Capability
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
@@ -27,11 +27,13 @@ from ...resources.message.protocol import (
 )
 from ...resources.message.types import MessageAction
 from ...resources.model.model import ModelCatalog
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
 from .catalogs import parse_model_catalog
-from .client import GrokClient, GrokProjectEditor, remote_id, validate_upload_candidate
+from .client import GrokClient, remote_id, validate_upload_candidate
+from .projects import GrokProjectEditor
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
 from .resources import (
     AsyncGrokChat,
@@ -264,12 +266,6 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
 
     def _active_transport(self) -> AsyncTransport | None:
         return self.client.http
-
-    def _get_project_editor(self) -> GrokProjectEditor:
-        return self.editor
-
-    def _get_project_gate(self) -> asyncio.Lock:
-        return self._gate
 
     def _take_continuation(self, conversation_id: str) -> str | None:
         return self._continuations.pop(conversation_id, None)

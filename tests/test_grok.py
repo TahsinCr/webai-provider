@@ -19,9 +19,9 @@ from webaiprovider.providers.grok import AsyncGrokProvider
 from webaiprovider.providers.grok.client import (
     _MAX_LINE_BYTES,
     GrokClient,
-    GrokProjectEditor,
     _iter_bounded_lines,
 )
+from webaiprovider.providers.grok.projects import GrokProjectEditor
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
 from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.protocol import (
@@ -886,7 +886,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(changes=changes):
                 transport = SimpleNamespace(request=AsyncMock(return_value={"updated": True}))
-                result = await GrokProjectEditor(transport).write("update", "workspace", **changes)
+                result = await GrokProjectEditor(transport).update("workspace", **changes)
                 self.assertEqual(result, {"updated": True})
                 transport.request.assert_awaited_once_with(
                     "PUT", "/rest/workspaces/workspace", json=expected
@@ -896,8 +896,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         transport = SimpleNamespace(request=AsyncMock(return_value={"assetId": "source-1"}))
         editor = GrokProjectEditor(transport)
 
-        await editor.write(
-            "add_source",
+        await editor.add_source(
             "workspace",
             kind="text",
             name="Instructions",
@@ -983,7 +982,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 "webaiprovider.providers.grok.client.mimetypes.guess_type",
                 return_value=("text/plain", None),
             ):
-                await editor.write("add_source", "workspace", kind="file", path=path)
+                await editor.add_source("workspace", kind="file", path=path)
 
         call = transport.request.await_args
         self.assertEqual(call.args, ("POST", "/rest/workspaces/workspace/files/upload"))
@@ -1018,8 +1017,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             transport = SimpleNamespace(request=AsyncMock(return_value={"deleted": True}))
             editor = GrokProjectEditor(transport)
 
-            result = await editor.write(
-                "remove_source",
+            result = await editor.remove_source(
                 "workspace",
                 resource_id=resource_id,
                 resource=Attachment(resource_id, source["name"], metadata=source),

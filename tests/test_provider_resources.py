@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from importlib import import_module
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
@@ -77,7 +77,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.provider._create_project_data.return_value = original
         self.provider._get_project_data.side_effect = lambda _pid: state["project"]
 
-        async def do_patch(project_id, **fields):
+        async def do_patch(project_id, *, current=None, **fields):
             del project_id
             state["project"] = replace(
                 state["project"],
@@ -113,7 +113,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await project.instruction.get(), "Be concise")
         added = await project.attachments.create("A note", resource_type="text", name="Notes")
         self.provider._add_project_resource.assert_awaited_once_with(
-            "project-1", "text", name="Notes", text="A note"
+            "project-1", "text", name="Notes", text="A note", current=ANY
         )
         self.assertEqual(added.id, "resource-2")
 
@@ -121,14 +121,16 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             project, title="Updated", instruction="New instructions"
         )
         self.provider._patch_project.assert_awaited_once_with(
-            "project-1", name="Updated", instructions="New instructions"
+            "project-1", name="Updated", instructions="New instructions", current=ANY
         )
         self.assertEqual(project.title, "Updated")
         self.assertEqual(await project.instruction.get(), "New instructions")
 
         self.provider._get_project_data.reset_mock()
         await project.attachments.delete("resource-2")
-        self.provider._remove_project_resource.assert_awaited_once_with("project-1", "resource-2")
+        self.provider._remove_project_resource.assert_awaited_once_with(
+            "project-1", "resource-2", current=ANY
+        )
         self.provider._get_project_data.assert_not_awaited()
         state["project"] = original
         loaded_projects = await self.provider.projects.list(limit=None)

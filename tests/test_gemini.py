@@ -116,18 +116,6 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(AccountPaused):
                 await provider._prepare_session()
 
-    async def test_close_releases_gemini_session_when_editor_cleanup_fails(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
-        client = SimpleNamespace(close=AsyncMock())
-        provider._client = client
-        provider.editor.close = AsyncMock(side_effect=RuntimeError("editor close failed"))
-
-        with self.assertRaisesRegex(RuntimeError, "editor close failed"):
-            await provider.close()
-
-        client.close.assert_awaited_once_with()
-        self.assertIsNone(provider._client)
-
     async def test_background_prepare_and_first_request_share_session_open(self):
         provider = AsyncGeminiProvider(
             provider_account("gemini", Path("saved")), client_factory=lambda _path: client
@@ -1329,7 +1317,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_notebook_editor_update_reuses_current_snapshot_and_skips_get(self):
-        from webaiprovider.providers.gemini.rpc import NotebookEditor
+        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
 
         detail = [None] * 13
         detail[12] = [2, None, None, None, 1]
@@ -1340,14 +1328,14 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         rpc = SimpleNamespace(call=AsyncMock(return_value=True))
         notebooks = SimpleNamespace(get=AsyncMock())
-        await NotebookEditor(rpc, notebooks).write(
-            "update", "notebooks/abcdef", name="New Name", current=current
+        await GeminiProjectEditor(rpc, notebooks).update(
+            "notebooks/abcdef", name="New Name", current=current
         )
         notebooks.get.assert_not_awaited()
         rpc.call.assert_awaited_once()
 
     async def test_notebook_editor_returns_project_data_for_update_and_remove_source(self):
-        from webaiprovider.providers.gemini.rpc import NotebookEditor
+        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -1363,15 +1351,14 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         rpc = SimpleNamespace(call=AsyncMock(return_value=[]))
         notebooks = SimpleNamespace(get=AsyncMock())
-        editor = NotebookEditor(rpc, notebooks)
+        editor = GeminiProjectEditor(rpc, notebooks)
 
-        updated = await editor.write("update", "notebooks/abcdef", name="New Name", current=current)
+        updated = await editor.update("notebooks/abcdef", name="New Name", current=current)
         self.assertIsInstance(updated, NativeProject)
         self.assertEqual(updated.name, "New Name")
         self.assertEqual(updated.instructions, "Old inst")
 
-        removed = await editor.write(
-            "remove_source",
+        removed = await editor.remove_source(
             "notebooks/abcdef",
             current=updated,
             resource_id=source_id,
@@ -1721,11 +1708,11 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
             provider_account("gemini", Path("unused")), notebooks=notebooks
         )
         with (
-            patch.object(provider.editor, "write", new_callable=AsyncMock) as delete,
+            patch.object(provider.editor, "delete", new_callable=AsyncMock) as delete,
             patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as wait,
         ):
             await provider._delete_project_data("notebooks/abcdef")
-            delete.assert_awaited_once_with("delete", "notebooks/abcdef")
+            delete.assert_awaited_once_with("notebooks/abcdef")
             wait.assert_not_awaited()
         notebooks.get.assert_not_awaited()
         notebooks.list.assert_not_awaited()

@@ -979,7 +979,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.client.request = record_request
         editor = ChatGPTProjectEditor(self.session, lambda _: self.client)
         with patch("pathlib.Path.read_bytes", side_effect=AssertionError("must stream")):
-            await editor.write("add_source", "project", kind="file", path=path)
+            await editor.add_source("project", kind="file", path=path)
         self.assertTrue(self.client.closed.is_set())
         self.assertEqual(
             requests[0][2]["json"]["files"][0]["last_modified"],
@@ -1283,11 +1283,10 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 }
             },
         )
-        updated_res = await editor.write("update", "p-1", name="New Name", current=current)
+        updated_res = await editor.update("p-1", name="New Name", current=current)
         self.assertIsInstance(updated_res, NativeProject)
         self.assertEqual(updated_res.name, "New Name")
-        removed_res = await editor.write(
-            "remove_source",
+        removed_res = await editor.remove_source(
             "p-1",
             current=updated_res,
             resource_id="file-1",
@@ -1298,8 +1297,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.assertEqual(mock_client.get_project.call_count, 0)
         mock_client.get_project = AsyncMock(return_value={"resources": []})
         with self.assertRaises(ValueError):
-            await editor.write(
-                "remove_source",
+            await editor.remove_source(
                 "p-1",
                 resource_id="foreign-id",
                 resource=Attachment("file-1", "doc.txt", "file"),
@@ -1423,9 +1421,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         try:
             await provider._rename_chat_data("c-1", "One")
             await provider._rename_chat_data("c-2", "Two")
-            await provider.editor.write(
-                "add_source", "g-p-1", kind="text", name="note", text="hello"
-            )
+            await provider.editor.add_source("g-p-1", kind="text", name="note", text="hello")
             self.assertEqual(len(created), 1)
             self.assertIs(provider._client, created[0])
             self.assertFalse(created[0].closed.is_set())

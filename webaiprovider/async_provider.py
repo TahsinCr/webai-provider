@@ -358,6 +358,7 @@ class AsyncProvider(BaseProvider):
         *,
         name: str | None = None,
         instructions: str | None = None,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECT_UPDATE, "not_implemented")
 
@@ -365,6 +366,8 @@ class AsyncProvider(BaseProvider):
         self,
         project_id: str,
         kind: str,
+        *,
+        current: ProjectData | None = None,
         **values: Any,
     ) -> ProjectData:
         raise FeatureUnavailable(Capability.RESOURCES, "not_implemented")
@@ -373,6 +376,8 @@ class AsyncProvider(BaseProvider):
         self,
         project_id: str,
         resource_id: str,
+        *,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         raise FeatureUnavailable(Capability.RESOURCES, "not_implemented")
 
@@ -459,15 +464,11 @@ class AsyncProvider(BaseProvider):
         instructions: str | None = None,
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
     ) -> ProjectData:
-        from .base import _STAGED_PROJECT
-
         async with self.runtime.project_lock(project_id):
             staged = current() if callable(current) else current
-            token = _STAGED_PROJECT.set(staged)
-            try:
-                return await self._patch_project(project_id, name=name, instructions=instructions)
-            finally:
-                _STAGED_PROJECT.reset(token)
+            return await self._patch_project(
+                project_id, name=name, instructions=instructions, current=staged
+            )
 
     async def _delete_project_data(self, project_id: str) -> None:
         raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
@@ -480,15 +481,9 @@ class AsyncProvider(BaseProvider):
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
         **values: Any,
     ) -> ProjectData:
-        from .base import _STAGED_PROJECT
-
         async with self.runtime.project_lock(project_id):
             staged = current() if callable(current) else current
-            token = _STAGED_PROJECT.set(staged)
-            try:
-                return await self._add_project_resource(project_id, kind, **values)
-            finally:
-                _STAGED_PROJECT.reset(token)
+            return await self._add_project_resource(project_id, kind, current=staged, **values)
 
     async def _remove_project_resource_data(
         self,
@@ -497,15 +492,9 @@ class AsyncProvider(BaseProvider):
         *,
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
     ) -> ProjectData:
-        from .base import _STAGED_PROJECT
-
         async with self.runtime.project_lock(project_id):
             staged = current() if callable(current) else current
-            token = _STAGED_PROJECT.set(staged)
-            try:
-                return await self._remove_project_resource(project_id, resource_id)
-            finally:
-                _STAGED_PROJECT.reset(token)
+            return await self._remove_project_resource(project_id, resource_id, current=staged)
 
     async def _resolve_download_data(
         self,

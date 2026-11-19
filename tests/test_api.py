@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
-from unittest.mock import AsyncMock, patch
+from functools import partial
+from unittest.mock import ANY, AsyncMock, patch
 
 import webaiprovider
 from tests.streaming_support import StreamTestProvider
@@ -389,7 +390,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def get_project(_project_id):
             return remote[0]
 
-        async def patch_project(project_id, *, name=None, instructions=None):
+        async def patch_project(project_id, *, name=None, instructions=None, current=None):
             del project_id
             remote[0] = replace(
                 remote[0],
@@ -408,7 +409,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             remote[0] = replace(remote[0], resources=(*remote[0].resources, resource))
             return remote[0]
 
-        async def remove_resource(_project_id, resource_id):
+        async def remove_resource(_project_id, resource_id, *, current=None):
             remote[0] = replace(
                 remote[0],
                 resources=tuple(r for r in remote[0].resources if r.id != resource_id),
@@ -436,7 +437,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         added = await project.attachments.create("Doc", resource_type="text", name="res-1")
         self.assertEqual(added.id, "remote-res-1")
         session._add_project_resource.assert_awaited_once_with(
-            "proj-abc", "text", name="res-1", text="Doc"
+            "proj-abc", "text", name="res-1", text="Doc", current=ANY
         )
         self.assertEqual(await project.attachments.download(added.id), "Doc")
 
@@ -444,7 +445,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             project, title="Updated Project", instruction="Updated Instruction"
         )
         session._patch_project.assert_awaited_with(
-            "proj-abc", name="Updated Project", instructions="Updated Instruction"
+            "proj-abc", name="Updated Project", instructions="Updated Instruction", current=ANY
         )
         self.assertEqual(project.title, "Updated Project")
         self.assertEqual(await project.instruction.get(), "Updated Instruction")
@@ -454,7 +455,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await project.attachments.get(added.id)).content, "Doc")
 
         await project.attachments.delete(added.id)
-        session._remove_project_resource.assert_awaited_once_with("proj-abc", added.id)
+        session._remove_project_resource.assert_awaited_once_with("proj-abc", added.id, current=ANY)
         await project.delete()
         session._delete_project_data.assert_awaited_once_with("proj-abc")
 
@@ -1190,8 +1191,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import ProjectMutationsMixin
         from webaiprovider.resources.message.attachment import Attachment
+        from webaiprovider.resources.project.mutations import ProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class ConfirmingProvider(ProjectMutationsMixin, AsyncProvider):
@@ -1207,13 +1208,11 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 )
                 self.get_calls = 0
                 self.writes: list[str] = []
-                self.editor = SimpleNamespace(write=self.write)
-
-            def _get_project_editor(self):
-                return self.editor
-
-            def _get_project_gate(self):
-                return self._gate
+                self.editor = SimpleNamespace(
+                    update=partial(self.write, "update"),
+                    add_source=partial(self.write, "add_source"),
+                    remove_source=partial(self.write, "remove_source"),
+                )
 
             async def _get_project_data(self, _project_id: str) -> NativeProject:
                 self.get_calls += 1
@@ -1258,7 +1257,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.base import ProjectMutationsMixin
+        from webaiprovider.resources.project.mutations import ProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class ConcurrentProvider(ProjectMutationsMixin, AsyncProvider):
@@ -1271,18 +1270,12 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 self.first_write_started = asyncio.Event()
                 self.release_first_write = asyncio.Event()
                 self.overlap_detected = asyncio.Event()
-                self.editor = SimpleNamespace(write=self.write)
-
-            def _get_project_editor(self):
-                return self.editor
-
-            def _get_project_gate(self):
-                return self._gate
+                self.editor = SimpleNamespace(update=self.update)
 
             async def _get_project_data(self, _project_id: str) -> NativeProject:
                 return self.remote
 
-            async def write(self, _action: str, _project_id: str, *, current, **changes):
+            async def update(self, _project_id: str, *, current, **changes):
                 self.active_writes += 1
                 self.max_active_writes = max(self.max_active_writes, self.active_writes)
                 if self.active_writes == 1:

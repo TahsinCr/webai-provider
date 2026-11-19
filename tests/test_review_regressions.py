@@ -276,7 +276,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
         write_started, release_write = asyncio.Event(), asyncio.Event()
         writes = []
 
-        async def write(_action, _project_id, *, current, **changes):
+        async def write(_project_id, *, current, **changes):
             nonlocal remote
             writes.append((current.name, current.instructions, dict(changes)))
             if changes.get("name") == "Renamed":
@@ -285,7 +285,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             remote = replace(current, **changes)
             return remote
 
-        provider.editor = SimpleNamespace(write=AsyncMock(side_effect=write))
+        provider.editor = SimpleNamespace(update=AsyncMock(side_effect=write))
         provider._get_project_data = AsyncMock(side_effect=lambda _: remote)
         try:
             rename = asyncio.create_task(provider.projects.update(project, title="Renamed"))
@@ -497,7 +497,6 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "fixture"}))
         provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
-        provider.editor.close = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def active():
@@ -588,17 +587,16 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
         provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
-        provider.editor.close = AsyncMock()
         remote = ProjectData("project", "Before", "Keep")
         provider._get_project_data = AsyncMock(return_value=remote)
         entered, release = asyncio.Event(), asyncio.Event()
 
-        async def write(_action, _remote, *, current, **changes):
+        async def write(_remote, *, current, **changes):
             entered.set()
             await release.wait()
             return replace(current, **changes)
 
-        provider.editor.write = AsyncMock(side_effect=write)
+        provider.editor.update = AsyncMock(side_effect=write)
         await provider.open()
         proj = await provider.projects.get("project")
         mutation = asyncio.create_task(provider.projects.update(proj, title="After"))
@@ -615,7 +613,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(mutation, 1)
         await asyncio.wait_for(closing, 1)
         self.assertEqual((result.title, await result.instruction.get()), ("After", "Keep"))
-        self.assertEqual(provider.editor.write.await_count, 1)
+        self.assertEqual(provider.editor.update.await_count, 1)
 
     async def test_project_pages_paginate_statelessly_and_dedup(self):
         from webaiprovider.collections import Page

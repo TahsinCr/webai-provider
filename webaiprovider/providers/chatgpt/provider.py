@@ -17,7 +17,7 @@ from ...accounts.credentials import read_session_async
 from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectMutationsMixin, confirm_deleted
+from ...base import Capability, confirm_deleted
 from ...collections import Page, _publish_collection_change
 from ...core import gather_bounded
 from ...core.files import DownloadSource
@@ -45,6 +45,7 @@ from ...resources.message.protocol import (
 from ...resources.message.types import Content, MessageData, actions_for, target_message
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import ProjectsCollection
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.project import AsyncProject, Project
 from ...resources.project.types import ProjectData
 from ...resources.response.source import sources_from
@@ -267,12 +268,6 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
     def _active_transport(self) -> AsyncTransport | None:
         return self._effective_transport
-
-    def _get_project_editor(self) -> ChatGPTProjectEditor:
-        return self.editor
-
-    def _get_project_gate(self) -> asyncio.Lock:
-        return self._gate
 
     def _transport_headers(self, method: str, path: str) -> dict[str, str]:
         client = self._client
@@ -520,7 +515,6 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 try:
                     self._read_loop = None
                     self._read_semaphore = None
-                    await self.editor.close()
                 finally:
                     self._temporary_conversations.clear()
                     self._pending_branches.clear()

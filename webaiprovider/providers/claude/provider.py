@@ -9,7 +9,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProjectMutationsMixin
+from ...base import Capability
 from ...collections import Page
 from ...core import gather_bounded
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
@@ -28,10 +28,12 @@ from ...resources.message.protocol import (
     TextReplacement,
 )
 from ...resources.model.model import ModelCatalog
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
-from .client import ClaudeClient, ClaudeProjectEditor, remote_id, validate_upload_candidate
+from .client import ClaudeClient, remote_id, validate_upload_candidate
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
+from .projects import ClaudeProjectEditor
 from .records import conversation, conversation_attachment_count, project
 from .resources import (
     AsyncClaudeChat,
@@ -100,12 +102,6 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
     def _active_transport(self) -> AsyncTransport | None:
         return self.client.http
 
-    def _get_project_editor(self) -> ClaudeProjectEditor:
-        return self.editor
-
-    def _get_project_gate(self) -> asyncio.Lock:
-        return self._gate
-
     def _purge_credentials_unlocked(self) -> SessionStatus:
         delete_session(self.credential_file)
         self.client.authenticated = False
@@ -120,14 +116,6 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
 
     async def _close_session(self) -> None:
         async with self._rename_gate:
-            try:
-                await self.editor.close()
-            except BaseException as editor_error:
-                try:
-                    await self.client.close()
-                except BaseException as close_error:
-                    raise editor_error from close_error
-                raise
             await self.client.close()
 
     async def _authenticate(self) -> SessionStatus:

@@ -2,11 +2,10 @@
 
 import asyncio
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from ...core.json import json_loads
 from ...errors import ProviderError
-from ...resources.project.types import ProjectData
 from .errors import GeminiCompatibilityError
 from .notebooks import notebook_id
 
@@ -108,130 +107,3 @@ class NotebookRPC:
         else:
             rpc, args = "CNgdBe", [2, ["en"], 0, None, [2]]
         return await self.call(rpc, args, "/notebooks/view")
-
-
-class NotebookEditor:
-    def __init__(self, rpc, notebooks):
-        self.rpc, self.notebooks = rpc, notebooks
-
-    async def close(self):
-        pass
-
-    async def options(self, project_id=None):
-        from ...resources.project.types import ProjectOptions
-
-        return ProjectOptions(
-            fields=("name", "instructions") if project_id else ("name",),
-            sources=({"id": "text", "title": "Metin"},) if project_id else (),
-            remove_sources=bool(project_id),
-        )
-
-    async def write(self, operation, project_id=None, **values):
-        if operation == "create":
-            detail = [
-                values["name"],
-                "",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                0,
-                None,
-                1,
-                None,
-                None,
-                None,
-                None,
-                None,
-                [2, None, None, None, 1],
-            ]
-            parts = await self.rpc.call("oMH3Zd", [detail])
-            matches = []
-
-            def collect(item):
-                if not isinstance(item, list):
-                    return
-                if len(item) == 2 and isinstance(item[0], str) and item[0].startswith("notebooks/"):
-                    matches.append(notebook_id(item[0]))
-                else:
-                    for child in item:
-                        collect(child)
-
-            collect(parts)
-            if len(set(matches)) != 1:
-                raise ProviderError(
-                    "Notebook creation could not be confirmed; the operation was not retried"
-                )
-            return matches[0]
-        remote = notebook_id(project_id)
-        path = "/notebook/" + remote.split("/")[1]
-        if operation == "delete":
-            return await self.rpc.call("Nwkn9", [remote], path, allow_empty=True)
-        if operation == "update":
-            current = values.get("current")
-            if current is None or not isinstance(
-                (current.metadata or {}).get("native"), (list, tuple)
-            ):
-                current = await self.notebooks.get(remote)
-            native = current.metadata["native"][1]
-            if len(native) < 13 or not isinstance(native[12], list):
-                raise ProviderError("Gemini notebook settings contract changed")
-            detail = [
-                values.get("name", current.name),
-                current.metadata.get("description") or "",
-                values.get("instructions", current.instructions or ""),
-                None,
-                None,
-                None,
-                None,
-                None,
-                0,
-                0,
-                None,
-                None,
-                [None, None, 0, 1, 0],
-                None,
-                None,
-                0,
-                native[12],
-                None,
-                None,
-            ]
-            result = await self.rpc.call("kHv0Vd", [remote, detail], path, allow_empty=True)
-            if isinstance(values.get("current"), ProjectData):
-                return replace(
-                    current,
-                    name=values.get("name", current.name),
-                    instructions=values.get("instructions", current.instructions or ""),
-                )
-            return result
-        if operation == "add_source":
-            if values["kind"] != "text":
-                raise ValueError("Unsupported notebook source type")
-            detail = [
-                None,
-                values["name"],
-                None,
-                None,
-                None,
-                [values["text"], 1],
-                None,
-                None,
-                "text/plain",
-            ]
-            return await self.rpc.call("ko3zcd", [remote, detail, [1, 3]], path)
-        if operation == "remove_source":
-            resource = values["resource_id"]
-            if not resource.startswith(remote + "/sources/"):
-                raise ValueError("Source belongs to another notebook")
-            result = await self.rpc.call("AptDmf", [resource, [1, 3]], path, allow_empty=True)
-            current = values.get("current")
-            if isinstance(current, ProjectData):
-                return replace(
-                    current,
-                    resources=tuple(r for r in current.resources if r.id != resource),
-                )
-            return result
-        raise ValueError("Unknown notebook operation")

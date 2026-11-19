@@ -215,7 +215,9 @@ class _ScriptedAsyncProvider(AsyncProvider):
         self.projects_data[project_id] = updated
         return updated
 
-    async def _remove_project_resource(self, project_id: str, resource_id: str) -> ProjectData:
+    async def _remove_project_resource(
+        self, project_id: str, resource_id: str, *, current=None
+    ) -> ProjectData:
         self.remove_calls.append((project_id, resource_id))
         proj = self.projects_data[project_id]
         kept = tuple(r for r in proj.resources if r.id != resource_id)
