@@ -1680,6 +1680,28 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.next_cursor, "4")
         self.assertEqual(provider.rpc.call.await_count, 2)
 
+    async def test_bounded_listing_uses_larger_followup_pages(self):
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider._prepare_session = AsyncMock()
+        provider._connect = AsyncMock()
+        rows = [[f"c_{index}", str(index)] for index in range(260)]
+        provider.rpc.call = AsyncMock(
+            side_effect=lambda _method, args, _path: [[None, None, rows[: args[0]]]]
+        )
+
+        async with provider:
+            for limit, expected_prefixes in ((10, [51]), (250, [51, 151, 251])):
+                with self.subTest(limit=limit):
+                    provider.rpc.call.reset_mock()
+                    chats = await provider.chats.list(limit=limit)
+                    self.assertEqual(
+                        [chat.remote_id for chat in chats], [r[0] for r in rows[:limit]]
+                    )
+                    self.assertEqual(
+                        [call.args[1][0] for call in provider.rpc.call.await_args_list],
+                        expected_prefixes,
+                    )
+
     async def test_message_ids_do_not_shift_when_older_history_arrives(self):
         def turn(rid):
             return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]

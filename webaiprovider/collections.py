@@ -600,6 +600,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
 
     _max_remote_pages = 2000
     _default_page_size = 50
+    _followup_page_size: int | None = None
 
     def _item_key(self, item: T) -> str:
         return getattr(item, "remote_id", None) or self._extract_id(item) or str(id(item))
@@ -628,11 +629,10 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
         try:
             for _ in range(self._max_remote_pages):
                 remaining = None if validated is None else validated - collected
-                page_limit = (
-                    min(self._default_page_size, remaining)
-                    if remaining is not None
-                    else self._default_page_size
-                )
+                page_size = self._default_page_size
+                if cursor is not None and remaining is not None and self._followup_page_size:
+                    page_size = self._followup_page_size
+                page_limit = min(page_size, remaining) if remaining is not None else page_size
                 self._mark_remote_read()
                 page = await self._fetch_page(cursor, page_limit, **options)
                 if not isinstance(page, Page):

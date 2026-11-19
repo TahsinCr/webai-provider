@@ -1005,6 +1005,17 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.chat_cursors, [None])
         self.assertEqual(provider.project_chat_calls, [("p-1", None)])
 
+        async with BoundedProvider(account) as provider:
+            provider._list_chats_data = AsyncMock(return_value=Page(()))
+            first = Conversation("cp-1", "P1 One")
+            second = Conversation("cp-2", "P1 Two")
+            provider._list_project_chats_data = AsyncMock(
+                side_effect=[Page((first, first), "next"), Page((first, second))]
+            )
+            chats = await provider.chats.list(limit=2, include_projects=True)
+            self.assertEqual([chat.remote_id for chat in chats], ["cp-1", "cp-2"])
+            self.assertEqual(provider._list_project_chats_data.await_count, 2)
+
     async def test_project_refresh_rejects_repeated_cursor_cleanly(self) -> None:
         from webaiprovider.collections import Page
 

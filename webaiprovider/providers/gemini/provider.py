@@ -59,6 +59,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
 
     _chat_type = AsyncGeminiChat
 
+    _chat_followup_page_size = 100
     capabilities = frozenset(
         {
             Capability.CHAT,
@@ -257,11 +258,8 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         parts = await self.rpc.call(
             "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
         )
-        chats = parse_conversations(parts)
-        return Page(
-            chats[offset : offset + limit],
-            str(offset + limit) if len(chats) > offset + limit else None,
-        )
+        chats = parse_conversations(parts, offset=offset, limit=limit + 1)
+        return Page(chats[:limit], str(offset + limit) if len(chats) > limit else None)
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         parts = await self.rpc.call(

@@ -1,6 +1,7 @@
 """Native Gemini read contracts; parsing has no session or frontend dependency."""
 
 import re
+from itertools import islice
 
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
@@ -97,9 +98,9 @@ def published_thoughts(candidate, steps=None, previous=""):
     return "\n".join(parts) or previous
 
 
-def conversations(pages, origin=None):
+def conversations(pages, origin=None, *, offset=0, limit=None):
     del origin
-    result = {}
+    rows_by_id = {}
     for page in pages:
         if page == []:
             continue
@@ -109,25 +110,28 @@ def conversations(pages, origin=None):
                 "The Gemini conversation-list contract changed; synchronization was not completed."
             )
         for row in rows:
-            cid, title = nested(row, 0), nested(row, 1)
-            if not isinstance(cid, str) or not cid.startswith("c_"):
-                continue
-            pid = nested(row, 7)
-            result[cid] = Conversation(
-                cid,
-                title or "Gemini sohbeti",
-                project=(
-                    ProjectData(pid, "")
-                    if isinstance(pid, str) and pid.startswith("notebooks/")
-                    else None
-                ),
-                metadata={
-                    "native": row,
-                    "updated_at": timestamp(nested(row, 5)),
-                    "project_membership_known": len(row) > 7,
-                },
-            )
-    return tuple(result.values())
+            cid = nested(row, 0)
+            if isinstance(cid, str) and cid.startswith("c_"):
+                rows_by_id[cid] = row
+
+    selected = islice(rows_by_id.items(), offset, None if limit is None else offset + limit)
+    return tuple(
+        Conversation(
+            cid,
+            nested(row, 1) or "Gemini sohbeti",
+            project=(
+                ProjectData(pid, "")
+                if isinstance(pid := nested(row, 7), str) and pid.startswith("notebooks/")
+                else None
+            ),
+            metadata={
+                "native": row,
+                "updated_at": timestamp(nested(row, 5)),
+                "project_membership_known": len(row) > 7,
+            },
+        )
+        for cid, row in selected
+    )
 
 
 def history(data, origin_or_cid, cid=None):

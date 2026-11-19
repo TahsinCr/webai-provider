@@ -80,6 +80,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
     def __init__(self, provider: AsyncProvider) -> None:
         self.provider = provider
         self._default_page_size = provider._chat_page_size
+        self._followup_page_size = provider._chat_followup_page_size
         self.hooks = OperationHooks()
 
     async def _fetch_page(
@@ -122,18 +123,22 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         async def fetch_pages(project: AsyncProject) -> list[AsyncChat]:
             assert project.remote_id is not None
             chats: list[AsyncChat] = []
+            seen_ids: set[str] = set()
             cursor: str | None = None
             seen_cursors: set[str] = set()
             for _ in range(_MAX_PROJECT_CHAT_PAGES):
                 raw_page = await session._list_project_chats_data(project.remote_id, cursor=cursor)
                 page = _require_conversation_page(raw_page, label="project conversation")
                 for item in page.items:
+                    if item.id in seen_ids:
+                        continue
+                    seen_ids.add(item.id)
                     chat = _chat_from_conversation(item, session, project_map)
                     if chat.project is None:
                         chat.project = project
                     chats.append(chat)
                     if per_project_limit is not None and len(chats) >= per_project_limit:
-                        return chats[:per_project_limit]
+                        return chats
                 next_cursor = page.next_cursor
                 if next_cursor is None:
                     return chats

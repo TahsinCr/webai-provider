@@ -65,6 +65,7 @@ class AsyncProvider(BaseProvider):
 
     _chat_type = AsyncChat
     _chat_page_size = 50
+    _chat_followup_page_size: int | None = None
     _project_type = AsyncProject
     _projects_collection_type = AsyncProjectsCollection
     capabilities: frozenset[Capability] = frozenset()
