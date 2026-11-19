@@ -282,12 +282,14 @@ class ProjectsCollection(RemoteCollection[AsyncProject, Project]):
         self._owner._call(self._collection.delete(target))
 
 
-def _merge_attachment(prev: Attachment | None, remote: Attachment) -> Attachment:
+def _merge_attachment(
+    attachment_type: type[Attachment], prev: Attachment | None, remote: Attachment
+) -> Attachment:
     raw_size = remote.metadata.get("size_bytes", remote.metadata.get("size"))
     meta_size = raw_size if isinstance(raw_size, int) and not isinstance(raw_size, bool) else None
     resolved_size = remote.size or meta_size or (prev.size if prev is not None else None) or None
     if prev is None:
-        return Attachment(
+        return attachment_type(
             id=remote.id,
             name=remote.name,
             media_type=remote.media_type,
@@ -297,7 +299,7 @@ def _merge_attachment(prev: Attachment | None, remote: Attachment) -> Attachment
             size=resolved_size,
             metadata=dict(remote.metadata),
         )
-    return Attachment(
+    return attachment_type(
         id=remote.id,
         name=remote.name or prev.name,
         media_type=remote.media_type or prev.media_type,
@@ -328,9 +330,15 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         self._items: list[Attachment] = []
         self.hooks = OperationHooks()
 
+    @property
+    def _attachment_type(self) -> type[Attachment]:
+        return getattr(self.project.provider, "_attachment_type", Attachment)
+
     def _sync_from_resources(self, resources: list[Attachment]) -> None:
         existing = {att.id: att for att in self._items}
-        self._items = [_merge_attachment(existing.get(att.id), att) for att in resources]
+        self._items = [
+            _merge_attachment(self._attachment_type, existing.get(att.id), att) for att in resources
+        ]
 
     async def _load_attachments(self) -> list[Attachment]:
         provider = self.project.provider
@@ -372,7 +380,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 send_options = {"name": resolved_name or item.name or "Text", "text": item.content}
             else:
                 raise UnsupportedOperationError(f"Project attachment type is unsupported: {kind}")
-            local = Attachment(
+            local = self._attachment_type(
                 id=item.id or str(uuid.uuid4()),
                 name=resolved_name or item.name,
                 media_type=mime_type or item.media_type,
@@ -403,7 +411,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             if not isinstance(item, (str, os.PathLike)):
                 raise ValueError("File attachments require a local path")
             raw_path = os.fspath(item)
-            local = Attachment(
+            local = self._attachment_type(
                 id=str(uuid.uuid4()),
                 name=str(resolved_name or Path(raw_path).name),
                 mime_type=mime_type,
@@ -457,7 +465,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 resource = matching[-1] if matching else added[0] if len(added) == 1 else None
                 if resource is None:
                     raise ProviderError("Provider did not confirm the created project attachment")
-                result = _merge_attachment(local, resource)
+                result = _merge_attachment(self._attachment_type, local, resource)
                 result.metadata.setdefault("kind", kind)
                 self.project._apply_provider_project(updated, replace_resources=True)
                 replaced = False
@@ -581,7 +589,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         target = await self.get(att_id)
         if self.project.provider is not None and self.project.remote_id:
             raise UnsupportedOperationError("Updating remote project attachments is not supported")
-        updated = Attachment(
+        updated = type(target)(
             id=target.id,
             name=str(options.get("name", target.name)),
             media_type=options.get("mime_type", options.get("media_type", target.media_type)),

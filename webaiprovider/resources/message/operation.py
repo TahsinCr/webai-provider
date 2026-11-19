@@ -356,7 +356,7 @@ class AsyncMessageOperation:
             )
 
             full_text = "".join(collected_text)
-            response = Response(
+            response = getattr(session, "_response_type", Response)(
                 full_text,
                 message=self.message,
                 id=self._assistant_message_id,
@@ -486,7 +486,7 @@ class MessageOperation:
 
     @property
     def message(self) -> Message:
-        return Message._from_async(self._owner, self._operation.message)
+        return self._owner.message_wrapper_type._from_async(self._owner, self._operation.message)
 
     @property
     def chat(self) -> Chat:
@@ -498,26 +498,7 @@ class MessageOperation:
         return self._wrap_response(response) if response is not None else None
 
     def _wrap_response(self, response: Response) -> Response:
-        message = response.message
-        if isinstance(message, AsyncMessage):
-            message = Message._from_async(self._owner, message)
-        chat = response.chat
-        from ..chat.chat import AsyncChat
-
-        if isinstance(chat, AsyncChat):
-            chat = self._owner._wrap_chat(chat)
-        return Response(
-            response.content,
-            message=message,
-            id=response.id,
-            remote_id=response.remote_id,
-            model=response.model,
-            sources=response.sources,
-            artifacts=response.artifacts,
-            metadata=response.metadata,
-            timing=response.timing,
-            chat=chat,
-        )
+        return self._owner._wrap_response(response)
 
     @property
     def state(self) -> OperationState:

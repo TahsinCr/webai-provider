@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from importlib import import_module
 from unittest.mock import AsyncMock
 
 from tests.streaming_support import StreamTestProvider
-from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState
+from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
 from webaiprovider.collections import Page
 from webaiprovider.core.operations import run_pipeline_unwrapped
 from webaiprovider.errors import UnsupportedOperationError
@@ -365,3 +366,78 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         )
         prepared = await run_pipeline_unwrapped(provider._send_pipeline, ctx)
         self.assertTrue(prepared.request.temporary)
+
+
+class ProviderResourceFamilyTests(unittest.TestCase):
+    def test_resource_types_survive_history_generation_and_sync_wrapping(self) -> None:
+        for provider_id, name in (
+            ("chatgpt", "ChatGPT"),
+            ("claude", "Claude"),
+            ("gemini", "Gemini"),
+            ("grok", "Grok"),
+        ):
+            with self.subTest(provider=provider_id):
+                module = import_module(f"webaiprovider.providers.{provider_id}.resources")
+                provider = Provider(Account.from_cookies(provider_id, {}))
+                runtime_provider = provider._provider
+                runtime_provider._prepare_session = AsyncMock()
+                runtime_provider._close_session = AsyncMock()
+                runtime_provider._get_chat_data = AsyncMock(
+                    return_value=Conversation(
+                        "chat-1",
+                        "Fixture",
+                        (
+                            NativeMessage("user-1", "user", (Content("text", "Question"),)),
+                            NativeMessage(
+                                "answer-1",
+                                "assistant",
+                                (Content("text", "Answer"),),
+                                metadata={
+                                    "sources": [{"url": "https://example.test"}],
+                                    "files": [{"id": "artifact-1"}],
+                                },
+                            ),
+                        ),
+                    )
+                )
+                runtime_provider._get_project_data = AsyncMock(
+                    return_value=NativeProject(
+                        "project-1", "Fixture", resources=(Attachment("attachment-1", "note.txt"),)
+                    )
+                )
+                scripted = StreamTestProvider(
+                    provider_id,
+                    "default",
+                    (
+                        TextDelta("Next answer"),
+                        MessageMetadata(message_id="answer-2"),
+                        ResponseComplete(),
+                    ),
+                )
+                runtime_provider._stream_provider_events = scripted._stream_provider_events
+                with provider:
+                    chat, responses = provider.chats.get_with_responses("chat-1", limit=1)
+                    response = responses[0]
+                    self.assertIs(type(chat), getattr(module, f"{name}Chat"))
+                    self.assertIs(type(chat._resource), getattr(module, f"Async{name}Chat"))
+                    self.assertIs(type(response), getattr(module, f"{name}Response"))
+                    self.assertIs(type(response.message), getattr(module, f"{name}Message"))
+                    self.assertIs(
+                        type(response.message._resource), getattr(module, f"Async{name}Message")
+                    )
+                    self.assertIs(
+                        type(next(iter(response.sources))), getattr(module, f"{name}Source")
+                    )
+                    self.assertIs(
+                        type(next(iter(response.artifacts))), getattr(module, f"{name}Artifact")
+                    )
+                    project = provider.projects.get("project-1")
+                    self.assertIs(type(project), getattr(module, f"{name}Project"))
+                    self.assertIs(type(project._resource), getattr(module, f"Async{name}Project"))
+                    self.assertIs(
+                        type(project.attachments.list()[0]), getattr(module, f"{name}Attachment")
+                    )
+                    sent = chat.ask("Next question")
+                    self.assertIs(type(sent), type(response))
+                    self.assertIs(type(sent.message), type(response.message))
+                    self.assertEqual(sent.remote_id, "answer-2")

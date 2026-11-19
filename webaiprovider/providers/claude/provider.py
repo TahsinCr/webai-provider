@@ -16,7 +16,6 @@ from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
 from ...provider import Provider, ProviderType
-from ...resources.chat.chat import Chat, MovableChat
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS
 from ...resources.message.protocol import (
@@ -34,7 +33,18 @@ from ...transport import AsyncTransport
 from .client import ClaudeClient, ClaudeProjectEditor, remote_id, validate_upload_candidate
 from .errors import ClaudeCompatibilityError, ClaudeStreamError
 from .records import conversation, conversation_attachment_count, project
-from .resources import AsyncClaudeChat
+from .resources import (
+    AsyncClaudeChat,
+    AsyncClaudeMessage,
+    AsyncClaudeProject,
+    ClaudeArtifact,
+    ClaudeAttachment,
+    ClaudeChat,
+    ClaudeMessage,
+    ClaudeProject,
+    ClaudeResponse,
+    ClaudeSource,
+)
 
 if TYPE_CHECKING:
     from ...accounts.account import Account
@@ -44,6 +54,12 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CLAUDE
 
     _chat_type = AsyncClaudeChat
+    _project_type = AsyncClaudeProject
+    _message_type = AsyncClaudeMessage
+    _response_type = ClaudeResponse
+    _source_type = ClaudeSource
+    _artifact_type = ClaudeArtifact
+    _attachment_type = ClaudeAttachment
 
     capabilities = frozenset(
         {
@@ -350,11 +366,9 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
         )
 
 
-class ClaudeChat(MovableChat, Chat):
-    pass
-
-
 class ClaudeProvider(Provider):
     provider_type = ProviderType.CLAUDE
     async_provider_type = AsyncClaudeProvider
     chat_wrapper_type = ClaudeChat
+    project_wrapper_type = ClaudeProject
+    message_wrapper_type = ClaudeMessage

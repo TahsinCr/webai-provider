@@ -14,7 +14,6 @@ from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
 from ...provider import Provider, ProviderType
-from ...resources.chat.chat import Chat, MovableChat
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import GROK_ATTACHMENTS
 from ...resources.message.protocol import (
@@ -34,7 +33,18 @@ from ...transport import AsyncTransport
 from .catalogs import parse_model_catalog
 from .client import GrokClient, GrokProjectEditor, remote_id, validate_upload_candidate
 from .records import GrokTextFilter, active_responses, clean_text, conversation, project
-from .resources import AsyncGrokChat
+from .resources import (
+    AsyncGrokChat,
+    AsyncGrokMessage,
+    AsyncGrokProject,
+    GrokArtifact,
+    GrokAttachment,
+    GrokChat,
+    GrokMessage,
+    GrokProject,
+    GrokResponse,
+    GrokSource,
+)
 
 if TYPE_CHECKING:
     from ...accounts.account import Account
@@ -198,6 +208,12 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.GROK
 
     _chat_type = AsyncGrokChat
+    _project_type = AsyncGrokProject
+    _message_type = AsyncGrokMessage
+    _response_type = GrokResponse
+    _source_type = GrokSource
+    _artifact_type = GrokArtifact
+    _attachment_type = GrokAttachment
 
     _chat_page_size = 100
     capabilities = frozenset(
@@ -757,11 +773,9 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
         return await self.client.upload_file(path)
 
 
-class GrokChat(MovableChat, Chat):
-    pass
-
-
 class GrokProvider(Provider):
     provider_type = ProviderType.GROK
     async_provider_type = AsyncGrokProvider
     chat_wrapper_type = GrokChat
+    project_wrapper_type = GrokProject
+    message_wrapper_type = GrokMessage

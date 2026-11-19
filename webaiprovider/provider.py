@@ -12,8 +12,9 @@ from .core.bridges import PortalBridge
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
-from .resources.chat.chat import Chat
+from .resources.chat.chat import AsyncChat, Chat
 from .resources.chat.collections import ChatsCollection
+from .resources.message.message import AsyncMessage, Message
 from .resources.model.collections import ModelsCollection
 from .resources.model.model import (
     EffortRef,
@@ -29,7 +30,6 @@ from .transport import AsyncTransport, PortalTransport, Transport
 if TYPE_CHECKING:
     from .accounts.account import Account
     from .async_provider import AsyncProvider
-    from .resources.chat.chat import AsyncChat
     from .resources.project.project import AsyncProject
 
 
@@ -64,6 +64,7 @@ class Provider(BaseProvider):
     async_provider_type: type[AsyncProvider] | None = None
     chat_wrapper_type = None
     project_wrapper_type = None
+    message_wrapper_type = Message
     projects_collection_type = None
     models_collection_type = None
 
@@ -100,6 +101,26 @@ class Provider(BaseProvider):
 
     def _wrap_project(self, resource: AsyncProject) -> Project:
         return (self.project_wrapper_type or Project)(self, resource)
+
+    def _wrap_response(self, item: Response, *, chat_view: Chat | None = None) -> Response:
+        message = item.message
+        if isinstance(message, AsyncMessage):
+            message = self.message_wrapper_type._from_async(self, message)
+        chat = item.chat
+        if isinstance(chat, AsyncChat):
+            chat = chat_view if chat_view is not None else self._wrap_chat(chat)
+        return type(item)(
+            item.content,
+            message=message,
+            id=item.id,
+            remote_id=item.remote_id,
+            model=item.model,
+            sources=item.sources,
+            artifacts=item.artifacts,
+            metadata=item.metadata,
+            timing=item.timing,
+            chat=chat,
+        )
 
     @property
     def capabilities(self) -> frozenset[Capability]:

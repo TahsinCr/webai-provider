@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from ..message.operation import StreamEvent
 
 
-def _build_sources(raw_sources: Iterable[Any]) -> tuple[Source, ...]:
+def _build_sources(raw_sources: Iterable[Any], source_type: type[Source]) -> tuple[Source, ...]:
     sources: list[Source] = []
     for index, raw in enumerate(raw_sources):
         if isinstance(raw, Source):
@@ -46,7 +46,7 @@ def _build_sources(raw_sources: Iterable[Any]) -> tuple[Source, ...]:
             url = str(raw.get("url") or raw.get("uri") or "")
             sid = str(raw.get("id") or raw.get("file_id") or url or f"source-{index}")
             sources.append(
-                Source(
+                source_type(
                     id=sid,
                     url=url,
                     title=str(raw.get("title") or raw.get("name") or ""),
@@ -58,7 +58,9 @@ def _build_sources(raw_sources: Iterable[Any]) -> tuple[Source, ...]:
     return tuple(sources)
 
 
-def _build_artifacts(item: Any, raw_files: Iterable[Any]) -> tuple[Artifact, ...]:
+def _build_artifacts(
+    item: Any, raw_files: Iterable[Any], artifact_type: type[Artifact]
+) -> tuple[Artifact, ...]:
     artifacts: list[Artifact] = []
     seen: set[str] = set()
     for index, entry in enumerate(raw_files):
@@ -77,7 +79,7 @@ def _build_artifacts(item: Any, raw_files: Iterable[Any]) -> tuple[Artifact, ...
             seen.add(key)
             size = entry.get("size_bytes", entry.get("size"))
             artifacts.append(
-                Artifact(
+                artifact_type(
                     id=aid,
                     kind=str(entry.get("kind") or "file"),
                     name=name,
@@ -99,7 +101,7 @@ def _build_artifacts(item: Any, raw_files: Iterable[Any]) -> tuple[Artifact, ...
                 continue
             seen.add(key)
             artifacts.append(
-                Artifact(
+                artifact_type(
                     id=resource.id,
                     kind="resource",
                     name=resource.name,
@@ -226,7 +228,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         existing = next((r for r in self._turns if r.message is message), None)
         if existing is not None:
             return existing
-        pending = message.response or Response(
+        pending = message.response or getattr(self.chat.provider, "_response_type", Response)(
             "",
             message=message,
             id=f"pending:{message.id}",
@@ -360,7 +362,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             seen_resp_ids.add(resp_id)
             resp = existing_responses.get(resp_id)
             if resp is None or resp.remote_id is not None:
-                resp = Response(
+                resp = provider._response_type(
                     "",
                     message=user_msg,
                     id=resp_id,
@@ -393,7 +395,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 seen_user_ids.add(item.id)
                 user_msg = existing_messages.get(item.id)
                 if user_msg is None:
-                    user_msg = AsyncMessage(role="user", id=item.id, chat=self.chat)
+                    user_msg = provider._message_type(role="user", id=item.id, chat=self.chat)
                 user_msg.remote_id = item.id
                 user_msg.content = content
                 user_msg.metadata = {**item.metadata, "actions": item.actions}
@@ -403,10 +405,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 
             seen_resp_ids.add(item.id)
             raw_sources = item.metadata.get("sources")
-            sources = _build_sources(raw_sources) if raw_sources else ()
+            sources = _build_sources(raw_sources, provider._source_type) if raw_sources else ()
             raw_files = item.metadata.get("files") or ()
             artifacts = (
-                _build_artifacts(item, raw_files)
+                _build_artifacts(item, raw_files, provider._artifact_type)
                 if raw_files
                 or (len(parts) == 1 and parts[0].resource is not None)
                 or len(parts) > 1
@@ -420,7 +422,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             }
             resp = existing_responses.get(item.id)
             if resp is None:
-                resp = Response(
+                resp = provider._response_type(
                     content,
                     message=pending_user,
                     id=item.id,
@@ -501,7 +503,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         **metadata: Any,
     ) -> AsyncMessageOperation:
         if isinstance(message, str):
-            msg = AsyncMessage(
+            msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
                 content=message,
                 model=model,
                 attachments=attachments,
@@ -616,7 +618,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         **options: Any,
     ) -> AsyncMessageOperation:
         msg_target = self._resolve_known_message(target)
-        msg = AsyncMessage(
+        msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
             content=new_content,
             model=model if model is not None else msg_target.model,
             attachments=Attachments(copy(item) for item in msg_target.attachments),
@@ -644,7 +646,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             if prompt_msg is not None
             else Attachments()
         )
-        msg = AsyncMessage(
+        msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
             content=prompt_msg.content if prompt_msg is not None else "",
             model=model if model is not None else default_model,
             attachments=attachments,
@@ -715,24 +717,7 @@ class ResponsesCollection(RemoteCollection[Response, Response]):
         self.hooks = SyncOperationHooks(chat.responses.hooks)
 
     def _wrap(self, item: Response, *, chat_view: Chat | None = None) -> Response:
-        msg = item.message
-        if isinstance(msg, AsyncMessage):
-            msg = Message._from_async(self._owner, msg)
-        chat = item.chat
-        if isinstance(chat, AsyncChat):
-            chat = chat_view if chat_view is not None else self._owner._wrap_chat(chat)
-        return Response(
-            item.content,
-            message=msg,
-            id=item.id,
-            remote_id=item.remote_id,
-            model=item.model,
-            sources=item.sources,
-            artifacts=item.artifacts,
-            metadata=item.metadata,
-            timing=item.timing,
-            chat=chat,
-        )
+        return self._owner._wrap_response(item, chat_view=chat_view)
 
     def create(
         self,

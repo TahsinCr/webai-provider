@@ -18,7 +18,6 @@ from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...provider import Provider, ProviderType
-from ...resources.chat.chat import BranchableChat, Chat
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
     ConversationBound,
@@ -42,7 +41,18 @@ from .history import conversations as parse_conversations
 from .history import history as parse_history
 from .media import PLACEHOLDER, resolve_image_links, valid_media_url
 from .notebooks import Notebooks, field, notebook_id
-from .resources import AsyncGeminiChat
+from .resources import (
+    AsyncGeminiChat,
+    AsyncGeminiMessage,
+    AsyncGeminiProject,
+    GeminiArtifact,
+    GeminiAttachment,
+    GeminiChat,
+    GeminiMessage,
+    GeminiProject,
+    GeminiResponse,
+    GeminiSource,
+)
 from .rpc import NotebookEditor, NotebookRPC, nested
 from .session import GeminiSession
 
@@ -58,6 +68,12 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
     stream_total_timeout = 600
 
     _chat_type = AsyncGeminiChat
+    _project_type = AsyncGeminiProject
+    _message_type = AsyncGeminiMessage
+    _response_type = GeminiResponse
+    _source_type = GeminiSource
+    _artifact_type = GeminiArtifact
+    _attachment_type = GeminiAttachment
 
     _chat_followup_page_size = 100
     capabilities = frozenset(
@@ -669,11 +685,9 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         return DownloadSource(target["url"], target["name"], True, headers, NativeDownloadClient)
 
 
-class GeminiChat(BranchableChat, Chat):
-    pass
-
-
 class GeminiProvider(Provider):
     provider_type = ProviderType.GEMINI
     async_provider_type = AsyncGeminiProvider
     chat_wrapper_type = GeminiChat
+    project_wrapper_type = GeminiProject
+    message_wrapper_type = GeminiMessage

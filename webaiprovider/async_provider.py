@@ -19,6 +19,8 @@ from .provider import ProviderType, _construct_provider
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
+from .resources.message.attachment import Attachment
+from .resources.message.message import AsyncMessage
 from .resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -67,6 +69,11 @@ class AsyncProvider(BaseProvider):
     _chat_page_size = 50
     _chat_followup_page_size: int | None = None
     _project_type = AsyncProject
+    _message_type = AsyncMessage
+    _response_type = Response
+    _source_type = Source
+    _artifact_type = Artifact
+    _attachment_type = Attachment
     _projects_collection_type = AsyncProjectsCollection
     capabilities: frozenset[Capability] = frozenset()
 
@@ -257,7 +264,7 @@ class AsyncProvider(BaseProvider):
                         operation._assistant_message_id = event.message_id
                     for record in event.sources:
                         yield SourceDiscovered(
-                            Source(
+                            self._source_type(
                                 id=str(record.get("id") or record.get("source_id") or ""),
                                 url=str(record.get("url") or ""),
                                 title=str(record.get("title") or ""),
@@ -269,7 +276,7 @@ class AsyncProvider(BaseProvider):
                     for record in event.files:
                         size = record.get("size")
                         yield ArtifactDiscovered(
-                            Artifact(
+                            self._artifact_type(
                                 id=str(record.get("id") or record.get("file_id") or ""),
                                 kind=str(record.get("kind") or "file"),
                                 name=str(

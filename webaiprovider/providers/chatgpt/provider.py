@@ -28,9 +28,7 @@ from ...errors import FeatureUnavailable, ProviderError, RateLimited, Unsupporte
 from ...provider import Provider, ProviderType
 from ...resources.chat.chat import (
     AsyncChat,
-    BranchableChat,
     Chat,
-    MovableChat,
     _resolve_project_arg,
 )
 from ...resources.chat.types import Conversation
@@ -62,7 +60,18 @@ from .discovery import project_id
 from .errors import ChatGPTAuthenticationError, ChatGPTError
 from .formats import message_files, message_parts, text_from_parts
 from .projects import ChatGPTProjectEditor
-from .resources import AsyncChatGPTChat
+from .resources import (
+    AsyncChatGPTChat,
+    AsyncChatGPTMessage,
+    AsyncChatGPTProject,
+    ChatGPTArtifact,
+    ChatGPTAttachment,
+    ChatGPTChat,
+    ChatGPTMessage,
+    ChatGPTProject,
+    ChatGPTResponse,
+    ChatGPTSource,
+)
 from .session import BrowserSession, SessionPaths
 
 if TYPE_CHECKING:
@@ -184,6 +193,12 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
     _chat_page_size = DEFAULT_PAGE_SIZE
     _chat_type = AsyncChatGPTChat
+    _project_type = AsyncChatGPTProject
+    _message_type = AsyncChatGPTMessage
+    _response_type = ChatGPTResponse
+    _source_type = ChatGPTSource
+    _artifact_type = ChatGPTArtifact
+    _attachment_type = ChatGPTAttachment
     _projects_collection_type = AsyncChatGPTProjectsCollection
 
     capabilities = frozenset(
@@ -1093,10 +1108,6 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         )
 
 
-class ChatGPTChat(BranchableChat, MovableChat, Chat):
-    pass
-
-
 class ChatGPTProjectsCollection(ProjectsCollection):
     def create(
         self,
@@ -1116,6 +1127,8 @@ class ChatGPTProvider(Provider):
     provider_type = ProviderType.CHATGPT
     async_provider_type = AsyncChatGPTProvider
     chat_wrapper_type = ChatGPTChat
+    project_wrapper_type = ChatGPTProject
+    message_wrapper_type = ChatGPTMessage
     projects_collection_type = ChatGPTProjectsCollection
 
     def move_project_chat(

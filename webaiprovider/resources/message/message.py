@@ -104,6 +104,8 @@ class AsyncMessage:
 class Message:
     """Synchronous view and input value for a message."""
 
+    _resource_type = AsyncMessage
+
     def __init__(
         self,
         content: str = "",
@@ -119,7 +121,7 @@ class Message:
         self._owner: Provider | None = None
         self._chat: Chat | AsyncChat | None = chat
         async_chat = chat._resource if isinstance(chat, Chat) else chat
-        self._resource = AsyncMessage(
+        self._resource = self._resource_type(
             content,
             role=role,
             id=id,
@@ -199,24 +201,7 @@ class Message:
         raw = self._resource.response
         if raw is None:
             return None
-        msg = raw.message
-        if self._owner is not None and isinstance(msg, AsyncMessage):
-            msg = Message._from_async(self._owner, msg)
-        chat = raw.chat
-        if self._owner is not None and isinstance(chat, AsyncChat):
-            chat = self._owner._wrap_chat(chat)
-        return Response(
-            raw.content,
-            message=msg,
-            id=raw.id,
-            remote_id=raw.remote_id,
-            model=raw.model,
-            sources=raw.sources,
-            artifacts=raw.artifacts,
-            metadata=raw.metadata,
-            timing=raw.timing,
-            chat=chat,
-        )
+        return self._owner._wrap_response(raw) if self._owner is not None else raw
 
     @property
     def sources(self) -> SourcesCollection:
