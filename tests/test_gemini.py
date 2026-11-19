@@ -1677,7 +1677,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async with provider:
-            for limit, expected_prefixes in ((10, [51]), (250, [51, 151, 251])):
+            for limit, expected_prefixes in ((10, [11]), (250, [51, 151, 251])):
                 with self.subTest(limit=limit):
                     provider.rpc.call.reset_mock()
                     chats = await provider.chats.list(limit=limit)
@@ -1714,6 +1714,21 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata[1:3], ["r_parent", "candidate-r_parent"])
         self.assertEqual(provider.rpc.call.await_count, 1)
 
+        provider._remember_chat_metadata("c_chat", ["c_chat", "r_target", "candidate-r_target"])
+        provider.rpc.call.reset_mock()
+        updated, metadata, _ = await provider._load_chat_continuation(request, None)
+        self.assertEqual(updated.action, MessageAction.EDIT)
+        self.assertEqual(metadata[1:3], ["r_parent", "candidate-r_parent"])
+        self.assertEqual([call.args[1][1] for call in provider.rpc.call.await_args_list], [2, 1000])
+
+        provider.rpc.call.reset_mock()
+        provider.rpc.call.return_value = [[turns[1:]]]
+        updated, metadata, _ = await provider._load_chat_continuation(request, None)
+        self.assertEqual(updated.action, MessageAction.RETRY)
+        self.assertEqual(metadata[1:3], ["r_parent", "candidate-r_parent"])
+        self.assertEqual([call.args[1][1] for call in provider.rpc.call.await_args_list], [2])
+
+        provider._chat_metadata.clear()
         for invalid, reason in (
             (turns + [turns[1]], "duplicate target"),
             (turns + [[["c_chat", None]]], "missing a response ID"),

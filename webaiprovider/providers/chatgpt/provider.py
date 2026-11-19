@@ -187,6 +187,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CHATGPT
 
     _chat_page_size = DEFAULT_PAGE_SIZE
+    _chat_initial_page_floor = 16
     _chat_type = AsyncChatGPTChat
     _project_type = AsyncChatGPTProject
     _message_type = AsyncChatGPTMessage

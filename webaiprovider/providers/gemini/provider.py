@@ -540,11 +540,10 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             return request, metadata, None
 
         cached = (
-            self._take_chat_metadata(request.conversation_id)
-            if request.conversation_id and not request.action
-            else None
+            self._take_chat_metadata(request.conversation_id) if request.conversation_id else None
         )
-        if AsyncGeminiProvider._usable_chat_metadata(cached, request.conversation_id):
+        usable = AsyncGeminiProvider._usable_chat_metadata(cached, request.conversation_id)
+        if usable and not request.action:
             if timing is not None:
                 timing.increment("pre_send_conversation_cache_hit")
             return request, list(cached), None
@@ -555,22 +554,30 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         if not request.conversation_id:
             return request, metadata, None
 
-        history_started = time.perf_counter_ns() if timing is not None else None
-        try:
-            parts = await self.rpc.call(
+        suffix = "user" if request.action == MessageAction.EDIT else "model"
+        recent_action = request.action and usable and request.message_id == f"{cached[1]}:{suffix}"
+
+        async def read_history(limit):
+            return await self.rpc.call(
                 "hNvQHb",
-                [
-                    request.conversation_id,
-                    1000 if request.action else 1,
-                    None,
-                    1,
-                    [1],
-                    [4],
-                    None,
-                    1,
-                ],
+                [request.conversation_id, limit, None, 1, [1], [4], None, 1],
                 "/app",
             )
+
+        history_started = time.perf_counter_ns() if timing is not None else None
+        try:
+            limit = 1000 if request.action else 1
+            parts = await read_history(2 if recent_action else limit)
+            if recent_action:
+                turns = rpc_value(parts, 0, 0, default=[])
+                if (
+                    not isinstance(turns, list)
+                    or len(turns) != 2
+                    or rpc_value(turns[0], 0, 1) != cached[1]
+                    or not rpc_value(turns[1], 0, 1)
+                    or not rpc_value(turns[1], 3, 0, 0, 0)
+                ):
+                    parts = await read_history(limit)
         finally:
             if history_started is not None:
                 timing.record(

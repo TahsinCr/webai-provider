@@ -1194,6 +1194,31 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
 
 class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_small_chat_listing_expands_only_if_project_filter_leaves_too_few_chats(self):
+        pages = AsyncMock()
+        self.client.list_page = pages
+        self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
+        async with self.provider:
+            for project_rows, expected_calls in ((14, [(0, 16)]), (16, [(0, 16), (16, 100)])):
+                with self.subTest(project_rows=project_rows):
+                    items = [
+                        {
+                            "id": f"chat-{index}",
+                            "project_id": "g-p-one" if index < project_rows else None,
+                        }
+                        for index in range(35)
+                    ]
+                    pages.reset_mock()
+                    pages.side_effect = lambda offset, limit: {
+                        "items": items[offset : offset + limit]
+                    }
+                    chats = await self.provider.chats.list(limit=2)
+                    self.assertEqual(
+                        [chat.remote_id for chat in chats],
+                        [f"chat-{project_rows}", f"chat-{project_rows + 1}"],
+                    )
+                    self.assertEqual([call.args for call in pages.await_args_list], expected_calls)
+
     async def test_list_project_chats_bounds_concurrency_to_four_and_runs_outside_gate(self):
         active = 0
         max_active = 0

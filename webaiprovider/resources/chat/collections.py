@@ -93,10 +93,15 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         session = self.provider
         async with session.runtime.activity():
             session._require_provider()
-            if include_projects or page_limit is None or page_limit >= 25:
-                limit_arg = page_limit or self._default_page_size
-            else:
-                limit_arg = self._default_page_size
+            limit_arg = page_limit or self._default_page_size
+            if not include_projects and limit_arg < 25:
+                # Leave space for filtered project chats on the first read.
+                # Only fetch a full page if results are still missing.
+                limit_arg = (
+                    max(limit_arg, session._chat_initial_page_floor)
+                    if cursor is None
+                    else self._default_page_size
+                )
             raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
             page = _require_conversation_page(raw_page)
             chats = tuple(

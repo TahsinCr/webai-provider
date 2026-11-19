@@ -6,6 +6,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Use smaller first pages for short chat lists and expand subsequent reads when filtering or duplicate records leave too few results.
+- Read only the latest Gemini turns for a retry or edit when the server confirms the known active turn and its parent.
+
 - Resolve Claude retry and edit targets by their active native message identity when stream and history block indexes differ.
 
 - Reduce history normalization work across providers and parse only the selected Gemini turn when preparing a retry or edit.
