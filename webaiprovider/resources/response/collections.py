@@ -23,6 +23,7 @@ from ..chat.types import Conversation
 from ..message.attachment import Attachment, Attachments
 from ..message.message import AsyncMessage, Message
 from ..message.operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
+from ..message.types import MessageData
 from ..model.model import EffortRef, ModelRef, ModelSelection
 from ..model.types import Models
 from .artifact import Artifact
@@ -108,6 +109,31 @@ def _build_artifacts(item: Any, raw_files: Iterable[Any]) -> tuple[Artifact, ...
                 )
             )
     return tuple(artifacts)
+
+
+def _recent_messages(messages: tuple[MessageData, ...], limit: int) -> tuple[MessageData, ...]:
+    """Select the last responses and the user record that starts their first turn."""
+    first_response = None
+    answered = False
+    for index in range(len(messages) - 1, -1, -1):
+        item = messages[index]
+        if item.channel == "analysis":
+            continue
+        if item.role == "assistant":
+            if first_response is None:
+                limit -= 1
+                if limit == 0:
+                    first_response = index
+            answered = True
+        elif item.role == "user":
+            if first_response is not None:
+                return (item, *messages[first_response:])
+            if not answered:
+                limit -= 1
+                if limit == 0:
+                    return messages[index:]
+            answered = False
+    return messages if first_response is None else messages[first_response:]
 
 
 @dataclass
@@ -301,7 +327,9 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             result.reported = True
         return result.items
 
-    def _apply_history(self, conversation: Conversation, provider: AsyncProvider) -> list[Response]:
+    def _apply_history(
+        self, conversation: Conversation, provider: AsyncProvider, *, limit: int | None = None
+    ) -> list[Response]:
         if not isinstance(conversation, Conversation):
             raise ProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
@@ -346,7 +374,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             user_msg.response = resp
             return resp
 
-        for item in conversation.messages:
+        messages = conversation.messages
+        if limit is not None and len(messages) > limit and not self._turns:
+            messages = _recent_messages(messages, limit)
+        for item in messages:
             if item.channel == "analysis" or item.role not in ("user", "assistant"):
                 continue
             parts = item.content

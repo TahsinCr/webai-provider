@@ -242,7 +242,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         chat = _chat_from_conversation(conversation, self.provider)
         if validated == 0:
             return chat, []
-        responses = chat.responses._apply_history(conversation, self.provider)
+        responses = chat.responses._apply_history(conversation, self.provider, limit=validated)
         return chat, responses if validated is None else responses[-validated:]
 
     async def create(

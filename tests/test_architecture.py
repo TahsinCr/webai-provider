@@ -723,6 +723,18 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             self.assertIs(history[1].message.response, history[1])
             self.assertEqual(history[2].message.content, "Next question")
 
+            for limit in range(4):
+                with self.subTest(limit=limit):
+                    chat, recent = await provider.chats.get_with_responses(cid, limit=limit)
+                    expected = history[-limit:] if limit else []
+                    self.assertEqual(
+                        [(r.id, r.text, r.message.remote_id) for r in recent],
+                        [(r.id, r.text, r.message.remote_id) for r in expected],
+                    )
+                    self.assertEqual(len(chat.responses._turns), len(expected))
+                    if limit == 2:
+                        self.assertIs(recent[0].message.response, recent[0])
+
     async def test_shared_history_fetch_separates_messages_and_responses_with_sources_and_artifacts(
         self,
     ) -> None:

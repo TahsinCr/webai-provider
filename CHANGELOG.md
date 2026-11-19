@@ -17,6 +17,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Overlap general and project chat pagination within the existing concurrency limit. Reuse a fixed set of async workers for bounded reads and uploads, and skip constructing chat objects excluded by scope.
 - Share overlapping reads of the same chat's response collection. Use `responses.list(fresh=True)` to request an independent read, and an older result cannot replace a newer applied history.
 - Reduce history reconstruction work for single-part text and turns without sources or artifacts.
+- Build only the requested recent responses when opening a chat with a limit, keeping the original prompt for responses that share a turn.
 - Reduce allocation during chat listing by creating hook tables on registration and reusing one ordered index when merging project chats.
 - Reuse the account model catalog loaded at session opening for the first model query. Explicit catalog refresh still requests up-to-date options.
 - Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
