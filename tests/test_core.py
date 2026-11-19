@@ -138,6 +138,27 @@ class CorePortalBridgeTests(unittest.TestCase):
             result = bridge.call(add(15, 27))
             self.assertEqual(result, 42)
 
+    def test_shared_portal_bridge_shares_one_loop_and_closes_on_last_release(self) -> None:
+        import threading
+
+        from webaiprovider.core.bridges import SharedPortalBridge
+
+        async def loop_and_thread():
+            return id(asyncio.get_running_loop()), threading.get_ident()
+
+        first = SharedPortalBridge()
+        second = SharedPortalBridge()
+        try:
+            id1 = first.call(loop_and_thread())
+            id2 = second.call(loop_and_thread())
+            self.assertEqual(id1, id2)
+
+            first.close()
+            # Closing one handle must keep the shared portal alive for the second.
+            self.assertEqual(second.call(loop_and_thread()), id1)
+        finally:
+            second.close()
+
 
 class CoreTelemetryTests(unittest.TestCase):
     def test_provider_telemetry_metrics_and_ttft(self) -> None:
