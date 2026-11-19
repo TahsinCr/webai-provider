@@ -17,6 +17,7 @@ from webaiprovider import (
     Provider,
     ProviderType,
 )
+from webaiprovider.core.timing import SendTiming
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
@@ -35,9 +36,34 @@ from webaiprovider.transport import (
     ThreadedTransport,
     TransportConfig,
 )
+from webaiprovider.transport.http import _open_curl_stream
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_stream_timing_reports_first_byte_and_connection_reuse(self):
+        from curl_cffi import CurlInfo
+
+        response = SimpleNamespace(
+            infos={
+                CurlInfo.PRETRANSFER_TIME_T: 200,
+                CurlInfo.STARTTRANSFER_TIME_T: 65_200,
+                CurlInfo.NUM_CONNECTS: 0,
+            },
+            aclose=AsyncMock(),
+        )
+        client = SimpleNamespace(
+            curl_infos=[CurlInfo.HTTP_VERSION], request=AsyncMock(return_value=response)
+        )
+        timing = SendTiming()
+        async with _open_curl_stream(client, "POST", "https://example.com", {}, timing=timing):
+            pass
+        durations, counts = timing.snapshot()
+        self.assertEqual(durations["transport_response_wait_ms"], 65.0)
+        self.assertEqual(durations["transport_first_byte_ms"], 65.2)
+        self.assertEqual(counts, {"transport_connection_reused": 1})
+        self.assertIn(CurlInfo.HTTP_VERSION, client.curl_infos)
+        response.aclose.assert_awaited_once()
+
     async def test_cancelled_request_releases_owned_client_reference(self):
         client = SimpleNamespace(close=AsyncMock())
         transport = AsyncHTTPTransport("https://example.com", client_factory=lambda **_: client)

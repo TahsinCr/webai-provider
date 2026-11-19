@@ -17,6 +17,7 @@ from contextlib import (
 from urllib.parse import urlsplit
 
 from ..core import MultiDimensionBoundedCache
+from ..core.timing import current_send_timing
 from ..errors import ProviderError
 from .base import AsyncTransport, Transport, _AsyncStreamResponse, _StreamResponse
 
@@ -45,6 +46,13 @@ _DNS_CACHE: MultiDimensionBoundedCache[tuple[str, int, bool], tuple[str, ...]] =
 )
 _IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
+_CURL_STREAM_PHASES = (
+    ("NAMELOOKUP_TIME_T", "transport_dns_ms"),
+    ("CONNECT_TIME_T", "transport_to_tcp_connected_ms"),
+    ("APPCONNECT_TIME_T", "transport_to_tls_connected_ms"),
+    ("PRETRANSFER_TIME_T", "transport_ready_ms"),
+    ("STARTTRANSFER_TIME_T", "transport_first_byte_ms"),
+)
 
 
 def _create_ipv6_probe_socket() -> socket.socket:
@@ -369,9 +377,32 @@ def _prepare_curl_session_sync(
 
 
 @asynccontextmanager
-async def _open_curl_stream(client, method: str, url: str, options: dict):
+async def _open_curl_stream(client, method: str, url: str, options: dict, *, timing=None):
+    if timing is not None:
+        from curl_cffi import CurlInfo
+
+        phases = tuple((CurlInfo[name], metric) for name, metric in _CURL_STREAM_PHASES)
+        infos = tuple(info for info, _ in phases) + (CurlInfo.NUM_CONNECTS,)
+        if not all(info in client.curl_infos for info in infos):
+            client.curl_infos = list(dict.fromkeys((*client.curl_infos, *infos)))
     response = await client.request(method, url, stream=True, allow_redirects=False, **options)
     try:
+        if timing is not None:
+            for info, metric in phases:
+                elapsed = response.infos.get(info)
+                if isinstance(elapsed, int):
+                    timing.record(metric, elapsed * 1000)
+            ready = response.infos.get(CurlInfo.PRETRANSFER_TIME_T)
+            first_byte = response.infos.get(CurlInfo.STARTTRANSFER_TIME_T)
+            if isinstance(ready, int) and isinstance(first_byte, int) and first_byte >= ready:
+                timing.record("transport_response_wait_ms", (first_byte - ready) * 1000)
+            connections = response.infos.get(CurlInfo.NUM_CONNECTS)
+            if isinstance(connections, int):
+                timing.increment(
+                    "transport_connection_reused"
+                    if connections == 0
+                    else "transport_connection_opened"
+                )
         yield response
     finally:
         task = getattr(response, "astream_task", None)
@@ -550,11 +581,14 @@ class AsyncHTTPTransport(AsyncTransport):
             await self._after()
 
     @asynccontextmanager
-    async def _open_stream(self, method, url, options, *, client=None):
+    async def _open_stream(self, method, url, options, *, client=None, timing=None):
         client = client if client is not None else self._connect()
         await self._prepare_curl(options, client=client)
-        if _is_curl_async_session(client) or not callable(getattr(client, "stream", None)):
-            async with _open_curl_stream(client, method, url, options) as response:
+        native = _is_curl_async_session(client)
+        if native or not callable(getattr(client, "stream", None)):
+            async with _open_curl_stream(
+                client, method, url, options, timing=timing if native else None
+            ) as response:
                 yield response
             return
         async with client.stream(
@@ -567,6 +601,7 @@ class AsyncHTTPTransport(AsyncTransport):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
+        timing = current_send_timing()
         stack = AsyncExitStack()
         client = None
         response = None
@@ -575,7 +610,7 @@ class AsyncHTTPTransport(AsyncTransport):
                 client = await self._acquire_client_async()
                 try:
                     response = await stack.enter_async_context(
-                        self._open_stream(method, url, options, client=client)
+                        self._open_stream(method, url, options, client=client, timing=timing)
                     )
                     self._check_response(response, check_status)
                     break
