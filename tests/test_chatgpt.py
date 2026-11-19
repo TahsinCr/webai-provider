@@ -145,12 +145,11 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         await asyncio.sleep(0)
         self.assertFalse(task.done())
-        self.assertTrue(provider._gate.locked())
+        self.assertFalse(client.closed.is_set())
 
         client.release_close.set()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)
-        self.assertFalse(provider._gate.locked())
         self.assertTrue(client.closed.is_set())
         await provider.close()
 
@@ -1058,16 +1057,11 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
                 ]
 
         timing = SendTiming()
-        await self.provider._gate.acquire()
-        stream = asyncio.create_task(collect())
-        await asyncio.sleep(0.02)
-        self.assertFalse(stream.done())
-        self.provider._gate.release()
-        events = await stream
+        events = await collect()
         self.assertEqual(events[0], TextDelta("partial"))
         self.assertEqual(events[-1].conversation_id, "remote")
         self.assertTrue(self.client.closed.is_set())
-        self.assertGreater(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
+        self.assertEqual(timing.snapshot()[0]["provider_send_gate_wait_ms"], 0)
 
     async def test_stream_uploads_inline_bytes_attachment_before_sending(self):
         uploaded = []
@@ -1219,7 +1213,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.list_page = pages
         self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
         async with self.provider:
-            for project_rows, expected_calls in ((14, [(0, 16)]), (16, [(0, 16), (16, 100)])):
+            for project_rows, expected_calls in ((14, [(0, 100)]), (16, [(0, 100)])):
                 with self.subTest(project_rows=project_rows):
                     items = [
                         {
@@ -1238,6 +1232,100 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                         [f"chat-{project_rows}", f"chat-{project_rows + 1}"],
                     )
                     self.assertEqual([call.args for call in pages.await_args_list], expected_calls)
+
+    async def test_chat_delete_and_rename_serialize_per_chat_without_blocking_other_chats(self):
+        from webaiprovider.resources.chat.chat import AsyncChat
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        deleted: list[str] = []
+        renamed: list[tuple[str, str]] = []
+
+        async def slow_stream(_request):
+            started.set()
+            await release.wait()
+            yield TextDelta("done")
+
+        async def fake_delete(cid):
+            deleted.append(cid)
+
+        async def fake_rename(cid, title):
+            renamed.append((cid, title))
+
+        self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
+        self.provider._stream_provider_events = slow_stream
+        self.provider._delete_chat_data = fake_delete
+        self.provider._rename_chat_data = fake_rename
+
+        async with self.provider:
+            chat_a = AsyncChat(title="A", remote_id="chat-a", provider=self.provider)
+            chat_b = AsyncChat(title="B", remote_id="chat-b", provider=self.provider)
+            send_a = asyncio.create_task(chat_a.responses.create("hi").start())
+            await asyncio.wait_for(started.wait(), 1)
+
+            # Different chat B can rename & delete immediately while chat A is streaming.
+            await asyncio.wait_for(chat_b.rename("B2"), 1)
+            await asyncio.wait_for(chat_b.delete(), 1)
+            self.assertEqual(renamed, [("chat-b", "B2")])
+            self.assertEqual(deleted, ["chat-b"])
+
+            # Same chat A must wait until its active stream finishes.
+            delete_a = asyncio.create_task(chat_a.delete())
+            await asyncio.sleep(0.02)
+            self.assertFalse(delete_a.done())
+            self.assertEqual(deleted, ["chat-b"])
+
+            release.set()
+            await asyncio.wait_for(send_a, 1)
+            await asyncio.wait_for(delete_a, 1)
+            self.assertEqual(deleted, ["chat-b", "chat-a"])
+
+    async def test_project_attachments_create_many_uses_single_batch_bind(self):
+        from webaiprovider import Attachment
+        from webaiprovider.resources.project.project import AsyncProject
+
+        uploads: list[str] = []
+        bind_payloads: list[dict] = []
+
+        async def fake_upload(name, mime, data, *, project_id=None, cancel_event=None):
+            del mime, data, project_id, cancel_event
+            uploads.append(name)
+            return {"id": f"file-{len(uploads)}", "size_bytes": 5}
+
+        async def fake_request(method, url, **kwargs):
+            if method == "POST" and url.endswith("/files"):
+                bind_payloads.append(kwargs["json"])
+                return SimpleNamespace(
+                    content=b"{}",
+                    json=lambda: {
+                        "files": [
+                            {
+                                "file_id": item["file_id"],
+                                "name": item["name"],
+                                "type": item["type"],
+                            }
+                            for item in kwargs["json"]["files"]
+                        ]
+                    },
+                )
+            raise AssertionError(f"Unexpected request: {method} {url}")
+
+        self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
+        self.client.upload_file = fake_upload
+        self.client.request = fake_request
+
+        async with self.provider:
+            project = AsyncProject(title="Work", remote_id="g-p-work", provider=self.provider)
+            created = await project.attachments.create_many(
+                Attachment(id="", name="first.txt", content="hello", metadata={"kind": "text"}),
+                Attachment(id="", name="second.txt", content="world", metadata={"kind": "text"}),
+            )
+            self.assertEqual([att.name for att in created], ["first.txt", "second.txt"])
+            self.assertEqual(len(bind_payloads), 1)
+            self.assertEqual(
+                [item["name"] for item in bind_payloads[0]["files"]],
+                ["first.txt", "second.txt"],
+            )
 
     async def test_list_project_chats_bounds_concurrency_to_four_and_runs_outside_gate(self):
         active = 0

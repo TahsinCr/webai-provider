@@ -518,6 +518,100 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             on_success_event=on_success,
         )
 
+    async def create_many(
+        self,
+        *items: Attachment | str | bytes | os.PathLike[str],
+    ) -> list[Attachment]:
+        if not items:
+            return []
+        if len(items) == 1:
+            return [await self.create(items[0])]
+        provider = self.project.provider
+        editor = getattr(provider, "editor", None) if provider is not None else None
+        batch_add = (
+            getattr(editor, "add_sources", None)
+            if self.project.remote_id and getattr(editor, "supports_batch_add", False)
+            else None
+        )
+        if not callable(batch_add) or provider is None:
+            results: list[Attachment] = []
+            for item in items:
+                results.append(await self.create(item))
+            return results
+
+        coerced = [self._coerce_add_input(item, None, None, None, {}) for item in items]
+        runtime = provider.runtime
+        context = runtime.new_context(
+            "project.attachment.add_many",
+            resource_id=self.project.remote_id or self.project.id,
+            parameters={"count": len(coerced)},
+        )
+
+        async def perform_batch(_ctx) -> list[Attachment]:
+            specs = [{"kind": kind, **send_options} for kind, _local, send_options in coerced]
+            lock = runtime.project_lock(self.project.remote_id)
+            async with runtime.activity():
+                async with lock:
+                    provider._require_provider()
+                    created = await batch_add(self.project.remote_id, specs)
+            if not isinstance(created, list) or len(created) != len(coerced):
+                raise ProviderError("Provider did not confirm all created project attachments")
+            results: list[Attachment] = []
+            for (kind, local, _send_options), resource in zip(coerced, created, strict=True):
+                merged = _merge_attachment(self._attachment_type, local, resource)
+                merged.metadata.setdefault("kind", kind)
+                results.append(merged)
+                replaced = False
+                for idx, entry in enumerate(self._items):
+                    if entry.id == merged.id:
+                        self._items[idx] = merged
+                        replaced = True
+                        break
+                if not replaced and _is_project_attachment(merged):
+                    self._items.append(merged)
+            if isinstance(self.project._provider_project, ProviderProject):
+                existing = list(self.project._provider_project.resources)
+                by_id = {r.id: idx for idx, r in enumerate(existing)}
+                for merged in results:
+                    if merged.id in by_id:
+                        existing[by_id[merged.id]] = merged
+                    else:
+                        by_id[merged.id] = len(existing)
+                        existing.append(merged)
+                self.project._provider_project = replace(
+                    self.project._provider_project, resources=tuple(existing)
+                )
+            return results
+
+        async def on_success(ctx) -> None:
+            for added_att in ctx.result:
+                if self.project.remote_id:
+                    await _publish_collection_change(
+                        runtime,
+                        "project.attachments",
+                        "create",
+                        added_att,
+                        scope_id=self.project.remote_id,
+                        operation_id=ctx.operation_id,
+                    )
+                await runtime.emit(
+                    "project.attachment.added",
+                    operation_id=ctx.operation_id,
+                    resource_id=self.project.remote_id or self.project.id,
+                    payload={
+                        "attachment_id": added_att.id,
+                        "kind": added_att.metadata.get("kind"),
+                    },
+                )
+
+        return await execute_with_hooks(
+            operation_name="project.attachment.add_many",
+            context=context,
+            hooks_chain=(runtime.hooks, self.hooks),
+            work=perform_batch,
+            on_success_event=on_success,
+        )
+
     async def delete(self, attachment: Attachment | str) -> None:
         file_id = attachment.id if isinstance(attachment, Attachment) else str(attachment)
         if not any(item.id == file_id for item in self._items):
@@ -581,6 +675,94 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             context=context,
             hooks_chain=(runtime.hooks, self.hooks),
             work=lambda _ctx: perform_remove(),
+            on_success_event=on_success,
+        )
+
+    async def delete_many(self, *attachments: Attachment | str) -> None:
+        if not attachments:
+            return
+        if len(attachments) == 1:
+            await self.delete(attachments[0])
+            return
+        provider = self.project.provider
+        editor = getattr(provider, "editor", None) if provider is not None else None
+        batch_remove = (
+            getattr(editor, "remove_sources", None)
+            if self.project.remote_id and getattr(editor, "supports_batch_remove", False)
+            else None
+        )
+        if not callable(batch_remove) or provider is None:
+            for attachment in attachments:
+                await self.delete(attachment)
+            return
+
+        file_ids = [
+            attachment.id if isinstance(attachment, Attachment) else str(attachment)
+            for attachment in attachments
+        ]
+        known = {item.id for item in self._items}
+        if any(fid not in known for fid in file_ids):
+            await self._load_attachments()
+        by_id = {item.id: item for item in self._items}
+        missing = [fid for fid in file_ids if fid not in by_id]
+        if missing:
+            raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
+
+        runtime = provider.runtime
+        context = runtime.new_context(
+            "project.attachment.remove_many",
+            resource_id=self.project.remote_id or self.project.id,
+            parameters={"attachment_ids": tuple(file_ids)},
+        )
+
+        async def perform_batch(_ctx) -> None:
+            payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
+            lock = runtime.project_lock(self.project.remote_id)
+            async with runtime.activity():
+                async with lock:
+                    provider._require_provider()
+                    updated = await batch_remove(
+                        self.project.remote_id,
+                        payloads,
+                        current=self.project._provider_project,
+                    )
+            removed_set = set(file_ids)
+            if isinstance(updated, ProviderProject):
+                self.project._provider_project = updated
+            elif isinstance(self.project._provider_project, ProviderProject):
+                self.project._provider_project = replace(
+                    self.project._provider_project,
+                    resources=tuple(
+                        r
+                        for r in self.project._provider_project.resources
+                        if r.id not in removed_set
+                    ),
+                )
+            self._items = [item for item in self._items if item.id not in removed_set]
+
+        async def on_success(ctx) -> None:
+            for fid in file_ids:
+                if self.project.remote_id:
+                    await _publish_collection_change(
+                        runtime,
+                        "project.attachments",
+                        "delete",
+                        fid,
+                        scope_id=self.project.remote_id,
+                        operation_id=ctx.operation_id,
+                    )
+                await runtime.emit(
+                    "project.attachment.removed",
+                    operation_id=ctx.operation_id,
+                    resource_id=self.project.remote_id or self.project.id,
+                    payload={"attachment_id": fid},
+                )
+
+        await execute_with_hooks(
+            operation_name="project.attachment.remove_many",
+            context=context,
+            hooks_chain=(runtime.hooks, self.hooks),
+            work=perform_batch,
             on_success_event=on_success,
         )
 
@@ -655,11 +837,20 @@ class ProjectAttachments(RemoteCollection[Attachment, Attachment]):
             )
         )
 
+    def create_many(
+        self,
+        *items: Attachment | str | bytes | os.PathLike[str],
+    ) -> list[Attachment]:
+        return self._owner._call(self._collection.create_many(*items))
+
     def update(self, attachment: Attachment | str, **options: Any) -> Attachment:
         return self._owner._call(self._collection.update(attachment, **options))
 
     def delete(self, attachment: Attachment | str) -> None:
         self._owner._call(self._collection.delete(attachment))
+
+    def delete_many(self, *attachments: Attachment | str) -> None:
+        self._owner._call(self._collection.delete_many(*attachments))
 
     def download(self, attachment: Attachment | str) -> Any:
         return self._owner._call(self._collection.download(attachment))

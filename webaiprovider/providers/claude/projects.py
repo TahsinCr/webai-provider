@@ -155,3 +155,52 @@ class ClaudeProjectEditor:
                 resources=tuple(r for r in current.resources if r.id != v["resource_id"]),
             )
         return result
+
+    supports_batch_remove = True
+
+    async def add_sources(self, project_id, items):
+        return [await self.add_source(project_id, **item) for item in items]
+
+    async def remove_sources(self, project_id, items, *, current=None):
+        if not items:
+            return current
+        path = await self.client.base() + "/projects/" + remote_id(project_id)
+        call = self.client.http.request
+        file_uuids: list[str] = []
+        fallback_items: list[dict] = []
+        removed_ids: set[str] = set()
+        for entry in items:
+            rid = str(entry["resource_id"])
+            resource = entry.get("resource")
+            native = (
+                resource.metadata.get("native")
+                if resource is not None and isinstance(resource.metadata, dict)
+                else None
+            )
+            if isinstance(native, dict):
+                native_id = native.get("uuid") or native.get("id")
+                file_uuid = native.get("file_uuid")
+                if file_uuid and (file_uuid == rid or native_id == rid):
+                    file_uuids.append(str(file_uuid))
+                    removed_ids.add(rid)
+                    continue
+                if native_id == rid and "file_uuid" not in native:
+                    await call("DELETE", path + "/docs/" + quote(rid, safe=""))
+                    removed_ids.add(rid)
+                    continue
+            fallback_items.append(entry)
+        if file_uuids:
+            await call(
+                "POST",
+                path + "/files/delete_many",
+                json={"file_uuids": list(dict.fromkeys(file_uuids))},
+            )
+        for entry in fallback_items:
+            await self.remove_source(project_id, **entry)
+            removed_ids.add(str(entry["resource_id"]))
+        if isinstance(current, ProjectData):
+            return replace(
+                current,
+                resources=tuple(r for r in current.resources if r.id not in removed_ids),
+            )
+        return None
