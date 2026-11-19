@@ -131,8 +131,15 @@ def sources_from(*roots: Any) -> tuple[dict[str, Any], ...]:
                         break
                     remaining_nodes -= 1
                     add(item)
-        for key in _SOURCE_NESTED_KEYS:
-            visit(value.get(key), depth + 1)
+        if depth < 4:
+            for key in _SOURCE_NESTED_KEYS:
+                if remaining_nodes <= 0:
+                    break
+                child = value.get(key)
+                if child is None:
+                    remaining_nodes -= 1
+                else:
+                    visit(child, depth + 1)
         for key in ("grounding_chunks", "groundingChunks"):
             entries = value.get(key)
             if isinstance(entries, (list, tuple)):

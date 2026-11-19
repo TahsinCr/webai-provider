@@ -3,12 +3,14 @@
 import re
 from itertools import islice
 
+from ...errors import ProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
     Content,
     MessageData,
     actions_for,
+    target_message,
 )
 from ...resources.project.types import ProjectData
 from ...resources.response.source import sources_from
@@ -133,80 +135,114 @@ def parse_chat_page(pages, *, offset=0, limit=None):
     )
 
 
-def parse_chat_history(data, cid):
+def _history_turns(data):
     turns = history_value(data, 0)
     if not isinstance(turns, list):
         raise GeminiError("Gemini history is temporarily unavailable; saved history was preserved")
+    return turns
+
+
+def _turn_id(turn):
+    rid = history_value(turn, 0, 1)
+    if not isinstance(rid, str):
+        raise GeminiCompatibilityError("Gemini history is missing a response ID")
+    return rid
+
+
+def _turn_messages(turn, rid):
+    user = history_value(turn, 2, 0, 0)
+    if isinstance(user, str) and user:
+        yield MessageData(
+            rid + ":user",
+            "user",
+            (Content("text", user),),
+            metadata={"turn_id": rid},
+            actions=actions_for("user"),
+        )
+    candidates = history_value(turn, 3, 0, default=[])
+    if not candidates:
+        return
+    candidate = candidates[0]
+    text = history_value(candidate, 1, 0, default="")
+    # Published thinking summaries only; never infer hidden reasoning.
+    activity = published_activity(candidate)
+    steps = activity[0]
+    thoughts = published_thoughts(candidate, steps)
+    if thoughts:
+        yield MessageData(
+            rid + ":model:thoughts",
+            "assistant",
+            (Content("text", thoughts),),
+            channel="analysis",
+            metadata={"turn_id": rid, "published_activity": bool(steps)},
+        )
+    images = candidate_files(candidate)
+    text = resolve_image_links(text if isinstance(text, str) else "", images)
+    if text or images:
+        yield MessageData(
+            rid + ":model",
+            "assistant",
+            (Content("text", text),)
+            + tuple(
+                Content(
+                    "resource",
+                    resource=Attachment(
+                        image["alias"], image["name"], image.get("media_type"), image["url"]
+                    ),
+                )
+                for image in images
+            ),
+            metadata={
+                "native_candidate": candidate,
+                "turn_id": rid,
+                "candidate_id": history_value(candidate, 0),
+                **candidate_metadata(candidate, activity),
+                "files": tuple(
+                    {
+                        "id": image["alias"],
+                        "name": image["name"],
+                        "remote_url": image["url"],
+                        "media_type": image.get("media_type"),
+                    }
+                    for image in images
+                ),
+            },
+            actions=actions_for("assistant", branch=True),
+        )
+
+
+def action_turn_index(data, message_id: str, role: str, action: str) -> int:
+    """Validate one selected turn without building the rest of the conversation."""
+    turns = _history_turns(data)
+    suffix = ":user" if role == "user" else ":model"
+    wanted = (
+        message_id.removesuffix(suffix)
+        if isinstance(message_id, str) and message_id.endswith(suffix)
+        else None
+    )
+    selected = None
+    for index, turn in enumerate(turns):
+        rid = _turn_id(turn)
+        if rid == wanted:
+            if selected is not None:
+                raise GeminiCompatibilityError(
+                    "Gemini history contains a duplicate target response ID"
+                )
+            selected = index
+    if selected is None:
+        raise ProviderError("The selected message is no longer on the active conversation path")
+    messages = tuple(_turn_messages(turns[selected], wanted))
+    _, target = target_message(messages, message_id, role)
+    if action not in target.actions:
+        raise ProviderError("This Gemini message action is not available")
+    return selected
+
+
+def parse_chat_history(data, cid):
+    turns = _history_turns(data)
     messages = []
     for turn in reversed(turns):
-        rid = history_value(turn, 0, 1)
-        if not isinstance(rid, str):
-            raise GeminiCompatibilityError("Gemini history is missing a response ID")
-        user = history_value(turn, 2, 0, 0)
-        if isinstance(user, str) and user:
-            messages.append(
-                MessageData(
-                    rid + ":user",
-                    "user",
-                    (Content("text", user),),
-                    metadata={"turn_id": rid},
-                    actions=actions_for("user"),
-                )
-            )
-        candidates = history_value(turn, 3, 0, default=[])
-        if not candidates:
-            continue
-        candidate = candidates[0]
-        text = history_value(candidate, 1, 0, default="")
-        # Published thinking summaries only; never infer hidden reasoning.
-        activity = published_activity(candidate)
-        steps = activity[0]
-        thoughts = published_thoughts(candidate, steps)
-        if thoughts:
-            messages.append(
-                MessageData(
-                    rid + ":model:thoughts",
-                    "assistant",
-                    (Content("text", thoughts),),
-                    channel="analysis",
-                    metadata={"turn_id": rid, "published_activity": bool(steps)},
-                )
-            )
-        images = candidate_files(candidate)
-        text = resolve_image_links(text if isinstance(text, str) else "", images)
-        if text or images:
-            messages.append(
-                MessageData(
-                    rid + ":model",
-                    "assistant",
-                    (Content("text", text),)
-                    + tuple(
-                        Content(
-                            "resource",
-                            resource=Attachment(
-                                image["alias"], image["name"], image.get("media_type"), image["url"]
-                            ),
-                        )
-                        for image in images
-                    ),
-                    metadata={
-                        "native_candidate": candidate,
-                        "turn_id": rid,
-                        "candidate_id": history_value(candidate, 0),
-                        **candidate_metadata(candidate, activity),
-                        "files": tuple(
-                            {
-                                "id": image["alias"],
-                                "name": image["name"],
-                                "remote_url": image["url"],
-                                "media_type": image.get("media_type"),
-                            }
-                            for image in images
-                        ),
-                    },
-                    actions=actions_for("assistant", branch=True),
-                )
-            )
+        messages.extend(_turn_messages(turn, _turn_id(turn)))
     return Conversation(
         cid,
         "Gemini sohbeti",

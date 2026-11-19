@@ -38,7 +38,7 @@ from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
 from . import generation
 from .errors import GeminiCompatibilityError, GeminiStreamError
-from .history import parse_chat_history, parse_chat_page
+from .history import action_turn_index, parse_chat_history, parse_chat_page
 from .media import PLACEHOLDER, resolve_image_links, valid_media_url
 from .notebooks import Notebooks, field, notebook_id
 from .projects import GeminiProjectEditor
@@ -583,15 +583,9 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         if request.action:
             if request.message_id is None:
                 raise ValueError("message action requires a message ID")
-            current = parse_chat_history(parts[0], request.conversation_id)
             role = "user" if request.action == MessageAction.EDIT else "assistant"
-            _, target = target_message(current.messages, request.message_id, role)
-            if request.action.value not in target.actions:
-                raise ProviderError("This Gemini message action is not available")
-            selected_index = next(
-                i
-                for i, item in enumerate(turns)
-                if rpc_value(item, 0, 1) == target.metadata["turn_id"]
+            selected_index = action_turn_index(
+                parts[0], request.message_id, role, request.action.value
             )
             original = turns[selected_index]
             action_files = rpc_value(original, 2, 0, 3) or []

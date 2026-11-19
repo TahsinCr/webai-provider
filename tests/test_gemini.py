@@ -1689,6 +1689,39 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
                         expected_prefixes,
                     )
 
+    async def test_retry_validates_history_identity_and_parses_only_the_target_turn(self):
+        from webaiprovider.providers.gemini import history
+        from webaiprovider.providers.gemini.errors import GeminiCompatibilityError
+
+        turns = [
+            [["c_chat", rid], None, [[f"Prompt {rid}"]], [[[f"candidate-{rid}", ["Answer"]]]]]
+            for rid in ("r_new", "r_target", "r_parent")
+        ]
+        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider.rpc.call = AsyncMock(return_value=[[turns]])
+        request = ProviderRequest(
+            "",
+            conversation_id="c_chat",
+            action=MessageAction.RETRY,
+            message_id="r_target:model",
+        )
+
+        with patch.object(history, "_turn_messages", wraps=history._turn_messages) as parse:
+            updated, metadata, _ = await provider._load_chat_continuation(request, None)
+        parse.assert_called_once_with(turns[1], "r_target")
+        self.assertEqual(updated.prompt, "Prompt r_target")
+        self.assertEqual(updated.action, MessageAction.EDIT)
+        self.assertEqual(metadata[1:3], ["r_parent", "candidate-r_parent"])
+        self.assertEqual(provider.rpc.call.await_count, 1)
+
+        for invalid, reason in (
+            (turns + [turns[1]], "duplicate target"),
+            (turns + [[["c_chat", None]]], "missing a response ID"),
+        ):
+            provider.rpc.call.return_value = [[invalid]]
+            with self.assertRaisesRegex(GeminiCompatibilityError, reason):
+                await provider._load_chat_continuation(request, None)
+
     async def test_message_ids_do_not_shift_when_older_history_arrives(self):
         def turn(rid):
             return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]

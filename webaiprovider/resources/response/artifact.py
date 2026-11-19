@@ -39,6 +39,7 @@ class FileTargetRule:
     parse_target: Callable[[str, SplitResult], bool]
     matches_identity: Callable[[str, str | None], bool] | None = None
     markdown_link_re: re.Pattern[str] | None = None
+    markdown_hint: str | None = None
 
 
 _FILE_TARGET_RULES: dict[str, FileTargetRule] = {}
@@ -145,7 +146,9 @@ def files_from(
                 visit(item, depth + 1, resource, owner)
         elif isinstance(value, str):
             for rule in active_rules:
-                if rule.markdown_link_re is None:
+                if rule.markdown_link_re is None or (
+                    rule.markdown_hint is not None and rule.markdown_hint not in value
+                ):
                     continue
                 for match in rule.markdown_link_re.finditer(value):
                     add({"name": match[1], "url": match[2]}, owner)
@@ -154,11 +157,22 @@ def files_from(
                 value.get(key) for key in ("file_path", "download_url", "asset_pointer")
             ):
                 add(value, owner)
-            visit(value.get("text"), depth + 1, owner=owner)
-            for key in _FILE_RESOURCE_KEYS:
-                visit(value.get(key), depth + 1, True, owner)
-            for key in _FILE_NESTED_KEYS:
-                visit(value.get(key), depth + 1, owner=owner)
+            if depth == 7:
+                return
+            child = value.get("text")
+            if child is not None:
+                visit(child, depth + 1, owner=owner)
+            else:
+                remaining -= 1
+            for keys, is_resource in ((_FILE_RESOURCE_KEYS, True), (_FILE_NESTED_KEYS, False)):
+                for key in keys:
+                    if remaining <= 0 or len(files) >= 128:
+                        return
+                    child = value.get(key)
+                    if child is None:
+                        remaining -= 1
+                    else:
+                        visit(child, depth + 1, is_resource, owner)
 
     for root in roots:
         owner = (

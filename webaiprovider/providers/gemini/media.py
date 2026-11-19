@@ -72,9 +72,12 @@ def _field(container, index, default=None):
 
 
 def candidate_files(candidate):
-    values = _nested_value(_field(_nested_value(candidate, [12]), 7), [0], [])
+    rich = _nested_value(candidate, [12])
+    if not rich:
+        return []
+    values = _nested_value(_field(rich, 7), [0], [])
     images = []
-    web = _field(_nested_value(candidate, [12]), 1, [])
+    web = _field(rich, 1, [])
     for index, item in enumerate(web if isinstance(web, list) else []):
         url = _nested_value(item, [0, 0, 0])
         if isinstance(url, str) and valid_media_url(url):
@@ -93,7 +96,6 @@ def candidate_files(candidate):
                     or f"http://googleusercontent.com/image_generation_content/{index}",
                 }
             )
-    rich = _nested_value(candidate, [12])
     candidate_id = _nested_value(candidate, [0])
     video = _nested_value(_field(rich, 59), [0, 0, 0, 0, 7, 1])
     media = _field(rich, 86, [])
@@ -109,6 +111,8 @@ def candidate_files(candidate):
 
 
 def resolve_image_links(text, images):
+    if not images:
+        return text or ""
     by_alias = {image["alias"]: image for image in images}
 
     def replace(match):

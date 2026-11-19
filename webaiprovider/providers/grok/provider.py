@@ -371,7 +371,8 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
             self._conversation_metadata(conversation_id),
             self._history(conversation_id),
         )
-        chat = conversation(metadata, self.account_id, history)
+        active = active_responses(history)
+        chat = conversation(metadata, self.account_id, active_rows=active)
         inflight = history.get("inflightResponses") if isinstance(history, dict) else None
         if isinstance(inflight, list) and inflight:
             return Conversation(
@@ -381,7 +382,6 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
                 chat.project,
                 {**chat.metadata, "generation": {"active": True}},
             )
-        active = active_responses(history) if isinstance(history, dict) else ()
         if active and isinstance(active[-1], dict) and active[-1].get("responseId"):
             self._remember_continuation(conversation_id, active[-1]["responseId"])
         return chat

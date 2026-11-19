@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Reduce history normalization work across providers and parse only the selected Gemini turn when preparing a retry or edit.
+
 - Use concrete provider types consistently for chats, projects, messages, responses, sources, artifacts, and project attachments across the blocking and async APIs.
 - Standardize provider project editors and reuse the current project snapshot through the shared mutation path.
 - Define browser-cookie selection, validation, and persistence rules once per provider, including known alternate session cookies.

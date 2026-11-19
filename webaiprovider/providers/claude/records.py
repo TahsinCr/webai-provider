@@ -76,8 +76,10 @@ def conversation_attachment_count(value):
 
 
 def _linearize_turns(turns: list[dict], leaf: str | None) -> list[dict]:
+    if not any("parent_message_uuid" in turn for turn in turns):
+        return turns
     by_id = {x.get("uuid"): x for x in turns}
-    if leaf not in by_id or not any("parent_message_uuid" in x for x in turns):
+    if leaf not in by_id:
         return turns
     branch, seen = [], set()
     while leaf in by_id and leaf not in seen:

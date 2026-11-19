@@ -148,8 +148,7 @@ def active_responses(history):
     return tuple(rows)
 
 
-def _messages(history, temporary=False):
-    rows = active_responses(history)
+def _messages(rows, temporary=False):
     messages = []
     for row in rows:
         response_id = row["responseId"]
@@ -234,7 +233,7 @@ def _messages(history, temporary=False):
     return tuple(messages)
 
 
-def conversation(value, account_id, history=None):
+def conversation(value, account_id, history=None, *, active_rows=None):
     if not isinstance(value, dict):
         raise ProviderError("Grok conversation response contract changed")
     identifier = value.get("conversationId") or value.get("id")
@@ -245,10 +244,12 @@ def conversation(value, account_id, history=None):
     project_id = value.get("workspaceId") or first_ws.get("workspaceId") or first_ws.get("id")
     project_name = first_ws.get("name") or value.get("workspaceName") or ""
     is_temporary = bool(value.get("temporary"))
+    if active_rows is None:
+        active_rows = active_responses(history) if history is not None else ()
     return Conversation(
         identifier,
         value.get("title") or "Grok conversation",
-        _messages(history, temporary=is_temporary) if history is not None else (),
+        _messages(active_rows, temporary=is_temporary) if active_rows else (),
         ProjectData(project_id, str(project_name)) if project_id else None,
         {
             "temporary": is_temporary,

@@ -28,6 +28,7 @@ register_file_target_rule(
             not target and identity.startswith("sandbox:/mnt/")
         ),
         markdown_link_re=_CHATGPT_SANDBOX_RE,
+        markdown_hint="/mnt/data/",
     )
 )
 
