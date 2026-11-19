@@ -1420,6 +1420,60 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_notebook_file_source_uses_uploaded_reference_and_confirms_new_id(self):
+        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
+        from webaiprovider.resources.message.attachment import Attachment
+
+        project_id = "notebooks/abcdef"
+        old = Attachment(f"{project_id}/sources/previous", "paper.pdf")
+        source_id = f"{project_id}/sources/new"
+        detail = [None] * 11
+        detail[10] = [
+            [
+                [None, None, old.name, None, None, old.id],
+                [None, None, old.name, None, None, source_id],
+            ]
+        ]
+        session = object()
+        rpc = SimpleNamespace(connect=AsyncMock(return_value=session), call=AsyncMock())
+        rpc.call.return_value = [[[project_id, detail]]]
+        editor = GeminiProjectEditor(rpc, None)
+        self.assertIn(
+            "file", {source["id"] for source in (await editor.options(project_id)).sources}
+        )
+        upload = AsyncMock(return_value=[("/uploaded", old.name, "application/pdf")])
+        with patch("webaiprovider.providers.gemini.projects.upload_file_references", upload):
+            added = await editor.add_source(
+                project_id, kind="file", path="paper.pdf", existing_resources=(old,)
+            )
+            upload.assert_awaited_once_with(session, ["paper.pdf"])
+            rpc.call.assert_awaited_once_with(
+                "ko3zcd",
+                [
+                    project_id,
+                    [
+                        None,
+                        old.name,
+                        None,
+                        None,
+                        ["/uploaded", "application/pdf"],
+                        None,
+                        None,
+                        None,
+                        "application/pdf",
+                    ],
+                    [1, 3],
+                ],
+                "/notebook/abcdef",
+            )
+            self.assertEqual((added.id, added.media_type), (source_id, "application/pdf"))
+
+            detail[10][0].pop()
+            with self.assertRaisesRegex(ProviderError, "did not confirm the added file"):
+                await editor.add_source(
+                    project_id, kind="file", path="paper.pdf", existing_resources=(old,)
+                )
+
     async def test_notebook_editor_update_reuses_current_snapshot_and_skips_get(self):
         from webaiprovider.providers.gemini.projects import GeminiProjectEditor
 

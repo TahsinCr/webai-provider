@@ -1,8 +1,10 @@
 from dataclasses import replace
 
 from ...errors import ProviderError
+from ...resources.message.attachment import Attachment
 from ...resources.project.types import ProjectData
-from .notebooks import notebook_id
+from .generation import upload_file_references
+from .notebooks import field, notebook_id
 
 
 class GeminiProjectEditor:
@@ -14,7 +16,11 @@ class GeminiProjectEditor:
 
         return ProjectOptions(
             fields=("name", "instructions") if project_id else ("name",),
-            sources=({"id": "text", "title": "Metin"},) if project_id else (),
+            sources=(
+                ({"id": "text", "title": "Metin"}, {"id": "file", "title": "Dosya"})
+                if project_id
+                else ()
+            ),
             remove_sources=bool(project_id),
         )
 
@@ -104,20 +110,53 @@ class GeminiProjectEditor:
     async def add_source(self, project_id, **values):
         remote = notebook_id(project_id)
         path = "/notebook/" + remote.split("/")[1]
-        if values["kind"] != "text":
+        kind = values["kind"]
+        if kind == "text":
+            name, mime_type = values["name"], "text/plain"
+            uploaded, text = None, [values["text"], 1]
+        elif kind == "file":
+            ((reference, name, mime_type),) = await upload_file_references(
+                await self.rpc.connect(), [values["path"]]
+            )
+            if not reference.startswith("/"):
+                raise ProviderError("Gemini returned an invalid file upload reference")
+            uploaded, text = [reference, mime_type], None
+        else:
             raise ValueError("Unsupported notebook source type")
-        detail = [
-            None,
-            values["name"],
-            None,
-            None,
-            None,
-            [values["text"], 1],
-            None,
-            None,
-            "text/plain",
-        ]
-        return await self.rpc.call("ko3zcd", [remote, detail, [1, 3]], path)
+        detail = [None, name, None, None, uploaded, text, None, None, mime_type]
+        result = await self.rpc.call("ko3zcd", [remote, detail, [1, 3]], path)
+        existing = {resource.id for resource in values.get("existing_resources", ())}
+        matches = {}
+        for part in result:
+            if not isinstance(part, list):
+                continue
+            for row in part:
+                if field(row, 0) != remote:
+                    continue
+                bundle = field(field(row, 1), 10)
+                sources = field(bundle, 0)
+                if not isinstance(sources, list):
+                    continue
+                for source in sources:
+                    source_id = field(source, 5)
+                    if (
+                        isinstance(source_id, str)
+                        and source_id.startswith(remote + "/sources/")
+                        and source_id not in existing
+                        and field(source, 2) == name
+                    ):
+                        matches[source_id] = source
+        if len(matches) == 1:
+            source_id, source = matches.popitem()
+            return Attachment(
+                source_id,
+                name,
+                mime_type=mime_type,
+                metadata={"kind": kind, "native": source, "source_type": field(source, 1)},
+            )
+        if kind == "file":
+            raise ProviderError("Gemini did not confirm the added file; sync before retrying")
+        return result
 
     async def remove_source(self, project_id, **values):
         remote = notebook_id(project_id)

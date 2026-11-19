@@ -4,6 +4,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
+
 ### Changed
 
 - Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.

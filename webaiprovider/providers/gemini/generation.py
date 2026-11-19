@@ -64,6 +64,13 @@ def _gemini_upload_spec(value):
 
 
 async def upload_files(session, items):
+    return [
+        [[reference], filename]
+        for reference, filename, _ in await upload_file_references(session, items)
+    ]
+
+
+async def upload_file_references(session, items):
     from curl_cffi import CurlMime
 
     if len(items) > GEMINI_ATTACHMENTS.max_files:
@@ -106,7 +113,7 @@ async def upload_files(session, items):
                 after = await asyncio.to_thread(os.stat, local_path)
                 if not same_file_version(before, after):
                     raise GeminiError("File changed while it was being uploaded")
-            return [[response.text], filename]
+            return response.text, filename, content_type
         finally:
             mime.close()
 
