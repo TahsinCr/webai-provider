@@ -274,6 +274,7 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
             "send",
             prompt=request.prompt,
             conversation_id=request.conversation_id,
+            draft_title=request.draft_title,
             project_id=request.project_id,
             model=request.model,
             effort=request.effort,

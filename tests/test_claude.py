@@ -13,7 +13,7 @@ from tests.provider_fakes import claude_model_catalog, provider_account
 from webaiprovider.base import (
     Capability,
 )
-from webaiprovider.errors import ProviderError
+from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.claude.catalogs import parse_model_catalog
 from webaiprovider.providers.claude.client import ClaudeClient
@@ -1119,6 +1119,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             prompt="Hello",
             model="claude-test",
             conversation_id=None,
+            draft_title="Disposable chat",
             temporary=False,
             action=None,
             project_id=PROJECT,
@@ -1133,6 +1134,22 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(bound_idx, move_idx)
         self.assertLess(move_idx, post_idx)
         self.assertEqual(seen[0], {"type": "bound", "id": created_ids[0]})
+        self.assertEqual(
+            session.request.await_args_list[0].kwargs["json"],
+            {"uuid": created_ids[0], "name": "Disposable chat"},
+        )
+
+        with patch.object(client.http, "stream", side_effect=RateLimited(message_submitted=False)):
+            events = client.events(
+                "send", prompt="Hello", model="claude-test", draft_title="Another draft"
+            )
+            self.assertEqual(await anext(events), {"type": "bound", "id": created_ids[-1]})
+            with self.assertRaises(RateLimited):
+                await anext(events)
+        self.assertEqual(
+            session.request.await_args.kwargs["json"],
+            {"uuid": created_ids[-1], "name": "Another draft"},
+        )
 
     async def test_malformed_sse_json_raises_claude_compatibility_error(self):
 

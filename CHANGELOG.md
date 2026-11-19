@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Preserve explicit Claude draft titles when the remote chat is created, so an interrupted first send leaves an identifiable chat.
 - Reduce project rename and instruction readbacks on Claude and Grok by validating changed fields independently of source lists.
 - Keep local project options responsive while another operation is generating a response.
 - Request smaller project chat pages on ChatGPT and Grok and reduce repeated prefixes in unbounded Gemini chat listings.

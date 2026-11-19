@@ -29,6 +29,7 @@ class ProviderRequest:
     attachments: tuple[dict, ...] = ()
     action: MessageAction | None = None
     message_id: str | None = None
+    draft_title: str | None = None
 
 
 @dataclass(frozen=True)

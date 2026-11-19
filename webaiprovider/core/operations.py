@@ -8,6 +8,7 @@ from typing import Any
 from eventflow import AsyncPipeline, PipelineExecutionError
 
 from ..errors import OperationCancelledError, RemoteNotFound, UnsupportedOperationError
+from ..resources.chat.types import DEFAULT_CHAT_TITLE
 from ..resources.message.protocol import ProviderRequest
 from ..resources.message.types import MessageAction
 from ..resources.model.model import EffortRef, ModelRef, ModelSelection
@@ -136,6 +137,7 @@ def build_message_request_pipeline(
             }
             for item in attachments
         )
+        title = getattr(context.parameters["chat"], "title", None)
         context.request = ProviderRequest(
             prompt=context.prompt if context.prompt is not None else message.content,
             model=context.parameters["resolved_model"],
@@ -146,6 +148,7 @@ def build_message_request_pipeline(
             temporary=context.parameters["temporary"],
             conversation_id=context.parameters["conversation_id"],
             project_id=context.parameters["project_id"],
+            draft_title=title if title != DEFAULT_CHAT_TITLE else None,
         )
         return context
 

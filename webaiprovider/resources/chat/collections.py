@@ -19,7 +19,7 @@ from ...core.operations import execute_with_hooks
 from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat, _project_from_data, _resolve_project_arg
-from .types import Conversation
+from .types import DEFAULT_CHAT_TITLE, Conversation
 
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
@@ -260,7 +260,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
 
     async def create(
         self,
-        title: str = "Yeni Sohbet",
+        title: str = DEFAULT_CHAT_TITLE,
         *,
         project: AsyncProject | str | None = None,
         temporary: bool = False,

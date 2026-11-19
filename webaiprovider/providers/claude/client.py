@@ -311,7 +311,9 @@ class ClaudeClient:
 
     async def _prepare_stream_conversation(self, cid, pid, path, v, timing):
         if not v.get("conversation_id"):
-            create_payload = {"uuid": cid, "name": ""}
+            title = v.get("draft_title")
+            title = title.strip() if isinstance(title, str) else ""
+            create_payload = {"uuid": cid, "name": title if len(title) <= 200 else ""}
             if v.get("temporary"):
                 create_payload["is_temporary"] = True
             created = await self.http.request(
