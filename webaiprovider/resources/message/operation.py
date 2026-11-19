@@ -37,70 +37,70 @@ async def _close_async_iterator(stream: AsyncIterator[Any] | None) -> None:
             raise original from cleanup
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StreamEvent:
     event: str = field(init=False, default="")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThinkingBegin(StreamEvent):
     event: str = field(init=False, default="thinking.begin")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThinkingDelta(StreamEvent):
     delta: str = ""
     event: str = field(init=False, default="thinking.delta")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThinkingReplace(StreamEvent):
     text: str = ""
     event: str = field(init=False, default="thinking.replace")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ThinkingEnd(StreamEvent):
     text: str = ""
     event: str = field(init=False, default="thinking.end")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OutputBegin(StreamEvent):
     event: str = field(init=False, default="output.begin")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OutputDelta(StreamEvent):
     delta: str = ""
     event: str = field(init=False, default="output.delta")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OutputReplace(StreamEvent):
     text: str = ""
     event: str = field(init=False, default="output.replace")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OutputEnd(StreamEvent):
     text: str = ""
     event: str = field(init=False, default="output.end")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SourceDiscovered(StreamEvent):
     source: Source = field(default_factory=lambda: Source("", ""))
     event: str = field(init=False, default="source.discovered")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArtifactDiscovered(StreamEvent):
     artifact: Artifact = field(default_factory=lambda: Artifact("", "", ""))
     event: str = field(init=False, default="artifact.discovered")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TerminalStatus(StreamEvent):
     status: str = "completed"
     error: Any = None

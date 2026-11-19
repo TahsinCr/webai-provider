@@ -42,7 +42,9 @@ def _read_limited(
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= max_bytes:
             raise ValueError(error)
-        data = stream.read(max_bytes + 1)
+        data = stream.read(info.st_size + 1)
+        if len(data) > info.st_size:
+            data += stream.read(max_bytes + 1 - len(data))
     if not 0 < len(data) <= max_bytes:
         raise ValueError(error)
     return data

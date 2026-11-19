@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Reduce memory allocations for Grok file reads and retained streaming events across providers.
+
 - Report native stream DNS, connection, TLS, first-byte timing, and connection reuse when send diagnostics are enabled.
 - Use smaller first pages for short chat lists and expand subsequent reads when filtering or duplicate records leave too few results.
 - Reuse complete ChatGPT project creation responses and fetch project details only when the server response lacks the saved settings or permissions.
