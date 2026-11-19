@@ -40,27 +40,25 @@ class ClaudeRecordsTests(unittest.TestCase):
         from webaiprovider.resources.message.types import MessageAction
         from webaiprovider.resources.response.response import Response
 
-        history = conversation(
-            {
-                "uuid": CHAT,
-                "chat_messages": [
-                    {
-                        "uuid": "native-turn",
-                        "sender": "assistant",
-                        "content": [
-                            {"type": "thinking", "thinking": "Summary"},
-                            {"type": "text", "text": "New answer"},
-                            {"type": "text", "text": ""},
-                        ],
-                    }
-                ],
-            },
-            "",
-        )
+        native = {
+            "uuid": CHAT,
+            "chat_messages": [
+                {
+                    "uuid": "native-turn",
+                    "sender": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Summary"},
+                        {"type": "text", "text": "New answer"},
+                        {"type": "text", "text": ""},
+                    ],
+                }
+            ],
+        }
+        history = conversation(native, "")
         visible = history.messages[-1]
         self.assertEqual(visible.id, "native-turn:1")
-        target = action_target(history.messages, "native-turn:4", MessageAction.RETRY)
-        self.assertIs(target, visible)
+        target = action_target(native, "native-turn:4", MessageAction.RETRY)
+        self.assertEqual(target, visible)
 
         saved = Response(
             "New answer",
@@ -79,7 +77,7 @@ class ClaudeRecordsTests(unittest.TestCase):
             )
         for remote_id in ("other:4", "native-turn:0"):
             with self.assertRaises(ProviderError):
-                action_target(history.messages, remote_id, MessageAction.RETRY)
+                action_target(native, remote_id, MessageAction.RETRY)
 
     def test_history_separates_public_thinking_and_retains_resources(self):
         data = {

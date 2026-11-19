@@ -103,7 +103,7 @@ def _project_data(value: dict, account_id: str) -> ProjectData | None:
     return ProjectData(pid, str(pname))
 
 
-def conversation(value, account_id):
+def conversation(value, account_id, *, _action_uuid=None):
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude conversation response contract changed")
     messages = []
@@ -113,6 +113,8 @@ def conversation(value, account_id):
         if isinstance(raw_turns, list)
         else []
     )
+    if _action_uuid is not None:
+        turns = [item for item in turns if item.get("uuid") == _action_uuid]
     pending_files = ()
     pending_sources = ()
     pending_id = ""
@@ -247,16 +249,15 @@ def stream_message_uuid(message_id: str) -> str | None:
     return uuid if uuid and separator and block.isascii() and block.isdecimal() else None
 
 
-def action_target(
-    messages: tuple[MessageData, ...], message_id: str, action: MessageAction
-) -> MessageData:
+def action_target(history: dict, message_id: str, action: MessageAction) -> MessageData:
+    native_id = stream_message_uuid(message_id)
+    messages = conversation(history, "", _action_uuid=native_id).messages
     role = "user" if action == MessageAction.EDIT else "assistant"
     try:
         return target_message(messages, message_id, role)[1]
     except ProviderError:
         if any(item.id == message_id for item in messages):
             raise
-        native_id = stream_message_uuid(message_id)
         if native_id is not None:
             for item in reversed(messages):
                 if (

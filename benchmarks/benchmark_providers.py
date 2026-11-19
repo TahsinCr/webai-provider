@@ -97,7 +97,16 @@ def _case(provider_name: str, *, retry: bool = False) -> Case:
             provider._conversation_metadata = metadata
             provider._history = fetch
 
-        if retry:
+        if retry and provider_name == "claude":
+            from webaiprovider.providers.claude.records import action_target
+
+            message_id = f"message-{_TURNS + 1}:0"
+
+            async def operation():
+                target = action_target(await fetch(), message_id, MessageAction.RETRY)
+                if target.id != message_id:
+                    raise AssertionError("Unexpected retry target")
+        elif retry:
             request = ProviderRequest(
                 "",
                 conversation_id=_CHAT,
@@ -133,4 +142,5 @@ def cases() -> tuple[Case, ...]:
     return (
         *(_case(name) for name in ("chatgpt", "gemini", "claude", "grok")),
         _case("gemini", retry=True),
+        _case("claude", retry=True),
     )

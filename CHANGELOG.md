@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Normalize only the selected active Claude message during retry and edit preparation.
 - Reduce memory allocations for Grok file reads and retained streaming events across providers.
 
 - Report native stream DNS, connection, TLS, first-byte timing, and connection reuse when send diagnostics are enabled.

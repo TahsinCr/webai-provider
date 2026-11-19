@@ -22,7 +22,7 @@ from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
-from .records import action_target, conversation, presented_files
+from .records import action_target, presented_files
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}
 _ALLOWED_UPLOAD_SUFFIXES = frozenset(CLAUDE_ATTACHMENTS.allowed_extensions)
@@ -370,7 +370,7 @@ class ClaudeClient:
         parent = history.get("current_leaf_message_uuid")
         if v.get("action"):
             self._continuations.remove(cid)
-            target = action_target(conversation(history, "").messages, v["message_id"], v["action"])
+            target = action_target(history, v["message_id"], v["action"])
             if v["action"].value not in target.actions:
                 raise ProviderError("This Claude message action is unavailable")
             original = target.metadata["native_message"]
