@@ -993,7 +993,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
         async def record_request(method, url, **kwargs):
             requests.append((method, url, kwargs))
-            return None
+            return {"file_id": "file"}
 
         self.client.request = record_request
         editor = ChatGPTProjectEditor(self.session, lambda _: self.client)
@@ -1286,6 +1286,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
 
         uploads: list[str] = []
         bind_payloads: list[dict] = []
+        reply = []
 
         async def fake_upload(name, mime, data, *, project_id=None, cancel_event=None):
             del mime, data, project_id, cancel_event
@@ -1297,35 +1298,81 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 bind_payloads.append(kwargs["json"])
                 return SimpleNamespace(
                     content=b"{}",
-                    json=lambda: {
-                        "files": [
-                            {
-                                "file_id": item["file_id"],
-                                "name": item["name"],
-                                "type": item["type"],
-                            }
-                            for item in kwargs["json"]["files"]
-                        ]
-                    },
+                    json=lambda: {"files": reply},
                 )
             raise AssertionError(f"Unexpected request: {method} {url}")
 
         self.client.model_catalog = lambda: ModelCatalog(ModelCatalogState.AVAILABLE)
         self.client.upload_file = fake_upload
         self.client.request = fake_request
+        files = [
+            {"file_id": "file-1", "name": "first.txt"},
+            {"file_id": "file-2", "name": "second.txt"},
+        ]
+        sources = [
+            Attachment(id="", name=name, content="test", metadata={"kind": "text"})
+            for name in ("first.txt", "second.txt")
+        ]
 
         async with self.provider:
-            project = AsyncProject(title="Work", remote_id="g-p-work", provider=self.provider)
-            created = await project.attachments.create_many(
-                Attachment(id="", name="first.txt", content="hello", metadata={"kind": "text"}),
-                Attachment(id="", name="second.txt", content="world", metadata={"kind": "text"}),
-            )
-            self.assertEqual([att.name for att in created], ["first.txt", "second.txt"])
-            self.assertEqual(len(bind_payloads), 1)
-            self.assertEqual(
-                [item["name"] for item in bind_payloads[0]["files"]],
-                ["first.txt", "second.txt"],
-            )
+            for bind_reply, readback, succeeds in (
+                (files[::-1], None, True),
+                (files[:1], files, True),
+                ([files[0], {"file_id": "other"}], files[:1], False),
+                ([files[0], files[0], files[1]], files[:1], False),
+            ):
+                with self.subTest(bind=bind_reply, succeeds=succeeds):
+                    uploads.clear()
+                    bind_payloads.clear()
+                    reply[:] = bind_reply
+                    self.client.get_project = AsyncMock(
+                        return_value={"id": "g-p-work", "resources": readback}
+                    )
+                    project = AsyncProject(
+                        title="Work", remote_id="g-p-work", provider=self.provider
+                    )
+                    if succeeds:
+                        created = await project.attachments.create_many(*sources)
+                        self.assertEqual([att.id for att in created], ["file-1", "file-2"])
+                        self.assertEqual([att.name for att in created], ["first.txt", "second.txt"])
+                    else:
+                        with self.assertRaisesRegex(ProviderError, "did not confirm all"):
+                            await project.attachments.create_many(*sources)
+                        self.assertEqual(project.attachments._items, [])
+                    self.assertEqual(self.client.get_project.await_count, int(readback is not None))
+                    self.assertEqual(len(bind_payloads), 1)
+                    self.assertEqual(
+                        [item["name"] for item in bind_payloads[0]["files"]],
+                        ["first.txt", "second.txt"],
+                    )
+
+    async def test_chatgpt_project_batch_cancels_and_joins_inflight_upload_on_failure(self):
+        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
+
+        started = asyncio.Event()
+        stopped: list[str] = []
+
+        async def upload(name, *_args, **_kwargs):
+            if name == "fail.txt":
+                await started.wait()
+                raise ProviderError("upload failed")
+            self.assertEqual(name, "pending.txt")
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.append(name)
+
+        self.client.upload_file = upload
+        self.client.request = AsyncMock()
+        editor = ChatGPTProjectEditor(self.session, lambda _: self.client)
+        items = [
+            {"kind": "text", "name": name, "text": "test"} for name in ("fail", "pending", "queued")
+        ]
+        with self.assertRaisesRegex(ProviderError, "upload failed"):
+            await asyncio.wait_for(editor.add_sources("g-p-work", items), 1)
+        self.assertEqual(stopped, ["pending.txt"])
+        self.client.request.assert_not_awaited()
 
     async def test_list_project_chats_bounds_concurrency_to_four_and_runs_outside_gate(self):
         active = 0

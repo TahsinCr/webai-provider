@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from urllib.parse import quote
 
-from ...core.concurrency import maybe_await
+from ...core.concurrency import gather_bounded, maybe_await
+from ...errors import ProviderError
 from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
     ProjectData,
@@ -155,24 +156,7 @@ class ChatGPTProjectEditor:
             "type": mime,
             "location": "fs",
         }
-        return uploaded, name, mime, file_payload
-
-    @staticmethod
-    def _build_attached(attached_item, uploaded, name, mime, file_payload):
-        if attached_item is None:
-            attached_item = {
-                "file_id": uploaded["id"],
-                "id": uploaded["id"],
-                "name": name,
-                "type": mime,
-                **file_payload,
-            }
-        return Attachment(
-            str(attached_item.get("file_id") or attached_item.get("id") or uploaded["id"]),
-            str(attached_item.get("name") or name),
-            attached_item.get("type") or mime,
-            metadata=dict(attached_item),
-        )
+        return file_payload
 
     async def add_source(self, project_id, **values):
         (created,) = await self.add_sources(project_id, [values])
@@ -183,54 +167,59 @@ class ChatGPTProjectEditor:
             return []
         async with self._use_client() as client:
             path = "https://chatgpt.com/backend-api/projects/" + quote(project_id, safe="")
-            slots = asyncio.Semaphore(2)
-
-            async def upload_one(values):
-                async with slots:
-                    return await self._upload_source(client, project_id, values)
-
-            uploaded_entries = await asyncio.gather(*(upload_one(item) for item in items))
+            uploads = await gather_bounded(
+                items, lambda item: self._upload_source(client, project_id, item), limit=2
+            )
+            ids = {item["file_id"] for item in uploads}
+            if len(ids) != len(uploads):
+                raise ProviderError("ChatGPT returned duplicate project upload IDs")
             attached = await maybe_await(
                 client.request(
                     "POST",
                     path + "/files",
-                    json={"files": [entry[3] for entry in uploaded_entries]},
+                    json={"files": uploads},
                 )
             )
             if callable(getattr(attached, "json", None)) and getattr(attached, "content", None):
                 attached = attached.json()
-            attached_files = (
-                attached["files"]
-                if isinstance(attached, dict) and isinstance(attached.get("files"), list)
-                else [attached]
-                if isinstance(attached, dict) and (attached.get("file_id") or attached.get("id"))
-                else []
-            )
-            by_id = {
-                str(item.get("file_id") or item.get("id")): item
-                for item in attached_files
-                if isinstance(item, dict) and (item.get("file_id") or item.get("id"))
-            }
+            rows = attached.get("files", [attached]) if isinstance(attached, dict) else attached
+            confirmed = self._confirmed_files(rows, ids)
+            if confirmed.keys() != ids:
+                project = await maybe_await(client.get_project(project_id))
+                if project.get("id") == project_id:
+                    confirmed = self._confirmed_files(project.get("resources"), ids)
+            if confirmed.keys() != ids:
+                raise ProviderError(
+                    "ChatGPT did not confirm all project attachments; reload the project before retrying"
+                )
             results = []
-            for idx, (uploaded, name, mime, file_payload) in enumerate(uploaded_entries):
-                fid = str(uploaded["id"])
-                attached_item = by_id.get(fid)
-                if attached_item is None and idx < len(attached_files):
-                    candidate = attached_files[idx]
-                    if isinstance(candidate, dict):
-                        attached_item = candidate
+            for upload in uploads:
+                file_id = upload["file_id"]
+                remote = confirmed[file_id]
                 results.append(
-                    self._build_attached(attached_item, uploaded, name, mime, file_payload)
+                    Attachment(
+                        file_id,
+                        str(remote.get("name") or upload["name"]),
+                        remote.get("type") or upload["type"],
+                        metadata=dict(remote),
+                    )
                 )
             return results
 
-    async def remove_sources(self, project_id, items, *, current=None):
-        updated = current
-        for entry in items:
-            result = await self.remove_source(project_id, current=updated, **entry)
-            if isinstance(result, ProjectData):
-                updated = result
-        return updated
+    @staticmethod
+    def _confirmed_files(rows, expected_ids):
+        confirmed = {}
+        if not isinstance(rows, list):
+            return confirmed
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            file_id = row.get("file_id") or row.get("id")
+            if isinstance(file_id, str) and file_id in expected_ids:
+                if file_id in confirmed:
+                    return {}
+                confirmed[file_id] = row
+        return confirmed
 
     async def remove_source(self, project_id, **values):
         async with self._use_client() as client:

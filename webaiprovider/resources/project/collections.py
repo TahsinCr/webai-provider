@@ -421,6 +421,13 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             return kind, local, {"path": raw_path}
         raise UnsupportedOperationError(f"Project attachment type is unsupported: {kind}")
 
+    def _store_created(self, attachments: list[Attachment]) -> None:
+        by_id = {item.id: item for item in self._items}
+        for attachment in attachments:
+            if attachment.id in by_id or _is_project_attachment(attachment):
+                by_id[attachment.id] = attachment
+        self._items = list(by_id.values())
+
     async def create(
         self,
         file_or_data: Attachment | str | bytes | os.PathLike[str],
@@ -468,14 +475,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 result = _merge_attachment(self._attachment_type, local, resource)
                 result.metadata.setdefault("kind", kind)
                 self.project._apply_provider_project(updated, replace_resources=True)
-                replaced = False
-                for idx, entry in enumerate(self._items):
-                    if entry.id == result.id:
-                        self._items[idx] = result
-                        replaced = True
-                        break
-                if not replaced and _is_project_attachment(result):
-                    self._items.append(result)
+                self._store_created([result])
             else:
                 self._items.append(result)
             return result
@@ -561,14 +561,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 merged = _merge_attachment(self._attachment_type, local, resource)
                 merged.metadata.setdefault("kind", kind)
                 results.append(merged)
-                replaced = False
-                for idx, entry in enumerate(self._items):
-                    if entry.id == merged.id:
-                        self._items[idx] = merged
-                        replaced = True
-                        break
-                if not replaced and _is_project_attachment(merged):
-                    self._items.append(merged)
+            self._store_created(results)
             if isinstance(self.project._provider_project, ProviderProject):
                 existing = list(self.project._provider_project.resources)
                 by_id = {r.id: idx for idx, r in enumerate(existing)}

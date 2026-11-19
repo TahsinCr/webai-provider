@@ -156,14 +156,3 @@ class GrokProjectEditor:
                 "DELETE", project_path + "/assets/" + remote_id(item["assetId"])
             )
         raise ValueError("Grok project resource was not found")
-
-    async def add_sources(self, project_id, items):
-        return [await self.add_source(project_id, **item) for item in items]
-
-    async def remove_sources(self, project_id, items, *, current=None):
-        updated = current
-        for entry in items:
-            result = await self.remove_source(project_id, current=updated, **entry)
-            if isinstance(result, ProjectData):
-                updated = result
-        return updated
