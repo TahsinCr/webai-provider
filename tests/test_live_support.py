@@ -1684,13 +1684,20 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
         from webaiprovider.resources.message.operation import OutputDelta, OutputEnd, TerminalStatus
 
-        gate = ActionGate(interval=0, limit=30)
-
         for rate_limit_branch in (False, True):
             with (
                 self.subTest(rate_limit_branch=rate_limit_branch),
                 tempfile.TemporaryDirectory() as directory,
             ):
+                gate = ActionGate(interval=0, limit=30)
+                now = 100.0
+                waits = []
+
+                async def advance(delay: float) -> None:
+                    nonlocal now
+                    waits.append(delay)
+                    now += delay
+
                 journal = Path(directory) / "live-cleanup-chatgpt.json"
                 events_order = []
                 created_entries = []
@@ -1913,6 +1920,10 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch("tests.live.support.context.CLEANUP_FILE", journal),
                     patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                    patch(
+                        "tests.live.support.actions.time", SimpleNamespace(monotonic=lambda: now)
+                    ),
+                    patch("tests.live.support.actions.asyncio", wraps=asyncio, sleep=advance),
                 ):
                     test = AsyncMessageApiTests("test_temporary_message_stream_history_and_cleanup")
                     test.context = LiveContext(
@@ -1939,6 +1950,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(journal.exists())
                         branched.rename.assert_not_awaited()
                         self.assertEqual(deleted_ids, {"c_root"})
+                        self.assertEqual(waits, [1.0, 0.5])
                     else:
                         await test.test_temporary_message_stream_history_and_cleanup()
                         branch_idx = events_order.index(("branch", "preview-1"))
@@ -1954,6 +1966,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(branch_entries[0]["remote_id"], "c_branch_real")
                         self.assertIn("preview-1", branch_entries[0]["exclude_ids"])
                         self.assertEqual(deleted_ids, {"c_root", "c_branch_real"})
+                        self.assertEqual(waits, [])
                         self.assertEqual(test.context.state["resources"], [])
                         self.assertFalse(journal.exists())
 
