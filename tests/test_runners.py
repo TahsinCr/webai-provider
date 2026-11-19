@@ -143,7 +143,7 @@ class TestRunnerTests(unittest.TestCase):
         with (
             patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)),
             patch("run_live_tests._matrix", return_value=(("grok", "async"),)),
-            patch("run_live_tests._pending_cleanup_files", return_value=[]),
+            patch("run_live_tests._provider_cleanup_pending", return_value=False),
             patch("run_live_tests._run_provider", side_effect=KeyboardInterrupt),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
@@ -213,6 +213,29 @@ class TestRunnerTests(unittest.TestCase):
             ):
                 self.assertEqual(run_live_tests.main(), 2)
         self.assertEqual(run.call_count, 1)
+
+    def test_pending_cleanup_only_blocks_its_own_provider(self) -> None:
+        for selection, expected_code in (("", 2), ("gemini", 0)):
+            with self.subTest(selection=selection):
+                popen_cls = _fake_popen_factory([0, 0])
+                stderr = io.StringIO()
+                with (
+                    patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": selection}, clear=True),
+                    patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)),
+                    patch(
+                        "run_live_tests._provider_cleanup_pending",
+                        side_effect=lambda p: p in {"chatgpt", "grok"},
+                    ),
+                    patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(run_live_tests.main(), expected_code)
+                launched = {
+                    call["kwargs"]["env"]["WEBAI_LIVE_PROVIDER"] for call in popen_cls.calls
+                }
+                self.assertEqual(launched, {"gemini"} if selection else {"claude", "gemini"})
+                self.assertEqual("chatgpt, grok" in stderr.getvalue(), not selection)
 
     def test_live_runner_reports_skips_rate_limits_and_refuses_false_full_pass(self) -> None:
         result = CompletedProcess([], 0)
@@ -340,7 +363,6 @@ class TestRunnerTests(unittest.TestCase):
                 patch("run_live_tests.CLEANUP_FILE", legacy),
                 patch("run_live_tests._DEFAULT_CLEANUP_FILE", legacy),
             ):
-                self.assertEqual(run_live_tests._pending_cleanup_files(), [legacy])
                 self.assertTrue(run_live_tests._provider_cleanup_pending("gemini"))
                 self.assertFalse(run_live_tests._provider_cleanup_pending("chatgpt"))
 

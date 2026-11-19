@@ -19,7 +19,6 @@ from tests.live.support.journal import (
     CLEANUP_FILE,
     cleanup_file,
     cleanup_journal_provider,
-    pending_cleanup_files,
 )
 
 _DEFAULT_CLEANUP_FILE = CLEANUP_FILE
@@ -61,12 +60,6 @@ class _PhaseOutcome:
             or self.skipped_setup_failed > 0
             or self.feature_skips > 0
         )
-
-
-def _pending_cleanup_files() -> list[Path]:
-    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
-        return [CLEANUP_FILE] if CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink() else []
-    return pending_cleanup_files()
 
 
 def _provider_cleanup_pending(provider: str) -> bool:
@@ -247,14 +240,24 @@ def main() -> int:
         return 2
 
     recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
-    if _pending_cleanup_files() and not recovering:
-        print(
-            "A cleanup journal remains; run the selected cleanup recovery before live tests.",
-            file=sys.stderr,
-        )
-        return 2
-
     providers = [provider for provider, _ in matrix]
+    blocked = (
+        []
+        if recovering
+        else [provider for provider in providers if _provider_cleanup_pending(provider)]
+    )
+    if blocked:
+        print(
+            "Live checks blocked by pending cleanup for: "
+            + ", ".join(blocked)
+            + ". Run cleanup recovery for these providers before testing them.",
+            file=sys.stderr,
+            flush=True,
+        )
+        providers = [provider for provider in providers if provider not in blocked]
+        if not providers:
+            return 2
+
     output_lock = threading.Lock()
     with tempfile.TemporaryDirectory() as runtime_raw:
         runtime_dir = Path(runtime_raw)
@@ -303,6 +306,9 @@ def main() -> int:
         failed = ", ".join(f"{item.provider}/{item.api}" for item in failures)
         print(f"\nLive API checks failed or were unverified: {failed}", file=sys.stderr)
         return failures[0].returncode or 1
+    if blocked:
+        print("\nLive API checks incomplete because cleanup is pending.", file=sys.stderr)
+        return 2
     if any(item.has_skips for item in outcomes):
         print(
             "\nOffline tests passed; live API checks completed with skipped scenarios (partial verification only)."

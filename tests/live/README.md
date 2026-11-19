@@ -73,7 +73,7 @@ The gate keeps a one-second cooldown between API actions on the same account. It
 
 The first Ctrl+C stops scheduling scenarios after the active scenarios finish and get a chance to clean up. An interrupted run exits with status 130. A second Ctrl+C can leave work for recovery.
 
-Before dispatching a remote creation request, the suite marks that attempt in a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
+Before dispatching a remote creation request, the suite marks that attempt in a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks new tests for that provider. Other selected providers still run. A run with blocked providers exits with status 2 when the providers that ran pass. Recover only the selected account's pending test objects with:
 
 ```sh
 WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal \
