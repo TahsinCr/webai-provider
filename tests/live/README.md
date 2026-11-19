@@ -69,9 +69,11 @@ The suite uses disposable data and the account's advertised capabilities. Raw tr
 
 The gate keeps a one-second cooldown between API actions on the same account. It caps each provider at 64 actions. Actions time out after 300 seconds. Providers may issue multiple requests within an API action. The harness can retry session opening once after a network timeout or a recognized transient HTTP status. For a typed authentication error, it can refresh a default-browser account once. A denied request, a rate limit, or a generation rejection cannot trigger a resend.
 
-`ACTION OK` confirms the API call returned. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. Known HTTP statuses, workspace-selection failures, and Gemini generation rejections appear as sanitized error labels. The report contains no prompt, response, credential, or remote ID values.
+`ACTION OK` confirms the API call returned and reports elapsed milliseconds, including time waiting for pacing. `passed` counts scenarios that completed all their checks, while `partial` counts scenarios with skipped features. Rate limits and unsupported scenarios have separate totals. A phase without a completed scenario is unverified. Known HTTP statuses, workspace-selection failures, and Gemini generation rejections appear as sanitized error labels. The report contains no prompt, response, credential, or remote ID values.
 
-Before creating a remote test object, the suite writes a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
+The first Ctrl+C stops scheduling scenarios after the active scenarios finish and get a chance to clean up. An interrupted run exits with status 130. A second Ctrl+C can leave work for recovery.
+
+Before dispatching a remote creation request, the suite marks that attempt in a private cleanup journal. It verifies the remote object ID and the run's unique marker in its title or chat history before deleting it, then verifies the deletion. If a provider or network error prevents confirmation, the suite keeps the journal and blocks another run. Recover only the selected account's pending test objects with:
 
 ```sh
 WEBAI_LIVE_TESTS=1 WEBAI_LIVE_RECOVER=1 WEBAI_LIVE_PROVIDER=chatgpt WEBAI_LIVE_ACCOUNT=personal \

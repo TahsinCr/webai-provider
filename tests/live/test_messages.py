@@ -78,8 +78,6 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
 
         marker = f"{self.context.marker}-chat"
         entry = self.context.new_remote("chat", marker)
-        entry["attempted"] = True
-        self.context.save()
         branch_entry = None
         try:
             chat = await self.context.session.chats.create(title=marker)
@@ -254,8 +252,6 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         exclude_ids=[chat.remote_id] if chat.remote_id else (),
                     )
                     branch_entry["markers"].extend([src_title, marker])
-                    branch_entry["attempted"] = True
-                    self.context.save()
 
                     branched = await self.call_or_skip_rate_limit(
                         "chats.branch",
@@ -279,9 +275,6 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                             f"{branch_marker} Reply with only: BRANCH",
                             model=Models.LOW,
                         )
-                        if pending_branch:
-                            branch_entry["attempted"] = True
-                            self.context.save()
                         branch_res = await self.call_or_skip_rate_limit(
                             "responses.create.branched",
                             branch_op.start,

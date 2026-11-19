@@ -975,6 +975,58 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_queued_action_does_not_require_remote_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "cleanup.json"
+            provider = SimpleNamespace(get_chat=AsyncMock(), delete_chat=AsyncMock())
+            gate = ActionGate(interval=0)
+            case = LiveAsyncTestCase("runTest")
+            case.context = LiveContext(
+                provider, LiveAccount("personal", "chatgpt", {}), gate=gate, journal_path=journal
+            )
+            entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
+            started, release = asyncio.Event(), asyncio.Event()
+
+            async def hold_slot():
+                started.set()
+                await release.wait()
+
+            holder = asyncio.create_task(gate.call_async(hold_slot))
+            try:
+                await started.wait()
+                mutation = AsyncMock()
+                task = asyncio.create_task(
+                    case.call_or_skip_rate_limit("chats.send", mutation, entry=entry)
+                )
+                await asyncio.sleep(0)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+                await holder
+
+            mutation.assert_not_awaited()
+            self.assertFalse(entry["attempted"])
+            await case.context.cleanup_entry_async(entry)
+            provider.get_chat.assert_not_awaited()
+            provider.delete_chat.assert_not_awaited()
+            self.assertFalse(journal.exists())
+
+    async def test_live_action_logs_elapsed_milliseconds(self) -> None:
+        context = LiveContext(
+            SimpleNamespace(), LiveAccount("personal", "chatgpt", {}), gate=ActionGate(interval=0)
+        )
+        clock = SimpleNamespace(monotonic=Mock(side_effect=(10.0, 10.125)))
+        with (
+            patch("tests.live.support.context.time", clock),
+            patch("builtins.print") as output,
+        ):
+            self.assertEqual(
+                await context.call_async("fixture", AsyncMock(return_value="ok")), "ok"
+            )
+        output.assert_called_once_with("ACTION OK  fixture  125 ms", flush=True)
+
     async def test_async_rate_limit_without_remote_id_preserves_attempted_and_journal(self) -> None:
         from webaiprovider.errors import RateLimited
 
@@ -992,8 +1044,6 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
                     gate=ActionGate(interval=0),
                 )
                 entry = case.context.new_remote("chat", f"{case.context.marker}-chat")
-                entry["attempted"] = True
-                case.context.save()
                 chat = SimpleNamespace(remote_id=None)
 
                 async def rate_limited_send():

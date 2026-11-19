@@ -479,8 +479,20 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     ):
         from webaiprovider.errors import RateLimited
 
+        async def attempt():
+            if not entry["attempted"]:
+                entry["attempted"] = True
+                self.context.save()
+            try:
+                return await action()
+            finally:
+                if chat is not None:
+                    self.context.record_chat_id(entry, chat)
+
         try:
-            return await self.call_api(label, action, expected_errors=(RateLimited,))
+            return await self.call_api(
+                label, attempt if entry is not None else action, expected_errors=(RateLimited,)
+            )
         except RateLimited as exc:
             self._skip_on_rate_limit(label, exc, entry, chat)
 

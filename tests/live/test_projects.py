@@ -24,8 +24,6 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
 
         marker = f"{self.context.marker}-p"
         entry = self.context.new_remote("project", marker)
-        entry["attempted"] = True
-        self.context.save()
         try:
             project = await self.call_or_skip_rate_limit(
                 "projects.create",
@@ -76,8 +74,6 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                 ):
                     loose_title = f"{self.context.marker}-loose"
                     chat_entry = self.context.new_remote("chat", loose_title)
-                    chat_entry["attempted"] = True
-                    self.context.save()
 
                     loose_chat = await self.context.session.chats.create(
                         title=f"{loose_title}-draft"
@@ -126,8 +122,6 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                     if isinstance(self.context.session, AsyncChatGPTProvider):
                         second_marker = f"{self.context.marker}-p2"
                         second_project_entry = self.context.new_remote("project", second_marker)
-                        second_project_entry["attempted"] = True
-                        self.context.save()
                         project2 = await self.call_or_skip_rate_limit(
                             "projects.create_second",
                             lambda: self.context.session.projects.create(second_marker),

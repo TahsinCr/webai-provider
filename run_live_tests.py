@@ -111,7 +111,7 @@ def _matrix() -> tuple[tuple[str, str], ...] | None:
 
 def _live_command(recovering: bool) -> list[str]:
     if recovering:
-        return [sys.executable, "-m", "unittest", "tests.live.test_cleanup", "-v"]
+        return [sys.executable, "-m", "unittest", "tests.live.test_cleanup", "-v", "-c"]
     return [
         sys.executable,
         "-m",
@@ -124,6 +124,7 @@ def _live_command(recovering: bool) -> list[str]:
         "-p",
         "test_*.py",
         "-v",
+        "-c",
     ]
 
 
@@ -263,15 +264,22 @@ def main() -> int:
             "recovering": recovering,
             "output_lock": output_lock,
         }
-        if len(providers) == 1:
-            outcomes = [_run_provider(providers[0], **options)]
-        else:
-            workers = len(providers) if supports_process_credentials_lock() else 1
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [
-                    pool.submit(_run_provider, provider, **options) for provider in providers
-                ]
+        workers = (
+            len(providers) if len(providers) > 1 and supports_process_credentials_lock() else 1
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_run_provider, provider, **options) for provider in providers]
+            try:
                 outcomes = [future.result() for future in futures]
+            except KeyboardInterrupt:
+                for future in futures:
+                    future.cancel()
+                print(
+                    "\nLive run interrupted. Waiting for active scenarios and cleanup.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 130
 
     outcomes.sort(key=lambda item: (item.provider, item.api))
     print("\nLive API scenario summary:", flush=True)
@@ -305,4 +313,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None

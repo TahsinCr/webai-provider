@@ -75,11 +75,10 @@ class AsyncModelApiTests(LiveAsyncTestCase):
         for model in models:
             marker = f"{self.context.marker}-m-{model.id}"
             entry = None if use_temporary else self.context.new_remote("chat", marker)
-            if entry is not None:
-                entry["attempted"] = True
-                self.context.save()
-            chat = await self.context.session.chats.create(title=marker, temporary=use_temporary)
             try:
+                chat = await self.context.session.chats.create(
+                    title=marker, temporary=use_temporary
+                )
                 if entry is not None:
                     self.context.record_chat_id(entry, chat)
                 efforts = model.efforts.list()
@@ -89,7 +88,7 @@ class AsyncModelApiTests(LiveAsyncTestCase):
                     else None
                 )
                 op = chat.responses.create(
-                    "Reply with only: OK",
+                    "Reply with only: OK" if entry is None else f"{marker} Reply with only: OK",
                     model=model,
                     **({"effort": selected_effort} if selected_effort is not None else {}),
                 )

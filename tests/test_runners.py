@@ -114,7 +114,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(len(popen_cls.calls), len(PROVIDERS))
         first_call = popen_cls.calls[0]
         self.assertEqual(first_call["args"][0][2:6], ["unittest", "discover", "-s", "tests/live"])
-        self.assertEqual(first_call["args"][0][-3:], ["-p", "test_*.py", "-v"])
+        self.assertEqual(first_call["args"][0][-4:], ["-p", "test_*.py", "-v", "-c"])
         self.assertEqual(first_call["kwargs"]["env"]["WEBAI_LIVE_TESTS"], "1")
         seen_pairs = {
             (
@@ -137,6 +137,20 @@ class TestRunnerTests(unittest.TestCase):
         }
         for p, paths in gate_files_by_provider.items():
             self.assertEqual(len(paths), 1, f"{p} must have one gate state")
+
+    def test_interrupted_live_run_returns_130_without_a_success_summary(self) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)),
+            patch("run_live_tests._matrix", return_value=(("grok", "async"),)),
+            patch("run_live_tests._pending_cleanup_files", return_value=[]),
+            patch("run_live_tests._run_provider", side_effect=KeyboardInterrupt),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(run_live_tests.main(), 130)
+        self.assertIn("Waiting for active scenarios and cleanup", stderr.getvalue())
+        self.assertNotIn("Live API scenario summary", stdout.getvalue())
 
     def test_live_runner_continues_api_matrix_after_failures(self) -> None:
         result = CompletedProcess([], 0)

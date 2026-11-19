@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,7 @@ class LiveContext:
     async def call_async(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
     ):
+        started = time.monotonic()
         try:
             value = await self.gate.call_async(action)
         except SafetyError:
@@ -92,9 +94,11 @@ class LiveContext:
             if isinstance(exc, expected_errors):
                 raise
             raise LiveApiError(
-                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed"
+                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed "
+                f"({round((time.monotonic() - started) * 1000)} ms)"
             ) from None
-        print(f"ACTION OK  {label}", flush=True)
+        elapsed = round((time.monotonic() - started) * 1000)
+        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
         return value
 
     def skip(self, label: str) -> None:
@@ -137,6 +141,7 @@ class LiveContext:
         excluded = {str(item) for item in entry.get("exclude_ids", ()) if item}
         if remote_id and remote_id not in excluded and entry.get("remote_id") != remote_id:
             entry["remote_id"] = remote_id
+            entry["attempted"] = True
             self.save()
 
     async def cleanup_pending_async(self) -> None:
