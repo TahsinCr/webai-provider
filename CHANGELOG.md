@@ -8,6 +8,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Use concrete provider types consistently for chats, projects, messages, responses, sources, artifacts, and project attachments across the blocking and async APIs.
 - Standardize provider project editors and reuse the current project snapshot through the shared mutation path.
+- Define browser-cookie selection, validation, and persistence rules once per provider, including known alternate session cookies.
 - Rename the Python import package from `webai_provider` to `webaiprovider`. The PyPI distribution remains `webai-provider`. Ship inline typing metadata and use `webaiprovider.__version__` as the package version source.
 - Replace the v1.3 `ProviderClient` API with account-scoped `Provider(account)` and `AsyncProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `ProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTProvider` or `AsyncChatGPTProvider`. Blocking calls reuse the same async implementation through a persistent event loop.
 - Send and read through `chat.responses`. Create a chat with `provider.chats.create()` or find an existing one with `provider.chats.get(id)`. Then `chat.responses.create(prompt)` prepares an operation, `operation.stream()` yields events, and `operation.wait()` returns the completed response. Both API variants also offer `chat.ask()` and `chat.stream()` shortcuts.

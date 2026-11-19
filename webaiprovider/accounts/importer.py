@@ -3,15 +3,10 @@ from urllib.parse import urlsplit
 
 from .cookies import import_cookies
 from .credentials import CredentialStore, save_session
-from .filters import REQUIRED_PROVIDER_COOKIES, ProviderCookieFilter
+from .filters import PROVIDER_COOKIE_POLICIES, ProviderCookieFilter
 from .profiles import BrowserProfile, default_profile
 
-_ORIGIN_TO_PROVIDER = {
-    "https://chatgpt.com": "chatgpt",
-    "https://claude.ai": "claude",
-    "https://gemini.google.com": "gemini",
-    "https://grok.com": "grok",
-}
+_ORIGIN_TO_PROVIDER = {rule.origin: name for name, rule in PROVIDER_COOKIE_POLICIES.items()}
 
 
 class CookieReader:
@@ -30,7 +25,7 @@ class CookieReader:
                 return _ORIGIN_TO_PROVIDER[origin]
             raise ValueError(f"unsupported session origin: {origin_or_provider}")
         provider = origin_or_provider.strip().lower()
-        if provider not in _ORIGIN_TO_PROVIDER.values():
+        if provider not in PROVIDER_COOKIE_POLICIES:
             raise ValueError(f"unsupported provider: {origin_or_provider}")
         return provider
 
@@ -52,9 +47,10 @@ def import_browser_session(
     required_cookie: str | None = None,
 ) -> dict[str, str]:
     ProviderCookieFilter.validate_origin(origin)
-    req = required_cookie or REQUIRED_PROVIDER_COOKIES.get(origin)
     cookies = CookieReader.read_provider_cookies(origin, profile=profile)
-    validated = ProviderCookieFilter.filter_cookies(origin, cookies, required_cookie=req)
+    validated = ProviderCookieFilter.filter_cookies(
+        origin, cookies, required_cookie=required_cookie
+    )
     if target is not None:
         save_session(target, validated)
     return validated

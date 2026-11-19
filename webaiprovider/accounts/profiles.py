@@ -4,7 +4,6 @@ import configparser
 import json
 import os
 import plistlib
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -30,9 +29,6 @@ from ..errors import (
 
 __all__ = [
     "BrowserProfile",
-    "HOSTS",
-    "NAMES",
-    "AUTH_COOKIE",
     "default_profile",
     "list_profiles",
     "snapshot_sqlite_file",
@@ -56,36 +52,6 @@ _PROFILE_ERROR_MAP = {
     6: ProfileKeyringError,
     7: ProfileDecryptionError,
 }
-
-HOSTS = {
-    "chatgpt": "chatgpt.com",
-    "gemini": "gemini.google.com",
-    "claude": "claude.ai",
-    "grok": "grok.com",
-}
-
-NAMES = {
-    "chatgpt": {"oai-did", "cf_clearance", "__cf_bm", "__Host-next-auth.csrf-token"},
-    "gemini": {
-        "__Secure-1PSID",
-        "__Secure-1PSIDTS",
-        "__Secure-3PSID",
-        "__Secure-3PSIDTS",
-        "SID",
-        "HSID",
-        "SSID",
-        "APISID",
-        "SAPISID",
-        "__Secure-1PAPISID",
-        "__Secure-3PAPISID",
-    },
-    "claude": {"sessionKey", "lastActiveOrg", "anthropic-device-id", "__cf_bm", "cf_clearance"},
-    "grok": set(),
-}
-
-AUTH_COOKIE = re.compile(r"__Secure-(?:next-auth|authjs)\.session-token(?:\.\d+)?\Z")
-_GROK_AUTH_COOKIE = re.compile(r"(?:^|[_-])(?:auth|session|sso|token)(?:[_-]|$)", re.IGNORECASE)
-_GROK_NON_AUTH_COOKIES = {"grok_device_id", "__cf_bm", "cf_clearance"}
 
 
 def _failure_code(error):
@@ -464,7 +430,7 @@ def snapshot_sqlite_file(
 
 
 def _firefox_rows(cookie_file, provider):
-    from .cookies import HOSTS
+    from .filters import PROVIDER_COOKIE_POLICIES
 
     source = Path(cookie_file)
 
@@ -475,17 +441,17 @@ def _firefox_rows(cookie_file, provider):
             scope = (
                 " AND COALESCE(originAttributes, '') = ''" if "originAttributes" in columns else ""
             )
-            host = HOSTS[provider]
-            domains = [host, "." + host]
-            if provider == "gemini":
-                domains.extend(["google.com", ".google.com"])
+            policy = PROVIDER_COOKIE_POLICIES[provider]
+            domains = {policy.host, "." + policy.host}
+            if policy.browser_domain is not None:
+                domains.update({policy.browser_domain, "." + policy.browser_domain})
             query = (
                 "SELECT host,path,isSecure,expiry,name,value,isHttpOnly FROM moz_cookies WHERE host IN ("
                 + ",".join("?" for _ in domains)
                 + ")"
                 + scope
             )
-            return list(database.execute(query, domains))
+            return list(database.execute(query, tuple(domains)))
 
     try:
         return read(source)
@@ -512,7 +478,7 @@ def _firefox_rows(cookie_file, provider):
 
 
 def _firefox_session_cookies(directory, provider):
-    from .cookies import HOSTS
+    from .filters import PROVIDER_COOKIE_POLICIES
 
     candidates = [
         directory / "sessionstore-backups/recovery.jsonlz4",
@@ -546,9 +512,10 @@ def _firefox_session_cookies(directory, provider):
                 cookies.extend(window.get("cookies") or [])
     except (OSError, ValueError, RuntimeError):
         return []
-    domains = {HOSTS[provider], "." + HOSTS[provider]}
-    if provider == "gemini":
-        domains.update({"google.com", ".google.com"})
+    policy = PROVIDER_COOKIE_POLICIES[provider]
+    domains = {policy.host, "." + policy.host}
+    if policy.browser_domain is not None:
+        domains.update({policy.browser_domain, "." + policy.browser_domain})
     return [
         cookie
         for cookie in cookies

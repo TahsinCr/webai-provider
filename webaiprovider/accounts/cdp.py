@@ -13,14 +13,8 @@ from urllib.parse import urlsplit
 
 import websocket
 
-_PROVIDER_ORIGINS = frozenset(
-    {
-        "https://chatgpt.com",
-        "https://gemini.google.com",
-        "https://claude.ai",
-        "https://grok.com",
-    }
-)
+from .filters import ALLOWED_PROVIDER_ORIGINS
+
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
 _MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 _MAX_EVENT_QUEUE_BYTES = 8 * 1024 * 1024
@@ -100,7 +94,7 @@ def _page_origin(value: str) -> str | None:
         origin += f":{port}"
     if (
         parts.scheme != "https"
-        or origin not in _PROVIDER_ORIGINS
+        or origin not in ALLOWED_PROVIDER_ORIGINS
         or parts.username
         or parts.password
     ):
@@ -320,83 +314,3 @@ def read_provider_cookies(cdp_url: str, provider_url: str) -> list[dict]:
     if not isinstance(cookies, list) or any(not isinstance(cookie, dict) for cookie in cookies):
         raise DevToolsError("Browser returned an invalid cookie list")
     return cookies
-
-
-def capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]:
-    """Capture the authenticated ChatGPT /me request from the connected page."""
-    base = _local_http_base(cdp_url)
-    origin = "https://chatgpt.com"
-    page = _page_for_origin(base, origin)
-    requests = {}
-    extra_headers = {}
-    responses = {}
-
-    def bound(mapping, key, value):
-        mapping[key] = value
-        while len(mapping) > 256:
-            mapping.pop(next(iter(mapping)))
-
-    def result_for(request_id):
-        if (
-            request_id not in requests
-            or request_id not in extra_headers
-            or request_id not in responses
-        ):
-            return None
-        status = responses.pop(request_id)
-        request = requests.pop(request_id)
-        headers = extra_headers.pop(request_id)
-        if not 200 <= status < 300:
-            return None
-        merged_headers = request.get("headers", {})
-        if not isinstance(merged_headers, dict):
-            merged_headers = {}
-        merged_headers = {**merged_headers, **headers}
-        return request["url"], merged_headers
-
-    with DevToolsConnection(page["webSocketDebuggerUrl"]) as connection:
-        connection.call("Network.enable")
-        connection.call("Page.navigate", {"url": f"{origin}/"})
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise DevToolsError(
-                    "Timed out waiting for an authenticated ChatGPT account request"
-                )
-            event = connection.next_event(remaining)
-            params = event.get("params", {})
-            request_id = params.get("requestId")
-            if not isinstance(request_id, str):
-                continue
-            method = event.get("method")
-            if method == "Network.requestWillBeSent":
-                request = params.get("request", {})
-                if not isinstance(request, dict) or request.get("method") != "GET":
-                    continue
-                try:
-                    request_url = urlsplit(request.get("url", ""))
-                except ValueError:
-                    continue
-                if (
-                    request_url.scheme != "https"
-                    or request_url.hostname != "chatgpt.com"
-                    or request_url.path != "/backend-api/me"
-                ):
-                    continue
-                bound(requests, request_id, request)
-            elif method == "Network.requestWillBeSentExtraInfo":
-                headers = params.get("headers", {})
-                bound(
-                    extra_headers,
-                    request_id,
-                    headers if isinstance(headers, dict) else {},
-                )
-            elif method == "Network.responseReceived" and request_id in requests:
-                response = params.get("response", {})
-                status = response.get("status") if isinstance(response, dict) else None
-                if isinstance(status, (int, float)):
-                    bound(responses, request_id, int(status))
-            captured = result_for(request_id)
-            if captured is not None:
-                return captured

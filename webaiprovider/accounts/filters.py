@@ -2,20 +2,22 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..errors import AccountPaused
+from ..providers.chatgpt.auth import COOKIE_POLICY as CHATGPT_COOKIES
+from ..providers.claude.auth import COOKIE_POLICY as CLAUDE_COOKIES
+from ..providers.gemini.auth import COOKIE_POLICY as GEMINI_COOKIES
+from ..providers.grok.auth import COOKIE_POLICY as GROK_COOKIES
 
-REQUIRED_PROVIDER_COOKIES = {
-    "https://chatgpt.com": "__Secure-next-auth.session-token",
-    "https://claude.ai": "sessionKey",
-    "https://gemini.google.com": "__Secure-1PSID",
-    "https://grok.com": "sso",
+PROVIDER_COOKIE_POLICIES = {
+    "chatgpt": CHATGPT_COOKIES,
+    "claude": CLAUDE_COOKIES,
+    "gemini": GEMINI_COOKIES,
+    "grok": GROK_COOKIES,
 }
-
-ALLOWED_PROVIDER_ORIGINS = (
-    "https://chatgpt.com",
-    "https://claude.ai",
-    "https://gemini.google.com",
-    "https://grok.com",
-)
+COOKIE_POLICIES_BY_ORIGIN = {rule.origin: rule for rule in PROVIDER_COOKIE_POLICIES.values()}
+REQUIRED_PROVIDER_COOKIES = {
+    origin: rule.required for origin, rule in COOKIE_POLICIES_BY_ORIGIN.items()
+}
+ALLOWED_PROVIDER_ORIGINS = tuple(COOKIE_POLICIES_BY_ORIGIN)
 
 
 class ProviderCookieFilter:
@@ -42,30 +44,13 @@ class ProviderCookieFilter:
         cls.validate_origin(origin)
         if not isinstance(cookies, dict) or not cookies:
             raise AccountPaused("Reverify your session once through the Accounts section")
-        req = required_cookie or REQUIRED_PROVIDER_COOKIES.get(origin)
-        if req is not None and not cookies.get(req):
-            prefix = f"{req}."
-            chunks = {
-                key[len(prefix) :]
-                for key in cookies
-                if isinstance(key, str)
-                and key.startswith(prefix)
-                and key[len(prefix) :].isascii()
-                and key[len(prefix) :].isdigit()
-            }
-            expected = {str(index) for index in range(len(chunks))}
-            chunked_cookie_present = (
-                bool(chunks)
-                and chunks == expected
-                and all(cookies.get(prefix + index) for index in expected)
-            )
-            if not chunked_cookie_present:
-                raise AccountPaused("Reverify your session once through the Accounts section")
         for key, val in cookies.items():
             if not isinstance(key, str) or not isinstance(val, str):
                 raise AccountPaused("Session record is invalid")
-            if "\n" in key + val or "\r" in key + val:
+            if any(char in key + val for char in "\n\r\0"):
                 raise AccountPaused("Session record is invalid")
+        if not COOKIE_POLICIES_BY_ORIGIN[origin].accepted(cookies, required_cookie):
+            raise AccountPaused("Reverify your session once through the Accounts section")
         return dict(cookies)
 
     @classmethod

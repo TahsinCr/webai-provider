@@ -13,13 +13,9 @@ from ..errors import (
     ProfileSessionNotFoundError,
     ProfileTimeoutError,
 )
+from .filters import PROVIDER_COOKIE_POLICIES, ProviderCookieFilter
 from .profiles import (
-    _GROK_AUTH_COOKIE,
-    _GROK_NON_AUTH_COOKIES,
     _PROFILE_ERROR_MAP,
-    AUTH_COOKIE,
-    HOSTS,
-    NAMES,
     BrowserProfile,
     _failure_code,
     _firefox_rows,
@@ -29,7 +25,8 @@ from .profiles import (
 
 
 def select_cookies(jar, provider):
-    host, values = HOSTS[provider], {}
+    policy = PROVIDER_COOKIE_POLICIES[provider]
+    host, values = policy.host, {}
 
     def value_of(cookie, key, default=None):
         return (
@@ -39,7 +36,7 @@ def select_cookies(jar, provider):
     now = time.time()
     for cookie in sorted(jar, key=lambda item: len(value_of(item, "domain", "") or "")):
         domain = (value_of(cookie, "domain", "") or "").lstrip(".").lower()
-        if not domain or not (host == domain or host.endswith("." + domain)):
+        if not domain or not ProviderCookieFilter.domain_matches(host, domain):
             continue
         name, value = value_of(cookie, "name"), value_of(cookie, "value")
         if not isinstance(name, str) or not name or not isinstance(value, str):
@@ -52,28 +49,14 @@ def select_cookies(jar, provider):
         )
         if expired or value_of(cookie, "path", "/") != "/":
             continue
-        grok_auth_cookie = (
-            provider == "grok"
-            and name not in _GROK_NON_AUTH_COOKIES
-            and _GROK_AUTH_COOKIE.search(name)
-            and bool(value_of(cookie, "secure", False))
-        )
-        if (
-            name not in NAMES[provider]
-            and not (provider == "chatgpt" and AUTH_COOKIE.fullmatch(name))
-            and not grok_auth_cookie
-        ):
+        if not policy.matches_name(name):
+            continue
+        if name in policy.secure_names and not value_of(cookie, "secure", False):
             continue
         if any(c in name + value for c in "\r\n\0"):
             continue
         values[name] = value
-    if provider == "chatgpt":
-        required = any(AUTH_COOKIE.fullmatch(name) for name in values)
-    elif provider == "grok":
-        required = bool(values)
-    else:
-        required = bool(values.get("__Secure-1PSID" if provider == "gemini" else "sessionKey"))
-    if not required:
+    if not policy.accepted(values):
         raise ProfileSessionNotFoundError()
     return values
 
@@ -84,7 +67,7 @@ def import_cookies(
     *,
     profile: BrowserProfile | None = None,
 ):
-    if provider not in HOSTS:
+    if provider not in PROVIDER_COOKIE_POLICIES:
         raise ValueError("unsupported provider")
     from . import profiles
 
@@ -161,9 +144,8 @@ def _main():
                     )
                 )
         else:
-            cookie_domain = (
-                "google.com" if data["provider"] == "gemini" else HOSTS[data["provider"]]
-            )
+            policy = PROVIDER_COOKIE_POLICIES[data["provider"]]
+            cookie_domain = policy.browser_domain or policy.host
             loader = getattr(browser_cookie3, data["cookie_backend"])
             try:
                 jar = loader(

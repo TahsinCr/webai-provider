@@ -2,21 +2,17 @@ import asyncio
 import time
 from collections.abc import Mapping
 
+from ..accounts.cookie_policy import is_cookie_chunk
 from ..accounts.credentials import read_session, read_session_async, save_session_async
-from ..accounts.filters import REQUIRED_PROVIDER_COOKIES, ProviderCookieFilter
+from ..accounts.filters import COOKIE_POLICIES_BY_ORIGIN, ProviderCookieFilter
 from .http import AsyncHTTPTransport
 
 _SECONDARY_PERSIST_INTERVAL = 5.0
-_CRITICAL_COOKIE_NAMES = ("sso", "sso-rw", "__cf_bm", "cf_clearance")
 
 
-def _chunked_cookie_values(cookies: Mapping[str, str], prefix: str) -> dict[str, str]:
+def _chunked_cookie_values(cookies: Mapping[str, str], name: str) -> dict[str, str]:
     """Return integer-indexed chunk entries for a split session cookie."""
-    return {
-        key: value
-        for key, value in cookies.items()
-        if key.startswith(prefix) and (suffix := key[len(prefix) :]).isascii() and suffix.isdigit()
-    }
+    return {key: value for key, value in cookies.items() if is_cookie_chunk(key, name)}
 
 
 def _critical_cookies_changed(
@@ -26,14 +22,15 @@ def _critical_cookies_changed(
     required_cookie: str | None,
 ) -> bool:
     """Return whether any auth, chunked session, or bot-challenge cookie changed."""
-    required = required_cookie or REQUIRED_PROVIDER_COOKIES.get(origin)
-    if required is not None:
-        if cookies.get(required) != saved_cookies.get(required):
+    policy = COOKIE_POLICIES_BY_ORIGIN[origin]
+    for name in policy.authentication_names(required_cookie):
+        if cookies.get(name) != saved_cookies.get(name):
             return True
-        prefix = f"{required}."
-        if _chunked_cookie_values(cookies, prefix) != _chunked_cookie_values(saved_cookies, prefix):
+        if policy.allow_chunks and (
+            _chunked_cookie_values(cookies, name) != _chunked_cookie_values(saved_cookies, name)
+        ):
             return True
-    return any(cookies.get(name) != saved_cookies.get(name) for name in _CRITICAL_COOKIE_NAMES)
+    return any(cookies.get(name) != saved_cookies.get(name) for name in policy.critical_names)
 
 
 class HttpSession(AsyncHTTPTransport):

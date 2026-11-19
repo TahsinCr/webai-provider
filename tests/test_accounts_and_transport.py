@@ -127,6 +127,25 @@ class AccountsTests(unittest.TestCase):
 
 
 class AuthTests(unittest.TestCase):
+    def test_browser_selection_and_import_share_provider_authentication_policy(self):
+        from webaiprovider.accounts.cookies import select_cookies
+        from webaiprovider.errors import ProfileSessionNotFoundError
+
+        for provider, host, name in (
+            ("chatgpt", "chatgpt.com", "__Secure-authjs.session-token"),
+            ("grok", "grok.com", "sso-rw"),
+        ):
+            with self.subTest(provider=provider):
+                cookie = {"name": name, "value": "fixture", "domain": host, "secure": True}
+                selected = select_cookies([cookie], provider)
+                with patch.object(CookieReader, "read_provider_cookies", return_value=selected):
+                    self.assertEqual(import_browser_session(f"https://{host}"), selected)
+                with self.assertRaises(ProfileSessionNotFoundError):
+                    select_cookies([dict(cookie, domain="example.test")], provider)
+                if provider == "grok":
+                    with self.assertRaises(ProfileSessionNotFoundError):
+                        select_cookies([dict(cookie, secure=False)], provider)
+
     def test_origin_validation(self):
         for origin in ALLOWED_PROVIDER_ORIGINS:
             self.assertEqual(ProviderCookieFilter.validate_origin(origin), origin)

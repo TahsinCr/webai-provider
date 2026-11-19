@@ -8,6 +8,7 @@ from collections import deque
 from unittest.mock import patch
 
 from webaiprovider.accounts import cdp
+from webaiprovider.providers.chatgpt.session import capture_chatgpt_auth
 
 
 class FakeSocket:
@@ -155,7 +156,7 @@ class DevToolsBoundaryTests(unittest.TestCase):
             patch.object(cdp, "_page_for_origin", return_value=page),
             patch.object(cdp, "DevToolsConnection", return_value=Connection()),
         ):
-            url, headers = cdp.capture_chatgpt_auth("http://127.0.0.1:9222", timeout=1)
+            url, headers = capture_chatgpt_auth("http://127.0.0.1:9222", timeout=1)
 
         self.assertEqual(url, "https://chatgpt.com/backend-api/me")
         self.assertEqual(headers["authorization"], "Bearer session")

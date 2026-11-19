@@ -1,8 +1,5 @@
 from .account import Account
 from .cookies import (
-    AUTH_COOKIE,
-    HOSTS,
-    NAMES,
     import_cookies,
     select_cookies,
 )
@@ -56,9 +53,6 @@ __all__ = [
     "snapshot_sqlite_file",
     "select_cookies",
     "import_cookies",
-    "HOSTS",
-    "NAMES",
-    "AUTH_COOKIE",
     "ALLOWED_PROVIDER_ORIGINS",
     "REQUIRED_PROVIDER_COOKIES",
     "ProviderCookieFilter",

@@ -6,18 +6,20 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from ...accounts import (
     CredentialStore,
+    cdp,
     read_session,
     read_session_async,
     save_session,
     save_session_async,
 )
-from ...accounts.cdp import DevToolsError, capture_chatgpt_auth, is_devtools_available
+from ...accounts.cdp import DevToolsError, is_devtools_available
 from ...errors import AccountPaused
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
 from .errors import ChatGPTAuthenticationError, ChatGPTError
@@ -255,3 +257,83 @@ class BrowserSession:
 
     def is_ready(self) -> bool:
         return is_devtools_available(self.cdp_url)
+
+
+def capture_chatgpt_auth(cdp_url: str, timeout: float = 15.0) -> tuple[str, dict]:
+    """Capture the authenticated ChatGPT /me request from the connected page."""
+    base = cdp._local_http_base(cdp_url)
+    origin = "https://chatgpt.com"
+    page = cdp._page_for_origin(base, origin)
+    requests = {}
+    extra_headers = {}
+    responses = {}
+
+    def bound(mapping, key, value):
+        mapping[key] = value
+        while len(mapping) > 256:
+            mapping.pop(next(iter(mapping)))
+
+    def result_for(request_id):
+        if (
+            request_id not in requests
+            or request_id not in extra_headers
+            or request_id not in responses
+        ):
+            return None
+        status = responses.pop(request_id)
+        request = requests.pop(request_id)
+        headers = extra_headers.pop(request_id)
+        if not 200 <= status < 300:
+            return None
+        merged_headers = request.get("headers", {})
+        if not isinstance(merged_headers, dict):
+            merged_headers = {}
+        merged_headers = {**merged_headers, **headers}
+        return request["url"], merged_headers
+
+    with cdp.DevToolsConnection(page["webSocketDebuggerUrl"]) as connection:
+        connection.call("Network.enable")
+        connection.call("Page.navigate", {"url": f"{origin}/"})
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DevToolsError(
+                    "Timed out waiting for an authenticated ChatGPT account request"
+                )
+            event = connection.next_event(remaining)
+            params = event.get("params", {})
+            request_id = params.get("requestId")
+            if not isinstance(request_id, str):
+                continue
+            method = event.get("method")
+            if method == "Network.requestWillBeSent":
+                request = params.get("request", {})
+                if not isinstance(request, dict) or request.get("method") != "GET":
+                    continue
+                try:
+                    request_url = urlsplit(request.get("url", ""))
+                except ValueError:
+                    continue
+                if (
+                    request_url.scheme != "https"
+                    or request_url.hostname != "chatgpt.com"
+                    or request_url.path != "/backend-api/me"
+                ):
+                    continue
+                bound(requests, request_id, request)
+            elif method == "Network.requestWillBeSentExtraInfo":
+                headers = params.get("headers", {})
+                bound(
+                    extra_headers,
+                    request_id,
+                    headers if isinstance(headers, dict) else {},
+                )
+            elif method == "Network.responseReceived" and request_id in requests:
+                response = params.get("response", {})
+                status = response.get("status") if isinstance(response, dict) else None
+                if isinstance(status, (int, float)):
+                    bound(responses, request_id, int(status))
+            captured = result_for(request_id)
+            if captured is not None:
+                return captured
