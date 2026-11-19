@@ -323,9 +323,11 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             new_title = ctx.parameters["title"]
             if new_title is not None and new_title != target.title:
                 if target.remote_id:
-                    async with runtime.activity():
-                        self.provider._require_provider()
-                        await self.provider._rename_chat_data(target.remote_id, new_title)
+                    lock = runtime.send_lock(target.remote_id)
+                    async with runtime.activity(send_lock_id=id(lock)):
+                        async with lock:
+                            self.provider._require_provider()
+                            await self.provider._rename_chat_data(target.remote_id, new_title)
                     ctx.metadata["remote_rename"] = True
                 target.title = new_title
             return target
@@ -368,9 +370,11 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
 
         async def work(_ctx) -> None:
             if target.remote_id:
-                async with runtime.activity():
-                    self.provider._require_provider()
-                    await self.provider._delete_chat_data(target.remote_id)
+                lock = runtime.send_lock(target.remote_id)
+                async with runtime.activity(send_lock_id=id(lock)):
+                    async with lock:
+                        self.provider._require_provider()
+                        await self.provider._delete_chat_data(target.remote_id)
 
         async def on_success(ctx) -> None:
             if target.remote_id:

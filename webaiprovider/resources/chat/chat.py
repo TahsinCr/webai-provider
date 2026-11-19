@@ -170,9 +170,13 @@ class AsyncBranchableChat(AsyncChat):
         )
 
         async def work(ctx) -> AsyncChat:
-            branched = await provider._branch_chat_data(
-                self.remote_id, ctx.parameters["message_id"]
-            )
+            lock = runtime.send_lock(self.remote_id)
+            async with runtime.activity(send_lock_id=id(lock)):
+                async with lock:
+                    provider._require_provider()
+                    branched = await provider._branch_chat_data(
+                        self.remote_id, ctx.parameters["message_id"]
+                    )
             if not isinstance(branched, Conversation):
                 raise ProviderError("Provider returned an invalid branched conversation")
             project = (
@@ -236,7 +240,11 @@ class AsyncMovableChat(AsyncChat):
 
         async def work(ctx) -> AsyncChat:
             if self.remote_id:
-                await provider._move_chat_data(self.remote_id, ctx.parameters["project_id"])
+                lock = runtime.send_lock(self.remote_id)
+                async with runtime.activity(send_lock_id=id(lock)):
+                    async with lock:
+                        provider._require_provider()
+                        await provider._move_chat_data(self.remote_id, ctx.parameters["project_id"])
             self.project = target
             return self
 

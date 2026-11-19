@@ -66,8 +66,7 @@ class ProjectMutationsMixin:
         if not changes:
             return staged
         editor = self.editor
-        async with self._gate:
-            result = await editor.update(project_id, current=staged, **changes)
+        result = await editor.update(project_id, current=staged, **changes)
         if isinstance(result, ProjectData):
             self._invalidate_project_cache(project_id)
             return result
@@ -98,13 +97,12 @@ class ProjectMutationsMixin:
             else await self._get_project_data(project_id)
         )
         editor = self.editor
-        async with self._gate:
-            result = await editor.add_source(
-                project_id,
-                kind=kind,
-                existing_resources=before.resources,
-                **values,
-            )
+        result = await editor.add_source(
+            project_id,
+            kind=kind,
+            existing_resources=before.resources,
+            **values,
+        )
         if isinstance(result, Attachment):
             self._invalidate_project_cache(project_id)
             return replace(before, resources=(*before.resources, result))
@@ -139,14 +137,13 @@ class ProjectMutationsMixin:
         if source is None:
             raise ValueError("Project resource was not found")
         editor = self.editor
-        async with self._gate:
-            result = await editor.remove_source(
-                project_id,
-                current=before,
-                resource_id=resource_id,
-                resource_name=source.name,
-                resource=source,
-            )
+        result = await editor.remove_source(
+            project_id,
+            current=before,
+            resource_id=resource_id,
+            resource_name=source.name,
+            resource=source,
+        )
         if isinstance(result, ProjectData):
             self._invalidate_project_cache(project_id)
             return result

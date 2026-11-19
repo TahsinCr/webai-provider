@@ -187,7 +187,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     provider_type = ProviderType.CHATGPT
 
     _chat_page_size = DEFAULT_PAGE_SIZE
-    _chat_initial_page_floor = 16
+    _chat_initial_page_floor = 100
     _chat_type = AsyncChatGPTChat
     _project_type = AsyncChatGPTProject
     _message_type = AsyncChatGPTMessage
@@ -612,69 +612,66 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         return self._conversation(raw)
 
     async def _branch_chat_data(self, conversation_id: str, message_id: str) -> Conversation:
-        async with self._gate:
-            async with self._client_scope() as client:
-                current = self._conversation(
-                    await maybe_await(client.get_conversation(conversation_id))
-                )
-                _, target = target_message(current.messages, message_id, "assistant")
-                if "branch" not in target.actions:
-                    raise FeatureUnavailable(Capability.CHAT_BRANCH)
-                result = (
-                    await maybe_await(
-                        client.request(
-                            "POST",
-                            "https://chatgpt.com/backend-api/conversation/new_branch",
-                            json={"conversation_id": conversation_id, "message_id": message_id},
-                        )
+        async with self._client_scope() as client:
+            current = self._conversation(
+                await maybe_await(client.get_conversation(conversation_id))
+            )
+            _, target = target_message(current.messages, message_id, "assistant")
+            if "branch" not in target.actions:
+                raise FeatureUnavailable(Capability.CHAT_BRANCH)
+            result = (
+                await maybe_await(
+                    client.request(
+                        "POST",
+                        "https://chatgpt.com/backend-api/conversation/new_branch",
+                        json={"conversation_id": conversation_id, "message_id": message_id},
                     )
-                ).json()
-                preview = result.get("conversation") if isinstance(result, dict) else None
-                remote = preview.get("conversation_id") if isinstance(preview, dict) else None
-                if not isinstance(remote, str) or not remote or remote == conversation_id:
-                    raise ValueError("ChatGPT did not confirm a new conversation")
-                if quote(remote, safe="") != remote:
-                    raise ValueError("Invalid branch conversation identity")
-                mapping, node = preview.get("mapping"), preview.get("current_node")
-                if not isinstance(mapping, dict) or node not in mapping:
-                    raise ValueError("ChatGPT branch preview has no selected message path")
-                selected, seen = [], set()
-                while node in mapping and node not in seen:
-                    seen.add(node)
-                    item = mapping[node]
-                    if item.get("message"):
-                        selected.append(item["message"])
-                    node = item.get("parent")
-                preview = dict(
-                    preview,
-                    messages=list(reversed(selected)),
-                    pending_branch={
-                        "conversation_id": conversation_id,
-                        "message_id": message_id,
-                    },
                 )
-                preview.pop("mapping", None)
-                client.pending_branches = self._pending_branches
-                client.pending_branches[remote] = preview
-                client.pending_branches.move_to_end(remote)
-                while len(client.pending_branches) > 32:
-                    client.pending_branches.popitem(last=False)
-                remember = getattr(client, "_remember_conversation", None)
-                if callable(remember):
-                    remember(preview)
-                return self._conversation(preview)
+            ).json()
+            preview = result.get("conversation") if isinstance(result, dict) else None
+            remote = preview.get("conversation_id") if isinstance(preview, dict) else None
+            if not isinstance(remote, str) or not remote or remote == conversation_id:
+                raise ValueError("ChatGPT did not confirm a new conversation")
+            if quote(remote, safe="") != remote:
+                raise ValueError("Invalid branch conversation identity")
+            mapping, node = preview.get("mapping"), preview.get("current_node")
+            if not isinstance(mapping, dict) or node not in mapping:
+                raise ValueError("ChatGPT branch preview has no selected message path")
+            selected, seen = [], set()
+            while node in mapping and node not in seen:
+                seen.add(node)
+                item = mapping[node]
+                if item.get("message"):
+                    selected.append(item["message"])
+                node = item.get("parent")
+            preview = dict(
+                preview,
+                messages=list(reversed(selected)),
+                pending_branch={
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                },
+            )
+            preview.pop("mapping", None)
+            client.pending_branches = self._pending_branches
+            client.pending_branches[remote] = preview
+            client.pending_branches.move_to_end(remote)
+            while len(client.pending_branches) > 32:
+                client.pending_branches.popitem(last=False)
+            remember = getattr(client, "_remember_conversation", None)
+            if callable(remember):
+                remember(preview)
+            return self._conversation(preview)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
         if not title.strip():
             raise ValueError("title must be nonempty")
-        async with self._rename_gate:
-            async with self._client_scope() as client:
-                await maybe_await(client.rename_conversation(conversation_id, title.strip()))
+        async with self._client_scope() as client:
+            await maybe_await(client.rename_conversation(conversation_id, title.strip()))
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
-        async with self._gate:
-            async with self._client_scope() as client:
-                confirmed = await maybe_await(client.delete_conversation(conversation_id))
+        async with self._client_scope() as client:
+            confirmed = await maybe_await(client.delete_conversation(conversation_id))
         if confirmed is True:
             return
 
@@ -685,9 +682,8 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
-        async with self._rename_gate:
-            async with self._client_scope() as client:
-                await maybe_await(client.move_conversation(conversation_id, project_id))
+        async with self._client_scope() as client:
+            await maybe_await(client.move_conversation(conversation_id, project_id))
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         await self._wait_for_prepare()
@@ -707,11 +703,10 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         del options
         if type(memory_share) is not bool:
             raise TypeError("memory_share must be a bool")
-        async with self._gate:
-            async with self._client_scope() as client:
-                raw = await maybe_await(
-                    client.create_project(name, instructions, memory_share=memory_share)
-                )
+        async with self._client_scope() as client:
+            raw = await maybe_await(
+                client.create_project(name, instructions, memory_share=memory_share)
+            )
         return self._project(raw)
 
     async def _get_project_data(self, project_id: str) -> ProjectData:
@@ -742,7 +737,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self._gate:
+        async with self.runtime.project_lock(project_id):
             async with self._client_scope() as client:
                 url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
                 for attempt in (0, 1):
@@ -846,43 +841,39 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 publish(("done", None))
 
         timing = current_send_timing()
-        gate_wait_started = time.perf_counter_ns() if timing is not None else None
-        async with self._gate:
-            if gate_wait_started is not None:
-                timing.record(
-                    "provider_send_gate_wait_ms", time.perf_counter_ns() - gate_wait_started
-                )
-            send_task = asyncio.create_task(run_send())
-            stream_finished = False
-            try:
-                while True:
-                    kind, value = await queue.get()
-                    if kind == "done":
-                        stream_finished = True
-                        break
-                    if kind == "error":
-                        raise value
-                    yield value
-            finally:
+        if timing is not None:
+            timing.record("provider_send_gate_wait_ms", 0)
+        send_task = asyncio.create_task(run_send())
+        stream_finished = False
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind == "done":
+                    stream_finished = True
+                    break
+                if kind == "error":
+                    raise value
+                yield value
+        finally:
 
-                async def cleanup() -> None:
-                    if not send_task.done():
-                        send_task.cancel()
-                    with suppress(asyncio.CancelledError, Exception):
-                        await send_task
-                    if self._persistent_client and not stream_finished:
-                        await self._discard_client()
+            async def cleanup() -> None:
+                if not send_task.done():
+                    send_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await send_task
+                if self._persistent_client and not stream_finished:
+                    await self._discard_client()
 
-                cleanup_task = asyncio.create_task(cleanup())
-                cancelled = False
-                while not cleanup_task.done():
-                    try:
-                        await asyncio.shield(cleanup_task)
-                    except asyncio.CancelledError:
-                        cancelled = True
-                cleanup_task.result()
-                if cancelled:
-                    raise asyncio.CancelledError
+            cleanup_task = asyncio.create_task(cleanup())
+            cancelled = False
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup_task.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _upload_file(self, path: Any, *, cancel_event: Any = None) -> dict[str, Any]:
         import mimetypes

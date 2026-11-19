@@ -645,30 +645,29 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
 
         is_retry = request.action == MessageAction.RETRY
         conversation_id = request.conversation_id
-        async with self._gate:
-            parent_response_id = await self._resolve_parent_response_id(
-                request, file_attachments, image_attachments
-            )
-            body: dict[str, object] = {
-                "message": "" if is_retry else request.prompt,
-                "parentResponseId": parent_response_id,
-                "fileAttachments": file_attachments,
-                "imageAttachments": image_attachments,
-                "disableSearch": False,
-                "temporary": request.temporary,
-                "isRegenRequest": is_retry,
-            }
-            if model_mode:
-                body["modelMode"] = model_mode
-            if model or not model_mode:
-                body["modelName"] = model or selected_id
-            if request.project_id:
-                body["workspaceIds"] = [request.project_id]
-            path = (
-                "/rest/app-chat/conversations/new"
-                if not conversation_id
-                else "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses"
-            )
+        parent_response_id = await self._resolve_parent_response_id(
+            request, file_attachments, image_attachments
+        )
+        body: dict[str, object] = {
+            "message": "" if is_retry else request.prompt,
+            "parentResponseId": parent_response_id,
+            "fileAttachments": file_attachments,
+            "imageAttachments": image_attachments,
+            "disableSearch": False,
+            "temporary": request.temporary,
+            "isRegenRequest": is_retry,
+        }
+        if model_mode:
+            body["modelMode"] = model_mode
+        if model or not model_mode:
+            body["modelName"] = model or selected_id
+        if request.project_id:
+            body["workspaceIds"] = [request.project_id]
+        path = (
+            "/rest/app-chat/conversations/new"
+            if not conversation_id
+            else "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses"
+        )
 
         response_id = user_response_id = None
         streamed_text, streamed_analysis = StringIO(), StringIO()

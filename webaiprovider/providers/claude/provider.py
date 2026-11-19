@@ -162,19 +162,17 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
             raise ValueError("Chat title must contain 1–200 characters")
-        async with self._rename_gate:
-            await self.client.request(
-                "rename_chat", conversation_id=conversation_id, title=title.strip()
-            )
+        await self.client.request(
+            "rename_chat", conversation_id=conversation_id, title=title.strip()
+        )
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
         await self.client.request("delete_chat", conversation_id=conversation_id)
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
-        async with self._gate:
-            await self.client.request(
-                "move_chat", conversation_id=conversation_id, project_id=project_id
-            )
+        await self.client.request(
+            "move_chat", conversation_id=conversation_id, project_id=project_id
+        )
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         if cursor:
@@ -211,16 +209,15 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
         del options
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
             raise ValueError("Project name must contain 1–200 characters")
-        async with self._gate:
-            return project(
-                await self.client.request(
-                    "create_project", name=name.strip(), instructions=instructions
-                ),
-                self.account_id,
-            )
+        return project(
+            await self.client.request(
+                "create_project", name=name.strip(), instructions=instructions
+            ),
+            self.account_id,
+        )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self._gate:
+        async with self.runtime.project_lock(project_id):
             await self.client.request("delete_project", project_id=project_id)
 
     async def _stream_provider_events(

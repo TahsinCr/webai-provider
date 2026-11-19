@@ -288,17 +288,10 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
     async def _branch_chat_data(self, conversation_id: str, message_id: str) -> Conversation:
         current = await self._get_chat_data(conversation_id)
         _, target = target_message(current.messages, message_id, "assistant")
-        async with self._gate:
-            result = await self.rpc.call(
-                "KDNZr", [conversation_id, target.metadata["turn_id"]], "/app"
-            )
-            remote = rpc_value(result, 0, 0, 0)
-            if (
-                not isinstance(remote, str)
-                or not remote.startswith("c_")
-                or remote == conversation_id
-            ):
-                raise ProviderError("Gemini did not confirm a new conversation")
+        result = await self.rpc.call("KDNZr", [conversation_id, target.metadata["turn_id"]], "/app")
+        remote = rpc_value(result, 0, 0, 0)
+        if not isinstance(remote, str) or not remote.startswith("c_") or remote == conversation_id:
+            raise ProviderError("Gemini did not confirm a new conversation")
         chat = await self._get_chat_data(remote)
         title = rpc_value(result, 0, 0, 1)
         if isinstance(title, str) and title.strip():
@@ -308,17 +301,15 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         return chat
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
-        async with self._gate:
-            await self._connect()
-            await self.rpc.call("GzXR5e", [conversation_id], "/app", allow_empty=True)
+        await self._connect()
+        await self.rpc.call("GzXR5e", [conversation_id], "/app", allow_empty=True)
         self._chat_metadata.pop(conversation_id, None)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
             raise ValueError("Gemini chat title must contain 1–100 characters")
-        async with self._gate:
-            client = await self._connect()
-            await client.rename_conversation(conversation_id, title.strip())
+        client = await self._connect()
+        await client.rename_conversation(conversation_id, title.strip())
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         if self.notebooks is None:
@@ -350,13 +341,12 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             raise ValueError(
                 "Provide only a name when creating a notebook; edit instructions afterward"
             )
-        async with self._gate:
-            remote = await self.editor.create(name=name.strip())
+        remote = await self.editor.create(name=name.strip())
         return await self._get_project_data(remote)
 
     async def _delete_project_data(self, project_id: str) -> None:
         remote = notebook_id(project_id)
-        async with self._gate:
+        async with self.runtime.project_lock(project_id):
             await self.editor.delete(remote)
         self._project_contexts.remove(remote)
 
