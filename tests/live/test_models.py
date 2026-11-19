@@ -1,12 +1,46 @@
 """Live checks for the authenticated account's available model catalog."""
 
 import os
+import re
 from contextlib import suppress
 
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 
 from .support.case import LiveAsyncTestCase
+
+_CLAUDE_5_MODEL_RE = re.compile(r"^claude-([a-z]+)-5(?:-(\d+))?(?:-\d{8})?$")
+
+
+def _select_live_models(provider: str, models):
+    """Narrow live model execution to the current generation unless WEBAI_LIVE_ALL_MODELS=1."""
+    if os.environ.get("WEBAI_LIVE_ALL_MODELS") == "1":
+        return models
+    if provider == "chatgpt":
+        preferred = [item for item in models if item.id in {"gpt-6-instant", "gpt-6-thinking"}]
+        if preferred:
+            return preferred
+        gpt6 = [item for item in models if item.id == "gpt-6" or item.id.startswith("gpt-6-")]
+        return gpt6 or models
+    if provider == "claude":
+        max_minor_by_family: dict[str, int] = {}
+        parsed: list[tuple[str, int] | None] = []
+        for item in models:
+            match = _CLAUDE_5_MODEL_RE.match(item.id)
+            if not match:
+                parsed.append(None)
+                continue
+            family, minor = match.group(1), int(match.group(2) or 0)
+            parsed.append((family, minor))
+            if minor > max_minor_by_family.get(family, -1):
+                max_minor_by_family[family] = minor
+        latest_claude_5 = [
+            item
+            for item, info in zip(models, parsed, strict=True)
+            if info is not None and info[1] == max_minor_by_family[info[0]]
+        ]
+        return latest_claude_5 or models
+    return models
 
 
 class AsyncModelApiTests(LiveAsyncTestCase):
@@ -33,13 +67,7 @@ class AsyncModelApiTests(LiveAsyncTestCase):
             self.context.skip("models.send: unavailable_or_cannot_safely_clean_up")
             return
 
-        if (
-            self.context.account.provider == "chatgpt"
-            and os.environ.get("WEBAI_LIVE_ALL_MODELS") != "1"
-        ):
-            gpt6 = [item for item in models if item.id == "gpt-6" or item.id.startswith("gpt-6-")]
-            if gpt6:
-                models = gpt6
+        models = _select_live_models(self.context.account.provider, models)
 
         for model in models:
             marker = f"{self.context.marker}-m-{model.id}"

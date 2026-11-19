@@ -327,6 +327,57 @@ class ActionGateTests(unittest.TestCase):
         )
         self.assertTrue(all(case.__bases__ == (LiveAsyncTestCase,) for case in asynchronous))
 
+    def test_select_live_models_keeps_only_latest_claude_5x_per_family(self) -> None:
+        from tests.live.test_models import _select_live_models
+        from webaiprovider.resources.model.model import Model
+
+        claude_models = [
+            Model("claude-fable-5-2", "Claude Fable 5.2"),
+            Model("claude-opus-5-5", "Claude Opus 5.5"),
+            Model("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+            Model("claude-haiku-5-5", "Claude Haiku 5.5"),
+            Model("claude-fable-5-1", "Claude Fable 5.1"),
+            Model("claude-fable-5", "Claude Fable 5"),
+            Model("claude-opus-5", "Claude Opus 5"),
+            Model("claude-opus-4-8", "Claude Opus 4.8"),
+            Model("claude-3-opus-20240229", "Claude Opus 3"),
+            Model("claude-sonnet-5", "Claude Sonnet 5"),
+            Model("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ]
+        selected = _select_live_models("claude", claude_models)
+        self.assertEqual(
+            [item.id for item in selected],
+            [
+                "claude-fable-5-2",
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+            ],
+        )
+
+        free_tier_models = [
+            Model("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+            Model("claude-haiku-5-5", "Claude Haiku 5.5"),
+            Model("claude-sonnet-5", "Claude Sonnet 5"),
+            Model("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ]
+        self.assertEqual(
+            [item.id for item in _select_live_models("claude", free_tier_models)],
+            ["claude-sonnet-5-5", "claude-haiku-5-5"],
+        )
+
+        chatgpt_models = [
+            Model("gpt-6", "GPT-6"),
+            Model("gpt-6-instant", "GPT-6 Instant"),
+            Model("gpt-6-thinking", "GPT-6 Thinking"),
+            Model("gpt-6-t-mini", "GPT-6 Thinking Mini"),
+            Model("gpt-5-4", "GPT-5.4"),
+        ]
+        self.assertEqual(
+            [item.id for item in _select_live_models("chatgpt", chatgpt_models)],
+            ["gpt-6-instant", "gpt-6-thinking"],
+        )
+
     def test_serializes_actions_and_stops_at_fixed_budget(self) -> None:
         async def scenario() -> list[float]:
             gate = ActionGate(interval=0.02, timeout=1, limit=2)
