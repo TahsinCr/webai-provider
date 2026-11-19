@@ -449,7 +449,9 @@ class AsyncProvider(BaseProvider):
     async def _get_project_data(self, project_id: str) -> ProjectData:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
-    async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None) -> Any:
+    async def _list_project_chats_data(
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
+    ) -> Any:
         raise FeatureUnavailable(Capability.PROJECTS, "not_implemented")
 
     async def _create_project_data(

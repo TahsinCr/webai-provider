@@ -252,7 +252,6 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             raise ValueError("invalid Gemini conversation cursor") from None
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("invalid Gemini conversation page")
-        await self._connect()
         parts = await self.rpc.call(
             "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
         )
@@ -332,7 +331,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         return await self.notebooks.get(project_id)
 
     async def _list_project_chats_data(
-        self, project_id: str, *, cursor: str | None = None
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
         if self.notebooks is None:
             raise FeatureUnavailable(Capability.PROJECTS)

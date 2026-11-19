@@ -558,7 +558,7 @@ class ChatGPTClient:
         return value
 
     async def list_project_chats(
-        self, project_id: str, cursor: str | None = None
+        self, project_id: str, cursor: str | None = None, *, limit: int = 30
     ) -> dict[str, Any]:
         raw = (
             await self.request(
@@ -567,7 +567,7 @@ class ChatGPTClient:
                     CHATGPT_ORIGIN,
                     f"/backend-api/gizmos/{quote(project_id, safe='')}/conversations",
                 ),
-                params={"cursor": cursor or "0", "limit": 30, "owned_only": "false"},
+                params={"cursor": cursor or "0", "limit": limit, "owned_only": "false"},
             )
         ).json()
         items, next_cursor = parse_page(raw)

@@ -35,7 +35,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         page_limit: int | None,
         **options: Any,
     ) -> Page[AsyncChat]:
-        del page_limit, options
+        del options
         provider = self.project.provider
         if provider is None:
             raise ProviderError("Project is not attached to an open provider")
@@ -43,7 +43,9 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
             return Page(())
         async with provider.runtime.activity():
             provider._require_provider()
-            page = await provider._list_project_chats_data(self.project.remote_id, cursor=cursor)
+            page = await provider._list_project_chats_data(
+                self.project.remote_id, cursor=cursor, limit=page_limit
+            )
         if not isinstance(page, Page) or any(
             not isinstance(item, Conversation) for item in page.items
         ):

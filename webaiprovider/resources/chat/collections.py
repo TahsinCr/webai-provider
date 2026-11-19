@@ -132,7 +132,10 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             cursor: str | None = None
             seen_cursors: set[str] = set()
             for _ in range(_MAX_PROJECT_CHAT_PAGES):
-                raw_page = await session._list_project_chats_data(project.remote_id, cursor=cursor)
+                remaining = None if per_project_limit is None else per_project_limit - len(chats)
+                raw_page = await session._list_project_chats_data(
+                    project.remote_id, cursor=cursor, limit=remaining
+                )
                 page = _require_conversation_page(raw_page, label="project conversation")
                 for item in page.items:
                     if item.id in seen_ids:

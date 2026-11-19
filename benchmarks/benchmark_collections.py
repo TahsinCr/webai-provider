@@ -33,7 +33,7 @@ class _PagedProvider(AsyncProvider):
     async def _list_projects_data(self, *, cursor=None):
         return Page(self.project_records)
 
-    async def _list_project_chats_data(self, project_id, *, cursor=None):
+    async def _list_project_chats_data(self, project_id, *, cursor=None, limit=None):
         await asyncio.sleep(0)
         return Page((Conversation(f"{project_id}-chat", "Project chat"),))
 

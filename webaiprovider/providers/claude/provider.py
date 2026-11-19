@@ -191,7 +191,7 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
         )
 
     async def _list_project_chats_data(
-        self, project_id: str, *, cursor: str | None = None
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
         if cursor:
             raise ValueError("Claude project conversation listing does not use a cursor")

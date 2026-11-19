@@ -1677,7 +1677,11 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async with provider:
-            for limit, expected_prefixes in ((10, [11]), (250, [51, 151, 251])):
+            for limit, expected_prefixes in (
+                (10, [11]),
+                (250, [51, 151, 251]),
+                (None, [51, 151, 251, 351]),
+            ):
                 with self.subTest(limit=limit):
                     provider.rpc.call.reset_mock()
                     chats = await provider.chats.list(limit=limit)

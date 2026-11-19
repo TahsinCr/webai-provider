@@ -8,6 +8,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Reduce project rename and instruction readbacks on Claude and Grok by validating changed fields independently of source lists.
 - Keep local project options responsive while another operation is generating a response.
+- Request smaller project chat pages on ChatGPT and Grok and reduce repeated prefixes in unbounded Gemini chat listings.
 - Normalize only the selected active Claude message during retry and edit preparation.
 - Reduce memory allocations for Grok file reads and retained streaming events across providers.
 

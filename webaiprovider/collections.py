@@ -630,7 +630,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
             for _ in range(self._max_remote_pages):
                 remaining = None if validated is None else validated - collected
                 page_size = self._default_page_size
-                if cursor is not None and remaining is not None and self._followup_page_size:
+                if cursor is not None and self._followup_page_size:
                     page_size = self._followup_page_size
                 page_limit = min(page_size, remaining) if remaining is not None else page_size
                 self._mark_remote_read()

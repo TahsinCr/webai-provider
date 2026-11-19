@@ -812,7 +812,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     Page(projects[:3], "projects-page-2") if cursor is None else Page(projects[3:])
                 )
 
-            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(
+                self, project_id: str, *, cursor: str | None = None, limit=None
+            ):
                 project_reads_started.set()
                 self.page_calls.append((project_id, cursor))
                 self.active_fetches += 1
@@ -904,7 +906,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     None,
                 )
 
-            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(
+                self, project_id: str, *, cursor: str | None = None, limit=None
+            ):
                 del cursor
                 if project_id == "p-1":
                     try:
@@ -980,7 +984,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 del cursor
                 return Page((NativeProject("p-1", "Project 1"),), None)
 
-            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(
+                self, project_id: str, *, cursor: str | None = None, limit=None
+            ):
                 self.project_chat_calls.append((project_id, cursor))
                 if cursor is not None:
                     raise AssertionError("project chat pagination should stop after limit=2")
@@ -1111,7 +1117,9 @@ class TestSyncApi(unittest.TestCase):
                     None,
                 )
 
-            async def _list_project_chats_data(self, project_id: str, *, cursor: str | None = None):
+            async def _list_project_chats_data(
+                self, project_id: str, *, cursor: str | None = None, limit=None
+            ):
                 del cursor
                 if project_id == "p-1":
                     return Page(

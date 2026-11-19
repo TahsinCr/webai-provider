@@ -313,9 +313,10 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[-1].url.params["cursor"], "next")
 
     async def test_project_chat_pagination_and_cache_preserve_membership(self):
-        page = await self.client.list_project_chats("g-p-work", "next-chat")
+        page = await self.client.list_project_chats("g-p-work", "next-chat", limit=2)
         self.assertEqual(page["items"][0]["project_id"], "g-p-work")
         self.assertEqual(self.requests[-1].url.params["cursor"], "next-chat")
+        self.assertEqual(self.requests[-1].url.params["limit"], "2")
         self.assertEqual(project_id({"id": "remote-chat", "gizmo_id": "g-p-work"}), "g-p-work")
 
     async def test_common_provider_exposes_the_same_real_catalog_and_project_records(self):
@@ -1242,7 +1243,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         active = 0
         max_active = 0
 
-        async def fake_list_project_chats(project_id, cursor=None):
+        async def fake_list_project_chats(project_id, cursor=None, *, limit=30):
             del cursor
             nonlocal active, max_active
             active += 1

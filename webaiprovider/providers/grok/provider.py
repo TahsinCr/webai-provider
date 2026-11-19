@@ -476,9 +476,9 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
         return project(workspace, self.account_id, files or [])
 
     async def _list_project_chats_data(
-        self, project_id: str, *, cursor: str | None = None
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
-        query = {"pageSize": 50, "workspaceId": project_id}
+        query = {"pageSize": min(limit or 50, 50), "workspaceId": project_id}
         if cursor:
             query["pageToken"] = cursor
         data = await self.client.request("GET", "/rest/app-chat/conversations", params=query)

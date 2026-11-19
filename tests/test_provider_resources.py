@@ -343,7 +343,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             ["chat-loose", "chat-shared", "chat-proj"],
         )
         provider._list_projects_data.assert_awaited()
-        provider._list_project_chats_data.assert_awaited_with("proj-1", cursor=None)
+        provider._list_project_chats_data.assert_awaited_with("proj-1", cursor=None, limit=None)
         shared = await provider.chats.get("chat-shared", include_projects=True)
         self.assertEqual(shared.title, "Shared In Project")
         self.assertIsNotNone(shared.project)

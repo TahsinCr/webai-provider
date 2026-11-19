@@ -179,9 +179,9 @@ class _ScriptedAsyncProvider(AsyncProvider):
         return self.projects_data[project_id]
 
     async def _list_project_chats_data(
-        self, project_id: str, cursor: str | None = None
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
-        del cursor
+        del cursor, limit
         return Page(tuple(self.project_chats.get(project_id, ())), None)
 
     async def _create_project_data(

@@ -728,12 +728,14 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         return await self.editor.options()
 
     async def _list_project_chats_data(
-        self, project_id: str, *, cursor: str | None = None
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
         await self._wait_for_prepare()
         async with self._project_read_semaphore():
             async with self._client_scope() as client:
-                raw = await maybe_await(client.list_project_chats(project_id, cursor))
+                raw = await maybe_await(
+                    client.list_project_chats(project_id, cursor, limit=min(limit or 30, 30))
+                )
         return Page(
             tuple(self._conversation(item) for item in raw["items"]),
             raw.get("cursor"),
