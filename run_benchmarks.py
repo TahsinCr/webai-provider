@@ -9,7 +9,7 @@ from pathlib import Path
 
 from benchmarks._runner import benchmark_metadata
 
-SUITES = ("history", "collections", "transport")
+SUITES = ("history", "collections", "transport", "providers")
 
 
 def _forward_selection(command, args) -> None:
