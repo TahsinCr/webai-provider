@@ -378,6 +378,17 @@ class ActionGateTests(unittest.TestCase):
             ["gpt-6-instant", "gpt-6-thinking"],
         )
 
+        gemini_models = [
+            Model("gemini-otomatik", "Otomatik"),
+            Model("gemini-hydrogen", "Hydrogen"),
+            Model("gemini-neon", "Neon"),
+            Model("gemini-carbon", "Carbon"),
+        ]
+        self.assertEqual(
+            [item.id for item in _select_live_models("gemini", gemini_models)],
+            ["gemini-hydrogen", "gemini-neon"],
+        )
+
     def test_serializes_actions_and_stops_at_fixed_budget(self) -> None:
         async def scenario() -> list[float]:
             gate = ActionGate(interval=0.02, timeout=1, limit=2)

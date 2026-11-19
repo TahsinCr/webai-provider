@@ -40,6 +40,9 @@ def _select_live_models(provider: str, models):
             if info is not None and info[1] == max_minor_by_family[info[0]]
         ]
         return latest_claude_5 or models
+    if provider == "gemini":
+        preferred = [item for item in models if item.id in {"gemini-hydrogen", "gemini-neon"}]
+        return preferred or models
     return models
 
 
