@@ -38,6 +38,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Run live API scenarios on Python 3.10 with isolated sessions and reuse a shared session on Python 3.11 and later.
+
 - Preserve the triggering user message across visible assistant segments in conversation history and keep tool or system records out of response turns. Prefer ChatGPT's active branch when a history payload contains both a branch map and a flat list.
 - Report Gemini server-side generation rejections distinctly from transport errors. Use the model's default effort in live availability probes and report safe HTTP status codes for known session failures.
 

@@ -646,6 +646,36 @@ class LiveSessionLifecycleTests(unittest.TestCase):
 
 
 class LiveSessionSetupCacheTests(unittest.TestCase):
+    def test_live_cases_use_the_runner_available_on_this_python(self) -> None:
+        from tests.live.support import case as support
+
+        loops = []
+
+        class Scenario(LiveAsyncTestCase):
+            async def runTest(self) -> None:
+                loops.append(asyncio.get_running_loop())
+
+        with (
+            patch.dict(os.environ, {"WEBAI_LIVE_TESTS": "1"}, clear=True),
+            patch.object(support, "_SHARED_ASYNC_RUNNER", None),
+            patch.object(support, "_SHARED_ASYNC_SESSION", None),
+            patch.object(support, "_SHARED_CLEANUP_REGISTERED", True),
+            patch.object(LiveSession, "open_async", new_callable=AsyncMock) as open_session,
+            patch.object(LiveSession, "close_async", new_callable=AsyncMock) as close_session,
+        ):
+            try:
+                result = unittest.TestResult()
+                unittest.TestSuite([Scenario(), Scenario()]).run(result)
+                self.assertTrue(result.wasSuccessful(), result.errors)
+                self.assertEqual(len(loops), 2)
+            finally:
+                support._close_shared_async_session()
+
+            shared = hasattr(asyncio, "Runner")
+            self.assertEqual(loops[0] is loops[1], shared)
+            self.assertEqual(open_session.await_count, 1 if shared else 2)
+            self.assertEqual(close_session.await_count, 1 if shared else 2)
+
     def test_failed_setup_skips_only_the_same_provider_api_pair(self) -> None:
         key = ("gemini", "async")
         with patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": key[0]}):

@@ -2,7 +2,7 @@
 
 This package runs bounded integration checks against real provider accounts. It is separate from the deterministic offline suite, and importing it never sends requests. `run_live_tests.py` runs the offline suite first, then tests the four providers through the asynchronous API. The synchronous API is covered by the offline suite. Limit the live run with `WEBAI_LIVE_PROVIDER`.
 
-Each feature file contains concrete `unittest.IsolatedAsyncioTestCase` tests for that API area: sessions, models, chats, projects, or messages. `tests/live/support/case.py` centralizes account selection, guarded session setup, pacing, and cleanup. Run the suite through `run_live_tests.py`; it opens and closes a session for each feature case so async sessions stay on their test's event loop.
+Each feature file contains concrete `unittest.IsolatedAsyncioTestCase` tests for that API area: sessions, models, chats, projects, or messages. `tests/live/support/case.py` centralizes account selection, guarded session setup, pacing, and cleanup. Run the suite through `run_live_tests.py`. On Python 3.11 and later, feature cases share a provider session on the same test event loop. On Python 3.10, each case opens and closes its own session on its event loop.
 
 ## Account setup
 

@@ -552,7 +552,8 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
     def _uses_shared_session(self) -> bool:
         return (
-            self.use_shared_session
+            hasattr(asyncio, "Runner")
+            and self.use_shared_session
             and not self.recovery_only
             and os.environ.get("WEBAI_LIVE_TESTS") == "1"
             and os.environ.get("WEBAI_LIVE_API", "async").casefold() == "async"
@@ -562,7 +563,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
     def _setupAsyncioRunner(self) -> None:
         if self._uses_shared_session():
-            self._asyncioRunner = _get_shared_async_runner(self.loop_factory)
+            self._asyncioRunner = _get_shared_async_runner(getattr(self, "loop_factory", None))
             self._owns_shared_runner = False
             return
         super()._setupAsyncioRunner()
