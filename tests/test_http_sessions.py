@@ -20,7 +20,7 @@ from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, Remo
 from webaiprovider.providers.claude.client import ClaudeClient, organization_from_bootstrap
 from webaiprovider.providers.claude.errors import ClaudeRequestNotSent
 from webaiprovider.providers.gemini.projects import GeminiProjectEditor
-from webaiprovider.providers.gemini.rpc import NotebookRPC
+from webaiprovider.providers.gemini.rpc import GeminiRPC
 from webaiprovider.transport import HttpSession
 
 
@@ -140,7 +140,7 @@ class NotebookHTTPTests(unittest.IsolatedAsyncioTestCase):
                 return_value=SimpleNamespace(text=')]}\'\n[["wrb.fr","HcT8bb","[[]]"]]')
             )
         )
-        rpc = NotebookRPC(AsyncMock(return_value=client))
+        rpc = GeminiRPC(AsyncMock(return_value=client))
         self.assertEqual(await rpc.read("notebooks", remote="notebooks/abcdef"), [[[]]])
         args = client.batch.call_args
         self.assertEqual(json.loads(args.args[0][0].payload), ["notebooks/abcdef", ["en"], 0])
@@ -150,7 +150,7 @@ class NotebookHTTPTests(unittest.IsolatedAsyncioTestCase):
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","HcT8bb",null]]'))
         )
         with self.assertRaises(ProviderError):
-            await NotebookRPC(AsyncMock(return_value=client)).call("HcT8bb", [])
+            await GeminiRPC(AsyncMock(return_value=client)).call("HcT8bb", [])
 
     async def test_notebook_update_uses_write_settings_not_display_icon(self):
         detail = [None] * 13

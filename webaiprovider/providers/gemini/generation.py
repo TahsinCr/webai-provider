@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from ...core import gather_bounded
+from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...resources.message.attachment import GEMINI_ATTACHMENTS
@@ -23,7 +24,7 @@ from .errors import (
 )
 from .history import candidate_metadata, published_activity, published_thoughts
 from .media import candidate_files
-from .rpc import nested
+from .rpc import rpc_value
 from .session import BASE, HEADERS
 
 
@@ -103,19 +104,7 @@ async def upload_files(session, items):
             )
             if local_path is not None and before is not None:
                 after = await asyncio.to_thread(os.stat, local_path)
-                if (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_size,
-                    before.st_mtime_ns,
-                    before.st_ctime_ns,
-                ) != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_size,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                ):
+                if not same_file_version(before, after):
                     raise GeminiError("File changed while it was being uploaded")
             return [[response.text], filename]
         finally:
@@ -252,9 +241,9 @@ async def generate(
                         first_event = True
                         timing.record("sse_first_event_ms", event_at - response_opened)
                         timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
-                if nested(frame, 5, 2, 0, 1, 0):
+                if rpc_value(frame, 5, 2, 0, 1, 0):
                     raise GeminiGenerationRejected("Gemini rejected the generation request")
-                payload = nested(frame, 2)
+                payload = rpc_value(frame, 2)
                 if not isinstance(payload, str):
                     continue
                 try:
@@ -263,41 +252,41 @@ async def generate(
                     raise GeminiCompatibilityError(
                         "Gemini response body format has changed"
                     ) from error
-                returned = nested(body, 1)
+                returned = rpc_value(body, 1)
                 if isinstance(returned, list) and returned:
                     cand_id = metadata[2] if len(metadata) > 2 else None
                     metadata = list(returned)
                     if cand_id and len(metadata) >= 2:
                         metadata.extend([None] * max(0, 3 - len(metadata)))
                         metadata[2] = cand_id
-                    if nested(metadata, 0) and not nested(body, 4):
+                    if rpc_value(metadata, 0) and not rpc_value(body, 4):
                         yield {
                             "cid": metadata[0],
                             "metadata": metadata,
                             "context_only": True,
                         }
-                context = nested(body, 25)
+                context = rpc_value(body, 25)
                 if isinstance(context, str):
                     completed = True
-                for candidate in nested(body, 4, default=[]):
-                    if not nested(candidate, 0):
+                for candidate in rpc_value(body, 4, default=[]):
+                    if not rpc_value(candidate, 0):
                         continue
-                    cid = nested(metadata, 0) or request.conversation_id
+                    cid = rpc_value(metadata, 0) or request.conversation_id
                     current = list(metadata)
                     current.extend([None] * max(0, 3 - len(current)))
                     current[2] = candidate[0]
                     if len(current) >= 3 and current[2]:
                         metadata = list(current)
-                    response_complete = nested(candidate, 8, 0) == 2
+                    response_complete = rpc_value(candidate, 8, 0) == 2
                     completed = completed or response_complete
-                    text = nested(candidate, 1, 0)
+                    text = rpc_value(candidate, 1, 0)
                     if isinstance(text, str) and text.startswith(
                         (
                             "http://googleusercontent.com/card_content/",
                             "https://googleusercontent.com/card_content/",
                         )
                     ):
-                        text = nested(candidate, 22, 0) or text
+                        text = rpc_value(candidate, 22, 0) or text
                     if (
                         timing is not None
                         and not first_assistant_text

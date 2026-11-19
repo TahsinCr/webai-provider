@@ -8,15 +8,13 @@ import time
 import uuid
 from pathlib import Path
 
-from ...accounts import read_session, read_session_async, save_session_async
+from ...accounts import read_session_async, save_session_async
 from ...accounts.credentials import CredentialStore
 from ...core.json import json_dumps, json_loads
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.retry import parse_retry_after
-
-_ORIGINAL_READ_SESSION = read_session
 
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
@@ -85,10 +83,7 @@ class GeminiSession:
     async def open(self):
         from curl_cffi.requests import AsyncSession
 
-        if read_session is not _ORIGINAL_READ_SESSION:
-            saved = await asyncio.to_thread(read_session, self.credential_file)
-        else:
-            saved = await read_session_async(self.credential_file)
+        saved = await read_session_async(self.credential_file)
         raw_cookies = saved.get("cookies")
         if not isinstance(raw_cookies, dict):
             raw_cookies = saved
@@ -282,7 +277,7 @@ class GeminiSession:
             raise ValueError("Gemini chat title must contain 1–100 characters")
         if self.http is None or not self.token:
             raise AccountPaused("Gemini session is not ready; reverify the account")
-        from .rpc import RPCPayload, nested, rpc_parts
+        from .rpc import RPCPayload, rpc_parts, rpc_value
 
         response = await self.batch(
             [
@@ -298,8 +293,8 @@ class GeminiSession:
             source_path="/app/" + conversation_id.removeprefix("c_"),
         )
         parts = list(rpc_parts(response.text, "MUAZcd"))
-        row = nested(parts[0], 1) if parts else None
-        if nested(row, 0) != conversation_id or nested(row, 1) != title:
+        row = rpc_value(parts[0], 1) if parts else None
+        if rpc_value(row, 0) != conversation_id or rpc_value(row, 1) != title:
             raise ProviderError("Gemini conversation rename could not be confirmed by the server")
 
     @staticmethod

@@ -232,14 +232,6 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
             raise AccountPaused("Verify the Claude account in the Accounts section")
         if len(request.attachments) > CLAUDE_ATTACHMENTS.max_files:
             raise ValueError(f"Claude accepts at most {CLAUDE_ATTACHMENTS.max_files} attachments")
-        for item in request.attachments:
-            if isinstance(item, dict) and ("bytes" in item or "path" in item):
-                validate_upload_candidate(
-                    item.get("path"),
-                    content=item.get("bytes"),
-                    name=item.get("name"),
-                    mime_type=item.get("mime_type"),
-                )
         timing = current_send_timing()
         if timing is not None:
             timing.record("provider_send_gate_wait_ms", 0)
@@ -249,6 +241,20 @@ class AsyncClaudeProvider(ProjectMutationsMixin, AsyncProvider):
             for index, item in enumerate(uploaded)
             if isinstance(item, dict) and ("bytes" in item or "path" in item)
         ]
+
+        def validate_uploads() -> None:
+            for _, item in pending:
+                validate_upload_candidate(
+                    item.get("path"),
+                    content=item.get("bytes"),
+                    name=item.get("name"),
+                    mime_type=item.get("mime_type"),
+                )
+
+        if any(item.get("path") is not None and item.get("bytes") is None for _, item in pending):
+            await asyncio.to_thread(validate_uploads)
+        else:
+            validate_uploads()
         if pending:
             results = await gather_bounded(
                 pending,

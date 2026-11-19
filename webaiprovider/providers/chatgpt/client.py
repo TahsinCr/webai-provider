@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import os
 import stat
@@ -24,6 +23,8 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core import MultiDimensionBoundedCache
+from ...core.concurrency import maybe_await
+from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import SendTiming, current_send_timing
 from ...errors import RateLimited
@@ -77,12 +78,6 @@ def _cached_system_timezone(tz_env: str) -> str | None:
 def system_timezone():
     """Use an actual IANA identifier, omitting the optional field if unknown."""
     return _cached_system_timezone(os.environ.get("TZ", ""))
-
-
-async def _maybe_await(result: Any) -> Any:
-    if inspect.isawaitable(result):
-        return await result
-    return result
 
 
 class ChatGPTClient:
@@ -199,7 +194,7 @@ class ChatGPTClient:
             close = getattr(stream, "close", None)
             if callable(close):
                 with suppress(Exception):
-                    await _maybe_await(close())
+                    await maybe_await(close())
 
         upload_http = getattr(self, "_upload_http", None)
         self._upload_http = None
@@ -259,7 +254,7 @@ class ChatGPTClient:
                             await aclose()
                     elif callable(close):
                         with suppress(Exception):
-                            await _maybe_await(close())
+                            await maybe_await(close())
                 yield stream
             finally:
                 active = getattr(self, "_active_streams", None)
@@ -1111,7 +1106,7 @@ class ChatGPTClient:
                 if payload == "[DONE]":
                     terminal_seen = True
                     if final_seen and not completion_notified and on_event is not None:
-                        await _maybe_await(on_event({"type": "response_complete"}))
+                        await maybe_await(on_event({"type": "response_complete"}))
                         completion_notified = True
                     if timing is not None and event_at is not None:
                         if response_opened is not None:
@@ -1134,7 +1129,7 @@ class ChatGPTClient:
                     if event_id != bound_id:
                         bound_id = event_id
                         if on_event is not None and getattr(on_event, "_accepts_bound", False):
-                            await _maybe_await(
+                            await maybe_await(
                                 on_event({"type": "bound", "conversation_id": event_id})
                             )
                 message = event.get("message")
@@ -1178,7 +1173,7 @@ class ChatGPTClient:
                                 "button_to_first_assistant_text_ms", event_at - timing.started_ns
                             )
                     if on_event is not None:
-                        await _maybe_await(
+                        await maybe_await(
                             on_event(
                                 {
                                     "type": "delta" if text.startswith(rendered) else "replace",
@@ -1197,7 +1192,7 @@ class ChatGPTClient:
                     and not completion_notified
                     and on_event is not None
                 ):
-                    await _maybe_await(on_event({"type": "response_complete"}))
+                    await maybe_await(on_event({"type": "response_complete"}))
                     completion_notified = True
         if not terminal_seen or not final_seen:
             raise ChatGPTError(
@@ -1701,19 +1696,7 @@ class ChatGPTClient:
                 if stream is None or before is None:
                     return
                 after = await asyncio.to_thread(os.fstat, stream.fileno())
-                if (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_size,
-                    before.st_mtime_ns,
-                    before.st_ctime_ns,
-                ) != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_size,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                ):
+                if not same_file_version(before, after):
                     raise ChatGPTError("file changed while it was being uploaded")
 
             ensure_active()

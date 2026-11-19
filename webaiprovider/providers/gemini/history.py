@@ -19,7 +19,7 @@ _CITATION_MARKER = re.compile(r"\[cite:\s*([\d,\s]+)\]")
 _CITATION_NUMBER = re.compile(r"\d+")
 
 
-def nested(value, *path, default=None):
+def history_value(value, *path, default=None):
     try:
         for key in path:
             value = value[key]
@@ -36,11 +36,11 @@ def timestamp(value):
 
 def candidate_metadata(candidate, activity=None):
     """Extract published citations separately from the candidate's thought summary."""
-    groups = _field(nested(candidate, 12), 43, [])
+    groups = _field(history_value(candidate, 12), 43, [])
     citations = {}
     for group in groups if isinstance(groups, list) else ():
-        marker = nested(group, 0, 0)
-        entries = nested(group, 1)
+        marker = history_value(group, 0, 0)
+        entries = history_value(group, 1)
         if not isinstance(marker, str) or not isinstance(entries, list):
             continue
         match = _CITATION_MARKER.search(marker)
@@ -50,11 +50,11 @@ def candidate_metadata(candidate, activity=None):
             citation_id = int(number)
             if citation_id in citations:
                 continue
-            url = nested(entry, 3, 0, 1)
+            url = history_value(entry, 3, 0, 1)
             if isinstance(url, str):
                 citations[citation_id] = {
                     "url": url,
-                    "title": nested(entry, 3, 0, 2),
+                    "title": history_value(entry, 3, 0, 2),
                 }
     ordered = [citations[key] for key in sorted(citations)]
     _, activity_sources = activity if activity is not None else published_activity(candidate)
@@ -63,7 +63,7 @@ def candidate_metadata(candidate, activity=None):
 
 def published_activity(candidate):
     """Return provider-published search steps and sources from Gemini history."""
-    activities = nested(candidate, 37, 1, default=[])
+    activities = history_value(candidate, 37, 1, default=[])
     if not isinstance(activities, list):
         return (), ()
     steps, seen_steps, sources = [], set(), []
@@ -71,18 +71,18 @@ def published_activity(candidate):
         if not isinstance(activity, list):
             continue
         for index in (1, 5):
-            label = nested(activity, index)
+            label = history_value(activity, index)
             if isinstance(label, str):
                 label = " ".join(label.split())
                 if label and label not in seen_steps:
                     seen_steps.add(label)
                     steps.append(label[:500])
-        results = nested(activity, 7, default=[])
+        results = history_value(activity, 7, default=[])
         if not isinstance(results, list):
             continue
         for result in results[:128]:
-            url = nested(result, 1)
-            title = nested(result, 2)
+            url = history_value(result, 1)
+            title = history_value(result, 2)
             if isinstance(url, str):
                 sources.append({"url": url, "title": title})
     return tuple(steps), sources_from({"sources": sources})
@@ -92,25 +92,24 @@ def published_thoughts(candidate, steps=None, previous=""):
     """Combine Gemini's public thought summary with visible search activity."""
     if steps is None:
         steps, _ = published_activity(candidate)
-    summary = nested(candidate, 37, 0, 0)
+    summary = history_value(candidate, 37, 0, 0)
     parts = [summary.strip()] if isinstance(summary, str) and summary.strip() else []
     parts.extend(step for step in steps if step not in parts)
     return "\n".join(parts) or previous
 
 
-def conversations(pages, origin=None, *, offset=0, limit=None):
-    del origin
+def parse_chat_page(pages, *, offset=0, limit=None):
     rows_by_id = {}
     for page in pages:
         if page == []:
             continue
-        rows = nested(page, 2)
+        rows = history_value(page, 2)
         if not isinstance(rows, list):
             raise GeminiCompatibilityError(
                 "The Gemini conversation-list contract changed; synchronization was not completed."
             )
         for row in rows:
-            cid = nested(row, 0)
+            cid = history_value(row, 0)
             if isinstance(cid, str) and cid.startswith("c_"):
                 rows_by_id[cid] = row
 
@@ -118,15 +117,15 @@ def conversations(pages, origin=None, *, offset=0, limit=None):
     return tuple(
         Conversation(
             cid,
-            nested(row, 1) or "Gemini sohbeti",
+            history_value(row, 1) or "Gemini sohbeti",
             project=(
                 ProjectData(pid, "")
-                if isinstance(pid := nested(row, 7), str) and pid.startswith("notebooks/")
+                if isinstance(pid := history_value(row, 7), str) and pid.startswith("notebooks/")
                 else None
             ),
             metadata={
                 "native": row,
-                "updated_at": timestamp(nested(row, 5)),
+                "updated_at": timestamp(history_value(row, 5)),
                 "project_membership_known": len(row) > 7,
             },
         )
@@ -134,18 +133,16 @@ def conversations(pages, origin=None, *, offset=0, limit=None):
     )
 
 
-def history(data, origin_or_cid, cid=None):
-    if cid is None:
-        cid = origin_or_cid
-    turns = nested(data, 0)
+def parse_chat_history(data, cid):
+    turns = history_value(data, 0)
     if not isinstance(turns, list):
         raise GeminiError("Gemini history is temporarily unavailable; saved history was preserved")
     messages = []
     for turn in reversed(turns):
-        rid = nested(turn, 0, 1)
+        rid = history_value(turn, 0, 1)
         if not isinstance(rid, str):
             raise GeminiCompatibilityError("Gemini history is missing a response ID")
-        user = nested(turn, 2, 0, 0)
+        user = history_value(turn, 2, 0, 0)
         if isinstance(user, str) and user:
             messages.append(
                 MessageData(
@@ -156,11 +153,11 @@ def history(data, origin_or_cid, cid=None):
                     actions=actions_for("user"),
                 )
             )
-        candidates = nested(turn, 3, 0, default=[])
+        candidates = history_value(turn, 3, 0, default=[])
         if not candidates:
             continue
         candidate = candidates[0]
-        text = nested(candidate, 1, 0, default="")
+        text = history_value(candidate, 1, 0, default="")
         # Published thinking summaries only; never infer hidden reasoning.
         activity = published_activity(candidate)
         steps = activity[0]
@@ -195,7 +192,7 @@ def history(data, origin_or_cid, cid=None):
                     metadata={
                         "native_candidate": candidate,
                         "turn_id": rid,
-                        "candidate_id": nested(candidate, 0),
+                        "candidate_id": history_value(candidate, 0),
                         **candidate_metadata(candidate, activity),
                         "files": tuple(
                             {

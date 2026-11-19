@@ -72,7 +72,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         factory = Mock(return_value=http)
         session = GeminiSession(Path("unused"), http_factory=factory)
         with (
-            patch("webaiprovider.providers.gemini.session.read_session", return_value=saved),
+            patch("webaiprovider.providers.gemini.session.read_session_async", return_value=saved),
             self.assertRaises(AccountPaused),
         ):
             await session.open()
@@ -471,12 +471,12 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             http.post.assert_not_awaited()
 
     async def test_rpc_is_account_owned_and_never_retries_writes(self):
-        from webaiprovider.providers.gemini.rpc import NotebookRPC
+        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         client = SimpleNamespace(
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","rpc","[]"]]\n'))
         )
-        rpc = NotebookRPC(AsyncMock(return_value=client))
+        rpc = GeminiRPC(AsyncMock(return_value=client))
         self.assertEqual(await rpc.call("rpc", ["test"]), [[]])
         client.batch.assert_awaited_once()
         client.batch.return_value.text = "invalid"
@@ -484,14 +484,14 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             await rpc.call("rpc", [])
 
     async def test_large_rpc_json_is_decoded_off_the_provider_loop(self):
-        from webaiprovider.providers.gemini.rpc import NotebookRPC
+        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         response = SimpleNamespace(
             content=b" " * (256 * 1024),
             text='[["wrb.fr","rpc","[]"]]\n',
         )
         client = SimpleNamespace(batch=AsyncMock(return_value=response))
-        rpc = NotebookRPC(AsyncMock(return_value=client))
+        rpc = GeminiRPC(AsyncMock(return_value=client))
         original = rpc._decode
         threads = []
 
@@ -1132,7 +1132,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
             patch(
-                "webaiprovider.providers.gemini.session.read_session",
+                "webaiprovider.providers.gemini.session.read_session_async",
                 return_value={"__Secure-1PSID": "cookie-1"},
             ),
             patch("webaiprovider.providers.gemini.session.save_session_async", AsyncMock()),
@@ -1507,7 +1507,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_rpc_malformed_json_raises_gemini_compatibility_error(self):
         from webaiprovider.providers.gemini.errors import GeminiCompatibilityError
-        from webaiprovider.providers.gemini.rpc import NotebookRPC, rpc_parts
+        from webaiprovider.providers.gemini.rpc import GeminiRPC, rpc_parts
 
         with self.assertRaises(GeminiCompatibilityError):
             list(rpc_parts('[["wrb.fr","ESY5D","{bad-json"]]', "ESY5D"))
@@ -1516,7 +1516,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         bad_response = SimpleNamespace(text='[["wrb.fr","CNgdBe","{not-json"]]')
         with self.assertRaises(GeminiCompatibilityError):
-            NotebookRPC._decode(bad_response, "CNgdBe", False)
+            GeminiRPC._decode(bad_response, "CNgdBe", False)
 
     async def test_get_chat_warms_metadata_and_prepare_send_runs_rpcs_concurrently(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
@@ -1575,12 +1575,12 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_notebook_get_raises_remote_not_found_when_server_returns_empty_or_null(self):
         from webaiprovider.errors import RemoteNotFound
         from webaiprovider.providers.gemini.notebooks import Notebooks
-        from webaiprovider.providers.gemini.rpc import NotebookRPC
+        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         client = SimpleNamespace(
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","HcT8bb",null]]'))
         )
-        rpc = NotebookRPC(AsyncMock(return_value=client))
+        rpc = GeminiRPC(AsyncMock(return_value=client))
         notebooks = Notebooks("acc")
         notebooks.reader = rpc.read
 

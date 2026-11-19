@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import math
 import re
 import time
@@ -20,6 +19,7 @@ from ...async_provider import AsyncProvider
 from ...base import Capability, confirm_deleted
 from ...collections import Page, _publish_collection_change
 from ...core import gather_bounded
+from ...core.concurrency import maybe_await
 from ...core.files import DownloadSource
 from ...core.json import json_dumps
 from ...core.operations import execute_with_hooks
@@ -79,12 +79,6 @@ if TYPE_CHECKING:
     from ...accounts.account import Account
 
 
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
 async def _prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
     items = request.attachments
     attachments: list[Any] = [None] * len(items)
@@ -97,7 +91,7 @@ async def _prepare_chatgpt_attachments(client: Any, request: ProviderRequest) ->
 
     async def run_upload(entry: tuple[int, dict[str, Any]]) -> tuple[int, Any]:
         index, spec = entry
-        result = await _maybe_await(
+        result = await maybe_await(
             client.upload_file(
                 spec.get("name") or (Path(spec["path"]).name if spec.get("path") else "attachment"),
                 spec.get("mime_type") or "application/octet-stream",
@@ -319,7 +313,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         finally:
             close = getattr(client, "close", None)
             if callable(close):
-                await _maybe_await(close())
+                await maybe_await(close())
 
     async def _discard_client(self) -> None:
         client, self._client = self._client, None
@@ -327,7 +321,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
             return
         close = getattr(client, "close", None)
         if callable(close):
-            await _maybe_await(close())
+            await maybe_await(close())
 
     async def _wait_for_prepare(self) -> None:
         pending = self._prepare_done
@@ -548,7 +542,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
                     await asyncio.to_thread(capture)
                 async with self._client_scope() as client:
-                    await _maybe_await(client.verify())
+                    await maybe_await(client.verify())
             except BaseException:
                 await self._discard_client()
                 raise
@@ -572,7 +566,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     async def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
         async with self._catalog_lock:
             async with self._client_scope() as client:
-                return await _maybe_await(
+                return await maybe_await(
                     client.model_catalog(refresh=True) if force else client.model_catalog()
                 )
 
@@ -591,7 +585,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 await asyncio.sleep(delay)
             try:
                 async with self._client_scope() as client:
-                    raw = await _maybe_await(client.list_page(offset, limit))
+                    raw = await maybe_await(client.list_page(offset, limit))
             except RateLimited as error:
                 retry_after = error.retry_after
                 if (
@@ -613,20 +607,20 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         await self._wait_for_prepare()
         async with self._client_scope() as client:
-            raw = await _maybe_await(client.get_conversation(conversation_id))
+            raw = await maybe_await(client.get_conversation(conversation_id))
         return self._conversation(raw)
 
     async def _branch_chat_data(self, conversation_id: str, message_id: str) -> Conversation:
         async with self._gate:
             async with self._client_scope() as client:
                 current = self._conversation(
-                    await _maybe_await(client.get_conversation(conversation_id))
+                    await maybe_await(client.get_conversation(conversation_id))
                 )
                 _, target = target_message(current.messages, message_id, "assistant")
                 if "branch" not in target.actions:
                     raise FeatureUnavailable(Capability.CHAT_BRANCH)
                 result = (
-                    await _maybe_await(
+                    await maybe_await(
                         client.request(
                             "POST",
                             "https://chatgpt.com/backend-api/conversation/new_branch",
@@ -674,31 +668,31 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
             raise ValueError("title must be nonempty")
         async with self._rename_gate:
             async with self._client_scope() as client:
-                await _maybe_await(client.rename_conversation(conversation_id, title.strip()))
+                await maybe_await(client.rename_conversation(conversation_id, title.strip()))
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
         async with self._gate:
             async with self._client_scope() as client:
-                confirmed = await _maybe_await(client.delete_conversation(conversation_id))
+                confirmed = await maybe_await(client.delete_conversation(conversation_id))
         if confirmed is True:
             return
 
         async def readback():
             async with self._client_scope() as client:
-                return await _maybe_await(client.get_conversation(conversation_id))
+                return await maybe_await(client.get_conversation(conversation_id))
 
         await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
         async with self._rename_gate:
             async with self._client_scope() as client:
-                await _maybe_await(client.move_conversation(conversation_id, project_id))
+                await maybe_await(client.move_conversation(conversation_id, project_id))
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         await self._wait_for_prepare()
         async with self._project_read_semaphore():
             async with self._client_scope() as client:
-                raw = await _maybe_await(client.list_projects(cursor))
+                raw = await maybe_await(client.list_projects(cursor))
         return Page(tuple(self._project(item) for item in raw["items"]), raw.get("cursor"))
 
     async def _create_project_data(
@@ -714,7 +708,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
             raise TypeError("memory_share must be a bool")
         async with self._gate:
             async with self._client_scope() as client:
-                raw = await _maybe_await(
+                raw = await maybe_await(
                     client.create_project(name, instructions, memory_share=memory_share)
                 )
         return self._project(raw)
@@ -722,7 +716,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
     async def _get_project_data(self, project_id: str) -> ProjectData:
         await self._wait_for_prepare()
         async with self._client_scope() as client:
-            raw = await _maybe_await(client.get_project(project_id))
+            raw = await maybe_await(client.get_project(project_id))
         return self._project(raw)
 
     async def _list_project_chats_data(
@@ -731,7 +725,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         await self._wait_for_prepare()
         async with self._project_read_semaphore():
             async with self._client_scope() as client:
-                raw = await _maybe_await(client.list_project_chats(project_id, cursor))
+                raw = await maybe_await(client.list_project_chats(project_id, cursor))
         return Page(
             tuple(self._conversation(item) for item in raw["items"]),
             raw.get("cursor"),
@@ -743,7 +737,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
                 for attempt in (0, 1):
                     try:
-                        response = await _maybe_await(
+                        response = await maybe_await(
                             client.request("DELETE", url, expect_json=False)
                         )
                         break
@@ -800,7 +794,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                     client.temporary_conversations = self._temporary_conversations
                     client.pending_branches = self._pending_branches
                     attachments = await _prepare_chatgpt_attachments(client, request)
-                    remote_id, completed, previous = await _maybe_await(
+                    remote_id, completed, previous = await maybe_await(
                         client.send_prompt(
                             request.conversation_id,
                             request.prompt,
@@ -893,7 +887,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
         client = self._factory(self.session_state)
         try:
-            return await _maybe_await(
+            return await maybe_await(
                 client.upload_file(path_obj.name, mime, path_obj, cancel_event=cancel_event)
             )
         except asyncio.CancelledError:
@@ -902,7 +896,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
 
                 async def cleanup():
                     with suppress(Exception):
-                        await _maybe_await(close())
+                        await maybe_await(close())
 
                 cleanup_task = asyncio.create_task(cleanup())
                 while not cleanup_task.done():
@@ -915,7 +909,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         else:
             close = getattr(client, "close", None)
             if callable(close):
-                await _maybe_await(close())
+                await maybe_await(close())
 
     @staticmethod
     async def _download_conversation_snapshot(client: Any, conversation_id: str, matches: Any):
@@ -929,7 +923,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
             temp_snapshot = temporary.get(conversation_id)
             if isinstance(temp_snapshot, dict) and matches(temp_snapshot):
                 return temp_snapshot
-        return await _maybe_await(client.get_conversation(conversation_id))
+        return await maybe_await(client.get_conversation(conversation_id))
 
     async def _resolve_download(
         self,
@@ -960,7 +954,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 if not has_file(chat):
                     raise ValueError("File was not found in the conversation record or has expired")
                 result = (
-                    await _maybe_await(
+                    await maybe_await(
                         client.request(
                             "GET",
                             "https://chatgpt.com/backend-api/files/download/"
@@ -1029,7 +1023,7 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
                 + "/interpreter/download"
             )
             result = (
-                await _maybe_await(
+                await maybe_await(
                     client.request(
                         "GET",
                         endpoint,

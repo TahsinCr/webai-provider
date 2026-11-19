@@ -38,8 +38,7 @@ from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
 from . import generation
 from .errors import GeminiCompatibilityError, GeminiStreamError
-from .history import conversations as parse_conversations
-from .history import history as parse_history
+from .history import parse_chat_history, parse_chat_page
 from .media import PLACEHOLDER, resolve_image_links, valid_media_url
 from .notebooks import Notebooks, field, notebook_id
 from .projects import GeminiProjectEditor
@@ -55,7 +54,7 @@ from .resources import (
     GeminiResponse,
     GeminiSource,
 )
-from .rpc import NotebookRPC, nested
+from .rpc import GeminiRPC, rpc_value
 from .session import GeminiSession
 
 if TYPE_CHECKING:
@@ -137,7 +136,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
                 clock=lambda: time.monotonic(),
             )
         )
-        self.rpc: NotebookRPC = NotebookRPC(self._connect)
+        self.rpc: GeminiRPC = GeminiRPC(self._connect)
         self.notebooks: Notebooks = notebooks or Notebooks(account.id)
         self.notebooks.reader = self.rpc.read
         self.editor: GeminiProjectEditor = GeminiProjectEditor(self.rpc, self.notebooks)
@@ -257,7 +256,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         parts = await self.rpc.call(
             "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
         )
-        chats = parse_conversations(parts, offset=offset, limit=limit + 1)
+        chats = parse_chat_page(parts, offset=offset, limit=limit + 1)
         return Page(chats[:limit], str(offset + limit) if len(chats) > limit else None)
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
@@ -266,13 +265,13 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
         )
         if len(parts) != 1:
             raise GeminiCompatibilityError("Gemini history response format changed")
-        chat = await asyncio.to_thread(parse_history, parts[0], conversation_id)
-        turns = nested(parts[0], 0, default=[])
+        chat = await asyncio.to_thread(parse_chat_history, parts[0], conversation_id)
+        turns = rpc_value(parts[0], 0, default=[])
         turn = turns[0] if turns else None
         metadata = [
             conversation_id,
-            nested(turn, 0, 1) or "",
-            nested(turn, 3, 0, 0, 0) or "",
+            rpc_value(turn, 0, 1) or "",
+            rpc_value(turn, 3, 0, 0, 0) or "",
             None,
             None,
             None,
@@ -294,7 +293,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             result = await self.rpc.call(
                 "KDNZr", [conversation_id, target.metadata["turn_id"]], "/app"
             )
-            remote = nested(result, 0, 0, 0)
+            remote = rpc_value(result, 0, 0, 0)
             if (
                 not isinstance(remote, str)
                 or not remote.startswith("c_")
@@ -302,7 +301,7 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             ):
                 raise ProviderError("Gemini did not confirm a new conversation")
         chat = await self._get_chat_data(remote)
-        title = nested(result, 0, 0, 1)
+        title = rpc_value(result, 0, 0, 1)
         if isinstance(title, str) and title.strip():
             chat = replace(
                 chat, title=title, metadata={**chat.metadata, "title_unavailable": False}
@@ -578,13 +577,13 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
                     "pre_send_get_conversation_ms", time.perf_counter_ns() - history_started
                 )
 
-        turns = nested(parts[0], 0, default=[])
+        turns = rpc_value(parts[0], 0, default=[])
         turn = turns[0] if turns else None
         action_files = None
         if request.action:
             if request.message_id is None:
                 raise ValueError("message action requires a message ID")
-            current = parse_history(parts[0], request.conversation_id)
+            current = parse_chat_history(parts[0], request.conversation_id)
             role = "user" if request.action == MessageAction.EDIT else "assistant"
             _, target = target_message(current.messages, request.message_id, role)
             if request.action.value not in target.actions:
@@ -592,21 +591,21 @@ class AsyncGeminiProvider(ProjectMutationsMixin, AsyncProvider):
             selected_index = next(
                 i
                 for i, item in enumerate(turns)
-                if nested(item, 0, 1) == target.metadata["turn_id"]
+                if rpc_value(item, 0, 1) == target.metadata["turn_id"]
             )
             original = turns[selected_index]
-            action_files = nested(original, 2, 0, 3) or []
+            action_files = rpc_value(original, 2, 0, 3) or []
             if not isinstance(action_files, list):
                 raise ProviderError("Gemini message attachments cannot be preserved")
             if request.action == MessageAction.RETRY:
                 request = replace(
                     request,
-                    prompt=nested(original, 2, 0, 0) or "",
+                    prompt=rpc_value(original, 2, 0, 0) or "",
                     action=MessageAction.EDIT if selected_index > 0 else MessageAction.RETRY,
                 )
             turn = turns[selected_index + 1] if selected_index + 1 < len(turns) else None
-        rid = nested(turn, 0, 1)
-        rcid = nested(turn, 3, 0, 0, 0)
+        rid = rpc_value(turn, 0, 1)
+        rcid = rpc_value(turn, 3, 0, 0, 0)
         if turn is not None and (not rid or not rcid):
             raise GeminiCompatibilityError(
                 "Could not retrieve Gemini conversation continuation IDs."

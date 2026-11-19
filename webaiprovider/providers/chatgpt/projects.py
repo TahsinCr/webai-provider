@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import mimetypes
 import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from urllib.parse import quote
 
+from ...core.concurrency import maybe_await
 from ...resources.message.attachment import Attachment
 from ...resources.project.types import (
     ProjectData,
@@ -17,12 +17,6 @@ from ...resources.project.types import (
     ProjectOptions,
     source_file,
 )
-
-
-async def _maybe_await(value):
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 class ChatGPTProjectEditor:
@@ -33,7 +27,7 @@ class ChatGPTProjectEditor:
     @asynccontextmanager
     async def _use_client(self):
         if self.client_scope is not None:
-            client = await _maybe_await(self.client_scope())
+            client = await maybe_await(self.client_scope())
             yield client
             return
         client = self.factory(self.session)
@@ -42,7 +36,7 @@ class ChatGPTProjectEditor:
         finally:
             aclose = getattr(client, "close", None)
             if callable(aclose):
-                await _maybe_await(aclose())
+                await maybe_await(aclose())
 
     async def options(self, project_id=None):
         if not project_id:
@@ -55,7 +49,7 @@ class ChatGPTProjectEditor:
                 ),
             )
         async with self._use_client() as client:
-            raw = (await _maybe_await(client.get_project(project_id)))["metadata"]
+            raw = (await maybe_await(client.get_project(project_id)))["metadata"]
         for _ in range(3):
             if not isinstance(raw.get("gizmo"), dict):
                 break
@@ -96,7 +90,7 @@ class ChatGPTProjectEditor:
                 current_name = provided.name
                 current_instructions = provided.instructions
             else:
-                fetched = await _maybe_await(client.get_project(project_id))
+                fetched = await maybe_await(client.get_project(project_id))
                 native = fetched["metadata"]
                 current_name = fetched["name"]
                 current_instructions = fetched["instructions"]
@@ -105,7 +99,7 @@ class ChatGPTProjectEditor:
                     break
                 native = native["gizmo"]
             display = native.get("display") or {}
-            await _maybe_await(
+            await maybe_await(
                 client.request(
                     "PATCH",
                     path,
@@ -151,7 +145,7 @@ class ChatGPTProjectEditor:
                 name, data, size, last_modified, mime = await asyncio.to_thread(_prepare_file)
             else:
                 raise ValueError("Unsupported project source type")
-            uploaded = await _maybe_await(
+            uploaded = await maybe_await(
                 client.upload_file(name, mime, data, project_id=project_id)
             )
             file_payload = {
@@ -162,7 +156,7 @@ class ChatGPTProjectEditor:
                 "type": mime,
                 "location": "fs",
             }
-            attached = await _maybe_await(
+            attached = await maybe_await(
                 client.request(
                     "POST",
                     path + "/files",
@@ -200,10 +194,10 @@ class ChatGPTProjectEditor:
             rid = values["resource_id"]
             resource = values.get("resource")
             if resource is None or resource.id != rid:
-                current = await _maybe_await(client.get_project(project_id))
+                current = await maybe_await(client.get_project(project_id))
                 if not any((x.get("file_id") or x.get("id")) == rid for x in current["resources"]):
                     raise ValueError("Resource does not belong to this project")
-            await _maybe_await(
+            await maybe_await(
                 client.request("DELETE", path + "/files/" + quote(rid, safe=""), expect_json=False)
             )
             current_project = values.get("current")

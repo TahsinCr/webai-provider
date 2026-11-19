@@ -10,7 +10,7 @@ from .errors import GeminiCompatibilityError
 from .notebooks import notebook_id
 
 
-def nested(value, *path, default=None):
+def rpc_value(value, *path, default=None):
     for index in path:
         if not isinstance(value, list) or not isinstance(index, int) or not 0 <= index < len(value):
             return default
@@ -27,8 +27,8 @@ def rpc_parts(text, rpc):
         except (ValueError, TypeError) as error:
             raise GeminiCompatibilityError("Gemini RPC response format has changed") from error
         for row in rows:
-            if nested(row, 0) == "wrb.fr" and nested(row, 1) == rpc:
-                body = nested(row, 2)
+            if rpc_value(row, 0) == "wrb.fr" and rpc_value(row, 1) == rpc:
+                body = rpc_value(row, 2)
                 if body is not None:
                     try:
                         yield json_loads(body)
@@ -47,7 +47,7 @@ class RPCPayload:
         return [self.rpcid, self.payload, None, "generic"]
 
 
-class NotebookRPC:
+class GeminiRPC:
     def __init__(self, connect):
         self.connect = connect
 

@@ -628,7 +628,16 @@ class AsyncGrokProvider(ProjectMutationsMixin, AsyncProvider):
     async def _stream_provider_events(
         self, request: ProviderRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
-        prepared, pending_uploads = _validate_grok_request(request)
+        if any(
+            isinstance(item, dict)
+            and item.get("grok_file") is None
+            and item.get("path") is not None
+            and item.get("bytes") is None
+            for item in request.attachments
+        ):
+            prepared, pending_uploads = await asyncio.to_thread(_validate_grok_request, request)
+        else:
+            prepared, pending_uploads = _validate_grok_request(request)
         selected_id, model, model_mode = await self._select_model_spec(request.model)
         file_attachments, image_attachments = await self._prepare_attachments(
             prepared, pending_uploads

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ...accounts import read_session_async
 from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
+from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError
@@ -190,19 +191,7 @@ class ClaudeClient:
             body.close()
         if local_path is not None and before is not None:
             after = await asyncio.to_thread(os.stat, local_path)
-            if (
-                before.st_dev,
-                before.st_ino,
-                before.st_size,
-                before.st_mtime_ns,
-                before.st_ctime_ns,
-            ) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            ):
+            if not same_file_version(before, after):
                 raise ProviderError("File changed while it was being uploaded")
         if not isinstance(result, dict):
             raise ClaudeCompatibilityError("Claude file upload response changed")

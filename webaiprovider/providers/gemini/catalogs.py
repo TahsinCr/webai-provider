@@ -13,7 +13,7 @@ from ...resources.model.model import (
 )
 from ...resources.model.types import StaticModelCatalog, effort_ref
 from .errors import GeminiCompatibilityError, GeminiError
-from .rpc import nested, rpc_parts
+from .rpc import rpc_parts, rpc_value
 
 THINKING_VALUES = {
     "THINKING_LEVEL_STANDARD": 1,
@@ -66,11 +66,11 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
     if not isinstance(status, dict):
         raise ProviderError("Gemini model policy could not be retrieved")
     parts = list(rpc_parts(rpc_response, "otAQ7b"))
-    if len(parts) != 1 or nested(parts[0], 14) == 1016:
+    if len(parts) != 1 or rpc_value(parts[0], 14) == 1016:
         raise AccountPaused("Gemini account could not be verified; guest mode was not used")
     body = parts[0]
-    rows = nested(body, 15)
-    tiers, flags = nested(body, 16, default=[]), nested(body, 17, default=[])
+    rows = rpc_value(body, 15)
+    tiers, flags = rpc_value(body, 16, default=[]), rpc_value(body, 17, default=[])
     native = {item["modeCategory"]: item["id"] for item in status.get("bardModeConfigs") or []}
     policy = status.get("geminiModePolicy")
     if not isinstance(policy, dict) or not isinstance(policy.get("configs"), list):
@@ -111,7 +111,7 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
     )
     models = []
     for row in rows:
-        remote = nested(row, 0)
+        remote = rpc_value(row, 0)
         if not isinstance(remote, str) or remote not in policies:
             continue
         item = policies[remote]
@@ -134,11 +134,11 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
         default = implicit.removeprefix("THINKING_LEVEL_").lower()
         if default not in values:
             default = None
-        category = nested(row, 1) or nested(row, 10) or remote
+        category = rpc_value(row, 1) or rpc_value(row, 10) or remote
         title = config.get("titleForPicker") or config.get("title") or category
-        number = nested(row, 17)
+        number = rpc_value(row, 17)
         if not isinstance(number, int):
-            number = nested(row, 9, default=1)
+            number = rpc_value(row, 9, default=1)
         mode_category = str(config.get("modeCategory") or "").strip().upper()
         category_name = str(category).strip().lower()
         variant_name = f"{category_name} {str(title).strip().lower()}".replace("-", " ").replace(
@@ -163,7 +163,7 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
                     "capacity_slot": slot,
                     "number": None if is_fast else number,
                     "effort_values": values,
-                    "description": nested(row, 12) or nested(row, 2),
+                    "description": rpc_value(row, 12) or rpc_value(row, 2),
                 },
             )
         )

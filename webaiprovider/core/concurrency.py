@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar, cast
 
@@ -8,6 +9,10 @@ from eventflow import KeyedConcurrencyLimiter, SingleFlight
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+async def maybe_await(value):
+    return await value if inspect.isawaitable(value) else value
 
 
 async def gather_bounded(

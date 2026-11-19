@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+import os
 import socket
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -11,6 +12,16 @@ from urllib.parse import urlsplit
 from ..transport.http import _has_ipv6_connectivity
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+
+
+def same_file_version(before: os.stat_result, after: os.stat_result) -> bool:
+    return (
+        before.st_dev == after.st_dev
+        and before.st_ino == after.st_ino
+        and before.st_size == after.st_size
+        and before.st_mtime_ns == after.st_mtime_ns
+        and before.st_ctime_ns == after.st_ctime_ns
+    )
 
 
 def resolve_network_addresses(address_str: str, allow_private: bool = False) -> tuple[str, ...]:
