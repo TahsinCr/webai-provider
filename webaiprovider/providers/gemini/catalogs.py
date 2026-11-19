@@ -28,6 +28,27 @@ _EFFORT_ORDER = {
     "deep_think": 3,
 }
 _LEADING_VERSION_RE = re.compile(r"^\d+(?:\.\d+)?\s+")
+_REMOTE_MODEL_SLUGS = {
+    "8c46e95b1a07cecc": "auto",
+    "e6fa609c3fa255c0": "neon",
+    "95a4c0abcba24364": "carbon",
+}
+_LOCALIZED_MODEL_SLUGS = {
+    "otomatik": "auto",
+    "hidrojen": "hydrogen",
+    "karbon": "carbon",
+}
+
+
+def _canonical_model_slug(remote: str, category: str, variant_tokens: set[str]) -> str:
+    if remote in _REMOTE_MODEL_SLUGS:
+        return _REMOTE_MODEL_SLUGS[remote]
+    if remote == "56fdd199312815e2" and "flash" not in variant_tokens:
+        return "hydrogen"
+    raw_slug = _LEADING_VERSION_RE.sub("", str(category).strip()).lower().replace(" ", "-") or str(
+        category
+    ).lower().replace(" ", "-")
+    return _LOCALIZED_MODEL_SLUGS.get(raw_slug, raw_slug)
 
 
 class GeminiHydrogenEfforts(EffortSet):
@@ -144,12 +165,9 @@ def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
         variant_name = f"{category_name} {str(title).strip().lower()}".replace("-", " ").replace(
             "_", " "
         )
-        is_fast = (
-            mode_category in {"FAST", "MODE_CATEGORY_FAST"} and "lite" not in variant_name.split()
-        )
-        category_slug = _LEADING_VERSION_RE.sub("", str(category).strip()).lower().replace(
-            " ", "-"
-        ) or str(category).lower().replace(" ", "-")
+        variant_tokens = set(variant_name.split())
+        is_fast = mode_category in {"FAST", "MODE_CATEGORY_FAST"} and "lite" not in variant_tokens
+        category_slug = _canonical_model_slug(remote, str(category), variant_tokens)
         models.append(
             Model(
                 "gemini-" + category_slug,

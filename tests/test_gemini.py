@@ -806,6 +806,110 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(selector[4])
         self.assertIsNone(selector[-3])
 
+    def test_gemini_4_catalog_canonicalizes_localized_ids_and_preserves_hydrogen_selector(self):
+        rows = []
+        for remote, category, title, number in (
+            ("8c46e95b1a07cecc", "Otomatik", "Otomatik", 6),
+            ("56fdd199312815e2", "4 Hydrogen", "Günlük işlerde yardım", 1),
+            ("e6fa609c3fa255c0", "Neon", "Daha ayrıntılı analiz", 3),
+            ("95a4c0abcba24364", "Karbon", "Kodlama ve karmaşık görevler", 8),
+        ):
+            row = [None] * 18
+            row[0], row[1], row[11], row[17] = remote, category, title, number
+            rows.append(row)
+        legacy = [None] * 18
+        legacy[15], legacy[16], legacy[17] = rows, [8], []
+        status = {
+            "bardModeConfigs": [
+                {"id": "8c46e95b1a07cecc", "modeCategory": "MODE_CATEGORY_FLASH_LITE"},
+                {"id": "56fdd199312815e2", "modeCategory": "MODE_CATEGORY_FAST"},
+                {"id": "e6fa609c3fa255c0", "modeCategory": "MODE_CATEGORY_PRO"},
+                {"id": "95a4c0abcba24364", "modeCategory": "MODE_CATEGORY_ULTRA"},
+            ],
+            "geminiModePolicy": {
+                "configs": [
+                    {
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                        "modeConfig": {
+                            "modeCategory": "MODE_CATEGORY_FLASH_LITE",
+                            "titleForPicker": "Otomatik",
+                        },
+                        "thinkingLevelConfigs": [],
+                    },
+                    {
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                        "modeConfig": {
+                            "modeCategory": "MODE_CATEGORY_FAST",
+                            "title": "4 Hydrogen",
+                            "titleForPicker": "Günlük işlerde yardım",
+                        },
+                        "thinkingLevelConfigs": [
+                            {"thinkingLevel": "THINKING_LEVEL_STANDARD"},
+                        ],
+                    },
+                    {
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                        "modeConfig": {
+                            "modeCategory": "MODE_CATEGORY_PRO",
+                            "title": "Neon",
+                            "titleForPicker": "Daha ayrıntılı analiz",
+                        },
+                        "thinkingLevelConfigs": [
+                            {"thinkingLevel": "THINKING_LEVEL_STANDARD"},
+                        ],
+                    },
+                    {
+                        "hosts": ["MODE_PICKER_HOST_CHAT"],
+                        "modeConfig": {
+                            "modeCategory": "MODE_CATEGORY_ULTRA",
+                            "title": "Karbon",
+                            "titleForPicker": "Kodlama ve karmaşık görevler",
+                        },
+                        "thinkingLevelConfigs": [
+                            {"thinkingLevel": "THINKING_LEVEL_STANDARD"},
+                        ],
+                    },
+                ]
+            },
+        }
+        rpc_text = json.dumps([["wrb.fr", "otAQ7b", json.dumps(legacy)]]) + "\n"
+        models = parse_model_catalog(status, rpc_text)
+        self.assertEqual(
+            [m.id for m in models],
+            ["gemini-auto", "gemini-hydrogen", "gemini-neon", "gemini-carbon"],
+        )
+        hydrogen = models[1]
+        self.assertEqual(hydrogen.title, "Günlük işlerde yardım")
+        self.assertEqual(hydrogen.metadata["model_id"], "56fdd199312815e2")
+        self.assertIsNone(hydrogen.metadata["selector_id"])
+        self.assertIsNone(hydrogen.metadata["number"])
+        neon = models[2]
+        self.assertEqual(neon.metadata["selector_id"], "e6fa609c3fa255c0")
+        self.assertEqual(neon.metadata["number"], 3)
+
+        session = SimpleNamespace(
+            models=models,
+            language="tr",
+            build="boq_gemini-web-uiserver_20261118.14_p0",
+            token="test",
+            session_id="session-1",
+        )
+        headers, data = generation_request(
+            session,
+            ProviderRequest("hello", model="gemini-hydrogen", effort="standard"),
+            ["cid", "", ""],
+            [],
+        )
+        body = json.loads(json.loads(data["f.req"])[1])
+        selector = json.loads(headers["x-goog-ext-525001261-jspb"])
+        self.assertIsNone(body[79])
+        self.assertEqual(body[80], 1)
+        self.assertIsNone(selector[4])
+        self.assertIsNone(selector[6])
+        self.assertIsNone(selector[14])
+        self.assertEqual(selector[15], 1)
+        self.assertEqual(selector[16], "session-1")
+
     async def test_sync_activity_is_throttled_unless_forced(self):
         session = GeminiSession(Path("unused"))
         session.batch = AsyncMock()
