@@ -510,14 +510,16 @@ class ChatGPTClient:
             raise ValueError("project name must contain 1–50 characters")
         if type(memory_share) is not bool:
             raise TypeError("memory_share must be a bool")
+        name = name.strip()
+        memory_scope = "global" if memory_share else "project_v2"
         raw = (
             await self.request(
                 "POST",
                 urljoin(CHATGPT_ORIGIN, "/backend-api/projects"),
                 json={
-                    "name": name.strip(),
+                    "name": name,
                     "instructions": instructions,
-                    "memory_scope": "global" if memory_share else "project_v2",
+                    "memory_scope": memory_scope,
                 },
             )
         ).json()
@@ -526,6 +528,22 @@ class ChatGPTClient:
         project = parse_project(raw["resource"])
         if project is None:
             raise ChatGPTError("Project creation returned no project")
+        native = project["metadata"]
+        for _ in range(3):
+            if not isinstance(native.get("gizmo"), dict):
+                break
+            native = native["gizmo"]
+        display = native.get("display") or {}
+        permission = native.get("current_user_permission")
+        if (
+            display.get("name") == name
+            and project["instructions"] == instructions
+            and (not instructions or isinstance(native.get("instructions"), str))
+            and native.get("memory_scope") == memory_scope
+            and isinstance(permission, dict)
+            and isinstance(permission.get("can_write"), bool)
+        ):
+            return project
         return await self.get_project(project["id"])
 
     async def get_project(self, project_id: str) -> dict[str, Any]:

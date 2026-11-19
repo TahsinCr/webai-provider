@@ -47,7 +47,7 @@ from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import ProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.project import AsyncProject, Project
-from ...resources.project.types import ProjectData
+from ...resources.project.types import ProjectData, ProjectOptions
 from ...resources.response.source import sources_from
 from ...transport import (
     AsyncHTTPTransport,
@@ -719,6 +719,13 @@ class AsyncChatGPTProvider(ProjectMutationsMixin, AsyncProvider):
         async with self._client_scope() as client:
             raw = await maybe_await(client.get_project(project_id))
         return self._project(raw)
+
+    async def _project_options(self, project_id: str | None = None) -> ProjectOptions:
+        if project_id is not None:
+            await self._wait_for_prepare()
+            async with self._project_read_semaphore():
+                return await self.editor.options(project_id)
+        return await self.editor.options()
 
     async def _list_project_chats_data(
         self, project_id: str, *, cursor: str | None = None

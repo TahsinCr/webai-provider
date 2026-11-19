@@ -254,6 +254,25 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             await self.client.create_project("Demo", memory_share=1)
         self.client.request.assert_not_awaited()
 
+        self.client.get_project.reset_mock()
+        self.client.request.return_value = FakeHTTPResponse(
+            200,
+            json={
+                "resource": {
+                    "gizmo": {
+                        "id": "g-p-created",
+                        "display": {"name": "Demo"},
+                        "instructions": "Notes",
+                        "memory_scope": "project_v2",
+                        "current_user_permission": {"can_write": True},
+                    }
+                }
+            },
+        )
+        project = await self.client.create_project("Demo", "Notes", memory_share=False)
+        self.assertEqual((project["id"], project["instructions"]), ("g-p-created", "Notes"))
+        self.client.get_project.assert_not_awaited()
+
     def test_chat_picker_uses_categories_without_exposing_work_variants_or_pinning_versions(self):
         raw = {
             "models": [
@@ -1393,6 +1412,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 )
             chat = await asyncio.wait_for(self.provider._get_chat_data("c-0"), 1.0)
             proj = await asyncio.wait_for(self.provider._get_project_data("g-p-1"), 1.0)
+            options = await asyncio.wait_for(self.provider._project_options("g-p-1"), 1.0)
             catalog = await asyncio.wait_for(self.provider._load_catalog(), 1.0)
             await asyncio.wait_for(self.provider._rename_chat_data("c-0", "New Title"), 1.0)
             await asyncio.wait_for(self.provider._move_chat_data("c-0", None), 1.0)
@@ -1401,6 +1421,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.assertEqual(page2.items[0].id, "c-1")
         self.assertEqual(chat.id, "c-0")
         self.assertEqual(proj.id, "g-p-1")
+        self.assertIn("name", options.fields)
         self.assertEqual(catalog.state, ModelCatalogState.AVAILABLE)
 
     async def test_persistent_client_reused_across_renames_and_project_uploads(self):
