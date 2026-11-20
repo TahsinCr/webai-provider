@@ -329,7 +329,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingCatalogTests(unittest.TestCase):
-    def test_loaded_catalog_lists_and_resolves_on_caller_without_starting_loop(self):
+    def test_loaded_catalog_lists_gets_and_resolves_on_caller_without_starting_loop(self):
         provider = Provider(Account.from_cookies("grok", {}))
         self.addCleanup(provider.close)
         model = ModelRef("grok", "fast", "Grok 3")
@@ -345,6 +345,7 @@ class BlockingCatalogTests(unittest.TestCase):
 
         with patch.object(provider, "_call", side_effect=AssertionError("Unexpected loop call")):
             self.assertEqual(provider.models.list(predicate, limit=1), [model])
+            self.assertIs(provider.models.get(model.id), model)
             self.assertEqual(provider.models.resolve(model), ModelSelection(model))
         loader.assert_awaited_once_with(True)
 

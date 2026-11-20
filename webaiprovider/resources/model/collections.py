@@ -19,6 +19,13 @@ if TYPE_CHECKING:
     from ...provider import Provider
 
 
+def _model_by_id(models: Sequence[ModelRef], model_id: str) -> ModelRef:
+    for model in models:
+        if model.id == model_id:
+            return model
+    raise RemoteNotFound(f"Model ID {model_id!r} is not available for this account")
+
+
 def _resolve_model_selection(
     target: Models | EffortRef | ModelRef | ModelSelection | str,
     models: Sequence[ModelRef],
@@ -71,10 +78,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
 
     @_report_read
     async def get(self, model_id: str, /) -> ModelRef:
-        for model in await self._load_items():
-            if model.id == model_id:
-                return model
-        raise RemoteNotFound(f"Model ID {model_id!r} is not available for this account")
+        return _model_by_id(await self._load_items(), model_id)
 
     @_report_read
     async def find(
@@ -87,8 +91,9 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         endswith: bool = False,
         single: bool = False,
         last: bool = False,
+        **options: Any,
     ) -> ModelRef | None:
-        if isinstance(query, Models) and not (exact or startswith or endswith or last):
+        if isinstance(query, Models) and not (exact or startswith or endswith or last or options):
             models = await self._load_items()
             result = SelectionResolver.resolve(query, models)
             if not isinstance(result, ModelRef):
@@ -101,6 +106,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
             endswith=endswith,
             single=single,
             last=last,
+            **options,
         )
 
     async def resolve(
@@ -111,6 +117,8 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
 
 
 class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
+    _collection: AsyncModelsCollection
+
     def __init__(self, owner: Provider[Any, Any]) -> None:
         super().__init__(owner, owner._provider.models)
 
@@ -119,12 +127,22 @@ class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
         predicate: Callable[[ModelRef], bool] | None = None,
         *,
         limit: int | None = None,
+        **options: Any,
     ) -> list[ModelRef]:
+        if options:
+            raise TypeError(f"Unexpected model list option: {next(iter(options))}")
         self._owner._ensure_blocking_call()
         items = self._collection._items
         if items is not None:
             return self._filter_items(items, predicate, limit=limit)
         return self._owner._call(self._collection.list(predicate, limit=limit))
+
+    def get(self, model_id: str, /) -> ModelRef:
+        self._owner._ensure_blocking_call()
+        items = self._collection._items
+        if items is not None:
+            return _model_by_id(items, model_id)
+        return self._owner._call(self._collection.get(model_id))
 
     def refresh(self) -> list[ModelRef]:
         return self._owner._call(self._collection.refresh())

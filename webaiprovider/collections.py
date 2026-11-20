@@ -351,7 +351,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
 
     _collection_name = ""
 
-    def _read_context(self):
+    def _read_context(self) -> tuple[AsyncProvider[Any, Any] | None, str | None]:
         return None, None
 
     def _mark_remote_read(self, started_ns: int | None = None) -> None:
