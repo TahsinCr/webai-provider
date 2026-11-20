@@ -29,6 +29,8 @@ _BOOTSTRAP_FIELD_RE = re.compile(
 )
 _SECONDARY_PERSIST_INTERVAL = 5.0
 _CRITICAL_PERSIST_FIELDS = (
+    "OSID",
+    "__Secure-OSID",
     "__Secure-1PSID",
     "__Secure-1PSIDTS",
     "__Secure-1PSIDCC",

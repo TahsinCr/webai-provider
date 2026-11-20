@@ -166,13 +166,28 @@ class AuthTests(unittest.TestCase):
             (
                 "gemini",
                 "gemini.google.com",
-                ("__Secure-1PSID", "__Secure-1PSIDCC", "__Secure-3PSIDCC", "SIDCC"),
+                (
+                    "__Secure-1PSID",
+                    "__Secure-1PSIDCC",
+                    "__Secure-3PSIDCC",
+                    "SIDCC",
+                    "OSID",
+                    "__Secure-OSID",
+                ),
             ),
         ):
             with self.subTest(provider=provider):
-                domain = "google.com" if provider == "gemini" else host
                 cookies = [
-                    {"name": name, "value": "fixture", "domain": domain, "secure": True}
+                    {
+                        "name": name,
+                        "value": "fixture",
+                        "domain": (
+                            host
+                            if provider != "gemini" or name in {"OSID", "__Secure-OSID"}
+                            else "google.com"
+                        ),
+                        "secure": True,
+                    }
                     for name in names
                 ]
                 selected = select_cookies(cookies, provider)

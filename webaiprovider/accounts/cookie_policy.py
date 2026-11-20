@@ -83,6 +83,7 @@ PROVIDER_COOKIE_POLICIES = {
             {
                 "APISID",
                 "HSID",
+                "OSID",
                 "SAPISID",
                 "SID",
                 "SIDCC",
@@ -95,6 +96,7 @@ PROVIDER_COOKIE_POLICIES = {
                 "__Secure-3PSID",
                 "__Secure-3PSIDCC",
                 "__Secure-3PSIDTS",
+                "__Secure-OSID",
             }
         ),
         browser_domain="google.com",
