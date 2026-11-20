@@ -101,6 +101,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Persist refreshed live-test browser cookies only after the provider accepts the new session.
+
 - Report a Gemini sign-in redirect as an account authentication failure without following it or exposing redirect parameters.
 
 - Use the asynchronous credential loader for every asynchronous HTTP session connection.

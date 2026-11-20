@@ -141,6 +141,7 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_refreshes_invalid_browser_cookies_without_replacing_other_accounts(self) -> None:
+        from tests.live.support.config import save_verified_browser_refresh
         from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
         from webaiprovider.accounts.account import Account
 
@@ -178,6 +179,14 @@ class LiveCredentialTests(unittest.TestCase):
                 path=self.path,
                 require_ignored=False,
             )
+
+        original = load_or_import_account(
+            "chatgpt", "default-browser", path=self.path, require_ignored=False
+        )
+        self.assertEqual(original.credentials, {"cookies": {"session": "expired"}})
+        save_verified_browser_refresh(original, account, path=self.path, require_ignored=False)
+        with self.assertRaisesRegex(SafetyError, "changed during cookie refresh"):
+            save_verified_browser_refresh(original, account, path=self.path, require_ignored=False)
 
         from_browser.assert_called_once()
         self.assertEqual(account.credentials[auth_cookie], "fresh")
@@ -825,10 +834,12 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "tests.live.support.case.load_or_import_account", return_value=refreshed_account
             ) as refresh,
+            patch("tests.live.support.case.save_verified_browser_refresh") as persist,
             redirect_stdout(StringIO()),
         ):
             context = await live.open_async()
             refresh.assert_called_once()
+            persist.assert_called_once_with(account, refreshed_account)
             self.assertEqual(refresh.call_args.kwargs["refresh"], True)
             self.assertEqual(old_context.gate.calls + gate.calls, 2)
             self.assertIs(context.session, new_provider)

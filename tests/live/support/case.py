@@ -15,7 +15,12 @@ from .actions import (
     DEFAULT_SINGLE_API_LIMIT,
     ActionGate,
 )
-from .config import LiveAccount, load_or_import_account, lock_file_guard
+from .config import (
+    LiveAccount,
+    load_or_import_account,
+    lock_file_guard,
+    save_verified_browser_refresh,
+)
 from .context import LiveContext, _provider_http_status, _safe_error_label
 from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_journal
@@ -276,6 +281,7 @@ class LiveSession:
                         f"{account.provider} browser cookies remain invalid after one refresh "
                         f"({_safe_error_label(error)})"
                     ) from None
+                await _run_blocking(save_verified_browser_refresh, account, refreshed)
         except BaseException:
             await self._close_async(suppress=True)
             self._release_lock()

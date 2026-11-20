@@ -325,14 +325,12 @@ def load_or_import_account(
             data = read_private_json(path, require_ignored=False)
         accounts = parse_accounts(data)
         matching = [item for item in accounts if item.provider == provider]
-        replacing = False
         if alias:
             selected = [item for item in matching if item.alias == alias]
             if selected:
                 if not refresh:
                     return select_account(accounts, provider, alias)
-                replacing = True
-            if matching and not selected:
+            if (refresh or matching) and not selected:
                 raise SafetyError("The selected provider account alias is not configured")
         elif matching:
             if len(matching) == 1:
@@ -361,19 +359,34 @@ def load_or_import_account(
         if not isinstance(credentials, dict) or not credentials:
             raise SafetyError(f"No {provider} session cookies were found in the default browser")
 
-        record = {"id": account_alias, "provider": provider, "credentials": credentials}
-        if replacing:
-            for index, existing in enumerate(data["accounts"]):
-                if (
-                    isinstance(existing, dict)
-                    and existing.get("id") == account_alias
-                    and str(existing.get("provider", "")).casefold() == provider
-                ):
-                    data["accounts"][index] = record
-                    break
-            else:
-                raise SafetyError("The selected browser account changed during cookie refresh")
-        else:
-            data["accounts"].append(record)
-        _write_private_json(path, data, require_ignored=require_ignored)
+        if not refresh:
+            data["accounts"].append(
+                {"id": account_alias, "provider": provider, "credentials": credentials}
+            )
+            _write_private_json(path, data, require_ignored=require_ignored)
         return LiveAccount(account_alias, provider, credentials)
+
+
+def save_verified_browser_refresh(
+    original: LiveAccount,
+    refreshed: LiveAccount,
+    *,
+    path: Path = CREDENTIALS_FILE,
+    require_ignored: bool = True,
+) -> None:
+    if original.alias != "default-browser" or (original.provider, original.alias) != (
+        refreshed.provider,
+        refreshed.alias,
+    ):
+        raise SafetyError("The refreshed browser account does not match the selected account")
+
+    with _credentials_lock(path):
+        data = read_private_json(path, require_ignored=require_ignored)
+        for entry, account in zip(data["accounts"], parse_accounts(data), strict=True):
+            if (account.provider, account.alias) == (original.provider, original.alias):
+                if account == original:
+                    entry["credentials"] = refreshed.credentials
+                    _write_private_json(path, data, require_ignored=require_ignored)
+                    return
+                break
+        raise SafetyError("The selected browser account changed during cookie refresh")
