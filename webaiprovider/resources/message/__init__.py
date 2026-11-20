@@ -1,1 +1,1 @@
-"""Message, response, operation, and attachment collection modules."""
+"""Message, request preparation, and attachment modules."""

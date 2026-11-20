@@ -20,7 +20,7 @@ from .attachment import Attachment, Attachments
 
 if TYPE_CHECKING:
     from ...provider import Provider
-    from .operation import AsyncMessageOperation, MessageOperation
+    from ..response.operation import AsyncMessageOperation, MessageOperation
 
 
 class AsyncMessage:

@@ -16,10 +16,10 @@ from webaiprovider import (
     ProviderError,
 )
 from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
-from webaiprovider.resources.message.operation import ThinkingEnd, ThinkingReplace
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
 from webaiprovider.resources.project.types import ProjectData
+from webaiprovider.resources.response.operation import ThinkingEnd, ThinkingReplace
 
 
 class IsolationTests(unittest.TestCase):
@@ -557,7 +557,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chat.responses._turns), 1)
 
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
-        from webaiprovider.resources.message.operation import _close_async_iterator
+        from webaiprovider.resources.response.operation import _close_async_iterator
 
         primary = ProviderError("stream failed")
         cleanup = RuntimeError("cleanup failed")

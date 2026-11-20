@@ -1502,7 +1502,11 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
         from tests.live.test_messages import AsyncMessageApiTests
         from webaiprovider.base import Capability
         from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
-        from webaiprovider.resources.message.operation import OutputDelta, OutputEnd, TerminalStatus
+        from webaiprovider.resources.response.operation import (
+            OutputDelta,
+            OutputEnd,
+            TerminalStatus,
+        )
 
         for rate_limit_branch in (False, True):
             with (
@@ -1795,7 +1799,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
         from tests.live.test_messages import AsyncMessageApiTests
         from webaiprovider.base import Capability
         from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
-        from webaiprovider.resources.message.operation import OutputDelta
+        from webaiprovider.resources.response.operation import OutputDelta
 
         gate = ActionGate(interval=0, limit=30)
         with tempfile.TemporaryDirectory() as directory:

@@ -63,22 +63,6 @@ from .resources.chat.chat import (
 from .resources.chat.collections import AsyncChatsCollection, ChatsCollection
 from .resources.message.attachment import Attachment, Attachments
 from .resources.message.message import AsyncMessage, Message
-from .resources.message.operation import (
-    ArtifactDiscovered,
-    AsyncMessageOperation,
-    MessageOperation,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    SourceDiscovered,
-    StreamEvent,
-    TerminalStatus,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
-    ThinkingReplace,
-)
 from .resources.model.collections import AsyncModelsCollection, ModelsCollection
 from .resources.model.model import (
     EffortRef,
@@ -103,6 +87,22 @@ from .resources.project.project import (
 )
 from .resources.response.artifact import Artifact, ArtifactsCollection
 from .resources.response.collections import AsyncResponsesCollection, ResponsesCollection
+from .resources.response.operation import (
+    ArtifactDiscovered,
+    AsyncMessageOperation,
+    MessageOperation,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    SourceDiscovered,
+    StreamEvent,
+    TerminalStatus,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+    ThinkingReplace,
+)
 from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
 

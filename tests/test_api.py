@@ -283,7 +283,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async def fake_stream(_operation: AsyncMessageOperation):
             yield OutputBegin()
             yield OutputDelta(delta="Relativity explained.")
-            from webaiprovider.resources.message.operation import (
+            from webaiprovider.resources.response.operation import (
                 ArtifactDiscovered,
                 SourceDiscovered,
             )
@@ -1431,8 +1431,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(provider.overlap_detected.is_set())
 
     def test_sync_stream_batches_buffered_events_and_propagates_errors(self) -> None:
-        from webaiprovider.resources.message.operation import MessageOperation
         from webaiprovider.resources.message.protocol import ConversationBound, ResponseComplete
+        from webaiprovider.resources.response.operation import MessageOperation
 
         deltas = [TextDelta(f"t{i}") for i in range(12)]
 

@@ -11,15 +11,6 @@ from webaiprovider.collections import Page
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.attachment import Attachment
-from webaiprovider.resources.message.operation import (
-    ArtifactDiscovered,
-    OutputBegin,
-    OutputReplace,
-    SourceDiscovered,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
-)
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -32,6 +23,15 @@ from webaiprovider.resources.message.request import run_pipeline_unwrapped
 from webaiprovider.resources.message.types import Content
 from webaiprovider.resources.message.types import MessageData as NativeMessage
 from webaiprovider.resources.project.types import ProjectData as NativeProject
+from webaiprovider.resources.response.operation import (
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputReplace,
+    SourceDiscovered,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+)
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):

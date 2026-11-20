@@ -22,20 +22,6 @@ from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
 from .resources.message.attachment import Attachment
 from .resources.message.message import AsyncMessage
-from .resources.message.operation import (
-    ArtifactDiscovered,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    SourceDiscovered,
-    StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
-    ThinkingReplace,
-    _close_async_iterator,
-)
 from .resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
@@ -51,6 +37,20 @@ from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
+from .resources.response.operation import (
+    ArtifactDiscovered,
+    OutputBegin,
+    OutputDelta,
+    OutputEnd,
+    OutputReplace,
+    SourceDiscovered,
+    StreamEvent,
+    ThinkingBegin,
+    ThinkingDelta,
+    ThinkingEnd,
+    ThinkingReplace,
+    _close_async_iterator,
+)
 from .resources.response.response import Response
 from .resources.response.source import Source
 from .transport import AsyncTransport

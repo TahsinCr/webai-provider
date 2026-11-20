@@ -24,7 +24,11 @@ from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
 from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
 from webaiprovider.providers.gemini.async_provider import AsyncGeminiProvider
 from webaiprovider.providers.grok.async_provider import AsyncGrokProvider
-from webaiprovider.resources.message.operation import (
+from webaiprovider.resources.message.protocol import TextDelta
+from webaiprovider.resources.model import ModelCatalogState
+from webaiprovider.resources.model.model import EffortOption, ModelCatalog
+from webaiprovider.resources.model.model import Model as CatalogModel
+from webaiprovider.resources.response.operation import (
     ArtifactDiscovered,
     OutputBegin,
     OutputDelta,
@@ -34,10 +38,6 @@ from webaiprovider.resources.message.operation import (
     ThinkingDelta,
     ThinkingEnd,
 )
-from webaiprovider.resources.message.protocol import TextDelta
-from webaiprovider.resources.model import ModelCatalogState
-from webaiprovider.resources.model.model import EffortOption, ModelCatalog
-from webaiprovider.resources.model.model import Model as CatalogModel
 
 
 def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:

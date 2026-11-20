@@ -23,11 +23,11 @@ from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
 from ..message.attachment import Attachment, Attachments
 from ..message.message import AsyncMessage, Message
-from ..message.operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
 from ..message.types import MessageData
 from ..model.model import EffortRef, ModelRef, ModelSelection
 from ..model.types import Models
 from .artifact import Artifact
+from .operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
 from .response import Response
 from .source import Source
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
     from ..chat.chat import Chat
-    from ..message.operation import StreamEvent
+    from .operation import StreamEvent
 
 
 def _build_sources(raw_sources: Iterable[Any], source_type: type[Source]) -> tuple[Source, ...]:
