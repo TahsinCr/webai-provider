@@ -1217,7 +1217,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         }
-        chat = conversation({"id": "chat"}, "account", history)
+        chat = conversation({"id": "chat"}, history)
         self.assertEqual(len(chat.messages), 2)
         user_msg = chat.messages[0]
         self.assertEqual(user_msg.content[0].text, "Check this")
@@ -1358,7 +1358,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         out = f.feed('Prefix <grok:render card_id="a>b">1</grok:render> Suffix', final=True)
         self.assertEqual(out, "Prefix 1 Suffix")
 
-    def test_active_responses_sorts_leaves_chronologically(self):
+    def test_active_responses_selects_latest_leaf_and_keeps_tie_order(self):
         history = {
             "responseNodes": [
                 {
@@ -1385,6 +1385,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(active), 2)
         self.assertEqual(active[0]["responseId"], "u1")
         self.assertEqual(active[1]["responseId"], "a2")
+
+        history["responseNodes"][1]["createTime"] = history["responseNodes"][2]["createTime"]
+        self.assertEqual(active_responses(history)[-1]["responseId"], "a2")
 
     async def test_stream_maps_rate_limit_error_to_rate_limited(self):
         provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
@@ -1473,7 +1476,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         }
-        chat = conversation({"id": "chat", "temporary": True}, "account", history)
+        chat = conversation({"id": "chat", "temporary": True}, history)
         self.assertEqual(len(chat.messages), 2)
         self.assertEqual(len(chat.messages[0].content), 2)
         self.assertEqual(chat.messages[0].actions, ())

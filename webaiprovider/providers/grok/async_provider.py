@@ -177,7 +177,7 @@ class AsyncGrokProvider(
         if conversations is not None and not isinstance(conversations, list):
             raise ProviderError("Grok conversation list response contract changed")
         return Page(
-            tuple(conversation(item, self.account_id) for item in (conversations or ())),
+            tuple(conversation(item) for item in (conversations or ())),
             data.get("nextPageToken"),
         )
 
@@ -198,7 +198,7 @@ class AsyncGrokProvider(
         return await self._conversation_get(conversation_id, includeWorkspaces=True)
 
     async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
-        return conversation(await self._conversation_metadata(conversation_id), self.account_id)
+        return conversation(await self._conversation_metadata(conversation_id))
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         metadata, history = await asyncio.gather(
@@ -206,7 +206,7 @@ class AsyncGrokProvider(
             self._history(conversation_id),
         )
         active = active_responses(history)
-        chat = conversation(metadata, self.account_id, active_rows=active)
+        chat = conversation(metadata, active_rows=active)
         inflight = history.get("inflightResponses") if isinstance(history, dict) else None
         if isinstance(inflight, list) and inflight:
             return Conversation(
@@ -216,7 +216,7 @@ class AsyncGrokProvider(
                 chat.project,
                 {**chat.metadata, "generation": {"active": True}},
             )
-        if active and isinstance(active[-1], dict) and active[-1].get("responseId"):
+        if active:
             self._remember_continuation(conversation_id, active[-1]["responseId"])
         return chat
 
@@ -244,7 +244,6 @@ class AsyncGrokProvider(
             conversation_id,
             project_id,
             fetch_metadata=self._conversation_metadata,
-            account_id=self.account_id,
         )
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
@@ -258,7 +257,7 @@ class AsyncGrokProvider(
         if workspaces is not None and not isinstance(workspaces, list):
             raise ProviderError("Grok workspace list response contract changed")
         return Page(
-            tuple(project(item, self.account_id) for item in (workspaces or ())),
+            tuple(project(item) for item in (workspaces or ())),
             data.get("nextPageToken"),
         )
 
@@ -273,7 +272,7 @@ class AsyncGrokProvider(
         files = listing.get("files")
         if files is not None and not isinstance(files, list):
             raise ProviderError("Grok workspace file response contract changed")
-        return project(workspace, self.account_id, files or [])
+        return project(workspace, files)
 
     async def _list_project_chats_data(
         self, project_id: str, *, cursor: str | None = None, limit: int | None = None
@@ -294,7 +293,6 @@ class AsyncGrokProvider(
                         **item,
                         "workspaceId": item.get("workspaceId") or project_id,
                     },
-                    self.account_id,
                 )
                 for item in (conversations or ())
             ),
@@ -317,7 +315,7 @@ class AsyncGrokProvider(
             "/rest/workspaces",
             json={"name": name.strip(), "customPersonality": instructions or ""},
         )
-        return project(data, self.account_id)
+        return project(data)
 
     async def _delete_project_data(self, project_id: str) -> None:
         await self.client.request("DELETE", "/rest/workspaces/" + remote_id(project_id))

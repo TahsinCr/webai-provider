@@ -60,14 +60,15 @@ def message_files(*messages):
 def message_parts(content: Any) -> list[Any]:
     if not isinstance(content, dict):
         return []
-    if content.get("content_type") == "thoughts":
+    content_type = content.get("content_type")
+    if content_type == "thoughts":
         thoughts = content.get("thoughts") or []
         return [
             item.get("summary") or item.get("content", "")
             for item in thoughts
             if isinstance(item, dict)
         ]
-    if content.get("content_type") in ("reasoning_recap", "reasoning_summary"):
+    if content_type in ("reasoning_recap", "reasoning_summary"):
         return [content.get("content") or content.get("text") or ""]
     parts = content.get("parts", [])
     return parts if isinstance(parts, list) else []

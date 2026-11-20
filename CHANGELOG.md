@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Reduce history decoding work across ChatGPT, Claude, Gemini, and Grok. Reuse message visibility and action checks, skip empty citation scans, and select the latest Grok branch in one pass.
+
 - List and resolve models from the loaded catalog directly on the calling thread in the synchronous API.
 
 - Read the synchronous provider session status on the calling thread without starting an event loop.

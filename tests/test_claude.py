@@ -54,7 +54,7 @@ class ClaudeRecordsTests(unittest.TestCase):
                 }
             ],
         }
-        history = conversation(native, "")
+        history = conversation(native)
         visible = history.messages[-1]
         self.assertEqual(visible.id, "native-turn:1")
         target = action_target(native, "native-turn:4", MessageAction.RETRY)
@@ -101,7 +101,7 @@ class ClaudeRecordsTests(unittest.TestCase):
                 },
             ],
         }
-        value = conversation(data, "account")
+        value = conversation(data)
         self.assertEqual(value.id, CHAT)
         self.assertIsNotNone(value.project)
         assert value.project is not None
@@ -161,7 +161,7 @@ class ClaudeRecordsTests(unittest.TestCase):
             ],
         }
 
-        result = conversation(data, "account")
+        result = conversation(data)
         answer = next(message for message in result.messages if message.content[0].text == "Answer")
 
         self.assertEqual(
@@ -179,7 +179,6 @@ class ClaudeRecordsTests(unittest.TestCase):
                 "uuid": CHAT,
                 "chat_messages": [{"uuid": "a", "sender": "assistant", "content": [block]}],
             },
-            "account",
         )
         self.assertEqual(chat.messages[0].content[0].metadata["native"], block)
         self.assertIsNone(chat.messages[0].content[0].text)
@@ -210,7 +209,6 @@ class ClaudeRecordsTests(unittest.TestCase):
                     },
                 ],
             },
-            "account",
         )
         self.assertEqual(
             [x.content[0].text for x in value.messages], ["Question", "Selected branch"]
@@ -263,7 +261,6 @@ class ClaudeRecordsTests(unittest.TestCase):
                 "prompt_template": "Instructions",
                 "docs": [{"uuid": "f", "file_name": "source.pdf"}],
             },
-            "account",
         )
         self.assertEqual(value.instructions, "Instructions")
         self.assertEqual(value.resources[0].name, "source.pdf")
@@ -1180,7 +1177,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = SimpleNamespace(
             authenticated=True,
             path=Path("unused"),
-            request=AsyncMock(),
+            request=AsyncMock(return_value={"current_leaf_message_uuid": "parent"}),
             connect=lambda: Client(),
             url=lambda path: path,
             check=lambda _response: None,

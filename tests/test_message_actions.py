@@ -476,13 +476,13 @@ class ClaudeActionsTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         }
-        messages = conversation(value, "account").messages
+        messages = conversation(value).messages
         self.assertEqual(
             messages[-1].metadata["files"],
             ({"url": "/mnt/user-data/outputs/result.docx", "name": "result.docx"},),
         )
         value["chat_messages"].pop()
-        file_only = conversation(value, "account").messages[-1]
+        file_only = conversation(value).messages[-1]
         self.assertEqual(file_only.channel, "final")
         self.assertEqual(file_only.metadata["files"][0]["name"], "result.docx")
 

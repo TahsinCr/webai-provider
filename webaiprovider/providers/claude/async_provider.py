@@ -125,13 +125,13 @@ class AsyncClaudeProvider(
         if not isinstance(values, list):
             raise ClaudeCompatibilityError("Claude conversation list response changed")
         return Page(
-            tuple(conversation(x, self.account_id) for x in values),
+            tuple(conversation(x) for x in values),
             str(int(cursor or 0) + limit) if len(values) == limit else None,
         )
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         raw = await self.client.request("history", conversation_id=conversation_id)
-        return await asyncio.to_thread(conversation, raw, self.account_id)
+        return await asyncio.to_thread(conversation, raw)
 
     async def _conversation_attachment_count(self, conversation_id: str) -> int | None:
         value = await self.client.request("history", conversation_id=conversation_id)
@@ -158,13 +158,10 @@ class AsyncClaudeProvider(
         values = await self.client.request("projects")
         if not isinstance(values, list):
             raise ClaudeCompatibilityError("Claude project list response changed")
-        return Page(tuple(project(x, self.account_id) for x in values))
+        return Page(tuple(project(x) for x in values))
 
     async def _get_project_data(self, project_id: str) -> ProjectData:
-        return project(
-            await self.client.request("project", project_id=project_id),
-            self.account_id,
-        )
+        return project(await self.client.request("project", project_id=project_id))
 
     async def _list_project_chats_data(
         self, project_id: str, *, cursor: str | None = None, limit: int | None = None
@@ -175,7 +172,7 @@ class AsyncClaudeProvider(
         if not isinstance(values, list):
             raise ClaudeCompatibilityError("Claude project conversation response changed")
         return Page(
-            tuple(conversation(dict(x, project_uuid=project_id), self.account_id) for x in values)
+            tuple(conversation(dict(x, project_uuid=project_id)) for x in values)
         )
 
     async def _create_project_data(
@@ -191,7 +188,6 @@ class AsyncClaudeProvider(
             await self.client.request(
                 "create_project", name=name.strip(), instructions=instructions
             ),
-            self.account_id,
         )
 
     async def _delete_project_data(self, project_id: str) -> None:

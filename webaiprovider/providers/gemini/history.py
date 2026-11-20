@@ -58,15 +58,18 @@ def candidate_metadata(candidate, activity=None):
                     "url": url,
                     "title": history_value(entry, 3, 0, 2),
                 }
-    ordered = [citations[key] for key in sorted(citations)]
     _, activity_sources = activity if activity is not None else published_activity(candidate)
-    return {"sources": sources_from({"sources": ordered + list(activity_sources)})}
+    if not citations and not activity_sources:
+        return {"sources": ()}
+    ordered = [citations[key] for key in sorted(citations)]
+    ordered.extend(activity_sources)
+    return {"sources": sources_from({"sources": ordered})}
 
 
 def published_activity(candidate):
     """Return provider-published search steps and sources from Gemini history."""
     activities = history_value(candidate, 37, 1, default=[])
-    if not isinstance(activities, list):
+    if not isinstance(activities, list) or not activities:
         return (), ()
     steps, seen_steps, sources = [], set(), []
     for activity in activities[:64]:
@@ -87,7 +90,7 @@ def published_activity(candidate):
             title = history_value(result, 2)
             if isinstance(url, str):
                 sources.append({"url": url, "title": title})
-    return tuple(steps), sources_from({"sources": sources})
+    return tuple(steps), sources_from({"sources": sources}) if sources else ()
 
 
 def published_thoughts(candidate, steps=None, previous=""):
@@ -95,7 +98,10 @@ def published_thoughts(candidate, steps=None, previous=""):
     if steps is None:
         steps, _ = published_activity(candidate)
     summary = history_value(candidate, 37, 0, 0)
-    parts = [summary.strip()] if isinstance(summary, str) and summary.strip() else []
+    summary = summary.strip() if isinstance(summary, str) else ""
+    if not steps:
+        return summary or previous
+    parts = [summary] if summary else []
     parts.extend(step for step in steps if step not in parts)
     return "\n".join(parts) or previous
 

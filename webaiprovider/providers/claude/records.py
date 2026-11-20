@@ -33,6 +33,7 @@ register_file_target_rule(
             not target and identity.startswith("/mnt/user-data/")
         ),
         markdown_link_re=_CLAUDE_SANDBOX_RE,
+        markdown_hint="/mnt/user-data/",
     )
 )
 
@@ -93,8 +94,7 @@ def _linearize_turns(turns: list[dict], leaf: str | None) -> list[dict]:
     return list(reversed(branch))
 
 
-def _project_data(value: dict, account_id: str) -> ProjectData | None:
-    del account_id
+def _project_data(value: dict) -> ProjectData | None:
     raw_project = value.get("project") if isinstance(value.get("project"), dict) else {}
     pid = value.get("project_uuid") or raw_project.get("uuid")
     if not pid:
@@ -103,7 +103,7 @@ def _project_data(value: dict, account_id: str) -> ProjectData | None:
     return ProjectData(pid, str(pname))
 
 
-def conversation(value, account_id, *, _action_uuid=None):
+def conversation(value, *, _action_uuid=None):
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude conversation response contract changed")
     messages = []
@@ -137,32 +137,39 @@ def conversation(value, account_id, *, _action_uuid=None):
             flush_files()
             pending_files = ()
             pending_sources = ()
-        content = item.get("content") or (
-            [{"type": "text", "text": item["text"]}] if item.get("text") else []
-        )
-        last_text_index = next(
-            (
-                i
-                for i in range(len(content) - 1, -1, -1)
-                if content[i].get("type") == "text" and content[i].get("text")
-            ),
-            None,
-        )
-        if role == "assistant":
-            search_results = [
-                result
-                for block in content
-                if block.get("type") == "web_search_tool_result"
-                for result in (
-                    block.get("content")[:128] if isinstance(block.get("content"), list) else ()
-                )
-                if isinstance(result, dict)
-            ]
-            pending_sources = sources_from(
-                {"sources": list(pending_sources)},
-                {"sources": search_results},
-                *(block for block in content if block.get("type") == "text"),
+        content = item.get("content")
+        native_blocks = bool(content)
+        if native_blocks:
+            last_text_index = next(
+                (
+                    i
+                    for i in range(len(content) - 1, -1, -1)
+                    if content[i].get("type") == "text" and content[i].get("text")
+                ),
+                None,
             )
+        else:
+            text = item.get("text")
+            content = ({"type": "text", "text": text},) if text else ()
+            last_text_index = 0 if content else None
+        if role == "assistant":
+            if native_blocks:
+                search_results = [
+                    result
+                    for block in content
+                    if block.get("type") == "web_search_tool_result"
+                    for result in (
+                        block.get("content")[:128] if isinstance(block.get("content"), list) else ()
+                    )
+                    if isinstance(result, dict)
+                ]
+                pending_sources = sources_from(
+                    {"sources": list(pending_sources)},
+                    {"sources": search_results},
+                    *(block for block in content if block.get("type") == "text"),
+                )
+            elif pending_sources:
+                pending_sources = sources_from({"sources": pending_sources})
             pending_files = files_from(
                 {"files": pending_files},
                 item,
@@ -193,7 +200,7 @@ def conversation(value, account_id, *, _action_uuid=None):
                                 "sources": (
                                     pending_sources
                                     if role == "assistant" and is_last_text
-                                    else sources_from(block)
+                                    else sources_from(block) if native_blocks else ()
                                 ),
                                 "files": (
                                     pending_files if role == "assistant" and is_last_text else ()
@@ -239,7 +246,7 @@ def conversation(value, account_id, *, _action_uuid=None):
         value["uuid"],
         value.get("name") or "Claude sohbeti",
         tuple(messages),
-        _project_data(value, account_id),
+        _project_data(value),
         {"native": {k: v for k, v in value.items() if k != "chat_messages"}},
     )
 
@@ -251,7 +258,7 @@ def stream_message_uuid(message_id: str) -> str | None:
 
 def action_target(history: dict, message_id: str, action: MessageAction) -> MessageData:
     native_id = stream_message_uuid(message_id)
-    messages = conversation(history, "", _action_uuid=native_id).messages
+    messages = conversation(history, _action_uuid=native_id).messages
     role = "user" if action == MessageAction.EDIT else "assistant"
     try:
         return target_message(messages, message_id, role)[1]
@@ -270,8 +277,7 @@ def action_target(history: dict, message_id: str, action: MessageAction) -> Mess
         raise
 
 
-def project(value, account_id):
-    del account_id
+def project(value):
     if not isinstance(value, dict) or not value.get("uuid"):
         raise ClaudeCompatibilityError("Claude project response contract changed")
     resources = tuple(

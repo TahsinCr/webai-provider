@@ -81,10 +81,9 @@ class GrokProjectEditor:
         project_id: str | None,
         *,
         fetch_metadata: Callable[[str], Awaitable[Any]],
-        account_id: str,
     ) -> None:
         metadata = await fetch_metadata(conversation_id)
-        chat = conversation(metadata, account_id)
+        chat = conversation(metadata)
         old_project = chat.project.id if chat.project is not None else None
         if old_project == project_id:
             return
@@ -115,7 +114,7 @@ class GrokProjectEditor:
                 raise
         for _ in range(5):
             metadata = await fetch_metadata(conversation_id)
-            updated = conversation(metadata, account_id)
+            updated = conversation(metadata)
             updated_project = updated.project.id if updated.project is not None else None
             if updated_project == project_id:
                 return

@@ -3,6 +3,7 @@
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from io import StringIO
+from itertools import chain
 
 from ...errors import ProviderError
 from ...resources.chat.types import Conversation
@@ -120,20 +121,21 @@ class GrokTextFilter:
 
 
 def clean_text(value):
-    return GrokTextFilter().feed(_text(value), final=True)
+    text = _text(value)
+    if "<" not in text:
+        return text.lstrip()
+    return GrokTextFilter().feed(text, final=True)
 
 
 def active_responses(history):
-    rows = (
-        history.get("responses", history.get("responseNodes", []))
-        if isinstance(history, dict)
-        else []
-    )
+    if not isinstance(history, dict):
+        return ()
+    rows = history.get("responses", history.get("responseNodes", []))
     if not isinstance(rows, list):
         return ()
     rows = [row for row in rows if isinstance(row, dict) and row.get("responseId")]
     by_id = {row["responseId"]: row for row in rows}
-    container = history.get("conversation", {}) if isinstance(history, dict) else {}
+    container = history.get("conversation")
     leaf_id = (
         history.get("lastResponseId")
         or history.get("currentLeafResponseId")
@@ -141,22 +143,22 @@ def active_responses(history):
     )
     if leaf_id not in by_id:
         parents = {row.get("parentResponseId") for row in rows}
-        leaves = [row for row in rows if row.get("responseId") not in parents]
-        if leaves:
-            leaves.sort(key=lambda r: str(r.get("createTime") or r.get("createdAt") or ""))
-            leaf_id = leaves[-1].get("responseId")
-        else:
-            leaf_id = None
-    if leaf_id in by_id:
-        branch, seen = [], set()
-        while leaf_id in by_id and leaf_id not in seen:
-            seen.add(leaf_id)
-            row = by_id[leaf_id]
-            branch.append(row)
-            leaf_id = row.get("parentResponseId")
-        rows = list(reversed(branch))
+        leaf = max(
+            (row for row in reversed(rows) if row["responseId"] not in parents),
+            key=lambda row: str(row.get("createTime") or row.get("createdAt") or ""),
+            default=None,
+        )
+        if leaf is None:
+            return tuple(rows)
+        leaf_id = leaf["responseId"]
 
-    return tuple(rows)
+    branch, seen = [], set()
+    while leaf_id in by_id and leaf_id not in seen:
+        seen.add(leaf_id)
+        row = by_id[leaf_id]
+        branch.append(row)
+        leaf_id = row.get("parentResponseId")
+    return tuple(reversed(branch))
 
 
 def _messages(rows, temporary=False):
@@ -167,47 +169,30 @@ def _messages(rows, temporary=False):
         if sender in ("human", "user"):
             text = row.get("message") or row.get("query") or ""
             seen_ids = set()
-            unique_files = []
-            for item in (
-                list(row.get("fileAttachments") or ())
-                + list(row.get("imageAttachments") or ())
-                + list(row.get("attachments") or ())
+            resources = []
+            for item in chain(
+                row.get("fileAttachments") or (),
+                row.get("imageAttachments") or (),
+                row.get("attachments") or (),
             ):
-                if isinstance(item, str) and item:
-                    if item not in seen_ids:
-                        seen_ids.add(item)
-                        unique_files.append({"id": item, "name": "Attachment"})
+                if isinstance(item, str):
+                    file_id, name, mime_type = item, "Attachment", None
                 elif isinstance(item, dict):
-                    fid = str(
-                        item.get("assetId") or item.get("fileMetadataId") or item.get("id") or ""
+                    file_id = item.get("assetId") or item.get("fileMetadataId") or item.get("id")
+                    name = item.get("name") or item.get("fileName") or "Attachment"
+                    mime_type = item.get("mimeType") or item.get("fileMimeType")
+                else:
+                    continue
+                if file_id and (identifier := str(file_id)) not in seen_ids:
+                    seen_ids.add(identifier)
+                    resources.append(
+                        Content("resource", resource=Attachment(identifier, str(name), mime_type))
                     )
-                    if fid and fid not in seen_ids:
-                        seen_ids.add(fid)
-                        unique_files.append(item)
-                    elif not fid:
-                        unique_files.append(item)
-            resources = tuple(
-                Content(
-                    "resource",
-                    resource=Attachment(
-                        str(
-                            item.get("assetId")
-                            or item.get("fileMetadataId")
-                            or item.get("id")
-                            or ""
-                        ),
-                        str(item.get("name") or item.get("fileName") or "Attachment"),
-                        item.get("mimeType") or item.get("fileMimeType"),
-                    ),
-                )
-                for item in unique_files
-                if item.get("assetId") or item.get("fileMetadataId") or item.get("id")
-            )
             messages.append(
                 MessageData(
                     response_id,
                     "user",
-                    (Content("text", str(text)),) + resources,
+                    (Content("text", str(text)), *resources),
                     actions=() if temporary else (MessageAction.EDIT.value,),
                 )
             )
@@ -226,7 +211,8 @@ def _messages(rows, temporary=False):
                 )
             )
         answer = clean_text(row.get("message"))
-        sources = sources_from({"sources": row.get("webSearchResults", [])})
+        results = row.get("webSearchResults")
+        sources = sources_from({"sources": results}) if results else ()
         messages.append(
             MessageData(
                 response_id,
@@ -244,7 +230,7 @@ def _messages(rows, temporary=False):
     return tuple(messages)
 
 
-def conversation(value, account_id, history=None, *, active_rows=None):
+def conversation(value, history=None, *, active_rows=None):
     if not isinstance(value, dict):
         raise ProviderError("Grok conversation response contract changed")
     identifier = value.get("conversationId") or value.get("id")
@@ -270,8 +256,7 @@ def conversation(value, account_id, history=None, *, active_rows=None):
     )
 
 
-def project(value, account_id, files=()):
-    del account_id
+def project(value, files=()):
     if not isinstance(value, dict):
         raise ProviderError("Grok workspace response contract changed")
     identifier = value.get("workspaceId") or value.get("id")

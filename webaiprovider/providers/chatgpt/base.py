@@ -57,42 +57,38 @@ class BaseChatGPTProvider(BaseProvider):
             dict(raw.get("metadata") or {}),
         )
 
-    def _message(self, item: dict[str, Any], raw: dict[str, Any]) -> MessageData:
+    def _message(self, item: dict[str, Any], *, allow_actions: bool) -> MessageData:
         content = item.get("content") or {}
         parts = message_parts(content)
-        parts = parts if isinstance(parts, list) else []
         author = item.get("author")
-        author = author if isinstance(author, dict) else {}
-        role = author.get("role", "unknown")
-        blocks = tuple(
-            Content("text", text=part)
-            if isinstance(part, str)
-            else Content("text", text=part["text"], metadata={"native": part})
-            if isinstance(part, dict) and isinstance(part.get("text"), str)
-            else Content("provider", metadata={"value": part})
-            for part in parts
+        role = author.get("role", "unknown") if isinstance(author, dict) else "unknown"
+        channel = item.get("channel")
+        public_recipient = item.get("recipient") in (None, "all")
+        summary = isinstance(content, dict) and content.get("content_type") in (
+            "thoughts", "reasoning_recap", "reasoning_summary"
         )
+        if summary or (role == "assistant" and not public_recipient):
+            channel = "analysis"
+        if len(parts) == 1 and isinstance(parts[0], str):
+            blocks = (Content("text", text=parts[0]),)
+        else:
+            blocks = tuple(
+                Content("text", text=part)
+                if isinstance(part, str)
+                else Content("text", text=part["text"], metadata={"native": part})
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+                else Content("provider", metadata={"value": part})
+                for part in parts
+            )
+        message_id = item.get("id", "")
         return MessageData(
-            str(item.get("id", "")),
+            str(message_id),
             role,
             blocks,
-            "analysis"
-            if content.get("content_type") in ("thoughts", "reasoning_recap", "reasoning_summary")
-            or (role == "assistant" and item.get("recipient") not in (None, "all"))
-            else item.get("channel"),
+            channel,
             dict(item),
-            actions=actions_for(
-                role,
-                final=item.get("channel") != "analysis"
-                and content.get("content_type")
-                not in ("thoughts", "reasoning_recap", "reasoning_summary")
-                and item.get("recipient") in (None, "all"),
-                branch=True,
-            )
-            if item.get("id")
-            and not raw.get("pending_branch")
-            and not raw.get("is_read_only")
-            and not raw.get("is_temporary_chat")
+            actions=actions_for(role, branch=True)
+            if allow_actions and message_id and channel != "analysis" and public_recipient
             else (),
         )
 
@@ -130,15 +126,18 @@ class BaseChatGPTProvider(BaseProvider):
         remote_id = raw.get("conversation_id") or raw.get("id")
         if not isinstance(remote_id, str) or not remote_id:
             raise ValueError("provider conversation has no remote ID")
+        allow_actions = not (
+            raw.get("pending_branch") or raw.get("is_read_only") or raw.get("is_temporary_chat")
+        )
         messages, turn = [], []
         for item in self._active_messages(raw):
             if not isinstance(item, dict):
                 continue
-            if (item.get("author") or {}).get("role") == "user":
+            message = self._message(item, allow_actions=allow_actions)
+            if message.role == "user":
                 turn.clear()
             else:
                 turn.append(item)
-            message = self._message(item, raw)
             if (
                 message.role == "assistant"
                 and message.channel != "analysis"
