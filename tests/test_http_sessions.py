@@ -844,7 +844,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 ) as read_async,
                 patch.object(http_session, "persist", wraps=http_session.persist) as persist_spy,
             ):
-                client = await http_session._acquire_client_async()
+                client = await http_session._acquire_client()
                 self.assertIs(client, fake_client)
                 read_async.assert_awaited_once()
                 http_session._dirty = True

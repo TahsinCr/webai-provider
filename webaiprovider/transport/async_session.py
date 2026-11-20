@@ -2,7 +2,7 @@
 
 import asyncio
 
-from ..accounts.credentials import read_session, read_session_async, save_session_async
+from ..accounts.credentials import read_session_async, save_session_async
 from ..accounts.filters import ProviderCookieFilter
 from .async_http import AsyncHTTPTransport
 from .cookie import _SessionCookies
@@ -28,29 +28,19 @@ class AsyncHttpSession(_SessionCookies, AsyncHTTPTransport):
 
         return self._build_client(cookies, AsyncSession)
 
-    def _connect(self):
-        if self.client is None:
-            cookies = self._load_initial_cookies(read_session(self.path))
-            self.client = self._create_client(cookies)
-        return self.client
-
-    async def _ensure_connected(self):
+    async def _connect(self):
         if self.client is not None:
             return self.client
         async with self._connect_lock:
             if self.client is None:
                 values = await read_session_async(self.path)
-                if self.client is None:
-                    self.client = self._create_client(self._load_initial_cookies(values))
+                self.client = self._create_client(self._load_initial_cookies(values))
         return self.client
 
     async def get_saved_cookies(self) -> dict[str, str]:
-        await self._ensure_connected()
-        return dict(self._saved_cookies or {})
-
-    async def _acquire_client_async(self):
-        await self._ensure_connected()
-        return self._acquire_client()
+        async with self._activity():
+            await self._connect()
+            return dict(self._saved_cookies or {})
 
     async def _reset_owned_client(self, failed_client):
         if (

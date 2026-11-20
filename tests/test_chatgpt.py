@@ -3371,7 +3371,7 @@ class ChatGPTStreamingUploadTests(unittest.IsolatedAsyncioTestCase):
 
         from curl_cffi.requests import Session as CurlSession
 
-        from webaiprovider.transport.http import curl_cookie_jar
+        from webaiprovider.transport.network import curl_cookie_jar
 
         jar = curl_cookie_jar(
             {

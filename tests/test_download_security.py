@@ -13,7 +13,7 @@ from webaiprovider.transport.downloader import (
     NativeDownloadClient,
     cookie_header,
     download_source,
-    validate_network_address,
+    resolve_network_addresses,
 )
 
 
@@ -23,14 +23,14 @@ class DownloadAddressTests(unittest.TestCase):
         getaddrinfo.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
         ]
-        self.assertEqual(validate_network_address("cdn.example"), "93.184.216.34")
+        self.assertEqual(resolve_network_addresses("cdn.example"), ("93.184.216.34",))
 
         getaddrinfo.return_value = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
         ]
         with self.assertRaisesRegex(ValueError, "Prohibited destination"):
-            validate_network_address("mixed.example")
+            resolve_network_addresses("mixed.example")
 
     def test_stream_pins_the_validated_dns_address(self):
         class Response:
@@ -112,11 +112,11 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             cookie_header({"sessionKey": "bad\r\nvalue"}, ("sessionKey",))
 
-    def test_validate_network_address_uses_af_inet_when_ipv6_unreachable(self):
+    def test_resolve_network_addresses_uses_af_inet_when_ipv6_unreachable(self):
         import socket
         from unittest.mock import patch
 
-        from webaiprovider.transport.downloader import validate_network_address
+        from webaiprovider.transport.downloader import resolve_network_addresses
 
         seen_families = []
 
@@ -128,13 +128,13 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.transport.downloader._has_ipv6_connectivity", return_value=False),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
         ):
-            validate_network_address("https://files.example/asset.png")
+            resolve_network_addresses("https://files.example/asset.png")
 
         with (
             patch("webaiprovider.transport.downloader._has_ipv6_connectivity", return_value=True),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
         ):
-            validate_network_address("https://files.example/asset.png")
+            resolve_network_addresses("https://files.example/asset.png")
 
         self.assertEqual(seen_families, [socket.AF_INET, socket.AF_UNSPEC])
 
@@ -192,7 +192,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("topsecret", str(ctx.exception))
 
     def test_no_proxy_bypass_still_triggers_ssrf_and_dns_pinning(self):
-        from webaiprovider.transport.http import _has_proxy_configured
+        from webaiprovider.transport.network import _has_proxy_configured
 
         with patch.dict(
             "os.environ",

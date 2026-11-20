@@ -31,7 +31,7 @@ from ...errors import RateLimited
 from ...resources.message.protocol import ProviderRequest
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.frames import SSEFrameDecoder
-from ...transport.http import _is_ip_literal
+from ...transport.network import _is_ip_literal
 from ...transport.retry import parse_retry_after
 from .auth import BrowserSession
 from .catalogs import parse_model_catalog

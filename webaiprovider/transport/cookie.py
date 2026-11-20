@@ -5,7 +5,7 @@ from collections.abc import Mapping
 
 from ..accounts.cookie_policy import COOKIE_POLICIES_BY_ORIGIN, is_cookie_chunk
 from ..accounts.filters import ProviderCookieFilter
-from .http import curl_cookie_jar
+from .network import curl_cookie_jar
 
 _SECONDARY_PERSIST_INTERVAL = 5.0
 

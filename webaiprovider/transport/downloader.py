@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from .http import _format_resolve_entry, _has_ipv6_connectivity, _is_ip_literal
+from .network import _format_resolve_entry, _has_ipv6_connectivity, _is_ip_literal
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
@@ -38,10 +38,6 @@ def resolve_network_addresses(address_str: str, allow_private: bool = False) -> 
         if not allow_private and not ip.is_global:
             raise ValueError("Prohibited destination network address")
     return tuple(str(ip) for ip in addresses)
-
-
-def validate_network_address(address_str: str, allow_private: bool = False) -> str:
-    return resolve_network_addresses(address_str, allow_private=allow_private)[0]
 
 
 @dataclass(frozen=True)
@@ -101,7 +97,7 @@ class NativeDownloadClient:
         self.client.close()
 
     @contextmanager
-    def stream(self, method, url, *, headers, resolved_address=None, allow_private=None):
+    def stream(self, method, url, *, headers, allow_private=None):
         from curl_cffi.requests.exceptions import RequestException
 
         permit_private = self.allow_private if allow_private is None else allow_private
@@ -109,10 +105,6 @@ class NativeDownloadClient:
         if target.scheme != "https" or not target.hostname or target.username or target.password:
             raise ValueError("Download URL must use HTTPS without credentials")
         pinned_addresses = resolve_network_addresses(target.hostname, allow_private=permit_private)
-        if resolved_address:
-            pinned_addresses = (
-                validate_network_address(resolved_address, allow_private=permit_private),
-            )
         if not _is_ip_literal(target.hostname):
             from curl_cffi import CurlOpt
 

@@ -119,7 +119,7 @@ class BrowserSession:
         """Bootstrap a profile's web session without CDP or a running browser."""
         from curl_cffi.requests import Session
 
-        from ...transport.http import (
+        from ...transport.network import (
             _invalidate_host_dns,
             _is_curl_timeout,
             _prepare_curl_session_sync,
@@ -152,7 +152,7 @@ class BrowserSession:
         from curl_cffi.requests import AsyncSession
 
         from ...transport.async_http import _prepare_curl_session_async
-        from ...transport.http import (
+        from ...transport.network import (
             _invalidate_host_dns,
             _is_curl_timeout,
             curl_cookie_jar,

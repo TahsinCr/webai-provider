@@ -97,6 +97,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Use the asynchronous credential loader for every asynchronous HTTP session connection.
+
 - Preserve the blocking transport response type for raw HTTP sends. Match the provider utility methods and ChatGPT authentication options across both API variants.
 
 - Lock the current source and selected destination during chat moves, including when the caller holds an older chat snapshot.

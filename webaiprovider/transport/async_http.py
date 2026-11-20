@@ -9,9 +9,9 @@ from io import BytesIO
 
 from ..core.timing import current_send_timing
 from ..errors import ProviderError
-from . import http
+from . import network
 from .base import AsyncTransport, _AsyncStreamResponse, _BufferedResponse
-from .http import (
+from .network import (
     _IDEMPOTENT_METHODS,
     _apply_curl_resolve,
     _extract_and_validate_ips,
@@ -34,10 +34,10 @@ _CURL_STREAM_PHASES = (
 
 
 async def _check_ipv6_connectivity() -> bool:
-    cached = http._ipv6_connectivity_cache
-    if cached is not None and time.monotonic() - cached[0] < http._IPV6_CACHE_TTL:
+    cached = network._ipv6_connectivity_cache
+    if cached is not None and time.monotonic() - cached[0] < network._IPV6_CACHE_TTL:
         return cached[1]
-    return await asyncio.to_thread(http._has_ipv6_connectivity)
+    return await asyncio.to_thread(network._has_ipv6_connectivity)
 
 
 def _connect_timeout(timeout) -> float:
@@ -50,7 +50,7 @@ async def _resolve_host_ips(
     hostname: str, port: int, *, use_ipv6: bool, timeout: float
 ) -> tuple[str, ...]:
     key = (hostname.casefold(), port, use_ipv6)
-    cached = http._DNS_CACHE.get(key)
+    cached = network._DNS_CACHE.get(key)
     if cached is not None:
         return cached
     family = socket.AF_UNSPEC if use_ipv6 else socket.AF_INET
@@ -68,7 +68,7 @@ async def _resolve_host_ips(
     except OSError:
         raise ProviderError("Provider host resolution failed") from None
     validated = _extract_and_validate_ips(hostname, records)
-    http._DNS_CACHE.put(key, validated)
+    network._DNS_CACHE.put(key, validated)
     return validated
 
 
@@ -191,26 +191,24 @@ class AsyncHTTPTransport(AsyncTransport):
             if not self._active_requests:
                 self._idle.set()
 
-    def _connect(self):
-        if self._client_getter is not None:
-            return self._client_getter()
-        if self.client is None:
-            factory = self.factory
-            is_default_curl = factory is None
-            if is_default_curl:
-                from curl_cffi.requests import AsyncSession
+    async def _connect(self):
+        factory = self.factory
+        timeout = self.config.timeout
+        if factory is None:
+            from curl_cffi.requests import AsyncSession
 
-                factory = AsyncSession
-            timeout = self.config.timeout
-            if is_default_curl:
-                self.client = factory(timeout=timeout, trust_env=False)
-            else:
-                self.client = factory(timeout=timeout)
+            self.client = AsyncSession(timeout=timeout, trust_env=False)
+        else:
+            self.client = factory(timeout=timeout)
         return self.client
 
-    def _acquire_client(self):
-        client = self._connect()
-        if self._client_getter is None and client is self.client and client is not None:
+    async def _acquire_client(self):
+        if self._client_getter is not None:
+            return self._client_getter()
+        client = self.client
+        if client is None:
+            client = await self._connect()
+        if client is not None:
             self._owned_refs[id(client)] = self._owned_refs.get(id(client), 0) + 1
         return client
 
@@ -234,8 +232,7 @@ class AsyncHTTPTransport(AsyncTransport):
         if self._after_response is not None:
             await self._after_response()
 
-    async def _prepare_curl(self, options, *, client=None):
-        client = client if client is not None else self._connect()
+    async def _prepare_curl(self, options, *, client):
         await _prepare_curl_session_async(
             client,
             self._dns.host,
@@ -244,14 +241,6 @@ class AsyncHTTPTransport(AsyncTransport):
             dns_state=self._dns,
             timeout=_connect_timeout(options.get("timeout", self.config.timeout)),
         )
-
-    def _invalidate_curl_dns(self, failed_client=None):
-        client = (
-            failed_client
-            if failed_client is not None
-            else (self._client_getter() if self._client_getter is not None else self.client)
-        )
-        self._dns.invalidate(client)
 
     async def _reset_owned_client(self, failed_client):
         if self._client_getter is not None or self.client is not failed_client:
@@ -264,8 +253,7 @@ class AsyncHTTPTransport(AsyncTransport):
         with suppress(Exception):
             await client.close()
 
-    async def _send(self, method, url, options, *, client=None):
-        client = client if client is not None else self._connect()
+    async def _send(self, method, url, options, *, client):
         await self._prepare_curl(options, client=client)
         sender = getattr(client, "request", None)
         if callable(sender):
@@ -297,9 +285,6 @@ class AsyncHTTPTransport(AsyncTransport):
                 buffer.write(bytes(chunk))
         return _BufferedResponse(response, first if buffer is None else buffer.getvalue())
 
-    async def _acquire_client_async(self):
-        return self._acquire_client()
-
     async def send(self, method, path, *, check_status=True, **options):
         async with self._activity():
             return await self._send_request(method, path, check_status=check_status, **options)
@@ -310,7 +295,7 @@ class AsyncHTTPTransport(AsyncTransport):
         can_retry = method.upper() in _IDEMPOTENT_METHODS
         try:
             for attempt in (0, 1):
-                client = await self._acquire_client_async()
+                client = await self._acquire_client()
                 streaming = callable(getattr(client, "stream", None)) or _is_curl_async_session(
                     client
                 )
@@ -322,7 +307,7 @@ class AsyncHTTPTransport(AsyncTransport):
                         return response
                     except BaseException as exc:
                         if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                            self._invalidate_curl_dns(client)
+                            self._dns.invalidate(client)
                             await self._reset_owned_client(client)
                             continue
                         raise
@@ -341,7 +326,7 @@ class AsyncHTTPTransport(AsyncTransport):
                     finally:
                         await self._release_client(client)
                     if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                        self._invalidate_curl_dns(client)
+                        self._dns.invalidate(client)
                         await self._reset_owned_client(client)
                         continue
                     raise
@@ -357,8 +342,7 @@ class AsyncHTTPTransport(AsyncTransport):
             await self._after()
 
     @asynccontextmanager
-    async def _open_stream(self, method, url, options, *, client=None, timing=None):
-        client = client if client is not None else self._connect()
+    async def _open_stream(self, method, url, options, *, client, timing=None):
         await self._prepare_curl(options, client=client)
         native = _is_curl_async_session(client)
         if native or not callable(getattr(client, "stream", None)):
@@ -389,7 +373,7 @@ class AsyncHTTPTransport(AsyncTransport):
         response = None
         try:
             for attempt in (0, 1):
-                client = await self._acquire_client_async()
+                client = await self._acquire_client()
                 try:
                     response = await stack.enter_async_context(
                         self._open_stream(method, url, options, client=client, timing=timing)
@@ -402,7 +386,7 @@ class AsyncHTTPTransport(AsyncTransport):
                     finally:
                         await self._release_client(client)
                     if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                        self._invalidate_curl_dns(client)
+                        self._dns.invalidate(client)
                         await self._reset_owned_client(client)
                         continue
                     raise
