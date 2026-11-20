@@ -5,6 +5,7 @@ import threading
 from collections import Counter, deque
 from collections.abc import Awaitable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import Condition, Lock
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -58,13 +59,22 @@ _ResultT = TypeVar("_ResultT")
 _ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
 
 
+class _CallEvents:
+    __slots__ = ("active", "items")
+
+    def __init__(self) -> None:
+        self.active = True
+        self.items: list[EventEnvelope[str]] = []
+
+
 class _CallWaiter:
     """Coroutine execution state shared between a caller thread and loop driver."""
 
-    __slots__ = ("cancelled", "coroutine", "done", "error", "task", "value")
+    __slots__ = ("cancelled", "coroutine", "done", "error", "events", "task", "value")
 
     def __init__(self, coroutine: Awaitable[Any]) -> None:
         self.coroutine = coroutine
+        self.events = _CallEvents()
         self.task: asyncio.Future[Any] | None = None
         self.cancelled = False
         self.done = False
@@ -104,10 +114,13 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._closed = False
         self.events: EventBus[EventEnvelope[str]] = EventBus(error_policy=ErrorPolicy.ISOLATE)
         self._pending_events: deque[EventEnvelope[str]] = deque()
+        self._call_events: ContextVar[_CallEvents | None] = ContextVar(
+            "webai_call_events", default=None
+        )
         self._publish_lock = Lock()
-        self._publishing = False
+        self._publishing = 0
         self._close_events_requested = False
-        self._provider.bind_sync_events(self.events, self._pending_events.append)
+        self._provider.bind_sync_events(self.events, self._enqueue_event)
         self.hooks: OperationHooks = OperationHooks(self._provider.hooks)
         self._chats = self._make_chats()
         self._projects = self._make_projects()
@@ -171,6 +184,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         raise RuntimeError("Use AsyncProvider in async code; Provider cannot block an event loop")
 
     def _start_waiter(self, waiter: _CallWaiter) -> None:
+        token = self._call_events.set(waiter.events)
         try:
             task = asyncio.ensure_future(waiter.coroutine, loop=asyncio.get_running_loop())
         except Exception as error:
@@ -179,6 +193,8 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 close()
             self._complete_waiter(waiter, error, None)
             return
+        finally:
+            self._call_events.reset(token)
         waiter.task = task
         task.add_done_callback(lambda completed: self._on_waiter_done(waiter, completed))
         if waiter.cancelled:
@@ -200,6 +216,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             waiter.error = error
             waiter.value = value
             waiter.done = True
+            waiter.events.active = False
             if self._driver_waiter is waiter:
                 asyncio.get_running_loop().stop()
             self._state_lock.notify_all()
@@ -270,34 +287,43 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 if close is not None:
                     close()
             else:
-                with self._state_lock:
-                    self._pending_calls -= 1
-                    self._state_lock.notify_all()
-                self._publish_pending_events()
+                self._publish_pending_events(waiter.events)
 
-    def _publish_pending_events(self, *, close: bool = False) -> None:
+    def _enqueue_event(self, event: EventEnvelope[str]) -> None:
+        call = self._call_events.get()
+        if call is not None and call.active:
+            call.items.append(event)
+        else:
+            with self._publish_lock:
+                self._pending_events.append(event)
+
+    def _publish_pending_events(
+        self, call: _CallEvents | None = None, *, close: bool = False
+    ) -> None:
         with self._publish_lock:
             self._close_events_requested |= close
-            if self._publishing:
-                return
-            self._publishing = True
+            pending = list(self._pending_events)
+            self._pending_events.clear()
+            if call is not None:
+                pending.extend(call.items)
+                call.items.clear()
+            self._publishing += 1
+        if call is not None:
+            with self._state_lock:
+                self._pending_calls -= 1
+                self._state_lock.notify_all()
 
         try:
-            while True:
-                with self._publish_lock:
-                    if not self._pending_events:
-                        self._publishing = False
-                        close_events = self._close_events_requested
-                        self._close_events_requested = False
-                        break
-                    event = self._pending_events.popleft()
+            for event in pending:
                 self.events.publish(event)
-        except BaseException:
+        finally:
             with self._publish_lock:
-                self._publishing = False
-            raise
-        if close_events:
-            self.events.close()
+                self._publishing -= 1
+                close_events = self._close_events_requested and self._publishing == 0
+                if close_events:
+                    self._close_events_requested = False
+            if close_events:
+                self.events.close()
 
     def open(self: _ProviderT) -> _ProviderT:
         self._ensure_blocking_call()

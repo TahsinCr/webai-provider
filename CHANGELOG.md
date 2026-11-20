@@ -93,6 +93,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Deliver synchronous events emitted during a blocking call on that call's thread.
+
 - Let blocking HTTP requests and streams finish before closing their client. Keep a client in use by another request alive during timeout recovery.
 - Release the synchronous call scheduler when it rejects an awaitable bound to another event loop.
 - Initialize the blocking HTTP client once during concurrent first access and keep network requests outside the initialization lock.

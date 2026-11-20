@@ -1149,12 +1149,17 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         listening = threading.Event()
         release = threading.Event()
         delivered = []
+        callers = {}
 
         def on_event(event):
-            delivered.append(event.event)
+            delivered.append((event.event, threading.get_ident()))
             if len(delivered) == 1:
                 listening.set()
                 release.wait(3)
+
+        def create(title):
+            callers[title] = threading.get_ident()
+            return provider.chats.create(title)
 
         provider.events.subscribe(
             on_event,
@@ -1165,17 +1170,24 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         )
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                first = pool.submit(provider.chats.create, "First")
+                first = pool.submit(create, "First")
                 try:
                     self.assertTrue(listening.wait(2))
-                    second = pool.submit(provider.chats.create, "Second")
+                    second = pool.submit(create, "Second")
                     self.assertEqual(second.result(timeout=1).title, "Second")
                     self.assertFalse(first.done())
                     pool.submit(provider.close).result(timeout=1)
                 finally:
                     release.set()
                 self.assertEqual(first.result(timeout=2).title, "First")
-            self.assertEqual(delivered, ["chat.prepared", "chat.prepared", "provider.closed"])
+            self.assertEqual(
+                delivered,
+                [
+                    ("chat.prepared", callers["First"]),
+                    ("chat.prepared", callers["Second"]),
+                    ("provider.closed", callers["Second"]),
+                ],
+            )
         finally:
             provider.close()
 
