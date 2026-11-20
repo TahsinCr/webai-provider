@@ -79,7 +79,7 @@ class _CallWaiter:
 
 
 class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
-    """Run provider operations in parallel on a cooperative caller-driven event loop."""
+    """Run overlapping provider operations on a cooperative caller-driven event loop."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, Provider, args, options, asynchronous=False)
@@ -318,25 +318,31 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def open(self: _ProviderT) -> _ProviderT:
         self._ensure_blocking_call()
-        if not self._provider.opened:
+        if not self._provider.opened or self._provider.closing:
             self._call(self._provider.open())
         return self
 
     def close(self) -> None:
-        if self._closed:
-            return
-        if self._loop is not None:
-            self._ensure_blocking_call()
-            self._call(self._provider.close())
         with self._state_lock:
             if self._closed:
                 return
-            if self._loop is None:
+            unused = self._loop is None
+            if unused:
                 self._closed = True
-                self.events.close()
-                return
-            if not self._provider.closed:
-                return
+
+        if unused:
+            self.events.close()
+            return
+
+        try:
+            self._call(self._provider.close())
+        except RuntimeError:
+            with self._state_lock:
+                if self._closed:
+                    return
+            raise
+
+        with self._state_lock:
             while self._driver_thread is not None or self._waiters:
                 self._state_lock.wait()
             if self._closed:

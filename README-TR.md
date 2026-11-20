@@ -45,7 +45,7 @@ asyncio.run(main())
 
 `browser` verilmezse `Account.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `Account.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
 
-Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Her sağlayıcı aynı olay döngüsünü kullanır ve işlemleri çağıran thread’de yürütür:
+Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Her sağlayıcı, çağıran thread’lerin yürüttüğü tek bir olay döngüsünü kullanır:
 
 ```python
 from webaiprovider import Account, ChatGPTProvider, ProviderType
@@ -106,7 +106,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncHttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
 | `HttpSession` | Hesap çerezlerini kaydeden, çağıran thread’de çalışan senkron HTTP oturumu |
 
-Claude ve Grok `AsyncHttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Senkron API aynı asenkron HTTP oturumunu çağıran thread’de yürütür. Aynı sağlayıcı örneğine yapılan çağrılar sırayla çalışır.
+Claude ve Grok `AsyncHttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Senkron API, asenkron HTTP oturumunu ve tek bir olay döngüsünü paylaşır. Bir çağıran thread olay döngüsünü yürütürken bağımsız istekler örtüşebilir. Bir işlem başka bir çağrının thread’inde yürüyebilir ve işlem sürerken olay döngüsünü yürüten thread değişebilir. Çakışan sohbet ve proje değişiklikleri kaynak kilitleriyle sıralanır.
 
 Özel bir uygulama, `AsyncTransport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
 

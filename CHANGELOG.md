@@ -82,7 +82,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
-- Remove the background provider portal and threaded HTTP facade. Blocking provider operations and their synchronous event callbacks run on the calling thread. Calls on a shared provider instance are serialized.
+- Remove the background provider portal and threaded HTTP facade. Synchronous callers drive a shared event loop, allowing independent requests to overlap.
 
 - Remove the unused `ThreadedTransport` adapter and legacy thread dispatch for synchronous hooks and events.
 - Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
@@ -91,7 +91,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Return synchronous chat and message resources from `Provider.ask()` across all four providers.
 
-- Keep synchronous providers available for a cleanup retry after a failed close.
+- Keep synchronous providers available for a cleanup retry after a failed close. Resolve races between the first open and close.
 - Require project mutation confirmations to match the target project and requested change.
 - Run live API scenarios on Python 3.10 with isolated sessions and reuse a shared session on Python 3.11 and later.
 

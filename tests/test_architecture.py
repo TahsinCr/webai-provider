@@ -1125,78 +1125,118 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             sync_provider.close()
             self.assertEqual(sync_provider.lifecycle_state, LifecycleState.CLOSED)
 
+    def test_close_cannot_skip_a_concurrent_first_open(self) -> None:
+        provider = _ScriptedSyncProvider(_account())
+        condition = provider._state_lock
+        closing_at_lock = threading.Event()
+        resume_close = threading.Event()
+        closer_thread = None
+
+        class Gate:
+            def __enter__(self):
+                if threading.current_thread() is closer_thread and not closing_at_lock.is_set():
+                    closing_at_lock.set()
+                    if not resume_close.wait(2):
+                        raise TimeoutError("Close was still waiting for the test")
+                return condition.__enter__()
+
+            def __exit__(self, *args):
+                return condition.__exit__(*args)
+
+            def __getattr__(self, name):
+                return getattr(condition, name)
+
+        def close():
+            nonlocal closer_thread
+            closer_thread = threading.current_thread()
+            provider.close()
+
+        provider._state_lock = Gate()  # type: ignore[assignment]
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                closing = pool.submit(close)
+                try:
+                    self.assertTrue(closing_at_lock.wait(2))
+                    provider.open()
+                finally:
+                    resume_close.set()
+                closing.result(timeout=2)
+            self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
+            self.assertIsNone(provider._loop)
+        finally:
+            provider.close()
+
     def test_sync_parallel_chats_do_not_block_each_other_while_same_chat_serializes(self) -> None:
-        sync_provider = _ScriptedSyncProvider(_account()).open()
-        async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
-        chat1_entered = threading.Event()
-        release_chat1 = asyncio.Event()
+        provider = _ScriptedSyncProvider(_account()).open()
+        async_provider: _ScriptedAsyncProvider = provider._provider  # type: ignore[assignment]
         driver_entered = threading.Event()
+        follower_entered = threading.Event()
+        release_driver = asyncio.Event()
         release_follower = asyncio.Event()
+        caller_threads: dict[str, int] = {}
+        execution_threads: dict[str, int] = {}
         same_chat_active = 0
         same_chat_max_active = 0
-        timeline: list[str] = []
 
         async def scripted_stream(request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
             nonlocal same_chat_active, same_chat_max_active
             prompt = request.prompt
-            if prompt == "slow-chat-1":
-                chat1_entered.set()
-                await release_chat1.wait()
-                yield TextDelta("one")
-                return
-            if prompt == "wait-follower":
+            if prompt == "driver":
                 driver_entered.set()
+                await release_driver.wait()
+            elif prompt == "follower":
+                execution_threads["follower-start"] = threading.get_ident()
+                follower_entered.set()
                 await release_follower.wait()
-                yield TextDelta("slow-driver")
-                return
-            if prompt.startswith("same-chat-"):
+                execution_threads["follower-end"] = threading.get_ident()
+            elif prompt.startswith("same-chat-"):
                 same_chat_active += 1
                 same_chat_max_active = max(same_chat_max_active, same_chat_active)
-                timeline.append(f"start:{prompt}")
-                await asyncio.sleep(0.02)
-                timeline.append(f"end:{prompt}")
-                same_chat_active -= 1
-                yield TextDelta(prompt)
-                return
-            yield TextDelta(f"ok:{prompt}")
+                try:
+                    await asyncio.sleep(0.02)
+                finally:
+                    same_chat_active -= 1
+            yield TextDelta(prompt)
 
         async_provider._stream_provider_events = scripted_stream  # type: ignore[method-assign]
         try:
-            chat1 = sync_provider.chats.create("One")
-            chat2 = sync_provider.chats.create("Two")
+            chat1 = provider.chats.create("One")
+            chat2 = provider.chats.create("Two")
+            loop = provider._loop
+            assert loop is not None
 
-            # 1) Follower completes chat2 while driver is blocked on chat1
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                slow_future = pool.submit(lambda: chat1.ask("slow-chat-1").text)
-                self.assertTrue(chat1_entered.wait(timeout=2.0))
-                fast_future = pool.submit(lambda: chat2.ask("fast-chat-2").text)
-                self.assertEqual(fast_future.result(timeout=2.0), "ok:fast-chat-2")
-                self.assertFalse(slow_future.done())
-                assert sync_provider._loop is not None
-                sync_provider._loop.call_soon_threadsafe(release_chat1.set)
-                self.assertEqual(slow_future.result(timeout=2.0), "one")
+            def send(chat, prompt):
+                caller_threads[prompt] = threading.get_ident()
+                return chat.ask(prompt).text
 
-            # 2) Driver finishes before follower and hands off loop driving cleanly
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                follower_future = pool.submit(lambda: chat1.ask("wait-follower").text)
-                self.assertTrue(driver_entered.wait(timeout=2.0))
-                driver_future = pool.submit(lambda: chat2.ask("quick-driver").text)
-                self.assertEqual(driver_future.result(timeout=2.0), "ok:quick-driver")
-                self.assertFalse(follower_future.done())
-                assert sync_provider._loop is not None
-                sync_provider._loop.call_soon_threadsafe(release_follower.set)
-                self.assertEqual(follower_future.result(timeout=2.0), "slow-driver")
+                try:
+                    driver = pool.submit(send, chat1, "driver")
+                    self.assertTrue(driver_entered.wait(2))
+                    self.assertEqual(pool.submit(send, chat2, "fast").result(timeout=2), "fast")
+                    self.assertFalse(driver.done())
 
-            # 3) Concurrent sends on the SAME chat serialize via per-chat lock
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                a = pool.submit(lambda: chat1.ask("same-chat-a").text)
-                b = pool.submit(lambda: chat1.ask("same-chat-b").text)
+                    follower = pool.submit(send, chat2, "follower")
+                    self.assertTrue(follower_entered.wait(2))
+                    self.assertEqual(execution_threads["follower-start"], caller_threads["driver"])
+                    loop.call_soon_threadsafe(release_driver.set)
+                    self.assertEqual(driver.result(timeout=2), "driver")
+                    self.assertFalse(follower.done())
+                    loop.call_soon_threadsafe(release_follower.set)
+                    self.assertEqual(follower.result(timeout=2), "follower")
+                    self.assertEqual(execution_threads["follower-end"], caller_threads["follower"])
+                finally:
+                    loop.call_soon_threadsafe(release_driver.set)
+                    loop.call_soon_threadsafe(release_follower.set)
+
+                a = pool.submit(send, chat1, "same-chat-a")
+                b = pool.submit(send, chat1, "same-chat-b")
                 self.assertEqual(
-                    {a.result(timeout=2.0), b.result(timeout=2.0)}, {"same-chat-a", "same-chat-b"}
+                    {a.result(timeout=2), b.result(timeout=2)}, {"same-chat-a", "same-chat-b"}
                 )
             self.assertEqual(same_chat_max_active, 1)
         finally:
-            sync_provider.close()
+            provider.close()
 
 
 class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
