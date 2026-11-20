@@ -468,6 +468,35 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingTransportTests(unittest.TestCase):
+    def test_native_requests_share_one_client_without_serializing_network_io(self):
+        requests = threading.Barrier(2)
+        callers = []
+
+        class Client:
+            def request(self, *_args, **_kwargs):
+                callers.append(threading.get_ident())
+                requests.wait(timeout=2)
+                return FakeHTTPResponse(200, json={"ok": True})
+
+            def close(self):
+                pass
+
+        factory = Mock(side_effect=lambda **_: Client())
+        transport = HTTPTransport("https://claude.ai", client_factory=factory)
+        self.addCleanup(transport.close)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+
+            def read():
+                return threading.get_ident(), transport.request("GET", "/fixture")
+
+            first, second = (pool.submit(read) for _ in range(2))
+            results = [first.result(timeout=3), second.result(timeout=3)]
+
+        factory.assert_called_once()
+        self.assertCountEqual(callers, [thread for thread, _ in results])
+        self.assertEqual([result for _, result in results], [{"ok": True}, {"ok": True}])
+
     def test_provider_shutdown_waits_for_raw_transport_calls(self):
         class FixtureAsyncProvider(AsyncProvider):
             pass

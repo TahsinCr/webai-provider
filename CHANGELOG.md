@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Construct chat response collections directly across providers.
+
 - Reduce history decoding work across ChatGPT, Claude, Gemini, and Grok. Reuse message visibility and action checks, skip empty citation scans, and select the latest Grok branch in one pass.
 
 - List and resolve models from the loaded catalog directly on the calling thread in the synchronous API.
@@ -88,6 +90,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
 
 ### Fixed
+
+- Release the synchronous call scheduler when it rejects an awaitable bound to another event loop.
+- Initialize the blocking HTTP client once during concurrent first access and keep network requests outside the initialization lock.
 
 - Wait for active raw HTTP requests and streams before closing a synchronous provider. Closing its shared transport uses the same shutdown path.
 - Allow independent synchronous calls to return while another caller is delivering an event.

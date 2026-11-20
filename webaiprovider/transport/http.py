@@ -12,6 +12,7 @@ from contextlib import (
     suppress,
 )
 from io import BytesIO
+from threading import RLock
 from urllib.parse import urlsplit
 
 from ..core.cache import BoundedCache
@@ -303,25 +304,28 @@ class HTTPTransport(Transport):
         self.factory = client_factory
         self._client_getter = client_getter
         self.client = None
+        self._client_lock = RLock()
         self._dns = _OriginDNS(self.origin)
 
     def _connect(self):
         if self._client_getter is not None:
             return self._client_getter()
-        if self.client is None:
-            factory = self.factory
-            if factory is None:
-                from curl_cffi.requests import Session as CurlSession
+        with self._client_lock:
+            if self.client is None:
+                factory = self.factory
+                if factory is None:
+                    from curl_cffi.requests import Session as CurlSession
 
-                self.client = CurlSession(timeout=self.config.timeout, trust_env=False)
-            else:
-                self.client = factory(timeout=self.config.timeout)
-        return self.client
+                    self.client = CurlSession(timeout=self.config.timeout, trust_env=False)
+                else:
+                    self.client = factory(timeout=self.config.timeout)
+            return self.client
 
     def _reset_owned_client(self, failed_client):
-        if self._client_getter is not None or self.client is not failed_client:
-            return
-        client, self.client = self.client, None
+        with self._client_lock:
+            if self._client_getter is not None or self.client is not failed_client:
+                return
+            client, self.client = self.client, None
         with suppress(Exception):
             client.close()
 
@@ -485,7 +489,8 @@ class HTTPTransport(Transport):
             yield _StreamResponse(response, self.config.max_stream_bytes)
 
     def close(self):
-        client, self.client = self.client, None
+        with self._client_lock:
+            client, self.client = self.client, None
         if client is not None:
             client.close()
 

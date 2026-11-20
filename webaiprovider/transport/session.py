@@ -1,7 +1,6 @@
 """Blocking HTTP session for saved accounts."""
 
 from contextlib import contextmanager
-from threading import RLock
 
 from ..accounts.credentials import read_session, save_session
 from ..accounts.filters import ProviderCookieFilter
@@ -18,24 +17,23 @@ class HttpSession(_SessionCookies, HTTPTransport):
         ProviderCookieFilter.validate_origin(origin)
         super().__init__(origin, client_factory=client_factory, config=config)
         self._init_session(credential_file, required_cookie)
-        self._session_lock = RLock()
 
     def _connect(self):
         from curl_cffi.requests import Session
 
-        with self._session_lock:
+        with self._client_lock:
             if self.client is None:
                 cookies = self._load_initial_cookies(read_session(self.path))
                 self.client = self._build_client(cookies, Session)
             return self.client
 
     def get_saved_cookies(self) -> dict[str, str]:
-        with self._session_lock:
+        with self._client_lock:
             self._connect()
             return dict(self._saved_cookies or {})
 
     def persist(self, *, force: bool = True):
-        with self._session_lock:
+        with self._client_lock:
             if (update := self._cookie_update(force=force)) is None:
                 return
             cookies, now = update
@@ -47,7 +45,7 @@ class HttpSession(_SessionCookies, HTTPTransport):
                 self._record_persisted(cookies, now)
 
     def _reset_owned_client(self, failed_client):
-        with self._session_lock:
+        with self._client_lock:
             if self.client is failed_client:
                 self.persist()
                 super()._reset_owned_client(failed_client)
@@ -69,7 +67,7 @@ class HttpSession(_SessionCookies, HTTPTransport):
             self.persist(force=False)
 
     def close(self):
-        with self._session_lock:
+        with self._client_lock:
             try:
                 self.persist()
             finally:

@@ -1056,6 +1056,37 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSyncCallerAndConcurrency(unittest.TestCase):
+    def test_sync_rejects_a_foreign_future_without_stranding_calls(self) -> None:
+        provider = _ScriptedSyncProvider(_account()).open()
+        self.addCleanup(provider.close)
+        foreign_loop = asyncio.new_event_loop()
+        self.addCleanup(foreign_loop.close)
+        foreign_future = foreign_loop.create_future()
+        self.addCleanup(foreign_future.cancel)
+
+        with self.assertRaisesRegex(ValueError, "different loop"):
+            provider._call(foreign_future)
+        self.assertEqual(provider.chats.create("Recovered").title, "Recovered")
+
+        entered = threading.Event()
+        release = asyncio.Event()
+
+        async def hold_driver():
+            entered.set()
+            await release.wait()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            holding = pool.submit(provider._call, hold_driver())
+            try:
+                self.assertTrue(entered.wait(2))
+                with self.assertRaisesRegex(ValueError, "different loop"):
+                    provider._call(foreign_future)
+                self.assertFalse(holding.done())
+            finally:
+                assert provider._loop is not None
+                provider._loop.call_soon_threadsafe(release.set)
+            holding.result(timeout=2)
+
     def test_sync_close_can_retry_cleanup_on_the_same_loop(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
         loops = []

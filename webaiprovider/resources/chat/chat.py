@@ -59,8 +59,6 @@ def _project_from_data(
 
 
 class AsyncChat:
-    _responses_collection_type = None
-
     def __init__(
         self,
         id: str | None = None,
@@ -82,7 +80,7 @@ class AsyncChat:
 
         from ..response.collections import AsyncResponsesCollection
 
-        self.responses = (self._responses_collection_type or AsyncResponsesCollection)(self)
+        self.responses = AsyncResponsesCollection(self)
 
     async def get(self, item_id: str) -> Response:
         return await self.responses.get(item_id)
@@ -313,14 +311,12 @@ class MovableChat(_ChatCapability):
 
 
 class Chat:
-    responses_collection_type = None
-
     def __init__(self, owner: Provider[Any, Any], resource: AsyncChat) -> None:
         self._owner = owner
         self._resource = resource
         from ..response.collections import ResponsesCollection
 
-        self.responses = (self.responses_collection_type or ResponsesCollection)(owner, resource)
+        self.responses = ResponsesCollection(owner, resource)
 
     @property
     def id(self) -> str:

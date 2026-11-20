@@ -61,12 +61,11 @@ _ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
 class _CallWaiter:
     """Coroutine execution state shared between a caller thread and loop driver."""
 
-    __slots__ = ("cancelled", "coroutine", "done", "error", "scheduled", "task", "value")
+    __slots__ = ("cancelled", "coroutine", "done", "error", "task", "value")
 
     def __init__(self, coroutine: Awaitable[Any]) -> None:
         self.coroutine = coroutine
-        self.task: asyncio.Task[Any] | None = None
-        self.scheduled = False
+        self.task: asyncio.Future[Any] | None = None
         self.cancelled = False
         self.done = False
         self.value: Any = None
@@ -98,9 +97,8 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._provider = self._make_async_provider(account, **options)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._state_lock = Condition(Lock())
-        self._driver_thread: int | None = None
         self._driver_waiter: _CallWaiter | None = None
-        self._waiters: list[_CallWaiter] = []
+        self._pending_calls = 0
         self._transport_stream_threads: Counter[int] = Counter()
         self.transport: Transport = _ProviderTransport(self)
         self._closed = False
@@ -173,44 +171,38 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         raise RuntimeError("Use AsyncProvider in async code; Provider cannot block an event loop")
 
     def _start_waiter(self, waiter: _CallWaiter) -> None:
-        if waiter.done or self._loop is None:
+        try:
+            task = asyncio.ensure_future(waiter.coroutine, loop=asyncio.get_running_loop())
+        except Exception as error:
+            close = getattr(waiter.coroutine, "close", None)
+            if close is not None:
+                close()
+            self._complete_waiter(waiter, error, None)
             return
-        if waiter.task is None:
-            task = asyncio.ensure_future(waiter.coroutine, loop=self._loop)
-            waiter.task = task
-            task.add_done_callback(lambda completed: self._on_waiter_done(waiter, completed))
-        if waiter.cancelled and not waiter.task.done():
-            waiter.task.cancel()
+        waiter.task = task
+        task.add_done_callback(lambda completed: self._on_waiter_done(waiter, completed))
+        if waiter.cancelled:
+            task.cancel()
 
     def _cancel_waiter(self, waiter: _CallWaiter) -> None:
         waiter.cancelled = True
-        if not waiter.done and waiter.task is None:
-            self._start_waiter(waiter)
         if waiter.task is not None and not waiter.task.done():
             waiter.task.cancel()
 
-    def _on_waiter_done(self, waiter: _CallWaiter, task: asyncio.Task[Any]) -> None:
-        if task.cancelled():
-            error: BaseException | None = asyncio.CancelledError()
-            value: Any = None
-        else:
-            error = task.exception()
-            value = None if error is not None else task.result()
+    def _on_waiter_done(self, waiter: _CallWaiter, task: asyncio.Future[Any]) -> None:
+        error = asyncio.CancelledError() if task.cancelled() else task.exception()
+        self._complete_waiter(waiter, error, None if error is not None else task.result())
+
+    def _complete_waiter(
+        self, waiter: _CallWaiter, error: BaseException | None, value: Any
+    ) -> None:
         with self._state_lock:
             waiter.error = error
             waiter.value = value
             waiter.done = True
-            if self._loop is not None and (
-                self._driver_waiter is waiter or not any(not item.done for item in self._waiters)
-            ):
-                self._loop.stop()
+            if self._driver_waiter is waiter:
+                asyncio.get_running_loop().stop()
             self._state_lock.notify_all()
-
-    def _remove_waiter_locked(self, waiter: _CallWaiter) -> None:
-        try:
-            self._waiters.remove(waiter)
-        except ValueError:
-            pass
 
     def _drive_waiter(self, waiter: _CallWaiter) -> None:
         loop = self._loop
@@ -227,9 +219,6 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         finally:
             with self._state_lock:
                 self._driver_waiter = None
-                self._driver_thread = None
-                if waiter.done:
-                    self._remove_waiter_locked(waiter)
                 self._state_lock.notify_all()
 
     def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
@@ -240,49 +229,33 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 self._ensure_blocking_call()
                 if self._loop is None:
                     self._loop = asyncio.new_event_loop()
-                waiter = _CallWaiter(coroutine)
-                self._waiters.append(waiter)
+                pending = _CallWaiter(coroutine)
+                self._loop.call_soon_threadsafe(self._start_waiter, pending)
+                self._pending_calls += 1
+                waiter = pending
+                loop = self._loop
 
             while True:
                 with self._state_lock:
                     if waiter.done:
-                        self._remove_waiter_locked(waiter)
-                        self._state_lock.notify_all()
-                        break
-                    if self._driver_thread is None:
-                        self._driver_thread = threading.get_ident()
+                        return waiter.result()
+                    is_driver = self._driver_waiter is None
+                    if is_driver:
                         self._driver_waiter = waiter
-                        if not waiter.scheduled:
-                            waiter.scheduled = True
-                            self._start_waiter(waiter)
-                        is_driver = True
-                    else:
-                        if not waiter.scheduled and self._loop is not None:
-                            waiter.scheduled = True
-                            self._loop.call_soon_threadsafe(self._start_waiter, waiter)
-                        is_driver = False
 
                 if is_driver:
                     self._drive_waiter(waiter)
-                    with self._state_lock:
-                        if waiter.done:
-                            self._remove_waiter_locked(waiter)
-                            break
                 else:
                     with self._state_lock:
                         try:
-                            while not waiter.done and self._driver_thread is not None:
-                                self._state_lock.wait()
+                            self._state_lock.wait_for(
+                                lambda: waiter.done or self._driver_waiter is None
+                            )
                         except BaseException:
-                            waiter.cancelled = True
-                            loop = self._loop
-                            if not waiter.done and loop is not None:
-                                loop.call_soon_threadsafe(self._cancel_waiter, waiter)
+                            loop.call_soon_threadsafe(self._cancel_waiter, waiter)
                             while not waiter.done:
-                                if self._driver_thread is None and loop is not None:
-                                    self._driver_thread = threading.get_ident()
+                                if self._driver_waiter is None:
                                     self._driver_waiter = waiter
-                                    self._cancel_waiter(waiter)
                                     self._state_lock.release()
                                     try:
                                         self._drive_waiter(waiter)
@@ -290,17 +263,16 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                                         self._state_lock.acquire()
                                 else:
                                     self._state_lock.wait()
-                            self._remove_waiter_locked(waiter)
-                            self._state_lock.notify_all()
                             raise
-
-            return waiter.result()
         finally:
-            if waiter is None or not waiter.scheduled:
+            if waiter is None:
                 close = getattr(coroutine, "close", None)
                 if close is not None:
                     close()
-            if waiter is not None:
+            else:
+                with self._state_lock:
+                    self._pending_calls -= 1
+                    self._state_lock.notify_all()
                 self._publish_pending_events()
 
     def _publish_pending_events(self, *, close: bool = False) -> None:
@@ -356,7 +328,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             raise
 
         with self._state_lock:
-            while self._driver_thread is not None or self._waiters:
+            while self._driver_waiter is not None or self._pending_calls:
                 self._state_lock.wait()
             if self._closed:
                 return
