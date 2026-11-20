@@ -11,7 +11,8 @@ import urllib.request
 from collections import deque
 from urllib.parse import urlsplit
 
-import websocket
+from curl_cffi import CurlECode, CurlError, CurlOpt, CurlWsFlag, Session
+from curl_cffi.requests.websockets import WebSocketTimeout
 
 from .filters import ALLOWED_PROVIDER_ORIGINS
 
@@ -204,37 +205,37 @@ class DevToolsConnection:
         self._next_id = 0
         self._events: deque[tuple[dict, int]] = deque()
         self._event_bytes = 0
+        self._session = Session(trust_env=False, curl_options={CurlOpt.PROXY: b""})
         try:
-            self._socket = websocket.create_connection(
+            self._socket = self._session.ws_connect(
                 socket_url,
                 timeout=timeout,
-                origin=origin,
-                http_no_proxy=["localhost", "127.0.0.1", "::1"],
-                enable_multithread=False,
+                headers={"Origin": origin},
+                allow_redirects=False,
+                max_message_size=_MAX_MESSAGE_BYTES,
             )
-        except (websocket.WebSocketException, OSError, ValueError) as error:
+        except (CurlError, OSError, ValueError) as error:
+            self.close()
             raise DevToolsError("Could not connect to the local browser debugger") from error
 
     def _receive(self, timeout: float) -> tuple[dict, int]:
         try:
-            self._socket.settimeout(max(timeout, 0.001))
-            message = self._socket.recv()
-        except websocket.WebSocketTimeoutException as error:
+            message, flags = self._socket.recv(timeout=max(timeout, 0.001))
+        except WebSocketTimeout as error:
             raise DevToolsError("Browser debugging request timed out") from error
-        except (websocket.WebSocketException, OSError) as error:
+        except (CurlError, OSError) as error:
+            if isinstance(error, CurlError) and error.code == CurlECode.TOO_LARGE:
+                raise DevToolsError("Browser debugging message exceeds the size limit") from error
             raise DevToolsError("Browser debugging connection was interrupted") from error
-        if not isinstance(message, (str, bytes, bytearray)):
-            raise DevToolsError("Browser returned an invalid debugging message")
-        size = len(message.encode("utf-8")) if isinstance(message, str) else len(message)
-        if size > _MAX_MESSAGE_BYTES:
-            raise DevToolsError("Browser debugging message exceeds the size limit")
+        if flags & CurlWsFlag.CLOSE:
+            raise DevToolsError("Browser debugging connection was interrupted")
         try:
             value = json.loads(message)
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise DevToolsError("Browser returned an invalid debugging message") from error
         if not isinstance(value, dict):
             raise DevToolsError("Browser returned an invalid debugging message")
-        return value, size
+        return value, len(message)
 
     def _queue_event(self, message: dict, size: int) -> None:
         if (
@@ -256,14 +257,14 @@ class DevToolsConnection:
         duration = self._timeout if timeout is None else timeout
         deadline = time.monotonic() + duration
         try:
-            self._socket.settimeout(duration)
-            self._socket.send(
+            self._socket.send_str(
                 json.dumps(
                     {"id": command_id, "method": method, "params": params or {}},
                     separators=(",", ":"),
-                )
+                ),
+                timeout=duration,
             )
-        except (websocket.WebSocketException, OSError, ValueError) as error:
+        except (CurlError, OSError, ValueError) as error:
             raise DevToolsError("Could not send a browser debugging command") from error
         while True:
             remaining = deadline - time.monotonic()
@@ -293,8 +294,8 @@ class DevToolsConnection:
                 return message
 
     def close(self) -> None:
-        with contextlib.suppress(websocket.WebSocketException, OSError):
-            self._socket.close()
+        with contextlib.suppress(CurlError, OSError):
+            self._session.close()
 
     def __enter__(self) -> DevToolsConnection:
         return self

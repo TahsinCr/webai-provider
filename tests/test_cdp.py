@@ -7,6 +7,8 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 
+from curl_cffi import CurlECode, CurlError, CurlOpt, CurlWsFlag
+
 from webaiprovider.accounts import cdp
 from webaiprovider.providers.chatgpt.session import capture_chatgpt_auth
 
@@ -14,21 +16,16 @@ from webaiprovider.providers.chatgpt.session import capture_chatgpt_auth
 class FakeSocket:
     def __init__(self, messages):
         self.messages = deque(messages)
-        self.timeouts = []
         self.sent = []
-        self.closed = False
 
-    def settimeout(self, timeout):
-        self.timeouts.append(timeout)
-
-    def send(self, message):
+    def send_str(self, message, *, timeout):
         self.sent.append(json.loads(message))
 
-    def recv(self):
-        return self.messages.popleft()
-
-    def close(self):
-        self.closed = True
+    def recv(self, *, timeout):
+        message = self.messages.popleft()
+        if isinstance(message, Exception):
+            raise message
+        return message.encode(), CurlWsFlag.TEXT
 
 
 def event(method, params):
@@ -99,10 +96,27 @@ class DevToolsBoundaryTests(unittest.TestCase):
 
     def test_websocket_message_size_is_checked_before_json_parsing(self):
         connection = cdp.DevToolsConnection.__new__(cdp.DevToolsConnection)
-        connection._socket = FakeSocket(["x" * (cdp._MAX_MESSAGE_BYTES + 1)])
+        connection._socket = FakeSocket([CurlError("Message too large", CurlECode.TOO_LARGE)])
 
         with self.assertRaisesRegex(cdp.DevToolsError, "size limit"):
             connection._receive(0.1)
+
+    def test_websocket_is_local_bounded_and_releases_failed_sessions(self):
+        url = "ws://127.0.0.1:9222/devtools/page/fixture"
+        with patch.object(cdp, "Session") as factory:
+            session = factory.return_value
+            session.ws_connect.side_effect = CurlError("Upgrade failed")
+            with self.assertRaisesRegex(cdp.DevToolsError, "Could not connect"):
+                cdp.DevToolsConnection(url, timeout=1.0)
+            factory.assert_called_once_with(trust_env=False, curl_options={CurlOpt.PROXY: b""})
+            session.ws_connect.assert_called_once_with(
+                url,
+                timeout=1.0,
+                headers={"Origin": "http://127.0.0.1:9222"},
+                allow_redirects=False,
+                max_message_size=cdp._MAX_MESSAGE_BYTES,
+            )
+            session.close.assert_called_once()
 
     def test_chatgpt_auth_capture_correlates_events_and_rejects_failed_responses(self):
         request = {

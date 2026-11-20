@@ -22,10 +22,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "websocket-client>=1.8,<2",
     "browser-cookie3>=0.20.1,<0.21",
     "lz4>=4.4.5,<5",
-    "curl-cffi>=0.16,<1",
+    "curl-cffi>=0.17,<1",
     "flowevent>=1.4.2,<2",
     "orjson>=3.10,<4",
 ]
