@@ -492,10 +492,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         portal = PortalTransport(
             lambda coro: asyncio.run_coroutine_threadsafe(coro, loop).result(),
             lambda: async_tr,
-            close_transport=False,
         )
-        portal.close()
-        async_tr.close.assert_not_awaited()
 
         read_done = threading.Event()
         holder = []
@@ -514,6 +511,8 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(holder[0].close)
         await asyncio.wait_for(exited.wait(), timeout=1.0)
         self.assertTrue(await asyncio.to_thread(read_done.wait, 1.0))
+        await asyncio.to_thread(portal.close)
+        async_tr.close.assert_awaited_once_with()
 
 
 class BlockingTransportTests(unittest.TestCase):

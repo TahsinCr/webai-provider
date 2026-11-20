@@ -12,10 +12,9 @@ from .base import Transport
 class PortalTransport(Transport):
     """Blocking facade over the provider's existing async runtime."""
 
-    def __init__(self, call, get_transport, *, close_transport: bool = True):
+    def __init__(self, call, get_transport):
         self._call = call
         self._get_transport = get_transport
-        self._close_transport = close_transport
 
     @property
     def origin(self):
@@ -191,5 +190,4 @@ class PortalTransport(Transport):
             finish()
 
     def close(self):
-        if self._close_transport:
-            self._call(self._get_transport().close())
+        self._call(self._get_transport().close())
