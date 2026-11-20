@@ -4,10 +4,6 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-### Added
-
-- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
-
 ### Changed
 
 - Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.
@@ -55,6 +51,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
 - Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
 - Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport bridge, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
 - Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
@@ -67,6 +64,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Keep synchronous providers available for a cleanup retry after a failed close.
+- Require project mutation confirmations to match the target project and requested change.
 - Run live API scenarios on Python 3.10 with isolated sessions and reuse a shared session on Python 3.11 and later.
 
 - Preserve the triggering user message across visible assistant segments in conversation history and keep tool or system records out of response turns. Prefer ChatGPT's active branch when a history payload contains both a branch map and a flat list.

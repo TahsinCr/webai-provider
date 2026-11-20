@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ProviderError
@@ -29,7 +30,7 @@ class ProjectMutationsMixin:
             if attempt:
                 await asyncio.sleep(0.4)
             project = await (self._get_project_data(project_id) if read is None else read())
-            if confirmed(project):
+            if project.id == project_id and confirmed(project):
                 return project
         raise ProviderError(
             "Project change could not be confirmed by the server; sync before retrying"
@@ -67,15 +68,17 @@ class ProjectMutationsMixin:
             return staged
         editor = self.editor
         result = await editor.update(project_id, current=staged, **changes)
-        if isinstance(result, ProjectData):
+
+        def confirmed(project: ProjectData) -> bool:
+            return all((getattr(project, field) or "") == value for field, value in changes.items())
+
+        if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
             self._invalidate_project_cache(project_id)
             return result
         read_metadata = getattr(editor, "read_metadata", None)
         return await self._project_after_write(
             project_id,
-            lambda saved: all(
-                (getattr(saved, field) or "") == value for field, value in changes.items()
-            ),
+            confirmed,
             read=(lambda: read_metadata(project_id, staged)) if callable(read_metadata) else None,
         )
 
@@ -103,17 +106,27 @@ class ProjectMutationsMixin:
             existing_resources=before.resources,
             **values,
         )
+        ids = {resource.id for resource in before.resources}
         if isinstance(result, Attachment):
             self._invalidate_project_cache(project_id)
+            if not result.id or result.id in ids:
+                raise ProviderError("Provider did not confirm a new project attachment")
             return replace(before, resources=(*before.resources, result))
-        if isinstance(result, ProjectData):
+        expected_name = values.get("name") or Path(values["path"]).name
+
+        def confirmed(project: ProjectData) -> bool:
+            return (
+                sum(
+                    bool(resource.id) and resource.id not in ids and resource.name == expected_name
+                    for resource in project.resources
+                )
+                == 1
+            )
+
+        if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
             self._invalidate_project_cache(project_id)
             return result
-        ids = {resource.id for resource in before.resources}
-        return await self._project_after_write(
-            project_id,
-            lambda project: any(resource.id not in ids for resource in project.resources),
-        )
+        return await self._project_after_write(project_id, confirmed)
 
     async def _remove_project_resource(
         self,
@@ -144,10 +157,11 @@ class ProjectMutationsMixin:
             resource_name=source.name,
             resource=source,
         )
-        if isinstance(result, ProjectData):
+
+        def confirmed(project: ProjectData) -> bool:
+            return all(resource.id != resource_id for resource in project.resources)
+
+        if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
             self._invalidate_project_cache(project_id)
             return result
-        return await self._project_after_write(
-            project_id,
-            lambda project: all(resource.id != resource_id for resource in project.resources),
-        )
+        return await self._project_after_write(project_id, confirmed)

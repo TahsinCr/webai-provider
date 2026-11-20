@@ -88,7 +88,6 @@ class Provider(BaseProvider):
         self._portal = PortalBridge()
         self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
         self._portal_started = False
-        self._opened = False
         self._closed = False
         self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
         self.hooks: SyncOperationHooks = SyncOperationHooks(self._provider.runtime.hooks)
@@ -155,9 +154,8 @@ class Provider(BaseProvider):
     def open(self) -> Provider:
         if self._closed:
             raise RuntimeError("A closed provider cannot be reopened")
-        if not self._opened:
+        if not self._provider.runtime.opened:
             self._call(self._provider.open())
-            self._opened = True
         return self
 
     def close(self) -> None:
@@ -169,9 +167,9 @@ class Provider(BaseProvider):
             else:
                 self._provider.runtime.sync_events.close()
         finally:
-            self._portal.close()
-            self._opened = False
-            self._closed = True
+            if not self._portal_started or self._provider.runtime.closed:
+                self._closed = True
+                self._portal.close()
 
     def authenticate(self) -> SessionStatus:
         return self._call(self._provider.authenticate())

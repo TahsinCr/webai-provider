@@ -1317,6 +1317,8 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_project_context_cache_reuses_and_invalidates_on_mutations_delete_and_close(
         self,
     ):
+        from webaiprovider.resources.project.types import ProjectData
+
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
         detail = [None] * 13
         detail[12] = [1, None, None, None, 0]
@@ -1325,7 +1327,9 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             return_value=SimpleNamespace(metadata={"native": ["notebooks/abcdef", detail]})
         )
         provider.rpc.call = AsyncMock(return_value=[])
-        provider._get_project_data = AsyncMock(return_value="confirmed")
+        provider._get_project_data = AsyncMock(
+            return_value=ProjectData("notebooks/abcdef", "Notebook")
+        )
         try:
             first = await provider._resolve_project_context("notebooks/abcdef", None)
             second = await provider._resolve_project_context("notebooks/abcdef", None)

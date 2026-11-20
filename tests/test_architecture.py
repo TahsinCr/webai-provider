@@ -8,6 +8,8 @@ import unittest
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
 
@@ -47,6 +49,7 @@ from webaiprovider.resources.message.protocol import (
 )
 from webaiprovider.resources.message.types import Content, MessageData
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
+from webaiprovider.resources.project.mutations import ProjectMutationsMixin
 from webaiprovider.resources.project.types import ProjectData
 
 
@@ -871,6 +874,24 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
+    async def test_project_attachment_readback_ignores_unrelated_sources(self) -> None:
+        project = ProjectData("p-1", "Workspace")
+        unrelated = replace(project, resources=(Attachment("r-1", "unrelated.txt"),))
+        wanted = Attachment("r-2", "report.pdf")
+        confirmed = replace(unrelated, resources=(*unrelated.resources, wanted))
+        provider = ProjectMutationsMixin()
+        provider.editor = SimpleNamespace(add_source=AsyncMock(return_value=unrelated))
+        provider._invalidate_project_cache = lambda _project_id: None
+        provider._get_project_data = AsyncMock(return_value=confirmed)
+
+        result = await provider._add_project_resource(
+            project.id, "file", current=project, path="/tmp/report.pdf"
+        )
+
+        self.assertEqual(result.resources[-1], wanted)
+        provider._get_project_data.assert_awaited_once_with(project.id)
+        provider.editor.add_source.assert_awaited_once()
+
     async def test_project_attachments_projects_file_resources_and_supports_queries(
         self,
     ) -> None:
@@ -1033,6 +1054,32 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
+    def test_sync_close_can_retry_cleanup_on_the_same_loop(self) -> None:
+        provider = _ScriptedSyncProvider(_account()).open()
+        loops = []
+
+        async def cleanup() -> None:
+            loops.append(asyncio.get_running_loop())
+            if len(loops) == 1:
+                raise RuntimeError("cleanup transient failure")
+
+        async def defer_cleanup() -> None:
+            provider._provider.runtime._scope.defer(cleanup)
+
+        provider._call(defer_cleanup())
+        try:
+            with self.assertRaises(Exception):
+                provider.close()
+            self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSE_FAILED)
+            with self.assertRaises(ProviderError):
+                provider.open()
+        finally:
+            provider.close()
+
+        self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
+        self.assertEqual(len(loops), 2)
+        self.assertIs(loops[0], loops[1])
+
     def test_sync_off_loop_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
         sync_provider = _ScriptedSyncProvider(_account())
         async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
