@@ -245,6 +245,10 @@ class LiveSession:
                 )
             except AuthenticationError:
                 account, state = context.account, context.state
+                if account.alias != "default-browser":
+                    raise SafetyError(
+                        f"{account.provider} rejected the configured account credentials"
+                    ) from None
                 await self._close_async()
                 refreshed = await _run_blocking(
                     load_or_import_account,
@@ -253,6 +257,12 @@ class LiveSession:
                     browser=os.environ.get("WEBAI_LIVE_BROWSER"),
                     refresh=True,
                 )
+                old_cookies = account.credentials.get("cookies", account.credentials)
+                new_cookies = refreshed.credentials.get("cookies", refreshed.credentials)
+                if old_cookies == new_cookies:
+                    raise SafetyError(
+                        f"{account.provider} rejected the browser credentials and the refresh returned the same cookies"
+                    ) from None
                 context = self._new_context(refreshed, state, journal_path=context._journal_path)
                 try:
                     await context.call_async(

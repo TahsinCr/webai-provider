@@ -160,20 +160,32 @@ class AuthTests(unittest.TestCase):
         from webaiprovider.accounts.cookies import select_cookies
         from webaiprovider.errors import ProfileSessionNotFoundError
 
-        for provider, host, name in (
-            ("chatgpt", "chatgpt.com", "__Secure-authjs.session-token"),
-            ("grok", "grok.com", "sso-rw"),
+        for provider, host, names in (
+            ("chatgpt", "chatgpt.com", ("__Secure-authjs.session-token",)),
+            ("grok", "grok.com", ("sso-rw",)),
+            (
+                "gemini",
+                "gemini.google.com",
+                ("__Secure-1PSID", "__Secure-1PSIDCC", "__Secure-3PSIDCC", "SIDCC"),
+            ),
         ):
             with self.subTest(provider=provider):
-                cookie = {"name": name, "value": "fixture", "domain": host, "secure": True}
-                selected = select_cookies([cookie], provider)
+                domain = "google.com" if provider == "gemini" else host
+                cookies = [
+                    {"name": name, "value": "fixture", "domain": domain, "secure": True}
+                    for name in names
+                ]
+                selected = select_cookies(cookies, provider)
+                self.assertEqual(selected, dict.fromkeys(names, "fixture"))
                 with patch.object(CookieReader, "read_provider_cookies", return_value=selected):
                     self.assertEqual(import_browser_session(f"https://{host}"), selected)
                 with self.assertRaises(ProfileSessionNotFoundError):
-                    select_cookies([dict(cookie, domain="example.test")], provider)
+                    select_cookies(
+                        [dict(cookie, domain="example.test") for cookie in cookies], provider
+                    )
                 if provider == "grok":
                     with self.assertRaises(ProfileSessionNotFoundError):
-                        select_cookies([dict(cookie, secure=False)], provider)
+                        select_cookies([dict(cookies[0], secure=False)], provider)
 
     def test_origin_validation(self):
         for origin in ALLOWED_PROVIDER_ORIGINS:

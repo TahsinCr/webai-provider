@@ -23,7 +23,9 @@ GRAPHQL_PATH = "/_/BardChatUi/"
 GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="
 _BOOTSTRAP_FIELDS = ("SNlM0e", "cfb2h", "FdrFJe", "TuX5cc", "qKIAYe", "eptZe")
-_BOOTSTRAP_FIELD_RE = re.compile(r'"(' + "|".join(_BOOTSTRAP_FIELDS) + r')"\s*:\s*"([^"\\]*)"')
+_BOOTSTRAP_FIELD_RE = re.compile(
+    r'"(' + "|".join(_BOOTSTRAP_FIELDS) + r')"\s*:\s*("(?:[^"\\]|\\.)*")'
+)
 _SECONDARY_PERSIST_INTERVAL = 5.0
 _CRITICAL_PERSIST_FIELDS = (
     "__Secure-1PSID",
@@ -116,7 +118,14 @@ class GeminiSession:
             for match in _BOOTSTRAP_FIELD_RE.finditer(response.text):
                 name = match.group(1)
                 if name not in fields:
-                    fields[name] = match.group(2)
+                    raw = match.group(2)
+                    if "\\" in raw:
+                        try:
+                            fields[name] = json_loads(raw)
+                        except ValueError:
+                            continue
+                    else:
+                        fields[name] = raw[1:-1]
                     if len(fields) == len(_BOOTSTRAP_FIELDS):
                         break
             self.token, self.build, self.sid = (

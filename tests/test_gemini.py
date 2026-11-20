@@ -1226,7 +1226,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_open_parses_reordered_and_partial_bootstrap_fields(self):
         html = (
             '<script>window.WIZ_global_data={"eptZe":"/_/BardChatUi/","FdrFJe":"sid-1",'
-            '"SNlM0e":"tok-1","TuX5cc":"tr","cfb2h":"bld-1"};</script>'
+            r'"SNlM0e":"tok\u002d1","TuX5cc":"tr","cfb2h":"bld-1"};</script>'
         )
         http = _enable_streaming_requests(
             SimpleNamespace(

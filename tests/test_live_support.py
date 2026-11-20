@@ -686,7 +686,7 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.errors import AuthenticationError
 
         started, finish = threading.Event(), threading.Event()
-        account = LiveAccount("default", "gemini", {})
+        account = LiveAccount("default-browser", "gemini", {})
         provider = SimpleNamespace(open=AsyncMock(side_effect=AuthenticationError("expired")))
         context = LiveContext(provider, account, gate=ActionGate(interval=0))
         live = LiveSession()
@@ -833,6 +833,27 @@ class AsyncLiveSessionCookieRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(old_context.gate.calls + gate.calls, 2)
             self.assertIs(context.session, new_provider)
             await live.close_async()
+
+    async def test_rejected_browser_credentials_are_not_retried_if_unchanged(self) -> None:
+        from webaiprovider.errors import AccountPaused
+
+        account = LiveAccount("default-browser", "gemini", {"cookies": {"sid": "fixture"}})
+        refreshed = LiveAccount("default-browser", "gemini", {"sid": "fixture"})
+        provider = SimpleNamespace(open=AsyncMock(side_effect=AccountPaused()), close=AsyncMock())
+        context = LiveContext(provider, account, gate=ActionGate(interval=0))
+        live = LiveSession()
+        live.context, live.session = context, provider
+
+        with (
+            patch.object(live, "_prepare", return_value=context),
+            patch.object(live, "_create_provider_session") as create,
+            patch("tests.live.support.case.load_or_import_account", return_value=refreshed),
+            self.assertRaisesRegex(SafetyError, "same cookies"),
+        ):
+            await live.open_async()
+        provider.open.assert_awaited_once()
+        provider.close.assert_awaited_once()
+        create.assert_not_called()
 
     async def test_cancelling_async_prepare_waits_for_worker_and_releases_lock(self) -> None:
         import threading

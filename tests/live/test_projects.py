@@ -128,8 +128,9 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                     assert loose_chat.project is not None
                     self.assertEqual(loose_chat.project.remote_id, project.remote_id)
 
-                    with self.assertRaises(UnsupportedOperationError):
-                        await loose_chat.move_to(project)
+                    if not isinstance(self.context.session, AsyncChatGPTProvider):
+                        with self.assertRaises(UnsupportedOperationError):
+                            await loose_chat.move_to(project)
 
                     with self.assertRaises(RemoteNotFound):
                         await self.call_api(

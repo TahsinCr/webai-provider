@@ -98,6 +98,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Use the asynchronous credential loader for every asynchronous HTTP session connection.
+- Retain Gemini browser cookies used for session continuity and read escaped bootstrap fields.
+- Match ChatGPT's project move contract in the live suite and skip a redundant session open when a browser cookie refresh returns identical credentials.
 
 - Preserve the blocking transport response type for raw HTTP sends. Match the provider utility methods and ChatGPT authentication options across both API variants.
 
