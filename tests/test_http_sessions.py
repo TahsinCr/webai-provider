@@ -644,7 +644,8 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_secondary_cookies_debounce_until_close_while_required_cookie_persists_immediately(
         self,
     ):
-        from webaiprovider.transport import session as session_module
+        from webaiprovider.transport import async_session as session_module
+        from webaiprovider.transport.session_cookies import _SECONDARY_PERSIST_INTERVAL
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"
@@ -707,7 +708,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(http_session._dirty)
 
                     http_session._last_persisted_at -= (
-                        session_module._SECONDARY_PERSIST_INTERVAL + 1
+                        _SECONDARY_PERSIST_INTERVAL + 1
                     )
                     await http_session.send("GET", "/fifth")
                     self.assertEqual(len(save_calls), 2)
@@ -726,7 +727,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 await http_session.close()
 
     async def test_chunked_grok_and_cloudflare_challenge_cookies_persist_immediately(self):
-        from webaiprovider.transport import session as session_module
+        from webaiprovider.transport import async_session as session_module
 
         cases = [
             (
@@ -820,9 +821,8 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
         from pathlib import Path
         from unittest.mock import AsyncMock, patch
 
-        import webaiprovider.transport.session as session_module
+        import webaiprovider.transport.async_session as session_module
         from webaiprovider.accounts.credentials import save_session
-        from webaiprovider.transport.session import AsyncHttpSession
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"
