@@ -306,8 +306,7 @@ class AsyncChatGPTProvider(
         )
 
     async def authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
-        async with self.activity():
-            return await self._authenticate(capture_browser=capture_browser)
+        return await self._authenticate_session(capture_browser=capture_browser)
 
     async def _forget_session(self) -> SessionStatus:
         async with self._gate:
@@ -490,26 +489,23 @@ class AsyncChatGPTProvider(
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self.project_lock(project_id):
-            async with self._client_scope() as client:
-                url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
-                for attempt in (0, 1):
-                    try:
-                        response = await maybe_await(
-                            client.request("DELETE", url, expect_json=False)
-                        )
-                        break
-                    except ChatGPTError as error:
-                        if attempt == 0 and any(
-                            f"HTTP {code} " in str(error) for code in (502, 503, 504)
-                        ):
-                            await asyncio.sleep(0.25)
-                            continue
-                        raise
-            payload = response.json() if getattr(response, "content", None) else None
-            if isinstance(payload, dict) and payload.get("success") is False:
-                raise ChatGPTError("ChatGPT refused to delete the project.")
-            confirmed = getattr(response, "status_code", None) in (200, 202, 204)
+        async with self._client_scope() as client:
+            url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
+            for attempt in (0, 1):
+                try:
+                    response = await maybe_await(client.request("DELETE", url, expect_json=False))
+                    break
+                except ChatGPTError as error:
+                    if attempt == 0 and any(
+                        f"HTTP {code} " in str(error) for code in (502, 503, 504)
+                    ):
+                        await asyncio.sleep(0.25)
+                        continue
+                    raise
+        payload = response.json() if getattr(response, "content", None) else None
+        if isinstance(payload, dict) and payload.get("success") is False:
+            raise ChatGPTError("ChatGPT refused to delete the project.")
+        confirmed = getattr(response, "status_code", None) in (200, 202, 204)
         if confirmed:
             return
         await confirm_deleted(lambda: self._get_project_data(project_id))

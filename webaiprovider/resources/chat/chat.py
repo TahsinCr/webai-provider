@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...collections import _publish_collection_change
@@ -256,10 +257,18 @@ class AsyncMovableChat(AsyncChat):
                         raise UnsupportedOperationError(
                             "A remote chat cannot be moved into a project that is not persisted remotely"
                         )
-                    provider._require_provider()
-                    await provider._move_chat_data(
-                        self.remote_id, destination.remote_id if destination is not None else None
-                    )
+                    project_ids = {
+                        project.remote_id
+                        for project in (self.project, destination)
+                        if project is not None and project.remote_id
+                    }
+                    async with AsyncExitStack() as locks:
+                        for project_id in sorted(project_ids):
+                            await locks.enter_async_context(provider.project_lock(project_id))
+                        provider._require_provider()
+                        await provider._move_chat_data(
+                            self.remote_id, destination.remote_id if destination else None
+                        )
                 self.project = destination
                 ctx.parameters["project_id"] = (
                     destination.remote_id or destination.id if destination is not None else None

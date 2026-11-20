@@ -189,8 +189,7 @@ class AsyncClaudeProvider(
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self.project_lock(project_id):
-            await self.client.request("delete_project", project_id=project_id)
+        await self.client.request("delete_project", project_id=project_id)
 
     async def _stream_provider_events(
         self, request: ProviderRequest

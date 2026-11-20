@@ -226,7 +226,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
 
         async def work(_ctx) -> None:
             if target.remote_id:
-                async with provider.activity():
+                async with provider.activity(), provider.project_lock(target.remote_id):
                     provider._require_provider()
                     await provider._delete_project_data(target.remote_id)
 

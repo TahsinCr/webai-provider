@@ -653,8 +653,14 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         del project_id
 
     async def authenticate(self) -> SessionStatus:
-        async with self.activity():
-            return await self._authenticate()
+        return await self._authenticate_session()
+
+    async def _authenticate_session(self, **options: Any) -> SessionStatus:
+        async with self.activity(), self.models._lock:
+            try:
+                return await self._authenticate(**options)
+            finally:
+                self.models._clear()
 
     async def session_status(self) -> SessionStatus:
         async with self.activity():

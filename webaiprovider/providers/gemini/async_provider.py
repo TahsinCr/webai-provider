@@ -315,8 +315,7 @@ class AsyncGeminiProvider(
 
     async def _delete_project_data(self, project_id: str) -> None:
         remote = notebook_id(project_id)
-        async with self.project_lock(project_id):
-            await self.editor.delete(remote)
+        await self.editor.delete(remote)
         self._project_contexts.remove(remote)
 
     async def _stream_provider_events(

@@ -39,6 +39,7 @@ from webaiprovider import (
     ThinkingDelta,
     ThinkingEnd,
 )
+from webaiprovider.accounts.status import SessionState, SessionStatus
 from webaiprovider.errors import ProviderError, RemoteNotFound, UnsupportedOperationError
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model.model import (
@@ -1213,6 +1214,44 @@ class TestSyncApi(unittest.TestCase):
 
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_reauthentication_invalidates_loaded_models_on_both_auth_paths(self) -> None:
+        for provider_type in (AsyncChatGPTProvider, AsyncGrokProvider):
+            with self.subTest(provider=provider_type.__name__):
+                name = "chatgpt" if provider_type is AsyncChatGPTProvider else "grok"
+                provider = provider_type(Account.from_cookies(name, {}))
+                provider._prepare_session = AsyncMock()
+                provider._close_session = AsyncMock()
+                provider._authenticate = AsyncMock(
+                    return_value=SessionStatus(SessionState.AUTHENTICATED, True)
+                )
+                before, after = (ModelRef(name, item) for item in ("before", "after"))
+                load = AsyncMock(side_effect=[[before], [after]])
+                provider.models._loader = load
+
+                async with provider:
+                    self.assertEqual(await provider.models.list(), [before])
+                    await provider.authenticate()
+                    self.assertEqual(await provider.models.list(), [after])
+                    self.assertEqual(await provider.models.list(), [after])
+                self.assertEqual(load.await_count, 2)
+
+    async def test_project_deletion_uses_the_collection_project_lock(self) -> None:
+        provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
+        provider._delete_project_data = AsyncMock()
+        project = provider.projects._new(remote_id="project")
+        entered = asyncio.Event()
+        provider.projects.hooks.before("project.delete", lambda _: entered.set())
+
+        async with provider:
+            async with provider.project_lock("project"):
+                operation = asyncio.create_task(provider.projects.delete(project))
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                provider._delete_project_data.assert_not_awaited()
+            await operation
+        provider._delete_project_data.assert_awaited_once_with("project")
+
     async def test_chatgpt_move_serializes_with_sends_and_applies_the_hook_target(self) -> None:
         account = Account.from_cookies("chatgpt", {})
         provider = AsyncChatGPTProvider(account)
@@ -1231,11 +1270,19 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         async with provider:
             with patch.object(provider, "emit", new_callable=AsyncMock) as emit:
-                async with provider.send_lock("chat"):
-                    operation = asyncio.create_task(chat.move_to(selected))
-                    await asyncio.wait_for(hook_ran.wait(), timeout=1)
-                    provider._move_chat_data.assert_not_awaited()
-                self.assertIs(await operation, chat)
+                for lock in (
+                    provider.send_lock("chat"),
+                    provider.project_lock("old"),
+                    provider.project_lock("updated"),
+                ):
+                    chat.project = provider.projects._new(remote_id="old")
+                    hook_ran.clear()
+                    provider._move_chat_data.reset_mock()
+                    async with lock:
+                        operation = asyncio.create_task(chat.move_to(selected))
+                        await asyncio.wait_for(hook_ran.wait(), timeout=1)
+                        provider._move_chat_data.assert_not_awaited()
+                    self.assertIs(await operation, chat)
 
         provider._move_chat_data.assert_awaited_once_with("chat", "updated")
         assert chat.project is not None

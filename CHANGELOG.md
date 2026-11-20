@@ -93,6 +93,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Serialize chat moves with mutations of the known source and destination projects.
+- Invalidate the loaded model catalog after reauthentication.
 - Drain active asynchronous HTTP requests and streams before closing their clients.
 - Deliver synchronous events emitted during a blocking call on that call's thread.
 
