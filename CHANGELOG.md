@@ -89,6 +89,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Wait for active raw HTTP requests and streams before closing a synchronous provider. Closing its shared transport uses the same shutdown path.
+- Allow independent synchronous calls to return while another caller is delivering an event.
+
 - Return synchronous chat and message resources from `Provider.ask()` across all four providers.
 
 - Keep synchronous providers available for a cleanup retry after a failed close. Resolve races between the first open and close.

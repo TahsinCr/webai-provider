@@ -229,17 +229,23 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             raise ProviderError("A send hook cannot await another send in the same conversation")
         nested = self.has_active_operation()
         with self.operation_marker(send_lock_id=send_lock_id):
-            async with self._lifecycle_lock:
-                if self.closed or (self.closing and not nested):
-                    raise ProviderError("Provider is closing or is closed")
-                async with self._lifecycle_condition:
-                    self._active_operations += 1
+            await self._begin_activity(nested=nested)
             try:
                 yield
             finally:
-                async with self._lifecycle_condition:
-                    self._active_operations -= 1
-                    self._lifecycle_condition.notify_all()
+                await self._end_activity()
+
+    async def _begin_activity(self, *, nested: bool = False) -> None:
+        async with self._lifecycle_lock:
+            if self.closed or (self.closing and not nested):
+                raise ProviderError("Provider is closing or is closed")
+            async with self._lifecycle_condition:
+                self._active_operations += 1
+
+    async def _end_activity(self) -> None:
+        async with self._lifecycle_condition:
+            self._active_operations -= 1
+            self._lifecycle_condition.notify_all()
 
     def bind_sync_events(
         self,

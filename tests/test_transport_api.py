@@ -5,6 +5,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -467,6 +468,79 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingTransportTests(unittest.TestCase):
+    def test_provider_shutdown_waits_for_raw_transport_calls(self):
+        class FixtureAsyncProvider(AsyncProvider):
+            pass
+
+        class FixtureProvider(Provider):
+            def _make_async_provider(self, account, **options):
+                return FixtureAsyncProvider(account, **options)
+
+        for operation in ("send", "request", "stream"):
+            with self.subTest(operation=operation):
+                entered, close_started, transport_closed = (threading.Event() for _ in range(3))
+                release = asyncio.Event()
+
+                async def chunks():
+                    await release.wait()
+                    yield b'{"ok":true}'
+
+                class Client:
+                    @asynccontextmanager
+                    async def stream(self, *_args, **_kw):
+                        entered.set()
+                        yield FakeHTTPResponse(200, stream=chunks())
+
+                    async def close(self):
+                        transport_closed.set()
+
+                transport = AsyncHTTPTransport(
+                    "https://claude.ai", client_factory=lambda **_: Client()
+                )
+                provider = FixtureProvider(
+                    Account.from_cookies("claude", {}), transport=transport
+                ).open()
+                self.addCleanup(provider.close)
+                loop = provider._loop
+                assert loop is not None
+
+                async def watch_close(event):
+                    if event.event == "provider.closing":
+                        close_started.set()
+
+                provider._call(provider._provider.events.subscribe(watch_close))
+
+                def read():
+                    raw = provider.transport
+                    if operation == "request":
+                        return raw.request("GET", "/fixture")
+                    if operation == "send":
+                        return raw.send("GET", "/fixture").json()
+                    with raw.stream("GET", "/fixture") as response:
+                        with self.assertRaisesRegex(ProviderError, "active HTTP stream"):
+                            provider.close()
+                        return b"".join(response.iter_bytes())
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    reading = pool.submit(read)
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        self.assertEqual(provider._provider._active_operations, 1)
+                        close = (
+                            provider.transport.close if operation == "request" else provider.close
+                        )
+                        closing = pool.submit(close)
+                        self.assertTrue(close_started.wait(2))
+                        self.assertFalse(transport_closed.is_set())
+                        self.assertFalse(closing.done())
+                    finally:
+                        loop.call_soon_threadsafe(release.set)
+                    expected = b'{"ok":true}' if operation == "stream" else {"ok": True}
+                    self.assertEqual(reading.result(timeout=2), expected)
+                    closing.result(timeout=2)
+                self.assertTrue(transport_closed.is_set())
+                self.assertTrue(provider._provider.closed)
+
     def test_blocking_stream_close_cancels_a_pending_read(self):
         started = threading.Event()
         received = threading.Event()

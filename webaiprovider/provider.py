@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable
 from contextlib import contextmanager
 from threading import Condition, Lock
@@ -101,12 +101,14 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._driver_thread: int | None = None
         self._driver_waiter: _CallWaiter | None = None
         self._waiters: list[_CallWaiter] = []
+        self._transport_stream_threads: Counter[int] = Counter()
         self.transport: Transport = _ProviderTransport(self)
         self._closed = False
         self.events: EventBus[EventEnvelope[str]] = EventBus(error_policy=ErrorPolicy.ISOLATE)
         self._pending_events: deque[EventEnvelope[str]] = deque()
         self._publish_lock = Lock()
-        self._publish_local = threading.local()
+        self._publishing = False
+        self._close_events_requested = False
         self._provider.bind_sync_events(self.events, self._pending_events.append)
         self.hooks: OperationHooks = OperationHooks(self._provider.hooks)
         self._chats = self._make_chats()
@@ -301,20 +303,29 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             if waiter is not None:
                 self._publish_pending_events()
 
-    def _publish_pending_events(self) -> None:
-        if getattr(self._publish_local, "active", False):
-            return
+    def _publish_pending_events(self, *, close: bool = False) -> None:
         with self._publish_lock:
-            self._publish_local.active = True
-            try:
-                while True:
-                    try:
-                        event = self._pending_events.popleft()
-                    except IndexError:
+            self._close_events_requested |= close
+            if self._publishing:
+                return
+            self._publishing = True
+
+        try:
+            while True:
+                with self._publish_lock:
+                    if not self._pending_events:
+                        self._publishing = False
+                        close_events = self._close_events_requested
+                        self._close_events_requested = False
                         break
-                    self.events.publish(event)
-            finally:
-                self._publish_local.active = False
+                    event = self._pending_events.popleft()
+                self.events.publish(event)
+        except BaseException:
+            with self._publish_lock:
+                self._publishing = False
+            raise
+        if close_events:
+            self.events.close()
 
     def open(self: _ProviderT) -> _ProviderT:
         self._ensure_blocking_call()
@@ -326,12 +337,14 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         with self._state_lock:
             if self._closed:
                 return
+            if self._transport_stream_threads[threading.get_ident()]:
+                raise ProviderError("Close the active HTTP stream before closing its provider")
             unused = self._loop is None
             if unused:
                 self._closed = True
 
         if unused:
-            self.events.close()
+            self._publish_pending_events(close=True)
             return
 
         try:
@@ -356,8 +369,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 finally:
                     loop.close()
         finally:
-            self._publish_pending_events()
-            self.events.close()
+            self._publish_pending_events(close=True)
 
     def authenticate(self) -> SessionStatus:
         return self._call(self._provider.authenticate())
@@ -422,17 +434,41 @@ class _ProviderTransport(Transport):
             self._owner._ensure_blocking_call()
             self._owner._provider.transport.record_rate_limit(retry_after)
 
+    async def _request(self, method, path, options, *, decode: bool):
+        provider = self._owner._provider
+        async with provider.activity():
+            transport = provider.transport
+            operation = transport.request if decode else transport.send
+            return await operation(method, path, **options)
+
     def send(self, method, path, **options):
-        return self._owner._call(self._owner._provider.transport.send(method, path, **options))
+        return self._owner._call(self._request(method, path, options, decode=False))
 
     def request(self, method, path, **options):
-        return self._owner._call(self._owner._provider.transport.request(method, path, **options))
+        return self._owner._call(self._request(method, path, options, decode=True))
+
+    async def _open_stream(self, caller: int, method, path, options):
+        owner = self._owner
+        provider = owner._provider
+        await provider._begin_activity()
+        try:
+            manager = provider.transport.stream(method, path, **options)
+            response = await manager.__aenter__()
+            try:
+                stream = _ProviderStream(owner, caller, manager, response)
+                with owner._state_lock:
+                    owner._transport_stream_threads[caller] += 1
+            except BaseException as error:
+                await manager.__aexit__(type(error), error, error.__traceback__)
+                raise
+        except BaseException:
+            await provider._end_activity()
+            raise
+        return stream
 
     @contextmanager
     def stream(self, method, path, **options):
-        manager = self._owner._provider.transport.stream(method, path, **options)
-        response = self._owner._call(manager.__aenter__())
-        stream = _ProviderStream(self._owner, manager, response)
+        stream = self._owner._call(self._open_stream(threading.get_ident(), method, path, options))
         try:
             yield stream
         except BaseException as error:
@@ -442,15 +478,16 @@ class _ProviderTransport(Transport):
             stream.close()
 
     def close(self):
-        self._owner._call(self._owner._provider.transport.close())
+        self._owner.close()
 
 
 class _ProviderStream:
-    def __init__(self, owner, manager, response):
+    def __init__(self, owner, caller, manager, response):
         self.status_code = response.status_code
         self.headers = response.headers
         self._owner = owner
         self._manager = manager
+        self._caller = caller
         self._chunks = response.aiter_bytes()
         self._reader = None
         self._producer = None
@@ -508,16 +545,23 @@ class _ProviderStream:
                 yield chunk
 
     async def _exit(self, exception):
-        producer = self._producer
-        if producer is not None and not producer.done():
-            producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
         try:
+            producer = self._producer
+            if producer is not None and not producer.done():
+                producer.cancel()
+                await asyncio.gather(producer, return_exceptions=True)
             return await self._manager.__aexit__(*exception)
         finally:
             while not self._buffer.empty():
                 self._buffer.get_nowait()
             self._error = None
+            owner = self._owner
+            with owner._state_lock:
+                owners = owner._transport_stream_threads
+                owners[self._caller] -= 1
+                if not owners[self._caller]:
+                    del owners[self._caller]
+            await owner._provider._end_activity()
 
     def _finish(self, *exception):
         with self._state_lock:

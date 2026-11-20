@@ -1125,6 +1125,41 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             sync_provider.close()
             self.assertEqual(sync_provider.lifecycle_state, LifecycleState.CLOSED)
 
+    def test_slow_event_listener_does_not_block_an_independent_call(self) -> None:
+        provider = _ScriptedSyncProvider(_account()).open()
+        listening = threading.Event()
+        release = threading.Event()
+        delivered = []
+
+        def on_event(event):
+            delivered.append(event.event)
+            if len(delivered) == 1:
+                listening.set()
+                release.wait(3)
+
+        provider.events.subscribe(
+            on_event,
+            event_filter=EventFilter(
+                event_type=EventEnvelope,
+                predicate=lambda event: event.event in {"chat.prepared", "provider.closed"},
+            ),
+        )
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(provider.chats.create, "First")
+                try:
+                    self.assertTrue(listening.wait(2))
+                    second = pool.submit(provider.chats.create, "Second")
+                    self.assertEqual(second.result(timeout=1).title, "Second")
+                    self.assertFalse(first.done())
+                    pool.submit(provider.close).result(timeout=1)
+                finally:
+                    release.set()
+                self.assertEqual(first.result(timeout=2).title, "First")
+            self.assertEqual(delivered, ["chat.prepared", "chat.prepared", "provider.closed"])
+        finally:
+            provider.close()
+
     def test_close_cannot_skip_a_concurrent_first_open(self) -> None:
         provider = _ScriptedSyncProvider(_account())
         condition = provider._state_lock
