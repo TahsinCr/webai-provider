@@ -14,12 +14,19 @@ from contextlib import (
     contextmanager,
     suppress,
 )
+from io import BytesIO
 from urllib.parse import urlsplit
 
 from ..core.cache import BoundedCache
 from ..core.timing import current_send_timing
 from ..errors import ProviderError
-from .base import AsyncTransport, Transport, _AsyncStreamResponse, _StreamResponse
+from .base import (
+    AsyncTransport,
+    Transport,
+    _AsyncStreamResponse,
+    _BufferedResponse,
+    _StreamResponse,
+)
 
 
 def curl_cookie_jar(cookies: Mapping[str, str]):
@@ -685,9 +692,60 @@ class HTTPTransport(Transport):
         with suppress(Exception):
             client.close()
 
+    def _send_curl(self, method, path, url, options, *, check_status):
+        from curl_cffi import CurlError
+        from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+
+        limit = self.config.max_response_bytes
+        for attempt in (0, 1):
+            client = self._connect()
+            buffer = BytesIO()
+            overflow = False
+
+            def collect(chunk: bytes) -> int:
+                nonlocal overflow
+                if buffer.tell() + len(chunk) > limit:
+                    overflow = True
+                    return CURL_WRITEFUNC_ERROR
+                return buffer.write(chunk)
+
+            _prepare_curl_session_sync(
+                client, self._dns.host, self._dns.port, options, dns_state=self._dns
+            )
+            try:
+                response = client.request(
+                    method, url, allow_redirects=False, content_callback=collect, **options
+                )
+            except CurlError as error:
+                response = getattr(error, "response", None)
+                received_headers = bool(getattr(response, "status_code", 0))
+                if received_headers:
+                    self._check_response(response, check_status)
+                if overflow:
+                    raise ProviderError("Provider response exceeds the size limit") from None
+                if (
+                    attempt == 0
+                    and method.upper() in _IDEMPOTENT_METHODS
+                    and not received_headers
+                    and not buffer.tell()
+                    and _is_curl_timeout(error)
+                ):
+                    self._dns.invalidate(client)
+                    self._reset_owned_client(client)
+                    continue
+                raise
+            self._check_response(response, check_status)
+            self._check_declared_size(response)
+            return _BufferedResponse(response, buffer.getvalue())
+        raise ProviderError("Provider request could not be completed")
+
     def send(self, method, path, *, check_status=True, **options):
         url = self.url(path)
         options = self._options(options, method, path)
+        if self.factory is None and self._client_getter is None:
+            if options.pop("content_callback", None) is not None:
+                raise ValueError("Use transport.stream() to process response chunks")
+            return self._send_curl(method, path, url, options, check_status=check_status)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
         for attempt in (0, 1):
             client = self._connect()

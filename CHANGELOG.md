@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.
 - Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
 - Use FlowEvent's cache and single-flight primitives for bounded continuation state and overlapping discovery reads.
 - Assign, transfer, or detach ChatGPT chats with `chat.move_to(project)` or `chat.move_to(None)`. The operation uses the conversation's send lock and applies the destination selected by hooks consistently.

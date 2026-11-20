@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -516,6 +517,67 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingTransportTests(unittest.TestCase):
+    def test_default_buffered_curl_transport_runs_in_caller_and_bounds_body(self):
+        from curl_cffi.requests import Session
+        from curl_cffi.requests.exceptions import Timeout
+
+        release = threading.Event()
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                if self.path == "/stall":
+                    self.send_header("Content-Length", "1")
+                self.end_headers()
+                if self.path == "/stall":
+                    release.wait(timeout=2)
+                    return
+                self.wfile.write(b"ok" if self.path == "/ok" else b"x" * 64)
+
+            def log_message(self, *_args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            caller = threading.get_ident()
+            request = Session.request
+
+            def request_on_caller(session, *args, **kwargs):
+                collect = kwargs["content_callback"]
+
+                def collect_on_caller(chunk):
+                    self.assertEqual(threading.get_ident(), caller)
+                    return collect(chunk)
+
+                kwargs["content_callback"] = collect_on_caller
+                return request(session, *args, **kwargs)
+
+            try:
+                with (
+                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch.object(Session, "request", request_on_caller),
+                    patch.object(
+                        Session, "stream", side_effect=AssertionError("Stream worker used")
+                    ),
+                    HTTPTransport(
+                        f"http://127.0.0.1:{server.server_port}",
+                        config=TransportConfig(max_response_bytes=16),
+                    ) as transport,
+                ):
+                    self.assertEqual(transport.send("GET", "/ok").content, b"ok")
+                    with self.assertRaisesRegex(ProviderError, "size limit"):
+                        transport.send("GET", "/large")
+                    with self.assertRaises(Timeout):
+                        transport.send("GET", "/stall", timeout=0.1)
+                self.assertEqual(requests, ["/ok", "/large", "/stall"])
+            finally:
+                release.set()
+                server.shutdown()
+                worker.join(timeout=2)
+
     def test_all_blocking_provider_facades_use_the_injected_async_transport(self):
         for provider_type, origin in (
             ("chatgpt", "https://chatgpt.com"),
