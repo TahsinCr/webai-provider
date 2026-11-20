@@ -677,8 +677,8 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(http.get.call_args.args[0], "https://chatgpt.com/api/auth/session")
 
     async def test_provider_open_prepares_cookie_credentials_before_catalog(self):
+        from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
         from webaiprovider.accounts.account import Account
-        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
 
         cookie_name = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
         cookies = {f"{cookie_name}.0": "part-zero", f"{cookie_name}.1": "part-one"}

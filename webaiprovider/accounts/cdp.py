@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from curl_cffi import CurlECode, CurlError, CurlOpt, CurlWsFlag, Session
 from curl_cffi.requests.websockets import WebSocketTimeout
 
-from .filters import ALLOWED_PROVIDER_ORIGINS
+from .cookie_policy import ALLOWED_PROVIDER_ORIGINS
 
 _MAX_METADATA_BYTES = 2 * 1024 * 1024
 _MAX_MESSAGE_BYTES = 2 * 1024 * 1024

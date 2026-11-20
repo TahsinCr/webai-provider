@@ -430,7 +430,7 @@ def snapshot_sqlite_file(
 
 
 def _firefox_rows(cookie_file, provider):
-    from .filters import PROVIDER_COOKIE_POLICIES
+    from .cookie_policy import PROVIDER_COOKIE_POLICIES
 
     source = Path(cookie_file)
 
@@ -478,7 +478,7 @@ def _firefox_rows(cookie_file, provider):
 
 
 def _firefox_session_cookies(directory, provider):
-    from .filters import PROVIDER_COOKIE_POLICIES
+    from .cookie_policy import PROVIDER_COOKIE_POLICIES
 
     candidates = [
         directory / "sessionstore-backups/recovery.jsonlz4",

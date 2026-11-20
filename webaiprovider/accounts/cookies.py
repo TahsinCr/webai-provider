@@ -13,7 +13,8 @@ from ..errors import (
     ProfileSessionNotFoundError,
     ProfileTimeoutError,
 )
-from .filters import PROVIDER_COOKIE_POLICIES, ProviderCookieFilter
+from .cookie_policy import PROVIDER_COOKIE_POLICIES
+from .filters import ProviderCookieFilter
 from .profiles import (
     _PROFILE_ERROR_MAP,
     BrowserProfile,

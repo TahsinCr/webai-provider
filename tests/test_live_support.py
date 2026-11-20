@@ -73,8 +73,8 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(account.provider, "chatgpt")
 
     def test_imports_missing_provider_from_browser_and_preserves_other_accounts(self) -> None:
+        from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
         from webaiprovider.accounts.account import Account
-        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
 
         self._write(
             json.dumps(
@@ -141,8 +141,8 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_refreshes_invalid_browser_cookies_without_replacing_other_accounts(self) -> None:
+        from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
         from webaiprovider.accounts.account import Account
-        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
 
         self._write(
             json.dumps(
@@ -1235,8 +1235,8 @@ class CredentialLockAndConcurrencyTests(unittest.TestCase):
     def test_concurrent_account_imports_preserve_all_providers(self) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
+        from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
         from webaiprovider.accounts.account import Account
-        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
 
         with tempfile.TemporaryDirectory() as directory:
             cfg = Path(directory) / ".config"

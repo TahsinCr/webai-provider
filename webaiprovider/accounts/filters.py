@@ -2,22 +2,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..errors import AccountPaused
-from ..providers.chatgpt.auth import COOKIE_POLICY as CHATGPT_COOKIES
-from ..providers.claude.auth import COOKIE_POLICY as CLAUDE_COOKIES
-from ..providers.gemini.auth import COOKIE_POLICY as GEMINI_COOKIES
-from ..providers.grok.auth import COOKIE_POLICY as GROK_COOKIES
-
-PROVIDER_COOKIE_POLICIES = {
-    "chatgpt": CHATGPT_COOKIES,
-    "claude": CLAUDE_COOKIES,
-    "gemini": GEMINI_COOKIES,
-    "grok": GROK_COOKIES,
-}
-COOKIE_POLICIES_BY_ORIGIN = {rule.origin: rule for rule in PROVIDER_COOKIE_POLICIES.values()}
-REQUIRED_PROVIDER_COOKIES = {
-    origin: rule.required for origin, rule in COOKIE_POLICIES_BY_ORIGIN.items()
-}
-ALLOWED_PROVIDER_ORIGINS = tuple(COOKIE_POLICIES_BY_ORIGIN)
+from .cookie_policy import ALLOWED_PROVIDER_ORIGINS, COOKIE_POLICIES_BY_ORIGIN
 
 
 class ProviderCookieFilter:

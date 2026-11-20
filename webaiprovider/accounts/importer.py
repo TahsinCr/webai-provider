@@ -1,9 +1,10 @@
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .cookie_policy import PROVIDER_COOKIE_POLICIES
 from .cookies import import_cookies
 from .credentials import CredentialStore, save_session
-from .filters import PROVIDER_COOKIE_POLICIES, ProviderCookieFilter
+from .filters import ProviderCookieFilter
 from .profiles import BrowserProfile, default_profile
 
 _ORIGIN_TO_PROVIDER = {rule.origin: name for name, rule in PROVIDER_COOKIE_POLICIES.items()}

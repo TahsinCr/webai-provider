@@ -47,3 +47,66 @@ def is_cookie_chunk(key: str, name: str) -> bool:
         return False
     suffix = key[len(prefix) :]
     return bool(suffix) and suffix.isascii() and suffix.isdecimal()
+
+
+PROVIDER_COOKIE_POLICIES = {
+    "chatgpt": CookiePolicy(
+        origin="https://chatgpt.com",
+        required="__Secure-next-auth.session-token",
+        names=frozenset(
+            {
+                "__Host-next-auth.csrf-token",
+                "__Secure-next-auth.session-token",
+                "__Secure-authjs.session-token",
+                "__cf_bm",
+                "cf_clearance",
+                "oai-did",
+            }
+        ),
+        allow_chunks=True,
+        alternatives=("__Secure-authjs.session-token",),
+        critical_names=("__cf_bm", "cf_clearance"),
+    ),
+    "claude": CookiePolicy(
+        origin="https://claude.ai",
+        required="sessionKey",
+        names=frozenset(
+            {"__cf_bm", "anthropic-device-id", "cf_clearance", "lastActiveOrg", "sessionKey"}
+        ),
+        allow_chunks=True,
+        critical_names=("__cf_bm", "cf_clearance"),
+    ),
+    "gemini": CookiePolicy(
+        origin="https://gemini.google.com",
+        required="__Secure-1PSID",
+        names=frozenset(
+            {
+                "APISID",
+                "HSID",
+                "SAPISID",
+                "SID",
+                "SSID",
+                "__Secure-1PAPISID",
+                "__Secure-1PSID",
+                "__Secure-1PSIDTS",
+                "__Secure-3PAPISID",
+                "__Secure-3PSID",
+                "__Secure-3PSIDTS",
+            }
+        ),
+        browser_domain="google.com",
+    ),
+    "grok": CookiePolicy(
+        origin="https://grok.com",
+        required="sso",
+        names=frozenset({"sso", "sso-rw"}),
+        secure_names=frozenset({"sso", "sso-rw"}),
+        alternatives=("sso-rw",),
+        critical_names=("sso-rw", "__cf_bm", "cf_clearance"),
+    ),
+}
+COOKIE_POLICIES_BY_ORIGIN = {rule.origin: rule for rule in PROVIDER_COOKIE_POLICIES.values()}
+REQUIRED_PROVIDER_COOKIES = {
+    origin: rule.required for origin, rule in COOKIE_POLICIES_BY_ORIGIN.items()
+}
+ALLOWED_PROVIDER_ORIGINS = tuple(COOKIE_POLICIES_BY_ORIGIN)

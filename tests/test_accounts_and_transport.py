@@ -19,8 +19,8 @@ from webaiprovider.accounts import (
     save_session,
     session_exists,
 )
+from webaiprovider.accounts.cookie_policy import ALLOWED_PROVIDER_ORIGINS
 from webaiprovider.accounts.filters import (
-    ALLOWED_PROVIDER_ORIGINS,
     ProviderCookieFilter,
     filter_provider_cookies,
 )
@@ -184,7 +184,7 @@ class AuthTests(unittest.TestCase):
                 ProviderCookieFilter.validate_origin(invalid)
 
     def test_cookie_filtering_and_sanitation(self):
-        from webaiprovider.accounts.filters import REQUIRED_PROVIDER_COOKIES
+        from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
 
         valid = {"sessionKey": "sk_valid_123", "extra": "val"}
         filtered = ProviderCookieFilter.filter_cookies("https://claude.ai", valid)

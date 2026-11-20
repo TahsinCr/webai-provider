@@ -3,8 +3,8 @@
 import time
 from collections.abc import Mapping
 
-from ..accounts.cookie_policy import is_cookie_chunk
-from ..accounts.filters import COOKIE_POLICIES_BY_ORIGIN, ProviderCookieFilter
+from ..accounts.cookie_policy import COOKIE_POLICIES_BY_ORIGIN, is_cookie_chunk
+from ..accounts.filters import ProviderCookieFilter
 from .http import curl_cookie_jar
 
 _SECONDARY_PERSIST_INTERVAL = 5.0

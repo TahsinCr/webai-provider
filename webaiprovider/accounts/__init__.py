@@ -1,4 +1,5 @@
 from .account import Account
+from .cookie_policy import ALLOWED_PROVIDER_ORIGINS, REQUIRED_PROVIDER_COOKIES
 from .cookies import (
     import_cookies,
     select_cookies,
@@ -15,8 +16,6 @@ from .credentials import (
     session_exists,
 )
 from .filters import (
-    ALLOWED_PROVIDER_ORIGINS,
-    REQUIRED_PROVIDER_COOKIES,
     ProviderCookieFilter,
     filter_provider_cookies,
 )
