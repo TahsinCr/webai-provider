@@ -24,7 +24,7 @@ from curl_cffi.requests.exceptions import RequestException as CurlRequestExcepti
 
 from ...core.cache import BoundedCache
 from ...core.concurrency import gather_bounded, maybe_await
-from ...core.files import same_file_version
+from ...core.file_stat import same_file_version
 from ...core.json import json_loads
 from ...core.timing import SendTiming, current_send_timing
 from ...errors import RateLimited

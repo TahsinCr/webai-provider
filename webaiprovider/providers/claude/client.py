@@ -14,7 +14,7 @@ from eventflow import SingleFlight
 from ...accounts import read_session_async
 from ...core.cache import BoundedCache
 from ...core.concurrency import gather_bounded
-from ...core.files import same_file_version
+from ...core.file_stat import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError

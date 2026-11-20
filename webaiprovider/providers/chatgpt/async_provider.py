@@ -19,7 +19,6 @@ from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
 from ...core.concurrency import maybe_await
-from ...core.files import DownloadSource
 from ...core.json import json_dumps
 from ...core.timing import current_send_timing
 from ...errors import (
@@ -47,6 +46,7 @@ from ...transport import (
     AsyncTransport,
     TransportConfig,
 )
+from ...transport.downloader import DownloadSource
 from .auth import BrowserSession
 from .base import BaseChatGPTProvider
 from .client import ChatGPTClient, prepare_chatgpt_attachments

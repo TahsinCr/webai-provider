@@ -36,8 +36,8 @@ from webaiprovider import (
     UnsupportedOperationError,
 )
 from webaiprovider.collections import Page
-from webaiprovider.core.operations import OperationCancelledError, OperationContext
-from webaiprovider.core.types import HookDispatchResult
+from webaiprovider.core.types import HookDispatchResult, OperationContext
+from webaiprovider.errors import OperationCancelledError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
@@ -1337,7 +1337,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         )
         await provider.open()
         try:
-            chat = await provider.chats.create("Yeni")
+            chat = await provider.chats.create()
+            self.assertEqual(chat.title, "New Chat")
             self.assertEqual(seen, [("chat.prepared", chat.id)])
 
             await chat.responses.create("ilk mesaj")

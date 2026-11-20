@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from eventflow import AsyncPipeline, PipelineExecutionError
 
-from ..errors import OperationCancelledError, RemoteNotFound, UnsupportedOperationError
-from ..resources.chat.types import DEFAULT_CHAT_TITLE
-from ..resources.message.protocol import ProviderRequest
-from ..resources.message.types import MessageAction
-from ..resources.model.model import EffortRef, ModelRef, ModelSelection
-from .async_hooks import AsyncOperationHooks
-from .types import OperationContext
-
-_log = logging.getLogger(__name__)
+from ...core.types import OperationContext
+from ...errors import RemoteNotFound, UnsupportedOperationError
+from ..chat.types import DEFAULT_CHAT_TITLE
+from ..model.model import EffortRef, ModelRef, ModelSelection
+from .protocol import ProviderRequest
+from .types import MessageAction
 
 
 async def run_pipeline_unwrapped(
@@ -157,61 +152,3 @@ def build_message_request_pipeline(
     pipeline.add("resolve_model", resolve_model)
     pipeline.add("prepare_attachments", prepare_attachments)
     return pipeline
-
-
-async def execute_with_hooks(
-    *,
-    operation_name: str,
-    context: OperationContext,
-    hooks_chain: Sequence[AsyncOperationHooks],
-    work: Callable[[OperationContext], Awaitable[Any]],
-    on_success_event: Callable[[OperationContext], Awaitable[None]] | None = None,
-    on_cancelled_event: Callable[[OperationContext], Awaitable[None]] | None = None,
-    on_error_event: Callable[[OperationContext], Awaitable[None]] | None = None,
-) -> Any:
-    """Execute one operation through before -> work -> success/error/cancelled -> finally."""
-    cancelled = False
-    try:
-        context = await AsyncOperationHooks.run_before(hooks_chain, operation_name, context)
-        result = await work(context)
-        context.result = result
-        if on_success_event is not None:
-            # The remote work already succeeded; an observer failure must not turn it into an error.
-            try:
-                await on_success_event(context)
-            except Exception as event_error:
-                context.metadata["success_event_error"] = type(event_error).__name__
-                _log.warning(
-                    "Success event dispatch failed: operation=%s error_type=%s",
-                    operation_name,
-                    type(event_error).__name__,
-                )
-        await AsyncOperationHooks.run_lifecycle(hooks_chain, "on_success", operation_name, context)
-        return context.result
-    except (asyncio.CancelledError, OperationCancelledError) as error:
-        cancelled = True
-        context.cancelled = True
-        context.error = error
-        if on_cancelled_event is not None:
-            await asyncio.shield(on_cancelled_event(context))
-        await asyncio.shield(
-            AsyncOperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
-        )
-        raise
-    except Exception as error:
-        context.error = error
-        if on_error_event is not None:
-            await on_error_event(context)
-        await AsyncOperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
-        raise
-    finally:
-        if cancelled:
-            await asyncio.shield(
-                AsyncOperationHooks.run_lifecycle(
-                    hooks_chain, "on_finally", operation_name, context
-                )
-            )
-        else:
-            await AsyncOperationHooks.run_lifecycle(
-                hooks_chain, "on_finally", operation_name, context
-            )

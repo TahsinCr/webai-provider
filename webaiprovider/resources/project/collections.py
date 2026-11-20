@@ -14,16 +14,16 @@ from ...collections import (
     _publish_collection_change,
 )
 from ...core.async_hooks import AsyncOperationHooks
-from ...core.files import DownloadSource, download_source
 from ...core.hooks import OperationHooks
-from ...core.operations import execute_with_hooks
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
     RemoteNotFound,
     UnsupportedOperationError,
 )
+from ...transport.downloader import DownloadSource, download_source
 from ..message.attachment import Attachment
+from ..operations import execute_with_hooks
 from .project import AsyncProject, Project, _is_project_attachment
 from .types import ProjectData as ProviderProject
 

@@ -6,9 +6,9 @@ from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...collections import _publish_collection_change
-from ...core.files import DownloadSource, download_source
-from ...core.operations import execute_with_hooks
 from ...errors import ProviderError, UnsupportedOperationError
+from ...transport.downloader import DownloadSource, download_source
+from ..operations import execute_with_hooks
 from ..project.types import ProjectData
 from ..response.artifact import Artifact
 from .types import Conversation

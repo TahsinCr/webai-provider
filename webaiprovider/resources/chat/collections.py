@@ -16,8 +16,8 @@ from ...collections import (
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.concurrency import gather_bounded
 from ...core.hooks import OperationHooks
-from ...core.operations import execute_with_hooks
 from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
+from ..operations import execute_with_hooks
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat, _project_from_data, _resolve_project_arg
 from .types import DEFAULT_CHAT_TITLE, Conversation

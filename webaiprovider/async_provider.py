@@ -15,7 +15,6 @@ from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .collections import _publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
-from .core.operations import build_message_request_pipeline, run_pipeline_unwrapped
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
 from .errors import FeatureUnavailable, ProviderError
 from .resources.chat.chat import AsyncChat
@@ -44,6 +43,7 @@ from .resources.message.protocol import (
     TextReplacement,
     ThoughtDelta,
 )
+from .resources.message.request import build_message_request_pipeline, run_pipeline_unwrapped
 from .resources.model.collections import AsyncModelsCollection
 from .resources.model.model import EffortRef, ModelRef, ModelSelection
 from .resources.model.types import Models, _model_refs_from_catalog

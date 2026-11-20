@@ -6,7 +6,7 @@ from typing import Any
 from ..message.types import MessageData
 from ..project.types import ProjectData
 
-DEFAULT_CHAT_TITLE = "Yeni Sohbet"
+DEFAULT_CHAT_TITLE = "New Chat"
 
 
 @dataclass(frozen=True)

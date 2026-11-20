@@ -671,7 +671,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await provider.close()
 
     async def test_prepare_operation_preserves_attachment_mime_type(self) -> None:
-        from webaiprovider.core.operations import run_pipeline_unwrapped
+        from webaiprovider.resources.message.request import run_pipeline_unwrapped
 
         provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
         provider._prepare_session = AsyncMock()

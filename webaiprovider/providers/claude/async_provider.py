@@ -12,7 +12,6 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
-from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
@@ -25,6 +24,7 @@ from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
+from ...transport.downloader import DownloadSource, NativeDownloadClient, cookie_header
 from .base import BaseClaudeProvider
 from .client import ClaudeClient, remote_id, stream_response
 from .errors import ClaudeCompatibilityError

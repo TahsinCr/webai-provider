@@ -2,26 +2,15 @@
 
 import asyncio
 import ipaddress
-import os
 import socket
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from ..transport.http import _has_ipv6_connectivity
+from .http import _format_resolve_entry, _has_ipv6_connectivity, _is_ip_literal
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
-
-
-def same_file_version(before: os.stat_result, after: os.stat_result) -> bool:
-    return (
-        before.st_dev == after.st_dev
-        and before.st_ino == after.st_ino
-        and before.st_size == after.st_size
-        and before.st_mtime_ns == after.st_mtime_ns
-        and before.st_ctime_ns == after.st_ctime_ns
-    )
 
 
 def resolve_network_addresses(address_str: str, allow_private: bool = False) -> tuple[str, ...]:
@@ -35,7 +24,9 @@ def resolve_network_addresses(address_str: str, allow_private: bool = False) -> 
         except socket.gaierror:
             raise ValueError("Download host could not be resolved") from None
         addresses = list(
-            dict.fromkeys(ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records)
+            dict.fromkeys(
+                ipaddress.ip_address(str(record[4][0]).split("%", 1)[0]) for record in records
+            )
         )
         addresses.sort(key=lambda ip: ip.version == 6)
 
@@ -51,9 +42,6 @@ def resolve_network_addresses(address_str: str, allow_private: bool = False) -> 
 
 def validate_network_address(address_str: str, allow_private: bool = False) -> str:
     return resolve_network_addresses(address_str, allow_private=allow_private)[0]
-
-
-_ORIGINAL_VALIDATE_NETWORK_ADDRESS = validate_network_address
 
 
 @dataclass(frozen=True)
@@ -120,29 +108,20 @@ class NativeDownloadClient:
         target = urlsplit(url)
         if target.scheme != "https" or not target.hostname or target.username or target.password:
             raise ValueError("Download URL must use HTTPS without credentials")
-        dns_address = validate_network_address(target.hostname, allow_private=permit_private)
-        pinned_addresses = [
-            validate_network_address(resolved_address, allow_private=permit_private)
-            if resolved_address
-            else dns_address
-        ]
-        if not resolved_address and validate_network_address is _ORIGINAL_VALIDATE_NETWORK_ADDRESS:
-            for ip in resolve_network_addresses(target.hostname, allow_private=permit_private):
-                if ip not in pinned_addresses:
-                    pinned_addresses.append(ip)
-        try:
-            ipaddress.ip_address(target.hostname.strip("[]").split("%", 1)[0])
-            is_ip_literal = True
-        except ValueError:
-            is_ip_literal = False
-        if not is_ip_literal:
+        pinned_addresses = resolve_network_addresses(target.hostname, allow_private=permit_private)
+        if resolved_address:
+            pinned_addresses = (
+                validate_network_address(resolved_address, allow_private=permit_private),
+            )
+        if not _is_ip_literal(target.hostname):
             from curl_cffi import CurlOpt
 
-            port = target.port or 443
-            formatted = ",".join(f"[{addr}]" if ":" in addr else addr for addr in pinned_addresses)
             if not _has_ipv6_connectivity():
                 self.client.curl_options[CurlOpt.IPRESOLVE] = 1
-            self.client.curl_options[CurlOpt.RESOLVE] = [f"{target.hostname}:{port}:{formatted}"]
+            prefix = f"{target.hostname}:{target.port or 443}:"
+            self.client.curl_options[CurlOpt.RESOLVE] = [
+                _format_resolve_entry(prefix, pinned_addresses)
+            ]
         try:
             with self.client.stream(
                 method, url, headers=headers, allow_redirects=False

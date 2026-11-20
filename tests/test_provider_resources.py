@@ -8,7 +8,6 @@ from unittest.mock import ANY, AsyncMock
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
 from webaiprovider.collections import Page
-from webaiprovider.core.operations import run_pipeline_unwrapped
 from webaiprovider.errors import UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.attachment import Attachment
@@ -29,6 +28,7 @@ from webaiprovider.resources.message.protocol import (
     TextReplacement,
     ThoughtDelta,
 )
+from webaiprovider.resources.message.request import run_pipeline_unwrapped
 from webaiprovider.resources.message.types import Content
 from webaiprovider.resources.message.types import MessageData as NativeMessage
 from webaiprovider.resources.project.types import ProjectData as NativeProject

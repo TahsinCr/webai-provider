@@ -14,7 +14,6 @@ from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
 from ...core.cache import BoundedCache
-from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...resources.chat.collections import AsyncChatsCollection
@@ -30,6 +29,7 @@ from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
+from ...transport.downloader import DownloadSource, NativeDownloadClient, cookie_header
 from . import generation
 from .base import BaseGeminiProvider
 from .errors import GeminiCompatibilityError, GeminiStreamError
