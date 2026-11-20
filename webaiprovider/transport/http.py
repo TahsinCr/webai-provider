@@ -792,6 +792,17 @@ class HTTPTransport(Transport):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
+        if self.factory is None and self._client_getter is None:
+            from .curl_stream import open_blocking_curl_stream
+
+            if options.pop("content_callback", None) is not None:
+                raise ValueError("Consume data with the returned stream iterator")
+            open_stream = open_blocking_curl_stream
+        else:
+
+            def open_stream(client, method, url, options):
+                return client.stream(method, url, allow_redirects=False, **options)
+
         with ExitStack() as stack:
             response = None
             for attempt in (0, 1):
@@ -800,14 +811,17 @@ class HTTPTransport(Transport):
                     _prepare_curl_session_sync(
                         client, self._dns.host, self._dns.port, options, dns_state=self._dns
                     )
-                    response = stack.enter_context(
-                        client.stream(method, url, allow_redirects=False, **options)
-                    )
+                    response = stack.enter_context(open_stream(client, method, url, options))
                     self._check_response(response, check_status)
                     break
                 except BaseException as exc:
                     stack.close()
-                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                    if (
+                        attempt == 0
+                        and can_retry
+                        and not getattr(getattr(exc, "response", None), "status_code", 0)
+                        and _is_curl_timeout(exc)
+                    ):
                         self._dns.invalidate(client)
                         self._reset_owned_client(client)
                         continue

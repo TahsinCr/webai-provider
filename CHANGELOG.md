@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.
+
 - Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.
 - Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
 - Use FlowEvent's cache and single-flight primitives for bounded continuation state and overlapping discovery reads.

@@ -577,6 +577,88 @@ class BlockingTransportTests(unittest.TestCase):
                 server.shutdown()
                 worker.join(timeout=2)
 
+    def test_default_curl_stream_yields_on_caller_before_transfer_finishes(self):
+        from curl_cffi.requests import Session
+
+        from webaiprovider.errors import AccountPaused
+        from webaiprovider.transport.curl_stream import _CurlStream
+
+        release = threading.Event()
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", "/forbidden")
+                    self.end_headers()
+                    return
+                if self.path == "/empty":
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                if self.path == "/stream":
+                    self.send_header("Set-Cookie", "fixture=updated; Path=/")
+                self.end_headers()
+                if self.path == "/stream":
+                    self.wfile.write(b"first")
+                    release.wait(timeout=3)
+                    self.wfile.write(b"after")
+                else:
+                    self.wfile.write(b"x" * (70_000 if self.path == "/overflow" else 50_000))
+
+            def log_message(self, *_args):
+                pass
+
+        caller = threading.get_ident()
+        original_receive = _CurlStream.receive
+
+        def receive(stream, chunk):
+            self.assertEqual(threading.get_ident(), caller)
+            return original_receive(stream, chunk)
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                with (
+                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch.object(_CurlStream, "receive", receive),
+                    patch.object(Session, "stream", side_effect=AssertionError("Stream worker used")),
+                    HTTPTransport(
+                        f"http://127.0.0.1:{server.server_port}",
+                        config=TransportConfig(max_stream_bytes=60_000),
+                    ) as transport,
+                ):
+                    with transport.stream("GET", "/stream") as response:
+                        chunks = response.iter_bytes()
+                        self.assertEqual(next(chunks), b"first")
+                        self.assertEqual(transport.client.cookies.get("fixture"), "updated")
+                        release.set()
+                        self.assertEqual(b"".join(chunks), b"after")
+                    with transport.stream("GET", "/large") as response:
+                        self.assertEqual(b"".join(response.iter_bytes()), b"x" * 50_000)
+                    with transport.stream("GET", "/large") as response:
+                        response.close()
+                        self.assertEqual(list(response.iter_bytes()), [])
+                    with transport.stream("GET", "/empty") as response:
+                        self.assertEqual(response.status_code, 204)
+                        self.assertEqual(list(response.iter_bytes()), [])
+                    with transport.stream("GET", "/overflow") as response:
+                        with self.assertRaisesRegex(ProviderError, "size limit"):
+                            list(response.iter_bytes())
+                    with self.assertRaises(AccountPaused), transport.stream("GET", "/redirect"):
+                        self.fail("Redirect was exposed to the consumer")
+                self.assertEqual(
+                    requests, ["/stream", "/large", "/large", "/empty", "/overflow", "/redirect"]
+                )
+            finally:
+                release.set()
+                server.shutdown()
+                worker.join(timeout=2)
+
     def test_all_blocking_provider_facades_use_the_injected_async_transport(self):
         for provider_type, origin in (
             ("chatgpt", "https://chatgpt.com"),
