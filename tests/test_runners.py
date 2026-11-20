@@ -101,7 +101,7 @@ class TestRunnerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {}, clear=True),
-            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result) as run,
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
@@ -158,7 +158,7 @@ class TestRunnerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {}, clear=True),
-            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result),
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
@@ -203,11 +203,12 @@ class TestRunnerTests(unittest.TestCase):
 
     def test_live_runner_stops_before_network_when_cleanup_is_pending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cleanup_file = Path(directory) / "pending.json"
+            cleanup_file = Path(directory) / "live-cleanup.json"
             cleanup_file.touch()
             with (
                 patch.dict(os.environ, {}, clear=True),
-                patch("run_live_tests.CLEANUP_FILE", cleanup_file),
+                patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
+                patch("tests.live.support.config._require_ignored"),
                 patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)) as run,
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -259,7 +260,7 @@ class TestRunnerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": "grok"}, clear=True),
-            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
             patch("run_live_tests.supports_process_credentials_lock", return_value=True),
             patch("run_live_tests.subprocess.run", return_value=result),
             patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
@@ -296,7 +297,7 @@ class TestRunnerTests(unittest.TestCase):
                         {"WEBAI_LIVE_PROVIDER": "grok", "WEBAI_LIVE_API": "async"},
                         clear=True,
                     ),
-                    patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+                    patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
                     patch("run_live_tests.supports_process_credentials_lock", return_value=True),
                     patch("run_live_tests.subprocess.run", return_value=result),
                     patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
@@ -320,7 +321,7 @@ class TestRunnerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.dict(os.environ, {}, clear=True),
-            patch("run_live_tests.CLEANUP_FILE", Path(directory) / "absent.json"),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
             patch("run_live_tests.supports_process_credentials_lock", return_value=False),
             patch("run_live_tests.ThreadPoolExecutor", side_effect=spy_executor),
             patch("run_live_tests.subprocess.run", return_value=result),
@@ -357,11 +358,7 @@ class TestRunnerTests(unittest.TestCase):
             )
             with (
                 patch("tests.live.support.journal.CONFIG_DIR", cfg),
-                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
-                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
                 patch("tests.live.support.config._require_ignored"),
-                patch("run_live_tests.CLEANUP_FILE", legacy),
-                patch("run_live_tests._DEFAULT_CLEANUP_FILE", legacy),
             ):
                 self.assertTrue(run_live_tests._provider_cleanup_pending("gemini"))
                 self.assertFalse(run_live_tests._provider_cleanup_pending("chatgpt"))

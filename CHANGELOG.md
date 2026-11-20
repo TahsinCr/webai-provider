@@ -84,6 +84,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
+- Remove unused JSON serialization and duplicate cleanup journal routing from the live test runner.
+
 - Remove the background provider portal and threaded HTTP facade. Synchronous callers drive a shared event loop, allowing independent requests to overlap.
 
 - Remove the unused `ThreadedTransport` adapter and legacy thread dispatch for synchronous hooks and events.

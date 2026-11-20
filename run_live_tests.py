@@ -15,13 +15,7 @@ from pathlib import Path
 from tests.live.support.actions import DEFAULT_SINGLE_API_LIMIT
 from tests.live.support.config import PROVIDERS, supports_process_credentials_lock
 from tests.live.support.errors import SafetyError
-from tests.live.support.journal import (
-    CLEANUP_FILE,
-    cleanup_file,
-    cleanup_journal_provider,
-)
-
-_DEFAULT_CLEANUP_FILE = CLEANUP_FILE
+from tests.live.support.journal import read_cleanup_journal
 
 
 @dataclass(frozen=True)
@@ -63,25 +57,11 @@ class _PhaseOutcome:
 
 
 def _provider_cleanup_pending(provider: str) -> bool:
-    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
-        if not (CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink()):
-            return False
-        try:
-            owner = cleanup_journal_provider(CLEANUP_FILE)
-        except SafetyError:
-            return True
-        return owner is None or owner == provider
-
-    provider_path = cleanup_file(provider)
-    if provider_path.exists() or provider_path.is_symlink():
+    try:
+        state, _ = read_cleanup_journal(provider)
+    except SafetyError:
         return True
-    if CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink():
-        try:
-            owner = cleanup_journal_provider(CLEANUP_FILE)
-        except SafetyError:
-            return True
-        return owner == provider
-    return False
+    return state is not None
 
 
 def _matrix() -> tuple[tuple[str, str], ...] | None:

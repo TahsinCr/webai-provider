@@ -22,13 +22,6 @@ def json_loads(data: bytes | bytearray | memoryview | str) -> Any:
     return _stdlib_json.loads(data)
 
 
-def json_dumps_bytes(obj: Any) -> bytes:
-    """Serialize an object to compact UTF-8 JSON bytes."""
-    if _orjson is not None:
-        return _orjson.dumps(obj)
-    return _stdlib_json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-
 def json_dumps(obj: Any) -> str:
     """Serialize an object to a compact JSON string."""
     if _orjson is not None:

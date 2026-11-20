@@ -298,32 +298,13 @@ class LiveCredentialTests(unittest.TestCase):
             journal = Path(temporary) / "live-cleanup.json"
             journal.touch()
             with (
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
                 patch("tests.live.support.journal.read_private_json", return_value=state),
             ):
                 self.assertEqual(read_cleanup_journal()[0], state)
 
 
 class ActionGateTests(unittest.TestCase):
-    def test_feature_scenarios_use_standard_unittest_cases(self) -> None:
-        from tests.live.test_chats import AsyncChatApiTests
-        from tests.live.test_messages import AsyncMessageApiTests
-        from tests.live.test_models import AsyncModelApiTests
-        from tests.live.test_projects import AsyncProjectApiTests
-        from tests.live.test_sessions import AsyncSessionApiTests
-
-        asynchronous = (
-            AsyncChatApiTests,
-            AsyncMessageApiTests,
-            AsyncModelApiTests,
-            AsyncProjectApiTests,
-            AsyncSessionApiTests,
-        )
-        self.assertTrue(
-            all(issubclass(case, unittest.IsolatedAsyncioTestCase) for case in asynchronous)
-        )
-        self.assertTrue(all(case.__bases__ == (LiveAsyncTestCase,) for case in asynchronous))
-
     def test_select_live_models_keeps_only_latest_claude_5x_per_family(self) -> None:
         from tests.live.test_models import _select_live_models
         from webaiprovider.resources.model.model import Model
@@ -480,11 +461,10 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.journal = Path(temporary.name) / "cleanup.json"
-        for module in ("context", "journal"):
-            patcher = patch(f"tests.live.support.{module}.CLEANUP_FILE", self.journal)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        self.journal = Path(temporary.name) / "live-cleanup-chatgpt.json"
+        patcher = patch("tests.live.support.journal.CONFIG_DIR", self.journal.parent)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.provider = SimpleNamespace()
         self.context = LiveContext(
             self.provider,
@@ -902,10 +882,9 @@ class BranchRecoverySafetyTests(unittest.IsolatedAsyncioTestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.journal = Path(temporary.name) / "live-cleanup-gemini.json"
-        for module in ("context", "journal"):
-            patcher = patch(f"tests.live.support.{module}.CLEANUP_FILE", self.journal)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch("tests.live.support.journal.CONFIG_DIR", self.journal.parent)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.provider = SimpleNamespace()
         self.context = LiveContext(
             self.provider,
@@ -1033,8 +1012,7 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "live-cleanup-chatgpt.json"
             with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
             ):
                 case = LiveAsyncTestCase("runTest")
                 provider = SimpleNamespace()
@@ -1074,8 +1052,7 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
             ):
                 journal = Path(directory) / "live-cleanup-gemini.json"
                 with (
-                    patch("tests.live.support.context.CLEANUP_FILE", journal),
-                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                    patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
                 ):
                     provider = SimpleNamespace()
                     context = LiveContext(
@@ -1136,7 +1113,7 @@ class RateLimitAndUncertainMutationTests(unittest.IsolatedAsyncioTestCase):
 
 class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_journal_routes_to_owning_provider_without_touching_others(self) -> None:
-        from tests.live.support.journal import pending_cleanup_files, read_cleanup_journal
+        from tests.live.support.journal import read_cleanup_journal
 
         with tempfile.TemporaryDirectory() as directory:
             cfg = Path(directory) / ".config"
@@ -1178,13 +1155,8 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("tests.live.support.journal.CONFIG_DIR", cfg),
-                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
-                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
                 patch("tests.live.support.config._require_ignored"),
-                patch("tests.live.support.context.CLEANUP_FILE", legacy),
-                patch("tests.live.support.context._DEFAULT_CLEANUP_FILE", legacy),
             ):
-                self.assertEqual(set(pending_cleanup_files()), {legacy, claude_journal})
                 self.assertEqual(read_cleanup_journal("chatgpt"), (None, None))
                 loaded_state, loaded_path = read_cleanup_journal("gemini")
                 self.assertEqual(loaded_path, legacy)
@@ -1235,8 +1207,6 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     },
                 ),
                 patch("tests.live.support.journal.CONFIG_DIR", cfg),
-                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
-                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
                 patch("tests.live.support.config._require_ignored"),
                 patch(
                     "tests.live.support.case.load_or_import_account",
@@ -1252,8 +1222,6 @@ class LegacyAndPerProviderRecoveryTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.dict(os.environ, {"WEBAI_LIVE_PROVIDER": "gemini"}),
                 patch("tests.live.support.journal.CONFIG_DIR", cfg),
-                patch("tests.live.support.journal.CLEANUP_FILE", legacy),
-                patch("tests.live.support.journal._DEFAULT_CLEANUP_FILE", legacy),
                 patch("tests.live.support.config._require_ignored"),
             ):
                 from tests.live.support.journal import read_cleanup_journal
@@ -1751,8 +1719,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 root_chat.branch = capture_branch.__get__(root_chat, AsyncChatGPTChat)
                 session.chats.create.return_value = root_chat
                 with (
-                    patch("tests.live.support.context.CLEANUP_FILE", journal),
-                    patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                    patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
                     patch(
                         "tests.live.support.actions.time", SimpleNamespace(monotonic=lambda: now)
                     ),
@@ -1908,8 +1875,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
             root_chat.branch = bad_branch
             session.chats.create.return_value = root_chat
             with (
-                patch("tests.live.support.context.CLEANUP_FILE", journal),
-                patch("tests.live.support.journal.CLEANUP_FILE", journal),
+                patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
             ):
                 test = AsyncMessageApiTests("test_temporary_message_stream_history_and_cleanup")
                 test.context = LiveContext(

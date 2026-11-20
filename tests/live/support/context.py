@@ -12,7 +12,7 @@ from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from .actions import ActionGate
 from .config import LiveAccount
 from .errors import CleanupError, LiveApiError, SafetyError
-from .journal import _DEFAULT_CLEANUP_FILE, CLEANUP_FILE, cleanup_file, write_cleanup_state
+from .journal import cleanup_file, write_cleanup_state
 
 _CLEANUP_RATE_LIMIT = "The provider rate limited cleanup; the journal was retained"
 
@@ -105,13 +105,7 @@ class LiveContext:
         self.skipped.append(label)
 
     def _cleanup_path(self) -> Path:
-        if self._journal_path is not None:
-            return self._journal_path
-        return (
-            cleanup_file(self.account.provider)
-            if CLEANUP_FILE == _DEFAULT_CLEANUP_FILE
-            else CLEANUP_FILE
-        )
+        return self._journal_path or cleanup_file(self.account.provider)
 
     def save(self) -> None:
         write_cleanup_state(self.state, path=self._cleanup_path())

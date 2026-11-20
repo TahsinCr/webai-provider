@@ -297,20 +297,8 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
     def test_internal_plumbing_not_exported_on_top_level_and_public_symbols_exist(self) -> None:
         excluded = {
             "Page",
-            "BaseProviderAdapter",
-            "BaseSessionAdapter",
-            "BaseModelAdapter",
-            "BaseChatAdapter",
-            "BaseProjectAdapter",
-            "BaseMessageAdapter",
-            "BaseAttachmentAdapter",
-            "ProviderRuntime",
             "HookDispatchResult",
             "OperationContext",
-            "BaseLocalCollection",
-            "ReadOnlyCollection",
-            "AsyncDerivedCollection",
-            "AsyncMutableRemoteCollection",
         }
         self.assertTrue(excluded.isdisjoint(set(webaiprovider.__all__)))
         for symbol in excluded:

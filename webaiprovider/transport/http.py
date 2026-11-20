@@ -438,42 +438,29 @@ class HTTPTransport(Transport):
         can_retry = method.upper() in _IDEMPOTENT_METHODS
         for attempt in (0, 1):
             client = self._connect()
-            if not callable(getattr(client, "stream", None)):
+            stream = getattr(client, "stream", None)
+            with ExitStack() as stack:
                 try:
                     _prepare_curl_session_sync(
                         client, self._dns.host, self._dns.port, options, dns_state=self._dns
                     )
-                    response = client.request(method, url, allow_redirects=False, **options)
+                    if not callable(stream):
+                        response = client.request(method, url, allow_redirects=False, **options)
+                        self._check_response(response, check_status)
+                        self._check_size(response)
+                        return response
+                    response = stack.enter_context(
+                        stream(method, url, allow_redirects=False, **options)
+                    )
                     self._check_response(response, check_status)
-                    self._check_size(response)
-                    return response
                 except BaseException as exc:
+                    stack.close()
                     if attempt == 0 and can_retry and _is_curl_timeout(exc):
                         self._dns.invalidate(client)
                         self._reset_owned_client(client)
                         continue
                     raise
-
-            stack = ExitStack()
-            try:
-                _prepare_curl_session_sync(
-                    client, self._dns.host, self._dns.port, options, dns_state=self._dns
-                )
-                response = stack.enter_context(
-                    client.stream(method, url, allow_redirects=False, **options)
-                )
-                self._check_response(response, check_status)
-            except BaseException as exc:
-                stack.close()
-                if attempt == 0 and can_retry and _is_curl_timeout(exc):
-                    self._dns.invalidate(client)
-                    self._reset_owned_client(client)
-                    continue
-                raise
-            try:
                 return self._buffer_response(response)
-            finally:
-                stack.close()
         raise ProviderError("Provider request could not be completed")
 
     @contextmanager

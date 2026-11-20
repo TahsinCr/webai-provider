@@ -9,46 +9,28 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from .config import CONFIG_DIR, _private_directory, read_private_json
+from .config import CONFIG_DIR, PROVIDERS, _private_directory, read_private_json
 from .errors import SafetyError
 
-CLEANUP_FILE = CONFIG_DIR / "live-cleanup.json"
-LOCK_FILE = CONFIG_DIR / "live-run.lock"
-_DEFAULT_CLEANUP_FILE = CLEANUP_FILE
-_DEFAULT_LOCK_FILE = LOCK_FILE
 _ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _RUN_ID = re.compile(r"^webai-live-[0-9a-f]{32}$")
-_PROVIDERS = {"chatgpt", "gemini", "claude", "grok"}
 _REQUIRED_RESOURCE_KEYS = {"kind", "markers", "remote_id", "attempted"}
 _OPTIONAL_RESOURCE_KEYS = {"exclude_ids"}
 
 
-def cleanup_file(provider: str | None = None) -> Path:
-    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
-        return CLEANUP_FILE
+def _provider(provider: str | None) -> str:
     selected = (provider or os.environ.get("WEBAI_LIVE_PROVIDER", "")).casefold()
-    if selected in _PROVIDERS:
-        return CONFIG_DIR / f"live-cleanup-{selected}.json"
-    return CLEANUP_FILE
+    return selected if selected in PROVIDERS else ""
+
+
+def cleanup_file(provider: str | None = None) -> Path:
+    selected = _provider(provider)
+    return CONFIG_DIR / (f"live-cleanup-{selected}.json" if selected else "live-cleanup.json")
 
 
 def lock_file(provider: str | None = None) -> Path:
-    if LOCK_FILE != _DEFAULT_LOCK_FILE:
-        return LOCK_FILE
-    selected = (provider or os.environ.get("WEBAI_LIVE_PROVIDER", "")).casefold()
-    if selected in _PROVIDERS:
-        return CONFIG_DIR / f"live-run-{selected}.lock"
-    return LOCK_FILE
-
-
-def pending_cleanup_files() -> list[Path]:
-    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
-        return [CLEANUP_FILE] if CLEANUP_FILE.exists() or CLEANUP_FILE.is_symlink() else []
-    candidates = [
-        CLEANUP_FILE,
-        *(CONFIG_DIR / f"live-cleanup-{p}.json" for p in sorted(_PROVIDERS)),
-    ]
-    return [path for path in candidates if path.exists() or path.is_symlink()]
+    selected = _provider(provider)
+    return CONFIG_DIR / (f"live-run-{selected}.lock" if selected else "live-run.lock")
 
 
 def _contains_credentials(value: Any) -> bool:
@@ -99,7 +81,7 @@ def _validate_cleanup_state(data: Any) -> dict[str, Any]:
         not isinstance(data, dict)
         or data.get("version") != 1
         or not isinstance(data.get("provider"), str)
-        or data["provider"] not in _PROVIDERS
+        or data["provider"] not in PROVIDERS
         or not isinstance(data.get("account"), str)
         or not _ACCOUNT_ID.fullmatch(data["account"])
         or not isinstance(run_id, str)
@@ -152,31 +134,20 @@ def _read_journal_file(path: Path) -> dict[str, Any] | None:
     return _validate_cleanup_state(read_private_json(path, require_ignored=True))
 
 
-def cleanup_journal_provider(path: Path) -> str | None:
-    """Return the validated owning provider for a pending journal file, or raise SafetyError."""
-    data = _read_journal_file(path)
-    return data["provider"] if data is not None else None
-
-
 def read_cleanup_journal(provider: str | None = None) -> tuple[dict[str, Any] | None, Path | None]:
-    if CLEANUP_FILE != _DEFAULT_CLEANUP_FILE:
-        data = _read_journal_file(CLEANUP_FILE)
-        return (data, CLEANUP_FILE) if data is not None else (None, None)
+    selected = _provider(provider)
+    path = cleanup_file(provider)
+    data = _read_journal_file(path)
+    if data is not None:
+        if selected and data["provider"] != selected:
+            raise SafetyError("Cleanup journal provider does not match the selected provider")
+        return data, path
 
-    selected = (provider or os.environ.get("WEBAI_LIVE_PROVIDER", "")).casefold()
-    if selected in _PROVIDERS:
-        provider_path = CONFIG_DIR / f"live-cleanup-{selected}.json"
-        data = _read_journal_file(provider_path)
-        if data is not None:
-            if data["provider"] != selected:
-                raise SafetyError("Cleanup journal provider does not match the selected provider")
-            return data, provider_path
-
-    legacy_data = _read_journal_file(CLEANUP_FILE)
-    if legacy_data is not None:
-        if selected in _PROVIDERS and legacy_data["provider"] != selected:
-            return None, None
-        return legacy_data, CLEANUP_FILE
+    if selected:
+        shared_path = CONFIG_DIR / "live-cleanup.json"
+        data = _read_journal_file(shared_path)
+        if data is not None and data["provider"] == selected:
+            return data, shared_path
     return None, None
 
 
