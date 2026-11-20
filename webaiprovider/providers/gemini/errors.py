@@ -1,8 +1,12 @@
-from ...errors import CompatibilityError, ProviderError, RemoteNotFound, StreamError
+from ...errors import AccountPaused, CompatibilityError, ProviderError, RemoteNotFound, StreamError
 
 
 class GeminiError(ProviderError):
     code = "gemini_error"
+
+
+class GeminiSignInRequired(AccountPaused, GeminiError):
+    code = "gemini_sign_in_required"
 
 
 class GeminiGenerationRejected(GeminiError):

@@ -15,6 +15,7 @@ from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.model.model import Model
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.retry import parse_retry_after
+from .errors import GeminiSignInRequired
 
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
@@ -113,6 +114,15 @@ class GeminiSession:
             response = await self.request(
                 "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False
             )
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("location", "")
+                if isinstance(location, str) and (
+                    location.partition("?")[0].rstrip("/").casefold()
+                    == "https://accounts.google.com/servicelogin"
+                ):
+                    raise GeminiSignInRequired(
+                        "Google requires sign-in to Gemini. Sign in again and reimport the account."
+                    )
             AsyncTransport.check(response)
             fields: dict[str, str] = {}
             for match in _BOOTSTRAP_FIELD_RE.finditer(response.text):

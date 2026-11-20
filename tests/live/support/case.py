@@ -16,7 +16,7 @@ from .actions import (
     ActionGate,
 )
 from .config import LiveAccount, load_or_import_account, lock_file_guard
-from .context import LiveContext, _provider_http_status
+from .context import LiveContext, _provider_http_status, _safe_error_label
 from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_journal
 
@@ -243,11 +243,12 @@ class LiveSession:
                     self.session.open,
                     expected_errors=(AuthenticationError,),
                 )
-            except AuthenticationError:
+            except AuthenticationError as error:
+                reason = _safe_error_label(error)
                 account, state = context.account, context.state
                 if account.alias != "default-browser":
                     raise SafetyError(
-                        f"{account.provider} rejected the configured account credentials"
+                        f"{account.provider} rejected the configured account credentials ({reason})"
                     ) from None
                 await self._close_async()
                 refreshed = await _run_blocking(
@@ -261,7 +262,7 @@ class LiveSession:
                 new_cookies = refreshed.credentials.get("cookies", refreshed.credentials)
                 if old_cookies == new_cookies:
                     raise SafetyError(
-                        f"{account.provider} rejected the browser credentials and the refresh returned the same cookies"
+                        f"{account.provider} rejected the browser credentials ({reason}) and the refresh returned the same cookies"
                     ) from None
                 context = self._new_context(refreshed, state, journal_path=context._journal_path)
                 try:
@@ -270,9 +271,10 @@ class LiveSession:
                         self.session.open,
                         expected_errors=(AuthenticationError,),
                     )
-                except AuthenticationError:
+                except AuthenticationError as error:
                     raise SafetyError(
-                        f"{account.provider} browser cookies remain invalid after one refresh"
+                        f"{account.provider} browser cookies remain invalid after one refresh "
+                        f"({_safe_error_label(error)})"
                     ) from None
         except BaseException:
             await self._close_async(suppress=True)

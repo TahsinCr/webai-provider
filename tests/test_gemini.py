@@ -1223,6 +1223,39 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_open_reports_google_sign_in_without_following_redirect(self):
+        from webaiprovider.providers.gemini.errors import GeminiSignInRequired
+
+        http = _enable_streaming_requests(
+            SimpleNamespace(
+                get=AsyncMock(
+                    return_value=SimpleNamespace(
+                        status_code=302,
+                        headers={
+                            "location": "https://accounts.google.com/ServiceLogin?continue=private"
+                        },
+                        content=b"",
+                        text="",
+                    )
+                ),
+                close=AsyncMock(),
+            )
+        )
+        session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
+        with (
+            patch(
+                "webaiprovider.providers.gemini.session.read_session_async",
+                return_value={"__Secure-1PSID": "fixture"},
+            ),
+            self.assertRaisesRegex(GeminiSignInRequired, "Sign in again") as failure,
+        ):
+            await session.open()
+
+        http.get.assert_awaited_once()
+        self.assertFalse(http.get.await_args.kwargs["allow_redirects"])
+        self.assertNotIn("private", str(failure.exception))
+        http.close.assert_awaited_once()
+
     async def test_session_open_parses_reordered_and_partial_bootstrap_fields(self):
         html = (
             '<script>window.WIZ_global_data={"eptZe":"/_/BardChatUi/","FdrFJe":"sid-1",'
