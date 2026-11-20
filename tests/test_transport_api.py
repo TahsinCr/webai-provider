@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -496,6 +496,55 @@ class BlockingTransportTests(unittest.TestCase):
         factory.assert_called_once()
         self.assertCountEqual(callers, [thread for thread, _ in results])
         self.assertEqual([result for _, result in results], [{"ok": True}, {"ok": True}])
+
+    def test_native_close_drains_an_active_stream_before_closing_its_client(self):
+        active, release, draining = (threading.Event() for _ in range(3))
+        order = []
+
+        class Client:
+            @contextmanager
+            def stream(self, *_args, **_kwargs):
+                try:
+                    yield FakeHTTPResponse(200, content=b"body")
+                finally:
+                    order.append("stream")
+
+            def close(self):
+                order.append("client")
+
+        transport = HTTPTransport("https://claude.ai", client_factory=lambda **_: Client())
+        self.addCleanup(transport.close)
+        wait_for = transport._idle.wait_for
+
+        def observe_drain(predicate):
+            if transport._closing:
+                draining.set()
+            return wait_for(predicate)
+
+        def read():
+            with transport.stream("GET", "/fixture") as stream:
+                with self.assertRaisesRegex(ProviderError, "active HTTP call"):
+                    transport.close()
+                active.set()
+                self.assertTrue(release.wait(2))
+                return b"".join(stream.iter_bytes())
+
+        with (
+            patch.object(transport._idle, "wait_for", side_effect=observe_drain),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            reading = pool.submit(read)
+            try:
+                self.assertTrue(active.wait(2))
+                closing = pool.submit(transport.close)
+                self.assertTrue(draining.wait(2))
+                self.assertEqual(order, [])
+            finally:
+                release.set()
+            self.assertEqual(reading.result(timeout=2), b"body")
+            closing.result(timeout=2)
+
+        self.assertEqual(order, ["stream", "client"])
 
     def test_provider_shutdown_waits_for_raw_transport_calls(self):
         class FixtureAsyncProvider(AsyncProvider):

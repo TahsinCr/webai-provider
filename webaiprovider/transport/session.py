@@ -46,29 +46,28 @@ class HttpSession(_SessionCookies, HTTPTransport):
 
     def _reset_owned_client(self, failed_client):
         with self._client_lock:
-            if self.client is failed_client:
+            if self.client is failed_client and self._callers.total() <= 1:
                 self.persist()
                 super()._reset_owned_client(failed_client)
 
-    def send(self, method, path, **options):
+    def _send(self, method, path, **options):
         try:
-            response = super().send(method, path, **options)
+            response = super()._send(method, path, **options)
             self.authenticated = True
             return response
         finally:
             self.persist(force=False)
 
     @contextmanager
-    def stream(self, method, path, **options):
+    def _stream(self, method, path, **options):
         try:
-            with super().stream(method, path, **options) as response:
+            with super()._stream(method, path, **options) as response:
                 yield response
         finally:
             self.persist(force=False)
 
-    def close(self):
-        with self._client_lock:
-            try:
-                self.persist()
-            finally:
-                super().close()
+    def _close_client(self):
+        try:
+            self.persist()
+        finally:
+            super()._close_client()

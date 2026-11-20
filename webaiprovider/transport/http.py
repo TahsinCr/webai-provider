@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import (
     ExitStack,
@@ -12,7 +13,7 @@ from contextlib import (
     suppress,
 )
 from io import BytesIO
-from threading import RLock
+from threading import Condition, RLock, get_ident
 from urllib.parse import urlsplit
 
 from ..core.cache import BoundedCache
@@ -305,6 +306,9 @@ class HTTPTransport(Transport):
         self._client_getter = client_getter
         self.client = None
         self._client_lock = RLock()
+        self._idle = Condition(self._client_lock)
+        self._callers: Counter[int] = Counter()
+        self._closing = False
         self._dns = _OriginDNS(self.origin)
 
     def _connect(self):
@@ -321,9 +325,30 @@ class HTTPTransport(Transport):
                     self.client = factory(timeout=self.config.timeout)
             return self.client
 
+    @contextmanager
+    def _activity(self):
+        caller = get_ident()
+        with self._idle:
+            if not self._callers[caller]:
+                self._idle.wait_for(lambda: not self._closing)
+            self._callers[caller] += 1
+        try:
+            yield
+        finally:
+            with self._idle:
+                self._callers[caller] -= 1
+                if not self._callers[caller]:
+                    del self._callers[caller]
+                if not self._callers and self._closing:
+                    self._idle.notify_all()
+
     def _reset_owned_client(self, failed_client):
         with self._client_lock:
-            if self._client_getter is not None or self.client is not failed_client:
+            if (
+                self._client_getter is not None
+                or self.client is not failed_client
+                or self._callers.total() > 1
+            ):
                 return
             client, self.client = self.client, None
         with suppress(Exception):
@@ -400,6 +425,10 @@ class HTTPTransport(Transport):
         raise ProviderError("Provider request could not be completed")
 
     def send(self, method, path, *, check_status=True, **options):
+        with self._activity():
+            return self._send(method, path, check_status=check_status, **options)
+
+    def _send(self, method, path, *, check_status, **options):
         url = self.url(path)
         options = self._options(options, method, path)
         if self.factory is None and self._client_getter is None:
@@ -449,6 +478,14 @@ class HTTPTransport(Transport):
 
     @contextmanager
     def stream(self, method, path, *, check_status=True, **options):
+        with (
+            self._activity(),
+            self._stream(method, path, check_status=check_status, **options) as stream,
+        ):
+            yield stream
+
+    @contextmanager
+    def _stream(self, method, path, *, check_status, **options):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
@@ -489,8 +526,20 @@ class HTTPTransport(Transport):
             yield _StreamResponse(response, self.config.max_stream_bytes)
 
     def close(self):
-        with self._client_lock:
-            client, self.client = self.client, None
+        with self._idle:
+            if self._callers[get_ident()]:
+                raise ProviderError("Cannot close the transport from an active HTTP call")
+            self._idle.wait_for(lambda: not self._closing)
+            self._closing = True
+            try:
+                self._idle.wait_for(lambda: not self._callers)
+                self._close_client()
+            finally:
+                self._closing = False
+                self._idle.notify_all()
+
+    def _close_client(self):
+        client, self.client = self.client, None
         if client is not None:
             client.close()
 
