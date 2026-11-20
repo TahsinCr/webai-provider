@@ -1055,7 +1055,7 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(set(sequences)), len(sequences))
 
 
-class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
+class TestSyncCallerAndConcurrency(unittest.TestCase):
     def test_sync_close_can_retry_cleanup_on_the_same_loop(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
         loops = []
@@ -1377,26 +1377,6 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.provider import ProviderType as PublicProviderType
 
         self.assertIs(BaseProviderType, PublicProviderType)
-
-    async def test_sync_event_pool_overflow_is_logged_without_dropping_async_delivery(self) -> None:
-        provider = _ScriptedAsyncProvider(_account())
-        async_seen: list[str] = []
-
-        async def on_async(event: EventEnvelope[str]) -> None:
-            async_seen.append(event.event)
-
-        await provider.events.subscribe(on_async)
-        provider.runtime.sync_events.subscribe(lambda _e: None)
-
-        class _FullPool:
-            def submit(self, *_args: object, **_kwargs: object) -> None:
-                raise RuntimeError("pool full")
-
-        provider.runtime._sync_event_pool = _FullPool()  # type: ignore[assignment]
-        with self.assertLogs("webaiprovider.core.runtime", level="WARNING") as captured:
-            await provider.runtime.emit("custom.test")
-        self.assertIn("Sync event dispatch skipped", captured.output[0])
-        self.assertEqual(async_seen, ["custom.test"])
 
 
 class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):

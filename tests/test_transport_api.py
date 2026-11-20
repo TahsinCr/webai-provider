@@ -583,7 +583,7 @@ class BlockingTransportTests(unittest.TestCase):
         from curl_cffi.requests import Session
 
         from webaiprovider.errors import AccountPaused
-        from webaiprovider.transport.blocking_stream import _CurlStream
+        from webaiprovider.transport.stream import _CurlStream
 
         release = threading.Event()
         requests = []
@@ -718,10 +718,6 @@ class BlockingTransportTests(unittest.TestCase):
         closed = threading.Event()
         exits = []
 
-        async def request(*args, **options):
-            threads.add(threading.get_ident())
-            return FakeHTTPResponse(200, json={"ok": True})
-
         async def chunks(data=b"stream"):
             threads.add(threading.get_ident())
             yield data
@@ -742,21 +738,12 @@ class BlockingTransportTests(unittest.TestCase):
 
         transport = AsyncHTTPTransport(
             "https://claude.ai",
-            client_getter=lambda: SimpleNamespace(
-                request=request,
-                stream=stream,
-            ),
+            client_getter=lambda: SimpleNamespace(stream=stream),
         )
-        account = Account.from_cookies("claude", {})
-
-        class CommonAsyncProvider(AsyncProvider):
-            pass
-
-        class CommonProvider(Provider):
-            def _make_async_provider(self, account, **options):
-                return CommonAsyncProvider(account, **options)
-
-        with CommonProvider(account, transport=transport) as provider:
+        provider = Provider(Account.from_cookies("claude", {}), transport=transport)
+        provider._provider._prepare_session = AsyncMock()
+        provider._provider._close_session = AsyncMock()
+        with provider:
             self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
             with provider.transport.stream("GET", "/stream") as response:
                 self.assertEqual(list(response.iter_bytes()), [b"stream"])
@@ -766,6 +753,9 @@ class BlockingTransportTests(unittest.TestCase):
                 provider.transport.stream("GET", "/stream"),
             ):
                 raise ValueError("caller failure")
+            provider.transport.record_rate_limit(2.0)
+            with self.assertRaises(RateLimited):
+                provider.transport.request("GET", "/fixture")
         self.assertEqual(threads, {threading.get_ident()})
         self.assertTrue(closed.is_set())
         self.assertEqual(len(exits), 3)

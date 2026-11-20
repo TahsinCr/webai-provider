@@ -1,24 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass(frozen=True, slots=True)
-class _HookEntry:
-    callback: Callable[..., Any]
-    off_loop: bool = False
-
-
 class OperationHooks:
-    """Register synchronous operation callbacks, including off-loop callbacks."""
-
-    _off_loop = True
+    """Register synchronous operation callbacks."""
 
     def __init__(self, target: OperationHooks | None = None) -> None:
-        self._handlers: dict[str, list[_HookEntry]] = {} if target is None else target._handlers
-        self._lifecycle: dict[str, dict[str, list[_HookEntry]]] = (
+        self._handlers: dict[str, list[Callable[..., Any]]] = {} if target is None else target._handlers
+        self._lifecycle: dict[str, dict[str, list[Callable[..., Any]]]] = (
             {} if target is None else target._lifecycle
         )
 
@@ -28,9 +19,7 @@ class OperationHooks:
         handler: Callable[..., Any] | None = None,
     ) -> Any:
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self._handlers.setdefault(event_name, []).append(
-                _HookEntry(fn, off_loop=self._off_loop)
-            )
+            self._handlers.setdefault(event_name, []).append(fn)
             return fn
 
         if handler is not None:
@@ -51,16 +40,12 @@ class OperationHooks:
         handler: Callable[..., Any] | None = None,
     ) -> Any:
         if callable(event_or_handler) and handler is None:
-            self._lifecycle.setdefault(stage, {}).setdefault("*", []).append(
-                _HookEntry(event_or_handler, off_loop=self._off_loop)
-            )
+            self._lifecycle.setdefault(stage, {}).setdefault("*", []).append(event_or_handler)
             return event_or_handler
         event_name = event_or_handler if isinstance(event_or_handler, str) else "*"
 
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self._lifecycle.setdefault(stage, {}).setdefault(event_name, []).append(
-                _HookEntry(fn, off_loop=self._off_loop)
-            )
+            self._lifecycle.setdefault(stage, {}).setdefault(event_name, []).append(fn)
             return fn
 
         if handler is not None:

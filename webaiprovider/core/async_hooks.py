@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from .hooks import OperationHooks, _HookEntry
+from .hooks import OperationHooks
 from .types import HookDispatchResult, OperationContext
 
 _log = logging.getLogger(__name__)
@@ -15,14 +15,9 @@ _log = logging.getLogger(__name__)
 class AsyncOperationHooks(OperationHooks):
     """Dispatch shared hook registrations on the asynchronous execution path."""
 
-    _off_loop = False
-
     @staticmethod
-    async def _invoke_entry(entry: _HookEntry, arg: Any) -> Any:
-        if entry.off_loop and not inspect.iscoroutinefunction(entry.callback):
-            result = await asyncio.to_thread(entry.callback, arg)
-        else:
-            result = entry.callback(arg)
+    async def _invoke(callback: Callable[..., Any], arg: Any) -> Any:
+        result = callback(arg)
         if inspect.isawaitable(result):
             return await result
         return result
@@ -32,7 +27,7 @@ class AsyncOperationHooks(OperationHooks):
         entries = list(self._handlers.get(event_name, ())) + list(self._handlers.get("*", ()))
         for entry in entries:
             try:
-                await self._invoke_entry(entry, event)
+                await self._invoke(entry, event)
             except Exception as error:
                 _log.warning(
                     "Operation hook failed: event=%s error_type=%s",
@@ -40,7 +35,7 @@ class AsyncOperationHooks(OperationHooks):
                     type(error).__name__,
                 )
 
-    def _entries_for(self, stage: str, operation_name: str) -> list[_HookEntry]:
+    def _entries_for(self, stage: str, operation_name: str) -> list[Callable[..., Any]]:
         stage_map = self._lifecycle.get(stage)
         if stage_map is None:
             return []
@@ -48,7 +43,7 @@ class AsyncOperationHooks(OperationHooks):
         wildcard = stage_map.get("*")
         if not exact and not wildcard:
             return []
-        result: list[_HookEntry] = []
+        result: list[Callable[..., Any]] = []
         if exact:
             result.extend(exact)
         if wildcard:
@@ -63,7 +58,7 @@ class AsyncOperationHooks(OperationHooks):
     ) -> OperationContext:
         for hooks in hooks_chain:
             for entry in hooks._entries_for("before", operation_name):
-                updated = await hooks._invoke_entry(entry, context)
+                updated = await hooks._invoke(entry, context)
                 if isinstance(updated, OperationContext):
                     context = updated
         return context
@@ -82,7 +77,7 @@ class AsyncOperationHooks(OperationHooks):
             for entry in hooks._entries_for(stage, operation_name):
                 matched += 1
                 try:
-                    await hooks._invoke_entry(entry, context)
+                    await hooks._invoke(entry, context)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:

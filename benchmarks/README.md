@@ -14,10 +14,10 @@ python run_benchmarks.py --list-cases
 | `history` | Blocking and async chat opening with one or two history reads, opening the last 25 responses from a 20,000-message history, eight overlapping reads of one chat, and a fresh read of an already opened history. |
 | `collections` | Listings of 100, 1,000, and 10,000 chats, a 1,000-chat listing with an event subscriber, project fanout, and 10,000 jobs on four workers. |
 | `providers` | Read a synthetic 1,000-turn history through each provider, and prepare a retry for a past Gemini or Claude turn. Fixtures replace remote calls and keep actual provider parsing and selection in the timed path. |
-| `transport` | 16 KiB and 8 MiB buffered reads through sync and async HTTP transports, 4,000 stream chunks through a persistent blocking portal, and split SSE and JSPB frames. |
+| `transport` | 16 KiB and 8 MiB buffered reads through sync and async HTTP transports, 4,000 stream chunks through the synchronous provider on the calling thread, and split SSE and JSPB frames. |
 
 Each value measures one full operation. Large workloads return their batch
-duration. Fixture preparation, provider opening, and event loop or portal
+duration. Fixture preparation, provider opening, and event loop
 startup are outside the reported elapsed time. The transport workloads exercise
 the library above an injected client. TLS, DNS, transfer speed, server latency,
 and browser behavior require separate measurements.

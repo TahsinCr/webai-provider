@@ -42,7 +42,8 @@ class _AsyncHistoryProvider(AsyncProvider):
 
 
 class _HistoryProvider(Provider):
-    async_provider_type = _AsyncHistoryProvider
+    def _make_async_provider(self, account: Account, **options) -> _AsyncHistoryProvider:
+        return _AsyncHistoryProvider(account, **options)
 
 
 def _account() -> Account:

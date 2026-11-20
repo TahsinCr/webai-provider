@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import contextvars
 import logging
-import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -14,7 +13,6 @@ from weakref import WeakValueDictionary
 from eventflow import (
     AsyncEventBus,
     AsyncResourceScope,
-    BoundedWorkPool,
     ErrorPolicy,
     EventBus,
     EventEnvelope,
@@ -59,10 +57,7 @@ class ProviderRuntime:
         self.provider_id = provider_id
         self.account_id = account_id
         self.events = AsyncEventBus(error_policy=ErrorPolicy.ISOLATE)
-        self.sync_events = EventBus(error_policy=ErrorPolicy.ISOLATE)
-        self._dispatch_sync_event: Callable[[EventEnvelope[str]], None] | None = None
-        self._sync_event_pool: BoundedWorkPool | None = None
-        self._sync_event_lock = threading.RLock()
+        self._sync_events: tuple[EventBus[EventEnvelope[str]], Callable[[EventEnvelope[str]], None]] | None = None
         self._event_sequence = 0
         self.hooks = AsyncOperationHooks()
         self.lifecycle = StateMachine(
@@ -166,6 +161,21 @@ class ProviderRuntime:
                     self._active_operations -= 1
                     self._lifecycle_condition.notify_all()
 
+    def bind_sync_events(
+        self,
+        bus: EventBus[EventEnvelope[str]],
+        enqueue: Callable[[EventEnvelope[str]], None],
+    ) -> None:
+        self._sync_events = bus, enqueue
+
+    @property
+    def has_event_subscribers(self) -> bool:
+        return bool(self.events.subscriber_count or self._sync_event_enqueue())
+
+    def _sync_event_enqueue(self) -> Callable[[EventEnvelope[str]], None] | None:
+        binding = self._sync_events
+        return binding[1] if binding is not None and binding[0].subscriber_count else None
+
     async def emit(
         self,
         name: str,
@@ -174,15 +184,10 @@ class ProviderRuntime:
         resource_id: str | None = None,
         payload: object | None = None,
     ) -> None:
-        """Publish an event to async subscribers and bounded off-loop sync subscribers.
-
-        Async ``self.events`` delivery is awaited directly without dropping.
-        When ``self.sync_events`` has subscribers, delivery runs on a bounded
-        single-worker pool. Saturated sync dispatches are logged.
-        """
+        """Publish to async subscribers and enqueue delivery for the sync caller."""
         self._event_sequence += 1
-        sync_subscribers = self.sync_events.subscriber_count
-        if not sync_subscribers and not self.events.subscriber_count:
+        enqueue = self._sync_event_enqueue()
+        if enqueue is None and not self.events.subscriber_count:
             return
         event = EventEnvelope(
             event=name,
@@ -195,40 +200,9 @@ class ProviderRuntime:
                 "payload": payload,
             },
         )
-        if sync_subscribers and self._dispatch_sync_event is not None:
-            self._dispatch_sync_event(event)
-        elif sync_subscribers:
-            with self._sync_event_lock:
-                if self._sync_event_pool is None:
-                    self._sync_event_pool = BoundedWorkPool(max_workers=1, max_pending=512)
-                try:
-                    self._sync_event_pool.submit(self.sync_events.publish, event)
-                except Exception as error:
-                    _log.warning(
-                        "Sync event dispatch skipped: event=%s error=%s",
-                        name,
-                        type(error).__name__,
-                    )
+        if enqueue is not None:
+            enqueue(event)
         await self.events.publish(event)
-
-    def _close_sync_events(self) -> None:
-        with self._sync_event_lock:
-            pool, self._sync_event_pool = self._sync_event_pool, None
-        try:
-            if pool is not None:
-                pool.close(wait=True, cancel_futures=False)
-        finally:
-            self.sync_events.close()
-
-    async def _close_events(self) -> None:
-        try:
-            await self.events.close()
-        finally:
-            if self._dispatch_sync_event is None:
-                if self._sync_event_pool is None:
-                    self.sync_events.close()
-                else:
-                    await asyncio.to_thread(self._close_sync_events)
 
     async def emit_safe(
         self,
@@ -355,7 +329,7 @@ class ProviderRuntime:
             if self.lifecycle.can_transition(LifecycleState.CLOSED):
                 self.lifecycle.transition(LifecycleState.CLOSED)
             await self.emit_safe("provider.closed")
-            await self._close_events()
+            await self.events.close()
         finally:
             _CLOSING_RUNTIME.reset(token)
             self._close_task = None

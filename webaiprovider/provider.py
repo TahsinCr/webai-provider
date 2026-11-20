@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from threading import Lock, RLock
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from eventflow import EventBus, EventEnvelope
+from eventflow import ErrorPolicy, EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
@@ -80,10 +80,10 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self.transport: Transport = _ProviderTransport(self)
         self._closed = False
         self._closing = False
-        self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
+        self.events: EventBus[EventEnvelope[str]] = EventBus(error_policy=ErrorPolicy.ISOLATE)
         self._pending_events: deque[EventEnvelope[str]] = deque()
         self._publishing = False
-        self._provider.runtime._dispatch_sync_event = self._pending_events.append
+        self._provider.runtime.bind_sync_events(self.events, self._pending_events.append)
         self.hooks: OperationHooks = OperationHooks(self._provider.runtime.hooks)
         self._chats = self._make_chats()
         self._projects = self._make_projects()
@@ -276,6 +276,12 @@ class _ProviderTransport(Transport):
     def url(self, path):
         return self._owner._provider.transport.url(path)
 
+    def record_rate_limit(self, retry_after: float | None) -> None:
+        self._owner._ensure_blocking_call()
+        with self._owner._call_lock:
+            self._owner._ensure_blocking_call()
+            self._owner._provider.transport.record_rate_limit(retry_after)
+
     def send(self, method, path, **options):
         return self._owner._call(self._owner._provider.transport.send(method, path, **options))
 
@@ -366,7 +372,12 @@ class _ProviderStream:
         if producer is not None and not producer.done():
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-        return await self._manager.__aexit__(*exception)
+        try:
+            return await self._manager.__aexit__(*exception)
+        finally:
+            while not self._buffer.empty():
+                self._buffer.get_nowait()
+            self._error = None
 
     def _finish(self, *exception):
         with self._state_lock:

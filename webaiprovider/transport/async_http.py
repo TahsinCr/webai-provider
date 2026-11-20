@@ -4,11 +4,12 @@ import asyncio
 import socket
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from io import BytesIO
 
 from ..core.timing import current_send_timing
 from ..errors import ProviderError
 from . import http
-from .base import AsyncTransport, _AsyncStreamResponse
+from .base import AsyncTransport, _AsyncStreamResponse, _BufferedResponse
 from .http import (
     _IDEMPOTENT_METHODS,
     _apply_curl_resolve,
@@ -143,9 +144,6 @@ async def _open_curl_stream(client, method: str, url: str, options: dict, *, tim
 
 
 class AsyncHTTPTransport(AsyncTransport):
-    _redirect_option = "allow_redirects"
-    _close_method = "close"
-
     def __init__(
         self,
         origin,
@@ -164,10 +162,6 @@ class AsyncHTTPTransport(AsyncTransport):
         self._owned_refs: dict[int, int] = {}
         self._retired_clients: dict[int, object] = {}
         self._dns = _OriginDNS(self.origin)
-        self._origin_host = self._dns.host
-        self._origin_port = self._dns.port
-        self._origin_prefix = self._dns.prefix
-        self._origin_is_ip = self._dns.is_ip
 
     def _connect(self):
         if self._client_getter is not None:
@@ -206,7 +200,7 @@ class AsyncHTTPTransport(AsyncTransport):
         retired = self._retired_clients.pop(cid, None)
         if retired is not None:
             with suppress(Exception):
-                await getattr(retired, self._close_method)()
+                await retired.close()
 
     async def _after(self):
         if self._after_response is not None:
@@ -240,17 +234,42 @@ class AsyncHTTPTransport(AsyncTransport):
             self._retired_clients[cid] = client
             return
         with suppress(Exception):
-            await getattr(client, self._close_method)()
+            await client.close()
 
     async def _send(self, method, url, options, *, client=None):
         client = client if client is not None else self._connect()
         await self._prepare_curl(options, client=client)
         sender = getattr(client, "request", None)
         if callable(sender):
-            return await sender(method, url, **{self._redirect_option: False}, **options)
+            return await sender(method, url, allow_redirects=False, **options)
         return await getattr(client, method.lower())(
-            url, **{self._redirect_option: False}, **options
+            url, allow_redirects=False, **options
         )
+
+    async def _buffer_response_async(self, response) -> _BufferedResponse:
+        self._check_declared_size(response)
+        iterator = getattr(response, "aiter_content", None) or getattr(
+            response, "aiter_bytes", None
+        )
+        if not callable(iterator):
+            raise ProviderError("Provider response cannot be streamed")
+        first = b""
+        buffer = None
+        limit = self.config.max_response_bytes
+        total = 0
+        async for chunk in iterator():
+            total += len(chunk)
+            if total > limit:
+                raise ProviderError("Provider response exceeds the size limit")
+            if chunk:
+                if not first:
+                    first = bytes(chunk)
+                    continue
+                if buffer is None:
+                    buffer = BytesIO()
+                    buffer.write(first)
+                buffer.write(bytes(chunk))
+        return _BufferedResponse(response, first if buffer is None else buffer.getvalue())
 
     async def _acquire_client_async(self):
         return self._acquire_client()
@@ -319,7 +338,7 @@ class AsyncHTTPTransport(AsyncTransport):
                 yield response
             return
         async with client.stream(
-            method, url, **{self._redirect_option: False}, **options
+            method, url, allow_redirects=False, **options
         ) as response:
             yield response
 
@@ -377,4 +396,4 @@ class AsyncHTTPTransport(AsyncTransport):
             if client is not None:
                 retired.append(client)
             for item in retired:
-                await getattr(item, self._close_method)()
+                await item.close()

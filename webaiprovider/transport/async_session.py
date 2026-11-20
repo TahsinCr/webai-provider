@@ -5,7 +5,7 @@ import asyncio
 from ..accounts.credentials import read_session, read_session_async, save_session_async
 from ..accounts.filters import ProviderCookieFilter
 from .async_http import AsyncHTTPTransport
-from .cookie_persistence import _SessionCookies
+from .cookie import _SessionCookies
 
 
 class AsyncHttpSession(_SessionCookies, AsyncHTTPTransport):

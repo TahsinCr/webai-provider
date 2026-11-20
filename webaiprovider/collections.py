@@ -293,9 +293,7 @@ def _report_read(
         finally:
             _active_read.reset(token)
         runtime = provider.runtime
-        if read.started_ns is not None and (
-            runtime.events.subscriber_count or runtime.sync_events.subscriber_count
-        ):
+        if read.started_ns is not None and runtime.has_event_subscribers:
             if isinstance(result, tuple):
                 result_items = [result[0]]
             elif isinstance(result, list):

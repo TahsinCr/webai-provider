@@ -5,7 +5,7 @@ from threading import RLock
 
 from ..accounts.credentials import read_session, save_session
 from ..accounts.filters import ProviderCookieFilter
-from .cookie_persistence import _SessionCookies
+from .cookie import _SessionCookies
 from .http import HTTPTransport
 
 

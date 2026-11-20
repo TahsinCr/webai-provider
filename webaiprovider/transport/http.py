@@ -323,7 +323,30 @@ class HTTPTransport(Transport):
         with suppress(Exception):
             client.close()
 
-    def _send_curl(self, method, path, url, options, *, check_status):
+    def _buffer_response(self, response) -> _BufferedResponse:
+        self._check_declared_size(response)
+        iterator = getattr(response, "iter_content", None) or getattr(response, "iter_bytes", None)
+        if not callable(iterator):
+            raise ProviderError("Provider response cannot be streamed")
+        first = b""
+        buffer = None
+        limit = self.config.max_response_bytes
+        total = 0
+        for chunk in iterator():
+            total += len(chunk)
+            if total > limit:
+                raise ProviderError("Provider response exceeds the size limit")
+            if chunk:
+                if not first:
+                    first = bytes(chunk)
+                    continue
+                if buffer is None:
+                    buffer = BytesIO()
+                    buffer.write(first)
+                buffer.write(bytes(chunk))
+        return _BufferedResponse(response, first if buffer is None else buffer.getvalue())
+
+    def _send_curl(self, method, url, options, *, check_status):
         from curl_cffi import CurlError
         from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 
@@ -376,7 +399,7 @@ class HTTPTransport(Transport):
         if self.factory is None and self._client_getter is None:
             if options.pop("content_callback", None) is not None:
                 raise ValueError("Use transport.stream() to process response chunks")
-            return self._send_curl(method, path, url, options, check_status=check_status)
+            return self._send_curl(method, url, options, check_status=check_status)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
         for attempt in (0, 1):
             client = self._connect()
@@ -424,7 +447,7 @@ class HTTPTransport(Transport):
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
         if self.factory is None and self._client_getter is None:
-            from .blocking_stream import open_blocking_curl_stream
+            from .stream import open_blocking_curl_stream
 
             if options.pop("content_callback", None) is not None:
                 raise ValueError("Consume data with the returned stream iterator")

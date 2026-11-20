@@ -8,7 +8,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - List and resolve models from the loaded catalog directly on the calling thread in the synchronous API.
 
-- Read the synchronous provider session status on the calling thread without starting the background portal.
+- Read the synchronous provider session status on the calling thread without starting an event loop.
 
 - Provide a calling-thread `HttpSession` for saved-account HTTP requests and streams. The asynchronous counterpart is `AsyncHttpSession`.
 
@@ -82,7 +82,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Remove the background provider portal and threaded HTTP facade. Blocking provider operations and their synchronous event callbacks run on the calling thread. Calls on a shared provider instance are serialized.
 
-- Remove the unused `ThreadedTransport` adapter.
+- Remove the unused `ThreadedTransport` adapter and legacy thread dispatch for synchronous hooks and events.
 - Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
 
 ### Fixed

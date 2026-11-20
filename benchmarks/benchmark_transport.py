@@ -6,7 +6,6 @@ import json
 from contextlib import asynccontextmanager, contextmanager
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from webaiprovider import Account, Provider
 from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport
@@ -76,20 +75,21 @@ def _buffered(count: int) -> tuple[Case, Case]:
 
 def _provider_stream(loops: int) -> float:
     transport = _async_transport(_STREAM_CHUNKS, 64, origin="https://claude.ai")
+
+    async def offline_session():
+        pass
+
     provider = Provider(Account.from_cookies("claude", {}), transport=transport)
-    provider._provider._prepare_session = AsyncMock()
-    provider._provider._close_session = AsyncMock()
-    provider.open()
-    try:
+    provider._provider._prepare_session = offline_session
+    provider._provider._close_session = offline_session
 
-        def consume():
-            with provider.transport.stream("GET", "/fixture") as response:
-                if sum(map(len, response.iter_bytes())) != _STREAM_CHUNKS * 64:
-                    raise AssertionError("Unexpected stream size")
+    def consume():
+        with provider.transport.stream("GET", "/fixture") as response:
+            if sum(map(len, response.iter_bytes())) != _STREAM_CHUNKS * 64:
+                raise AssertionError("Unexpected stream size")
 
+    with provider:
         return time_sync(loops, consume)
-    finally:
-        provider.close()
 
 
 def _frame_case(*, jspb: bool) -> Case:

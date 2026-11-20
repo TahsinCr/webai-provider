@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit
 
@@ -299,54 +298,6 @@ class _TransportPolicy:
             return
         if length > self.config.max_response_bytes:
             raise ProviderError("Provider response exceeds the size limit")
-
-    def _buffer_response(self, response) -> _BufferedResponse:
-        self._check_declared_size(response)
-        iterator = getattr(response, "iter_content", None) or getattr(response, "iter_bytes", None)
-        if not callable(iterator):
-            raise ProviderError("Provider response cannot be streamed")
-        first = b""
-        buffer = None
-        limit = self.config.max_response_bytes
-        total = 0
-        for chunk in iterator():
-            total += len(chunk)
-            if total > limit:
-                raise ProviderError("Provider response exceeds the size limit")
-            if chunk:
-                if not first:
-                    first = bytes(chunk)
-                    continue
-                if buffer is None:
-                    buffer = BytesIO()
-                    buffer.write(first)
-                buffer.write(bytes(chunk))
-        return _BufferedResponse(response, first if buffer is None else buffer.getvalue())
-
-    async def _buffer_response_async(self, response) -> _BufferedResponse:
-        self._check_declared_size(response)
-        iterator = getattr(response, "aiter_content", None) or getattr(
-            response, "aiter_bytes", None
-        )
-        if not callable(iterator):
-            raise ProviderError("Provider response cannot be streamed")
-        first = b""
-        buffer = None
-        limit = self.config.max_response_bytes
-        total = 0
-        async for chunk in iterator():
-            total += len(chunk)
-            if total > limit:
-                raise ProviderError("Provider response exceeds the size limit")
-            if chunk:
-                if not first:
-                    first = bytes(chunk)
-                    continue
-                if buffer is None:
-                    buffer = BytesIO()
-                    buffer.write(first)
-                buffer.write(bytes(chunk))
-        return _BufferedResponse(response, first if buffer is None else buffer.getvalue())
 
 
 class AsyncTransport(_TransportPolicy, ABC):

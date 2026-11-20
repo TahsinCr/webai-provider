@@ -1089,10 +1089,18 @@ class TestSyncApi(unittest.TestCase):
         ):
             project = provider.projects.create("Notes", memory_share=False)
             chat = provider.chats.create("Draft", project=project)
+            @provider.hooks.before("chat.send")
+            def before_send(context):
+                self.assertEqual(threading.get_ident(), caller)
+                calls.append(context.prompt)
+
+            caller = threading.get_ident()
+            calls = []
             operation = chat.responses.create("hello")
             events = list(operation.stream())
             response = operation.wait()
 
+        self.assertEqual(calls, ["hello"])
         self.assertEqual(response.text, "done")
         self.assertEqual(
             [event.event for event in events],
@@ -1387,10 +1395,10 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             ChatGPTProvider(account) as provider,
         ):
             chat = provider.chats.create()
-            with patch.object(provider, "_call", wraps=provider._call) as portal_calls:
+            with patch.object(provider, "_call", wraps=provider._call) as loop_calls:
                 operation = chat.responses.create("hello")
                 events = list(operation.stream())
-            call_count = portal_calls.call_count
+            call_count = loop_calls.call_count
 
         received_deltas = [event.delta for event in events if isinstance(event, OutputDelta)]
         self.assertEqual(received_deltas, [f"t{i}" for i in range(12)])
