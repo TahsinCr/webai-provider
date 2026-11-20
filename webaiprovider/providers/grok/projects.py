@@ -1,6 +1,8 @@
 import asyncio
 import mimetypes
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import Any
 
 from ...errors import ProviderError
 from ...resources.message.attachment import Attachment
@@ -10,6 +12,7 @@ from ...resources.project.types import (
     source_file,
 )
 from .client import _MAX_WORKSPACE_FILE_BYTES, _b64_ascii, _read_limited, remote_id
+from .records import conversation
 
 
 class GrokProjectEditor:
@@ -71,6 +74,55 @@ class GrokProjectEditor:
         if not isinstance(data, dict) or (data.get("workspaceId") or data.get("id")) != project_id:
             raise ProviderError("Grok workspace response contract changed")
         return self._apply_metadata(current, data)
+
+    async def move_chat(
+        self,
+        conversation_id: str,
+        project_id: str | None,
+        *,
+        fetch_metadata: Callable[[str], Awaitable[Any]],
+        account_id: str,
+    ) -> None:
+        metadata = await fetch_metadata(conversation_id)
+        chat = conversation(metadata, account_id)
+        old_project = chat.project.id if chat.project is not None else None
+        if old_project == project_id:
+            return
+        conversation_path = "/conversations/" + remote_id(conversation_id)
+        if project_id:
+            await self.client.request(
+                "POST",
+                "/rest/workspaces/" + remote_id(project_id) + "/conversations",
+                json={"conversationId": conversation_id},
+            )
+        if old_project:
+            try:
+                await self.client.request(
+                    "DELETE",
+                    "/rest/workspaces/" + remote_id(old_project) + conversation_path,
+                )
+            except Exception:
+                if project_id:
+                    try:
+                        await self.client.request(
+                            "DELETE",
+                            "/rest/workspaces/" + remote_id(project_id) + conversation_path,
+                        )
+                    except Exception:
+                        raise ProviderError(
+                            "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
+                        ) from None
+                raise
+        for _ in range(5):
+            metadata = await fetch_metadata(conversation_id)
+            updated = conversation(metadata, account_id)
+            updated_project = updated.project.id if updated.project is not None else None
+            if updated_project == project_id:
+                return
+            await asyncio.sleep(0.1)
+        raise ProviderError(
+            "Grok conversation project membership could not be confirmed by the server"
+        )
 
     async def add_source(self, project_id, **values):
         project_path = "/rest/workspaces/" + remote_id(project_id)

@@ -6,15 +6,25 @@ import os
 import stat
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from ...accounts import read_session_async
-from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache
+from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache, gather_bounded
 from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, ProviderError
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS
+from ...resources.message.protocol import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderRequest,
+    ProviderStreamEvent,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
@@ -655,3 +665,80 @@ class ClaudeClient:
                 "actions": ["retry"],
             }
         yield {"type": "done"}
+
+
+async def stream_response(
+    client, request: ProviderRequest
+) -> AsyncGenerator[ProviderStreamEvent, None]:
+    if len(request.attachments) > CLAUDE_ATTACHMENTS.max_files:
+        raise ValueError(f"Claude accepts at most {CLAUDE_ATTACHMENTS.max_files} attachments")
+    timing = current_send_timing()
+    if timing is not None:
+        timing.record("provider_send_gate_wait_ms", 0)
+    uploaded = list(request.attachments)
+    pending = [
+        (index, item)
+        for index, item in enumerate(uploaded)
+        if isinstance(item, dict) and ("bytes" in item or "path" in item)
+    ]
+
+    def validate_uploads() -> None:
+        for _, item in pending:
+            validate_upload_candidate(
+                item.get("path"),
+                content=item.get("bytes"),
+                name=item.get("name"),
+                mime_type=item.get("mime_type"),
+            )
+
+    if any(item.get("path") is not None and item.get("bytes") is None for _, item in pending):
+        await asyncio.to_thread(validate_uploads)
+    else:
+        validate_uploads()
+    if pending:
+        results = await gather_bounded(
+            pending,
+            lambda entry: client.upload_file(
+                entry[1].get("path"),
+                content=entry[1].get("bytes"),
+                name=entry[1].get("name"),
+                mime_type=entry[1].get("mime_type"),
+            ),
+            limit=2,
+        )
+        for (index, _), attachment in zip(pending, results, strict=True):
+            uploaded[index] = attachment
+    attachments = tuple(uploaded)
+    completed = False
+    async for event in client.events(
+        "send",
+        prompt=request.prompt,
+        conversation_id=request.conversation_id,
+        draft_title=request.draft_title,
+        project_id=request.project_id,
+        model=request.model,
+        effort=request.effort,
+        temporary=request.temporary,
+        attachments=attachments,
+        **({"action": request.action, "message_id": request.message_id} if request.action else {}),
+    ):
+        if event["type"] == "bound":
+            yield ConversationBound(event["id"])
+        elif event["type"] in ("replace", "delta"):
+            event_type = TextDelta if event["type"] == "delta" else TextReplacement
+            yield event_type(event["text"], event.get("channel", "final"))
+        elif event["type"] == "done":
+            completed = True
+        elif event["type"] == "response_complete":
+            yield ResponseComplete()
+        elif event["type"] == "metadata":
+            yield MessageMetadata(
+                message_id=event.get("message_id"),
+                user_message_id=event.get("user_message_id"),
+                model=event.get("model") or request.model,
+                effort=request.effort,
+                sources=tuple(event.get("sources", ())),
+                files=tuple(event.get("files", ())),
+            )
+    if not completed:
+        raise ClaudeStreamError("Claude response ended before completion; it was not resent")

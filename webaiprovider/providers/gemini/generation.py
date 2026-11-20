@@ -7,6 +7,7 @@ import os
 import stat
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from ...core import gather_bounded
@@ -14,7 +15,18 @@ from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
 from ...resources.message.attachment import GEMINI_ATTACHMENTS
+from ...resources.message.protocol import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderRequest,
+    ProviderStreamEvent,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 from ...resources.message.types import MessageAction
+from ...resources.response.artifact import files_from
+from ...resources.response.source import sources_from
 from ...transport.frames import JSPBFrameDecoder
 from .errors import (
     GeminiCompatibilityError,
@@ -23,7 +35,7 @@ from .errors import (
     GeminiStreamError,
 )
 from .history import candidate_metadata, published_activity, published_thoughts
-from .media import candidate_files
+from .media import candidate_files, resolve_image_links
 from .rpc import rpc_value
 from .session import BASE, HEADERS
 
@@ -201,7 +213,7 @@ def generation_request(session, request, metadata, files, notebook=None):
 
 async def generate(
     session, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
-):
+) -> AsyncGenerator[dict, None]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
 
@@ -339,3 +351,90 @@ async def generate(
             "Gemini stream ended before completion; the request was not retried"
         )
     await session.persist(force=False)
+
+
+async def response_events(
+    request: ProviderRequest, *, prepare, request_timeout, media, remember
+) -> AsyncGenerator[ProviderStreamEvent, None]:
+    client, request, metadata, context, action_files = await prepare(request)
+    bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
+    final_rid = None
+    raw_files: list[dict] = []
+    seen_file_keys: set[tuple[str, str]] = set()
+    raw_sources: list[dict] = []
+    seen_source_keys: set[str] = set()
+    rendered_by_channel = {"analysis": "", "final": ""}
+    async for chunk in generate(
+        client,
+        request,
+        metadata,
+        context,
+        files=action_files,
+        request_timeout=request_timeout,
+    ):
+        cid = chunk.get("cid") or cid
+        metadata = chunk["metadata"]
+        if cid and not bound and cid != request.conversation_id:
+            yield ConversationBound(cid)
+            bound = True
+        if chunk.get("context_only"):
+            continue
+        images = chunk["files"]
+        for image in images:
+            key = (str(image["alias"]), str(image["url"]))
+            if key not in seen_file_keys:
+                seen_file_keys.add(key)
+                raw_files.append(
+                    {
+                        "id": image["alias"],
+                        "name": image["name"],
+                        "remote_url": image["url"],
+                        "media_type": image.get("media_type"),
+                    }
+                )
+            media[cid, image["alias"]] = image
+            media[cid, image["url"]] = image
+        while len(media) > 256:
+            media.pop(next(iter(media)))
+        chunk_sources = chunk.get("sources")
+        if chunk_sources:
+            for item in chunk_sources:
+                if not isinstance(item, dict):
+                    continue
+                source_key = item.get("url") or item.get("title")
+                if source_key:
+                    if source_key not in seen_source_keys:
+                        seen_source_keys.add(source_key)
+                        raw_sources.append(item)
+                elif item not in raw_sources:
+                    raw_sources.append(item)
+        visible = visible or bool(chunk["text"] or images)
+        for channel, content_text in (
+            ("analysis", chunk["thoughts"]),
+            ("final", resolve_image_links(chunk["text"], images)),
+        ):
+            rendered = rendered_by_channel[channel]
+            if not content_text or content_text == rendered:
+                continue
+            if content_text.startswith(rendered):
+                yield TextDelta(content_text[len(rendered) :], channel)
+            else:
+                yield TextReplacement(content_text, channel)
+            rendered_by_channel[channel] = content_text
+        if chunk.get("response_complete"):
+            yield ResponseComplete()
+        rid = metadata[1] if len(metadata) > 1 else None
+        if rid:
+            final_rid = rid
+    if not visible or not cid:
+        raise GeminiStreamError("Gemini response did not complete; the request was not retried")
+    if final_rid:
+        yield MessageMetadata(
+            message_id=final_rid + ":model",
+            user_message_id=final_rid + ":user",
+            model=request.model,
+            effort=request.effort,
+            sources=sources_from({"sources": raw_sources}) if raw_sources else (),
+            files=files_from({"files": raw_files}) if raw_files else (),
+        )
+    remember(cid, metadata, temporary=request.temporary)

@@ -1,10 +1,21 @@
 """Grok conversation and workspace records mapped to the shared contract."""
 
 import re
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from io import StringIO
 
 from ...errors import ProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
+from ...resources.message.protocol import (
+    ConversationBound,
+    MessageMetadata,
+    ProviderRequest,
+    ProviderStreamEvent,
+    ResponseComplete,
+    TextDelta,
+    TextReplacement,
+)
 from ...resources.message.types import (
     Content,
     MessageAction,
@@ -290,3 +301,156 @@ def project(value, account_id, files=()):
         resources,
         {"preferred_model": value.get("preferredModel"), "kind": value.get("kind")},
     )
+
+
+def _append_web_search_results(
+    native: dict, raw_search_results: list, seen_search_keys: set[str]
+) -> None:
+    results = native.get("webSearchResults")
+    if not isinstance(results, list):
+        return
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("url") or item.get("title")
+        if key:
+            if key not in seen_search_keys:
+                seen_search_keys.add(key)
+                raw_search_results.append(item)
+        elif item not in raw_search_results:
+            raw_search_results.append(item)
+
+
+def _flush_grok_filters(text_filter, streamed_text, analysis_filter, streamed_analysis):
+    for cleaner, output, channel in (
+        (text_filter, streamed_text, None),
+        (analysis_filter, streamed_analysis, "analysis"),
+    ):
+        remainder = cleaner.feed(final=True)
+        if remainder:
+            output.write(remainder)
+            yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
+
+
+def _reconcile_grok_native(raw_native_text, raw_native_analysis, streamed_text, streamed_analysis):
+    resolved_analysis = clean_text(raw_native_analysis) if raw_native_analysis is not None else None
+    resolved_text = clean_text(raw_native_text) if raw_native_text is not None else None
+    for native, output, channel in (
+        (resolved_analysis, streamed_analysis, "analysis"),
+        (resolved_text, streamed_text, None),
+    ):
+        if native is not None and native != output.getvalue():
+            output.seek(0)
+            output.truncate()
+            output.write(native)
+            yield TextReplacement(native, channel) if channel else TextReplacement(native)
+
+
+async def response_events(
+    request: ProviderRequest,
+    *,
+    prepare: Callable[[ProviderRequest], Awaitable[tuple[AsyncIterator[dict], str | None]]],
+    raise_stream_error: Callable[[object], None],
+    remember: Callable[[str, str], None],
+) -> AsyncGenerator[ProviderStreamEvent, None]:
+    chunks, model = await prepare(request)
+    conversation_id = existing_conversation_id = request.conversation_id
+    response_id = user_response_id = None
+    streamed_text, streamed_analysis = StringIO(), StringIO()
+    raw_native_text = raw_native_analysis = None
+    sources = ()
+    raw_search_results: list[dict] = []
+    seen_search_keys: set[str] = set()
+    response_model = model
+    complete = False
+    completion_notified = False
+    bound = False
+    text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
+
+    def finalize_turn():
+        nonlocal sources
+        if raw_search_results and not sources:
+            sources = sources_from({"sources": raw_search_results})
+        yield from _flush_grok_filters(
+            text_filter, streamed_text, analysis_filter, streamed_analysis
+        )
+        yield from _reconcile_grok_native(
+            raw_native_text, raw_native_analysis, streamed_text, streamed_analysis
+        )
+
+    async for chunk in chunks:
+        result = chunk.get("result")
+        if not isinstance(result, dict):
+            result = chunk
+        native_conversation = result.get("conversation")
+        response = result.get("response")
+        if not isinstance(response, dict):
+            response = result
+        if not conversation_id and isinstance(native_conversation, dict):
+            conversation_id = native_conversation.get("conversationId")
+            if conversation_id and not bound:
+                yield ConversationBound(conversation_id)
+                bound = True
+        if not conversation_id and not existing_conversation_id:
+            conversation_id = result.get("conversationId") or response.get("conversationId")
+            if conversation_id and not bound:
+                yield ConversationBound(conversation_id)
+                bound = True
+        error = response.get("error") or result.get("error") or chunk.get("error")
+        if error:
+            raise_stream_error(error)
+        user = response.get("userResponse")
+        if isinstance(user, dict) and user.get("responseId"):
+            user_response_id = user["responseId"]
+        native = response.get("modelResponse")
+        if isinstance(native, dict):
+            response_id = native.get("responseId") or response_id
+            response_model = native.get("model") or response_model
+            _append_web_search_results(native, raw_search_results, seen_search_keys)
+            if isinstance(native.get("message"), str):
+                raw_native_text = native["message"]
+            if native.get("thinkingTrace") is not None:
+                raw_native_analysis = native["thinkingTrace"]
+            if native.get("partial") is False:
+                complete = True
+        token = response.get("token")
+        if isinstance(token, str) and token:
+            analysis = response.get("isThinking") or response.get("messageTag") in (
+                "header",
+                "summary",
+            )
+            cleaner = analysis_filter if analysis else text_filter
+            visible = cleaner.feed(token)
+            if visible:
+                (streamed_analysis if analysis else streamed_text).write(visible)
+                yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
+        if response.get("responseId") and not response_id:
+            response_id = response["responseId"]
+        if response.get("done") is True or response.get("finished") is True:
+            complete = True
+        if complete and not completion_notified and (existing_conversation_id or conversation_id):
+            for event in finalize_turn():
+                yield event
+            yield ResponseComplete()
+            completion_notified = True
+
+    for event in finalize_turn():
+        yield event
+    if not conversation_id:
+        raise ProviderError("Grok did not return a conversation ID")
+    if not complete:
+        raise ProviderError("Grok stream ended before response completion; it was not resent")
+    if response_id:
+        remember(conversation_id, response_id)
+    if not bound and not existing_conversation_id:
+        yield ConversationBound(conversation_id)
+    if response_id and streamed_text.tell():
+        yield MessageMetadata(
+            message_id=response_id,
+            user_message_id=user_response_id,
+            model=response_model,
+            effort=None,
+            sources=sources,
+        )
+    if not completion_notified:
+        yield ResponseComplete()

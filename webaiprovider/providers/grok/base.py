@@ -9,12 +9,9 @@ from ...errors import FeatureUnavailable
 from ...resources.message.attachment import GROK_ATTACHMENTS
 from ...resources.message.protocol import (
     ProviderRequest,
-    TextDelta,
-    TextReplacement,
 )
 from ...resources.message.types import MessageAction
 from ...resources.project.types import source_file
-from .records import clean_text
 
 
 def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=None):
@@ -138,49 +135,6 @@ def _inherit_grok_edit_attachments(
                 image_attachments.append(serialized)
             else:
                 file_attachments.append(serialized)
-
-
-def _append_web_search_results(
-    native: dict, raw_search_results: list, seen_search_keys: set[str]
-) -> None:
-    results = native.get("webSearchResults")
-    if not isinstance(results, list):
-        return
-    for item in results:
-        if not isinstance(item, dict):
-            continue
-        key = item.get("url") or item.get("title")
-        if key:
-            if key not in seen_search_keys:
-                seen_search_keys.add(key)
-                raw_search_results.append(item)
-        elif item not in raw_search_results:
-            raw_search_results.append(item)
-
-
-def _flush_grok_filters(text_filter, streamed_text, analysis_filter, streamed_analysis):
-    for cleaner, output, channel in (
-        (text_filter, streamed_text, None),
-        (analysis_filter, streamed_analysis, "analysis"),
-    ):
-        remainder = cleaner.feed(final=True)
-        if remainder:
-            output.write(remainder)
-            yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
-
-
-def _reconcile_grok_native(raw_native_text, raw_native_analysis, streamed_text, streamed_analysis):
-    resolved_analysis = clean_text(raw_native_analysis) if raw_native_analysis is not None else None
-    resolved_text = clean_text(raw_native_text) if raw_native_text is not None else None
-    for native, output, channel in (
-        (resolved_analysis, streamed_analysis, "analysis"),
-        (resolved_text, streamed_text, None),
-    ):
-        if native is not None and native != output.getvalue():
-            output.seek(0)
-            output.truncate()
-            output.write(native)
-            yield TextReplacement(native, channel) if channel else TextReplacement(native)
 
 
 def _grok_attachment_entry(metadata: dict) -> dict | str:

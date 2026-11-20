@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
 
@@ -11,21 +12,13 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
-from ...core import gather_bounded
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
-from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
-from ...resources.message.attachment import CLAUDE_ATTACHMENTS
 from ...resources.message.protocol import (
-    ConversationBound,
-    MessageMetadata,
     ProviderRequest,
     ProviderStreamEvent,
-    ResponseComplete,
-    TextDelta,
-    TextReplacement,
 )
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
@@ -33,8 +26,8 @@ from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
 from .base import BaseClaudeProvider
-from .client import ClaudeClient, remote_id, validate_upload_candidate
-from .errors import ClaudeCompatibilityError, ClaudeStreamError
+from .client import ClaudeClient, remote_id, stream_response
+from .errors import ClaudeCompatibilityError
 from .projects import ClaudeProjectEditor
 from .records import conversation, conversation_attachment_count, project
 from .resources import (
@@ -212,82 +205,9 @@ class AsyncClaudeProvider(
             raise FeatureUnavailable(Capability.TEMPORARY, "projects_not_supported")
         if not session_exists(self.credential_file) and not self.client.authenticated:
             raise AccountPaused("Verify the Claude account in the Accounts section")
-        if len(request.attachments) > CLAUDE_ATTACHMENTS.max_files:
-            raise ValueError(f"Claude accepts at most {CLAUDE_ATTACHMENTS.max_files} attachments")
-        timing = current_send_timing()
-        if timing is not None:
-            timing.record("provider_send_gate_wait_ms", 0)
-        uploaded = list(request.attachments)
-        pending = [
-            (index, item)
-            for index, item in enumerate(uploaded)
-            if isinstance(item, dict) and ("bytes" in item or "path" in item)
-        ]
-
-        def validate_uploads() -> None:
-            for _, item in pending:
-                validate_upload_candidate(
-                    item.get("path"),
-                    content=item.get("bytes"),
-                    name=item.get("name"),
-                    mime_type=item.get("mime_type"),
-                )
-
-        if any(item.get("path") is not None and item.get("bytes") is None for _, item in pending):
-            await asyncio.to_thread(validate_uploads)
-        else:
-            validate_uploads()
-        if pending:
-            results = await gather_bounded(
-                pending,
-                lambda entry: self.client.upload_file(
-                    entry[1].get("path"),
-                    content=entry[1].get("bytes"),
-                    name=entry[1].get("name"),
-                    mime_type=entry[1].get("mime_type"),
-                ),
-                limit=2,
-            )
-            for (index, _), attachment in zip(pending, results, strict=True):
-                uploaded[index] = attachment
-        attachments = tuple(uploaded)
-        completed = False
-        async for event in self.client.events(
-            "send",
-            prompt=request.prompt,
-            conversation_id=request.conversation_id,
-            draft_title=request.draft_title,
-            project_id=request.project_id,
-            model=request.model,
-            effort=request.effort,
-            temporary=request.temporary,
-            attachments=attachments,
-            **(
-                {"action": request.action, "message_id": request.message_id}
-                if request.action
-                else {}
-            ),
-        ):
-            if event["type"] == "bound":
-                yield ConversationBound(event["id"])
-            elif event["type"] in ("replace", "delta"):
-                event_type = TextDelta if event["type"] == "delta" else TextReplacement
-                yield event_type(event["text"], event.get("channel", "final"))
-            elif event["type"] == "done":
-                completed = True
-            elif event["type"] == "response_complete":
-                yield ResponseComplete()
-            elif event["type"] == "metadata":
-                yield MessageMetadata(
-                    message_id=event.get("message_id"),
-                    user_message_id=event.get("user_message_id"),
-                    model=event.get("model") or request.model,
-                    effort=request.effort,
-                    sources=tuple(event.get("sources", ())),
-                    files=tuple(event.get("files", ())),
-                )
-        if not completed:
-            raise ClaudeStreamError("Claude response ended before completion; it was not resent")
+        async with aclosing(stream_response(self.client, request)) as events:
+            async for event in events:
+                yield event
 
     async def _upload_file(self, path: Any) -> dict[str, Any]:
         return await self.client.upload_file(path)

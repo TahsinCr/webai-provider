@@ -1587,10 +1587,14 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(gemini_provider_mod.generation, "generate", side_effect=fake_generate),
                 patch.object(
-                    gemini_provider_mod, "sources_from", wraps=gemini_provider_mod.sources_from
+                    gemini_provider_mod.generation,
+                    "sources_from",
+                    wraps=gemini_provider_mod.generation.sources_from,
                 ) as norm_sources,
                 patch.object(
-                    gemini_provider_mod, "files_from", wraps=gemini_provider_mod.files_from
+                    gemini_provider_mod.generation,
+                    "files_from",
+                    wraps=gemini_provider_mod.generation.files_from,
                 ) as norm_files,
             ):
                 events = [e async for e in provider._stream(request)]

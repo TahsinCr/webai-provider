@@ -20,13 +20,8 @@ from ...errors import AccountPaused, FeatureUnavailable, ProviderError
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
-    ConversationBound,
-    MessageMetadata,
     ProviderRequest,
     ProviderStreamEvent,
-    ResponseComplete,
-    TextDelta,
-    TextReplacement,
 )
 from ...resources.message.types import MessageAction, target_message
 from ...resources.model import ModelCatalogState
@@ -34,14 +29,12 @@ from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
-from ...resources.response.artifact import files_from
-from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
 from . import generation
 from .base import BaseGeminiProvider
 from .errors import GeminiCompatibilityError, GeminiStreamError
 from .history import action_turn_index, parse_chat_history, parse_chat_page
-from .media import PLACEHOLDER, resolve_image_links, valid_media_url
+from .media import PLACEHOLDER, valid_media_url
 from .notebooks import Notebooks, field, notebook_id
 from .projects import GeminiProjectEditor
 from .resources import (
@@ -353,95 +346,19 @@ class AsyncGeminiProvider(
             timeout.cancel()
             await iterator.aclose()
 
-    async def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderStreamEvent, None]:
-        client, request, metadata, context, action_files = await self._prepare_send_context(request)
-        bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
-        final_rid = None
-        raw_files: list[dict] = []
-        seen_file_keys: set[tuple[str, str]] = set()
-        raw_sources: list[dict] = []
-        seen_source_keys: set[str] = set()
-        rendered_by_channel = {"analysis": "", "final": ""}
-        async for chunk in generation.generate(
-            client,
+    def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderStreamEvent, None]:
+        return generation.response_events(
             request,
-            metadata,
-            context,
-            files=action_files,
+            prepare=self._prepare_send_context,
             request_timeout=(15, self.stream_idle_timeout + 10),
-        ):
-            cid = chunk.get("cid") or cid
-            metadata = chunk["metadata"]
-            if cid and not bound and cid != request.conversation_id:
-                yield ConversationBound(cid)
-                bound = True
-            if chunk.get("context_only"):
-                continue
-            images = chunk["files"]
-            for image in images:
-                key = (str(image["alias"]), str(image["url"]))
-                if key not in seen_file_keys:
-                    seen_file_keys.add(key)
-                    raw_files.append(
-                        {
-                            "id": image["alias"],
-                            "name": image["name"],
-                            "remote_url": image["url"],
-                            "media_type": image.get("media_type"),
-                        }
-                    )
-                self._media[cid, image["alias"]] = image
-                self._media[cid, image["url"]] = image
-            while len(self._media) > 256:
-                self._media.pop(next(iter(self._media)))
-            chunk_sources = chunk.get("sources")
-            if chunk_sources:
-                for item in chunk_sources:
-                    if not isinstance(item, dict):
-                        continue
-                    source_key = item.get("url") or item.get("title")
-                    if source_key:
-                        if source_key not in seen_source_keys:
-                            seen_source_keys.add(source_key)
-                            raw_sources.append(item)
-                    elif item not in raw_sources:
-                        raw_sources.append(item)
-            visible = visible or bool(chunk["text"] or images)
-            for channel, content_text in (
-                ("analysis", chunk["thoughts"]),
-                ("final", resolve_image_links(chunk["text"], images)),
-            ):
-                rendered = rendered_by_channel[channel]
-                if not content_text or content_text == rendered:
-                    continue
-                if content_text.startswith(rendered):
-                    yield TextDelta(content_text[len(rendered) :], channel)
-                else:
-                    yield TextReplacement(content_text, channel)
-                rendered_by_channel[channel] = content_text
-            if chunk.get("response_complete"):
-                yield ResponseComplete()
-            rid = metadata[1] if len(metadata) > 1 else None
-            if rid:
-                final_rid = rid
-        if not visible or not cid:
-            raise GeminiStreamError("Gemini response did not complete; the request was not retried")
-        if final_rid:
-            yield MessageMetadata(
-                message_id=final_rid + ":model",
-                user_message_id=final_rid + ":user",
-                model=request.model,
-                effort=request.effort,
-                sources=sources_from({"sources": raw_sources}) if raw_sources else (),
-                files=files_from({"files": raw_files}) if raw_files else (),
-            )
-        if (
-            cid
-            and not request.temporary
-            and AsyncGeminiProvider._usable_chat_metadata(metadata, cid)
-        ):
+            media=self._media,
+            remember=self._remember_response,
+        )
+
+    def _remember_response(self, cid: str, metadata: Any, *, temporary: bool) -> None:
+        if cid and not temporary and AsyncGeminiProvider._usable_chat_metadata(metadata, cid):
             self._remember_chat_metadata(cid, metadata)
-        if request.temporary:
+        if temporary:
             self._temporary[cid] = metadata
             while len(self._temporary) > 32:
                 oldest = next(iter(self._temporary))

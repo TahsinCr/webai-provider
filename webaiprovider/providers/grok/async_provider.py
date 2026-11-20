@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from io import StringIO
 from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session, session_exists
@@ -16,34 +15,26 @@ from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
-    ConversationBound,
-    MessageMetadata,
     ProviderRequest,
     ProviderStreamEvent,
-    ResponseComplete,
-    TextDelta,
 )
 from ...resources.message.types import MessageAction
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
-from ...resources.response.source import sources_from
 from ...transport import AsyncTransport
 from .base import (
     BaseGrokProvider,
-    _append_web_search_results,
-    _flush_grok_filters,
     _grok_attachment_entry,
     _inherit_grok_edit_attachments,
-    _reconcile_grok_native,
     _validate_grok_request,
     _validated_grok_attachment,
 )
 from .catalogs import parse_model_catalog
 from .client import GrokClient, remote_id
 from .projects import GrokProjectEditor
-from .records import GrokTextFilter, active_responses, conversation, project
+from .records import active_responses, conversation, project, response_events
 from .resources import (
     AsyncGrokChat,
     AsyncGrokMessage,
@@ -248,45 +239,11 @@ class AsyncGrokProvider(
         self._continuations.pop(conversation_id, None)
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
-        metadata = await self._conversation_metadata(conversation_id)
-        chat = conversation(metadata, self.account_id)
-        old_project = chat.project.id if chat.project is not None else None
-        if old_project == project_id:
-            return
-        conversation_path = "/conversations/" + remote_id(conversation_id)
-        if project_id:
-            await self.client.request(
-                "POST",
-                "/rest/workspaces/" + remote_id(project_id) + "/conversations",
-                json={"conversationId": conversation_id},
-            )
-        if old_project:
-            try:
-                await self.client.request(
-                    "DELETE",
-                    "/rest/workspaces/" + remote_id(old_project) + conversation_path,
-                )
-            except Exception:
-                if project_id:
-                    try:
-                        await self.client.request(
-                            "DELETE",
-                            "/rest/workspaces/" + remote_id(project_id) + conversation_path,
-                        )
-                    except Exception:
-                        raise ProviderError(
-                            "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
-                        ) from None
-                raise
-        for _ in range(5):
-            metadata = await self._conversation_metadata(conversation_id)
-            updated = conversation(metadata, self.account_id)
-            updated_project = updated.project.id if updated.project is not None else None
-            if updated_project == project_id:
-                return
-            await asyncio.sleep(0.1)
-        raise ProviderError(
-            "Grok conversation project membership could not be confirmed by the server"
+        await self.editor.move_chat(
+            conversation_id,
+            project_id,
+            fetch_metadata=self._conversation_metadata,
+            account_id=self.account_id,
         )
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
@@ -467,9 +424,19 @@ class AsyncGrokProvider(
             raise RateLimited(delay)
         raise ProviderError("Grok stream reported an error; the request was not resent")
 
-    async def _stream_provider_events(
+    def _stream_provider_events(
         self, request: ProviderRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
+        return response_events(
+            request,
+            prepare=self._prepare_stream,
+            raise_stream_error=self._raise_stream_error,
+            remember=self._remember_continuation,
+        )
+
+    async def _prepare_stream(
+        self, request: ProviderRequest
+    ) -> tuple[AsyncIterator[dict], str | None]:
         if any(
             isinstance(item, dict)
             and item.get("grok_file") is None
@@ -511,109 +478,7 @@ class AsyncGrokProvider(
             else "/rest/app-chat/conversations/" + remote_id(conversation_id) + "/responses"
         )
 
-        response_id = user_response_id = None
-        streamed_text, streamed_analysis = StringIO(), StringIO()
-        raw_native_text = raw_native_analysis = None
-        sources = ()
-        raw_search_results: list[dict] = []
-        seen_search_keys: set[str] = set()
-        response_model = model
-        complete = False
-        completion_notified = False
-        bound = False
-        text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
-
-        def finalize_turn():
-            nonlocal sources
-            if raw_search_results and not sources:
-                sources = sources_from({"sources": raw_search_results})
-            yield from _flush_grok_filters(
-                text_filter, streamed_text, analysis_filter, streamed_analysis
-            )
-            yield from _reconcile_grok_native(
-                raw_native_text, raw_native_analysis, streamed_text, streamed_analysis
-            )
-
-        async for chunk in self.client.events(path, body):
-            result = chunk.get("result")
-            if not isinstance(result, dict):
-                result = chunk
-            native_conversation = result.get("conversation")
-            response = result.get("response")
-            if not isinstance(response, dict):
-                response = result
-            if not conversation_id and isinstance(native_conversation, dict):
-                conversation_id = native_conversation.get("conversationId")
-                if conversation_id and not bound:
-                    yield ConversationBound(conversation_id)
-                    bound = True
-            if not conversation_id and not request.conversation_id:
-                conversation_id = result.get("conversationId") or response.get("conversationId")
-                if conversation_id and not bound:
-                    yield ConversationBound(conversation_id)
-                    bound = True
-            error = response.get("error") or result.get("error") or chunk.get("error")
-            if error:
-                self._raise_stream_error(error)
-            user = response.get("userResponse")
-            if isinstance(user, dict) and user.get("responseId"):
-                user_response_id = user["responseId"]
-            native = response.get("modelResponse")
-            if isinstance(native, dict):
-                response_id = native.get("responseId") or response_id
-                response_model = native.get("model") or response_model
-                _append_web_search_results(native, raw_search_results, seen_search_keys)
-                if isinstance(native.get("message"), str):
-                    raw_native_text = native["message"]
-                if native.get("thinkingTrace") is not None:
-                    raw_native_analysis = native["thinkingTrace"]
-                if native.get("partial") is False:
-                    complete = True
-            token = response.get("token")
-            if isinstance(token, str) and token:
-                analysis = response.get("isThinking") or response.get("messageTag") in (
-                    "header",
-                    "summary",
-                )
-                cleaner = analysis_filter if analysis else text_filter
-                visible = cleaner.feed(token)
-                if visible:
-                    (streamed_analysis if analysis else streamed_text).write(visible)
-                    yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
-            if response.get("responseId") and not response_id:
-                response_id = response["responseId"]
-            if response.get("done") is True or response.get("finished") is True:
-                complete = True
-            if (
-                complete
-                and not completion_notified
-                and (request.conversation_id or conversation_id)
-            ):
-                for event in finalize_turn():
-                    yield event
-                yield ResponseComplete()
-                completion_notified = True
-
-        for event in finalize_turn():
-            yield event
-        if not conversation_id:
-            raise ProviderError("Grok did not return a conversation ID")
-        if not complete:
-            raise ProviderError("Grok stream ended before response completion; it was not resent")
-        if response_id:
-            self._remember_continuation(conversation_id, response_id)
-        if not bound and not request.conversation_id:
-            yield ConversationBound(conversation_id)
-        if response_id and streamed_text.tell():
-            yield MessageMetadata(
-                message_id=response_id,
-                user_message_id=user_response_id,
-                model=response_model,
-                effort=None,
-                sources=sources,
-            )
-        if not completion_notified:
-            yield ResponseComplete()
+        return self.client.events(path, body), model
 
     async def _upload_file(self, path: Any) -> dict[str, Any]:
         return await self.client.upload_file(path)
