@@ -8,7 +8,9 @@ class OperationHooks:
     """Register synchronous operation callbacks."""
 
     def __init__(self, target: OperationHooks | None = None) -> None:
-        self._handlers: dict[str, list[Callable[..., Any]]] = {} if target is None else target._handlers
+        self._handlers: dict[str, list[Callable[..., Any]]] = (
+            {} if target is None else target._handlers
+        )
         self._lifecycle: dict[str, dict[str, list[Callable[..., Any]]]] = (
             {} if target is None else target._lifecycle
         )

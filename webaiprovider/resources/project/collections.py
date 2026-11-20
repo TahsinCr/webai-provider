@@ -65,7 +65,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         **options: Any,
     ) -> Page[_AsyncProjectT]:
         del page_limit, options
-        async with self.provider.runtime.activity():
+        async with self.provider.activity():
             self.provider._require_provider()
             page = await self.provider._list_projects_data(cursor=cursor)
         if not isinstance(page, Page) or any(
@@ -78,7 +78,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         )
 
     async def _fetch_by_id(self, item_id: str) -> _AsyncProjectT | None:
-        async with self.provider.runtime.activity():
+        async with self.provider.activity():
             self.provider._require_provider()
             try:
                 self._mark_remote_read()
@@ -100,8 +100,8 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
     async def _create_project(
         self, title: str, instruction: str | None, **options: Any
     ) -> _AsyncProjectT:
-        runtime = self.provider.runtime
-        context = runtime.new_context(
+        provider = self.provider
+        context = provider.new_context(
             "project.create",
             parameters={"title": title, "instruction": instruction, **options},
         )
@@ -110,9 +110,9 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
             project = self._new(title=ctx.parameters["title"])
             if ctx.parameters["instruction"] is not None:
                 project.instruction._text = ctx.parameters["instruction"]
-            async with runtime.activity():
-                self.provider._require_provider()
-                created = await self.provider._create_project_data(
+            async with provider.activity():
+                provider._require_provider()
+                created = await provider._create_project_data(
                     project.title,
                     instructions=ctx.parameters["instruction"] or "",
                     **{name: ctx.parameters[name] for name in options},
@@ -124,9 +124,9 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
             project: AsyncProject = ctx.result
             if project.remote_id:
                 await _publish_collection_change(
-                    runtime, "projects", "create", project, operation_id=ctx.operation_id
+                    provider, "projects", "create", project, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "project.created",
                 operation_id=ctx.operation_id,
                 resource_id=project.remote_id or project.id,
@@ -136,7 +136,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         return await execute_with_hooks(
             operation_name="project.create",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -155,9 +155,9 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         else:
             target = await self.get(project)
 
-        runtime = self.provider.runtime
+        provider = self.provider
         rid = target.remote_id or target.id
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.update",
             resource_id=rid,
             parameters={"target": target, "title": title, "instruction": instruction},
@@ -167,10 +167,10 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
             new_title = ctx.parameters["title"]
             new_instruction = ctx.parameters["instruction"]
             if target.remote_id:
-                async with runtime.activity():
-                    self.provider._require_provider()
+                async with provider.activity():
+                    provider._require_provider()
                     previous = (target.title, target.instruction._text)
-                    updated = await self.provider._patch_project_data(
+                    updated = await provider._patch_project_data(
                         target.remote_id,
                         name=new_title,
                         instructions=new_instruction,
@@ -191,9 +191,9 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         async def on_success(ctx) -> None:
             if ctx.metadata.get("remote_update"):
                 await _publish_collection_change(
-                    runtime, "projects", "update", target, operation_id=ctx.operation_id
+                    provider, "projects", "update", target, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "project.updated",
                 operation_id=ctx.operation_id,
                 resource_id=target.remote_id or target.id,
@@ -203,7 +203,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         return await execute_with_hooks(
             operation_name="project.update",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -216,9 +216,9 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         else:
             target = await self.get(project)
 
-        runtime = self.provider.runtime
+        provider = self.provider
         rid = target.remote_id or target.id
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.delete",
             resource_id=rid,
             parameters={"target": target},
@@ -226,16 +226,16 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
 
         async def work(_ctx) -> None:
             if target.remote_id:
-                async with runtime.activity():
-                    self.provider._require_provider()
-                    await self.provider._delete_project_data(target.remote_id)
+                async with provider.activity():
+                    provider._require_provider()
+                    await provider._delete_project_data(target.remote_id)
 
         async def on_success(ctx) -> None:
             if target.remote_id:
                 await _publish_collection_change(
-                    runtime, "projects", "delete", target.remote_id, operation_id=ctx.operation_id
+                    provider, "projects", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "project.deleted",
                 operation_id=ctx.operation_id,
                 resource_id=rid,
@@ -244,7 +244,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
         await execute_with_hooks(
             operation_name="project.delete",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -352,8 +352,8 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 
     async def _load_attachments(self) -> list[Attachment]:
         provider = self.project.provider
-        if self.project.remote_id and provider is not None and provider.runtime.opened:
-            async with provider.runtime.activity():
+        if self.project.remote_id and provider is not None and provider.opened:
+            async with provider.activity():
                 provider._require_provider()
                 self._mark_remote_read()
                 remote = await provider._get_project_data(self.project.remote_id)
@@ -448,7 +448,6 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         **options: Any,
     ) -> Attachment:
         provider = self.project.provider
-        runtime = provider.runtime if provider is not None else None
         raw_options = dict(options)
         kind, local, send_options = self._coerce_add_input(
             file_or_data, resource_type, name, mime_type, raw_options
@@ -464,7 +463,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                     if self.project._provider_project is not None
                     else {att.id for att in self._items}
                 )
-                async with provider.runtime.activity():
+                async with provider.activity():
                     provider._require_provider()
                     updated = await provider._add_project_resource_data(
                         self.project.remote_id,
@@ -490,10 +489,10 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                 self._items.append(result)
             return result
 
-        if runtime is None:
+        if provider is None:
             return await perform_add()
 
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.attachment.add",
             resource_id=self.project.remote_id or self.project.id,
             parameters={"kind": kind, "options": raw_options},
@@ -503,14 +502,14 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             added_att: Attachment = ctx.result
             if self.project.remote_id:
                 await _publish_collection_change(
-                    runtime,
+                    provider,
                     "project.attachments",
                     "create",
                     added_att,
                     scope_id=self.project.remote_id,
                     operation_id=ctx.operation_id,
                 )
-            await runtime.emit(
+            await provider.emit(
                 "project.attachment.added",
                 operation_id=ctx.operation_id,
                 resource_id=self.project.remote_id or self.project.id,
@@ -523,7 +522,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         return await execute_with_hooks(
             operation_name="project.attachment.add",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=lambda _ctx: perform_add(),
             on_success_event=on_success,
         )
@@ -550,8 +549,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             return results
 
         coerced = [self._coerce_add_input(item, None, None, None, {}) for item in items]
-        runtime = provider.runtime
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.attachment.add_many",
             resource_id=self.project.remote_id or self.project.id,
             parameters={"count": len(coerced)},
@@ -559,8 +557,8 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 
         async def perform_batch(_ctx) -> list[Attachment]:
             specs = [{"kind": kind, **send_options} for kind, _local, send_options in coerced]
-            lock = runtime.project_lock(self.project.remote_id)
-            async with runtime.activity():
+            lock = provider.project_lock(self.project.remote_id)
+            async with provider.activity():
                 async with lock:
                     provider._require_provider()
                     created = await batch_add(self.project.remote_id, specs)
@@ -590,14 +588,14 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             for added_att in ctx.result:
                 if self.project.remote_id:
                     await _publish_collection_change(
-                        runtime,
+                        provider,
                         "project.attachments",
                         "create",
                         added_att,
                         scope_id=self.project.remote_id,
                         operation_id=ctx.operation_id,
                     )
-                await runtime.emit(
+                await provider.emit(
                     "project.attachment.added",
                     operation_id=ctx.operation_id,
                     resource_id=self.project.remote_id or self.project.id,
@@ -610,7 +608,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         return await execute_with_hooks(
             operation_name="project.attachment.add_many",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=perform_batch,
             on_success_event=on_success,
         )
@@ -620,7 +618,6 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         if not any(item.id == file_id for item in self._items):
             await self._load_attachments()
         provider = self.project.provider
-        runtime = provider.runtime if provider is not None else None
 
         async def perform_remove() -> None:
             if not any(item.id == file_id for item in self._items):
@@ -628,7 +625,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             if self.project.remote_id:
                 if provider is None:
                     raise ProviderError("Project is not attached to an open provider")
-                async with provider.runtime.activity():
+                async with provider.activity():
                     provider._require_provider()
                     updated = await provider._remove_project_resource_data(
                         self.project.remote_id,
@@ -646,11 +643,11 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
                     )
             self._items = [item for item in self._items if item.id != file_id]
 
-        if runtime is None:
+        if provider is None:
             await perform_remove()
             return
 
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.attachment.remove",
             resource_id=self.project.remote_id or self.project.id,
             parameters={"attachment_id": file_id},
@@ -659,14 +656,14 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         async def on_success(ctx) -> None:
             if self.project.remote_id:
                 await _publish_collection_change(
-                    runtime,
+                    provider,
                     "project.attachments",
                     "delete",
                     file_id,
                     scope_id=self.project.remote_id,
                     operation_id=ctx.operation_id,
                 )
-            await runtime.emit(
+            await provider.emit(
                 "project.attachment.removed",
                 operation_id=ctx.operation_id,
                 resource_id=self.project.remote_id or self.project.id,
@@ -676,7 +673,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         await execute_with_hooks(
             operation_name="project.attachment.remove",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=lambda _ctx: perform_remove(),
             on_success_event=on_success,
         )
@@ -711,8 +708,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         if missing:
             raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
 
-        runtime = provider.runtime
-        context = runtime.new_context(
+        context = provider.new_context(
             "project.attachment.remove_many",
             resource_id=self.project.remote_id or self.project.id,
             parameters={"attachment_ids": tuple(file_ids)},
@@ -720,8 +716,8 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 
         async def perform_batch(_ctx) -> None:
             payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
-            lock = runtime.project_lock(self.project.remote_id)
-            async with runtime.activity():
+            lock = provider.project_lock(self.project.remote_id)
+            async with provider.activity():
                 async with lock:
                     provider._require_provider()
                     updated = await batch_remove(
@@ -747,14 +743,14 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
             for fid in file_ids:
                 if self.project.remote_id:
                     await _publish_collection_change(
-                        runtime,
+                        provider,
                         "project.attachments",
                         "delete",
                         fid,
                         scope_id=self.project.remote_id,
                         operation_id=ctx.operation_id,
                     )
-                await runtime.emit(
+                await provider.emit(
                     "project.attachment.removed",
                     operation_id=ctx.operation_id,
                     resource_id=self.project.remote_id or self.project.id,
@@ -764,7 +760,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         await execute_with_hooks(
             operation_name="project.attachment.remove_many",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=perform_batch,
             on_success_event=on_success,
         )
@@ -803,7 +799,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         if item.remote_url and self.project.remote_id:
             if provider is None:
                 raise ProviderError("Project is not attached to an open provider")
-            async with provider.runtime.activity():
+            async with provider.activity():
                 provider._require_provider()
                 source: DownloadSource | None = await provider._resolve_download_data(
                     item.remote_url

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+from weakref import WeakValueDictionary
 
-from eventflow import AsyncEventBus, EventEnvelope
+from eventflow import AsyncEventBus, ErrorPolicy, EventBus, EventEnvelope, StateMachine
 
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .collections import _publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
 from .core.operations import build_message_request_pipeline, run_pipeline_unwrapped
-from .core.runtime import ProviderRuntime
-from .core.state import LifecycleState
+from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
 from .errors import FeatureUnavailable, ProviderError
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
@@ -80,8 +84,24 @@ else:
 _ProviderT = TypeVar("_ProviderT", bound="AsyncProvider[Any, Any]")
 
 
+@dataclass(slots=True, eq=False)
+class _ActiveOperation:
+    provider_id: int
+    send_lock_id: int | None = None
+    active: bool = True
+
+
+_ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = contextvars.ContextVar(
+    "webai_active_operations", default=()
+)
+_CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "webai_closing_provider", default=None
+)
+_log = logging.getLogger(__name__)
+
+
 class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
-    """Asynchronous provider session backed by one ProviderRuntime."""
+    """Asynchronous provider session owning its lifecycle, locks, hooks, and events."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
@@ -104,12 +124,25 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     ) -> None:
         super().__init__(account, type=type)
         self._transport = transport
-        self.runtime = ProviderRuntime(
-            provider_id=self.id,
-            account_id=self.account_id,
+        self.events: AsyncEventBus[EventEnvelope[str]] = AsyncEventBus(
+            error_policy=ErrorPolicy.ISOLATE
         )
-        self.events: AsyncEventBus[EventEnvelope[str]] = self.runtime.events
-        self.hooks: AsyncOperationHooks = self.runtime.hooks
+        self._sync_events: (
+            tuple[EventBus[EventEnvelope[str]], Callable[[EventEnvelope[str]], None]] | None
+        ) = None
+        self._event_sequence = 0
+        self.hooks: AsyncOperationHooks = AsyncOperationHooks()
+        self.lifecycle = StateMachine(
+            initial=LifecycleState.CREATED,
+            transitions=_LIFECYCLE_TRANSITIONS,
+            terminal=_LIFECYCLE_TERMINAL_STATES,
+        )
+        self._opened = False
+        self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_condition = asyncio.Condition()
+        self._close_task: asyncio.Task[None] | None = None
+        self._active_operations = 0
+        self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         self._chats = self._make_chats()
         self._projects = self._make_projects()
         self.models = AsyncModelsCollection(self._load_models, provider=self)
@@ -139,23 +172,186 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         return active
 
     @property
+    def opened(self) -> bool:
+        return self._opened
+
+    @property
+    def closed(self) -> bool:
+        return self.lifecycle.state == LifecycleState.CLOSED
+
+    @property
+    def closing(self) -> bool:
+        return self.lifecycle.state == LifecycleState.CLOSING
+
+    @property
     def lifecycle_state(self) -> LifecycleState:
-        return self.runtime.lifecycle.state
+        return self.lifecycle.state
+
+    def has_active_operation(self, *, send_lock_id: int | None = None) -> bool:
+        pid = id(self)
+        return any(
+            entry.active
+            and entry.provider_id == pid
+            and (send_lock_id is None or entry.send_lock_id == send_lock_id)
+            for entry in _ACTIVE_OPERATIONS.get()
+        )
+
+    def _lock(self, kind: str, remote_id: str) -> asyncio.Lock:
+        key = (kind, remote_id)
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def send_lock(self, conversation_id: str) -> asyncio.Lock:
+        return self._lock("chat", conversation_id)
+
+    def bind_send_lock(self, conversation_id: str, lock: asyncio.Lock) -> None:
+        self._locks["chat", conversation_id] = lock
+
+    def project_lock(self, project_id: str) -> asyncio.Lock:
+        return self._lock("project", project_id)
+
+    @contextlib.contextmanager
+    def operation_marker(self, *, send_lock_id: int | None = None):
+        marker = _ActiveOperation(id(self), send_lock_id)
+        token = _ACTIVE_OPERATIONS.set((*_ACTIVE_OPERATIONS.get(), marker))
+        try:
+            yield
+        finally:
+            marker.active = False
+            _ACTIVE_OPERATIONS.reset(token)
+
+    @contextlib.asynccontextmanager
+    async def activity(self, *, send_lock_id: int | None = None):
+        if send_lock_id is not None and self.has_active_operation(send_lock_id=send_lock_id):
+            raise ProviderError("A send hook cannot await another send in the same conversation")
+        nested = self.has_active_operation()
+        with self.operation_marker(send_lock_id=send_lock_id):
+            async with self._lifecycle_lock:
+                if self.closed or (self.closing and not nested):
+                    raise ProviderError("Provider is closing or is closed")
+                async with self._lifecycle_condition:
+                    self._active_operations += 1
+            try:
+                yield
+            finally:
+                async with self._lifecycle_condition:
+                    self._active_operations -= 1
+                    self._lifecycle_condition.notify_all()
+
+    def bind_sync_events(
+        self,
+        bus: EventBus[EventEnvelope[str]],
+        enqueue: Callable[[EventEnvelope[str]], None],
+    ) -> None:
+        self._sync_events = bus, enqueue
+
+    @property
+    def has_event_subscribers(self) -> bool:
+        return bool(self.events.subscriber_count or self._sync_event_enqueue())
+
+    def _sync_event_enqueue(self) -> Callable[[EventEnvelope[str]], None] | None:
+        binding = self._sync_events
+        return binding[1] if binding is not None and binding[0].subscriber_count else None
+
+    async def emit(
+        self,
+        name: str,
+        *,
+        operation_id: str | None = None,
+        resource_id: str | None = None,
+        payload: object | None = None,
+    ) -> None:
+        """Publish to async subscribers and enqueue delivery for the sync caller."""
+        self._event_sequence += 1
+        enqueue = self._sync_event_enqueue()
+        if enqueue is None and not self.events.subscriber_count:
+            return
+        event = EventEnvelope(
+            event=name,
+            correlation_id=operation_id,
+            source=self.id,
+            metadata={
+                "account_id": self.account_id,
+                "resource_id": resource_id,
+                "sequence": self._event_sequence,
+                "payload": payload,
+            },
+        )
+        if enqueue is not None:
+            enqueue(event)
+        await self.events.publish(event)
+
+    async def emit_safe(
+        self,
+        name: str,
+        *,
+        operation_id: str | None = None,
+        resource_id: str | None = None,
+        payload: object | None = None,
+    ) -> None:
+        """Publish an observer event without letting a dispatch failure affect the caller."""
+        try:
+            await self.emit(
+                name, operation_id=operation_id, resource_id=resource_id, payload=payload
+            )
+        except Exception as error:
+            _log.warning("Event dispatch failed: event=%s error=%s", name, type(error).__name__)
 
     def _prime_models(self, catalog: ModelCatalog) -> None:
         self.models._items = tuple(_model_refs_from_catalog(self.id, catalog))
 
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
-        async with self.runtime.activity():
+        async with self.activity():
             catalog = await self._load_catalog(force=refresh)
             return _model_refs_from_catalog(self.type.value, catalog)
 
+    async def _open_session(self, *, reuse_open: bool = False) -> bool:
+        pending: list[tuple[str, object | None]] = []
+        opened_here = False
+        try:
+            async with self._lifecycle_lock:
+                if reuse_open and self._opened:
+                    return False
+                opened_here = await self._open_unlocked(pending)
+        finally:
+            for name, payload in pending:
+                await self.emit_safe(name, payload=payload)
+        return opened_here
+
+    async def _open_unlocked(self, pending: list[tuple[str, object | None]]) -> bool:
+        if self.lifecycle.state == LifecycleState.CLOSE_FAILED:
+            raise ProviderError("Provider cleanup failed; call close() again before reopening")
+        if self.closed or (self.closing and not self.has_active_operation()):
+            raise ProviderError("A closed provider cannot be reopened")
+        if self._opened:
+            return False
+        if self.lifecycle.can_transition(LifecycleState.OPENING):
+            self.lifecycle.transition(LifecycleState.OPENING)
+        pending.append(("provider.opening", None))
+        try:
+            await self._prepare_session()
+        except BaseException as error:
+            if self.lifecycle.can_transition(LifecycleState.OPEN_FAILED):
+                self.lifecycle.transition(LifecycleState.OPEN_FAILED)
+            pending.append(("provider.open_failed", {"error_type": type(error).__name__}))
+            with contextlib.suppress(Exception):
+                await self._close_session_resources()
+            raise
+        self._opened = True
+        if self.lifecycle.can_transition(LifecycleState.OPEN):
+            self.lifecycle.transition(LifecycleState.OPEN)
+        pending.append(("provider.opened", None))
+        return True
+
     async def open(self: _ProviderT) -> _ProviderT:
-        await self.runtime.open(self._prepare_session, self._close_session_resources)
+        await self._open_session()
         return self
 
     def _require_provider(self) -> AsyncProvider[Any, Any]:
-        if not self.runtime.opened:
+        if not self._opened:
             raise ProviderError("Open the provider before using its resources")
         return self
 
@@ -171,15 +367,62 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 await self._transport.close()
 
     async def close(self) -> None:
-        await self.runtime.close(self._close_session_resources)
+        if _CLOSING_PROVIDER.get() == id(self):
+            raise ProviderError("close() cannot be awaited from a provider closing event callback")
+        if self.has_active_operation():
+            raise ProviderError("Cannot close a provider from one of its active operations")
+        async with self._lifecycle_lock:
+            if self.closed:
+                return
+            if self._close_task is None:
+                if self.lifecycle.can_transition(LifecycleState.CLOSING):
+                    self.lifecycle.transition(LifecycleState.CLOSING)
+                self._close_task = asyncio.create_task(self._finish_close())
+            task = self._close_task
+
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _finish_close(self) -> None:
+        token = _CLOSING_PROVIDER.set(id(self))
+        try:
+            await self.emit_safe("provider.closing")
+            async with self._lifecycle_condition:
+                await self._lifecycle_condition.wait_for(lambda: self._active_operations == 0)
+            self._opened = False
+            try:
+                await self._close_session_resources()
+            except BaseException as error:
+                if self.lifecycle.can_transition(LifecycleState.CLOSE_FAILED):
+                    self.lifecycle.transition(LifecycleState.CLOSE_FAILED)
+                await self.emit_safe(
+                    "provider.close_failed", payload={"error_type": type(error).__name__}
+                )
+                raise
+            if self.lifecycle.can_transition(LifecycleState.CLOSED):
+                self.lifecycle.transition(LifecycleState.CLOSED)
+            await self.emit_safe("provider.closed")
+            await self.events.close()
+        finally:
+            _CLOSING_PROVIDER.reset(token)
+            self._close_task = None
+            async with self._lifecycle_condition:
+                self._lifecycle_condition.notify_all()
 
     async def execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
-        lock = self.runtime.send_lock(conversation_id)
+        lock = self.send_lock(conversation_id)
         lock_id = id(lock)
         events = self._execute_stream_events(operation, lock)
-        async with self.runtime.activity(send_lock_id=lock_id):
+        async with self.activity(send_lock_id=lock_id):
             try:
                 async with lock:
                     async for event in events:
@@ -190,7 +433,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
     ) -> AsyncGenerator[StreamEvent, None]:
-        prep_context = self.runtime.new_context(
+        prep_context = self.new_context(
             "chat.send.prepare",
             operation_id=getattr(operation, "operation_id", None),
             resource_id=operation.chat.remote_id or operation.chat.id,
@@ -210,7 +453,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 if isinstance(event, ConversationBound):
                     had_remote_id = bool(operation.chat.remote_id)
                     operation.chat.remote_id = event.conversation_id
-                    self.runtime.bind_send_lock(event.conversation_id, send_lock)
+                    self.bind_send_lock(event.conversation_id, send_lock)
                     chat_metadata = getattr(operation.chat, "metadata", None)
                     was_pending_branch = (
                         isinstance(chat_metadata, dict)
@@ -222,14 +465,14 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                         and (not had_remote_id or was_pending_branch)
                     ):
                         await _publish_collection_change(
-                            self.runtime,
+                            self,
                             "chats",
                             "create",
                             operation.chat,
                             operation_id=getattr(operation, "operation_id", None),
                         )
                     if not had_remote_id and event.conversation_id:
-                        await self.runtime.emit_safe(
+                        await self.emit_safe(
                             "chat.created",
                             operation_id=getattr(operation, "operation_id", None),
                             resource_id=event.conversation_id,
@@ -404,40 +647,40 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         del project_id
 
     async def authenticate(self) -> SessionStatus:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._authenticate()
 
     async def session_status(self) -> SessionStatus:
-        async with self.runtime.activity():
+        async with self.activity():
             return self._session_status()
 
     async def forget_session(self) -> SessionStatus:
-        async with self.runtime.activity(), self.models._lock:
+        async with self.activity(), self.models._lock:
             try:
                 return await self._forget_session()
             finally:
                 self.models._clear()
 
     async def conversation_attachment_count(self, conversation_id: str) -> int | None:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._conversation_attachment_count(conversation_id)
 
     async def upload_file(self, path: Any) -> dict[str, Any]:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._upload_file(path)
 
     async def project_options(self, project_id: str | None = None) -> ProjectOptions:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._project_options(project_id)
 
     async def update_project(self, project: ProjectData) -> ProjectData:
-        async with self.runtime.activity():
+        async with self.activity():
             updated = await self._patch_project_data(
                 project.id,
                 name=project.name,
                 instructions=project.instructions or "",
             )
-        await _publish_collection_change(self.runtime, "projects", "update", updated)
+        await _publish_collection_change(self, "projects", "update", updated)
         return updated
 
     async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Any:
@@ -485,7 +728,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         instructions: str | None = None,
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
     ) -> ProjectData:
-        async with self.runtime.project_lock(project_id):
+        async with self.project_lock(project_id):
             staged = current() if callable(current) else current
             return await self._patch_project(
                 project_id, name=name, instructions=instructions, current=staged
@@ -502,7 +745,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
         **values: Any,
     ) -> ProjectData:
-        async with self.runtime.project_lock(project_id):
+        async with self.project_lock(project_id):
             staged = current() if callable(current) else current
             return await self._add_project_resource(project_id, kind, current=staged, **values)
 
@@ -513,7 +756,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         *,
         current: ProjectData | Callable[[], ProjectData | None] | None = None,
     ) -> ProjectData:
-        async with self.runtime.project_lock(project_id):
+        async with self.project_lock(project_id):
             staged = current() if callable(current) else current
             return await self._remove_project_resource(project_id, resource_id, current=staged)
 
@@ -523,7 +766,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         conversation_id: str | None = None,
         message_id: str | None = None,
     ) -> Any | None:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._resolve_download(
                 url, conversation_id=conversation_id, message_id=message_id
             )
@@ -537,12 +780,8 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     ) -> Response:
         opened_here = False
         try:
-            async with self.runtime.activity():
-                opened_here = await self.runtime.open(
-                    self._prepare_session,
-                    self._close_session_resources,
-                    reuse_open=True,
-                )
+            async with self.activity():
+                opened_here = await self._open_session(reuse_open=True)
                 chat = await self.chats.create()
                 return await chat.responses.create(
                     prompt,

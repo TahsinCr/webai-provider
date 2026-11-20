@@ -695,7 +695,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
 
         close = asyncio.create_task(provider.close())
         try:
-            while not provider.runtime.closing:
+            while not provider.closing:
                 await asyncio.sleep(0)
             self.assertEqual(provider.close_calls, 0)
             with self.assertRaisesRegex(ProviderError, "closing"):
@@ -1065,10 +1065,7 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             if len(loops) == 1:
                 raise RuntimeError("cleanup transient failure")
 
-        async def defer_cleanup() -> None:
-            provider._provider.runtime._scope.defer(cleanup)
-
-        provider._call(defer_cleanup())
+        provider._provider._close_session = cleanup  # type: ignore[method-assign]
         try:
             with self.assertRaises(Exception):
                 provider.close()
@@ -1127,6 +1124,79 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         finally:
             sync_provider.close()
             self.assertEqual(sync_provider.lifecycle_state, LifecycleState.CLOSED)
+
+    def test_sync_parallel_chats_do_not_block_each_other_while_same_chat_serializes(self) -> None:
+        sync_provider = _ScriptedSyncProvider(_account()).open()
+        async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
+        chat1_entered = threading.Event()
+        release_chat1 = asyncio.Event()
+        driver_entered = threading.Event()
+        release_follower = asyncio.Event()
+        same_chat_active = 0
+        same_chat_max_active = 0
+        timeline: list[str] = []
+
+        async def scripted_stream(request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+            nonlocal same_chat_active, same_chat_max_active
+            prompt = request.prompt
+            if prompt == "slow-chat-1":
+                chat1_entered.set()
+                await release_chat1.wait()
+                yield TextDelta("one")
+                return
+            if prompt == "wait-follower":
+                driver_entered.set()
+                await release_follower.wait()
+                yield TextDelta("slow-driver")
+                return
+            if prompt.startswith("same-chat-"):
+                same_chat_active += 1
+                same_chat_max_active = max(same_chat_max_active, same_chat_active)
+                timeline.append(f"start:{prompt}")
+                await asyncio.sleep(0.02)
+                timeline.append(f"end:{prompt}")
+                same_chat_active -= 1
+                yield TextDelta(prompt)
+                return
+            yield TextDelta(f"ok:{prompt}")
+
+        async_provider._stream_provider_events = scripted_stream  # type: ignore[method-assign]
+        try:
+            chat1 = sync_provider.chats.create("One")
+            chat2 = sync_provider.chats.create("Two")
+
+            # 1) Follower completes chat2 while driver is blocked on chat1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                slow_future = pool.submit(lambda: chat1.ask("slow-chat-1").text)
+                self.assertTrue(chat1_entered.wait(timeout=2.0))
+                fast_future = pool.submit(lambda: chat2.ask("fast-chat-2").text)
+                self.assertEqual(fast_future.result(timeout=2.0), "ok:fast-chat-2")
+                self.assertFalse(slow_future.done())
+                assert sync_provider._loop is not None
+                sync_provider._loop.call_soon_threadsafe(release_chat1.set)
+                self.assertEqual(slow_future.result(timeout=2.0), "one")
+
+            # 2) Driver finishes before follower and hands off loop driving cleanly
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                follower_future = pool.submit(lambda: chat1.ask("wait-follower").text)
+                self.assertTrue(driver_entered.wait(timeout=2.0))
+                driver_future = pool.submit(lambda: chat2.ask("quick-driver").text)
+                self.assertEqual(driver_future.result(timeout=2.0), "ok:quick-driver")
+                self.assertFalse(follower_future.done())
+                assert sync_provider._loop is not None
+                sync_provider._loop.call_soon_threadsafe(release_follower.set)
+                self.assertEqual(follower_future.result(timeout=2.0), "slow-driver")
+
+            # 3) Concurrent sends on the SAME chat serialize via per-chat lock
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                a = pool.submit(lambda: chat1.ask("same-chat-a").text)
+                b = pool.submit(lambda: chat1.ask("same-chat-b").text)
+                self.assertEqual(
+                    {a.result(timeout=2.0), b.result(timeout=2.0)}, {"same-chat-a", "same-chat-b"}
+                )
+            self.assertEqual(same_chat_max_active, 1)
+        finally:
+            sync_provider.close()
 
 
 class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
@@ -1230,7 +1300,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             if attempts == 1:
                 raise RuntimeError("cleanup transient failure")
 
-        provider.runtime._scope.defer(flaky_cleanup)
+        provider._close_session = flaky_cleanup  # type: ignore[method-assign]
 
         with self.assertRaises(Exception):
             await provider.close()

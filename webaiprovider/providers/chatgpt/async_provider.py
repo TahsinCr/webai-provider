@@ -306,7 +306,7 @@ class AsyncChatGPTProvider(
         )
 
     async def authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
-        async with self.runtime.activity():
+        async with self.activity():
             return await self._authenticate(capture_browser=capture_browser)
 
     async def _forget_session(self) -> SessionStatus:
@@ -490,7 +490,7 @@ class AsyncChatGPTProvider(
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self.runtime.project_lock(project_id):
+        async with self.project_lock(project_id):
             async with self._client_scope() as client:
                 url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
                 for attempt in (0, 1):

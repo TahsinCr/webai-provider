@@ -356,7 +356,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         temp_chat = await provider.chats.create("Incognito", temporary=True)
         self.assertTrue(temp_chat.temporary)
         op = temp_chat.responses.create("secret")
-        ctx = provider.runtime.new_context(
+        ctx = provider.new_context(
             "chat.send.prepare",
             resource_id=temp_chat.id,
             operation=op,

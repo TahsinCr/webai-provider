@@ -97,13 +97,13 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         def make_provider() -> AsyncProvider:
             account = Account.from_cookies("chatgpt", {"session": "token"})
             provider = SlowProvider(account)
-            orig_finish = provider.runtime._finish_close
+            orig_finish = provider._finish_close
 
-            async def tracked_finish(close_fn):
+            async def tracked_finish():
                 close_started.set()
-                await orig_finish(close_fn)
+                await orig_finish()
 
-            provider.runtime._finish_close = tracked_finish  # type: ignore[method-assign]
+            provider._finish_close = tracked_finish  # type: ignore[method-assign]
             return provider
 
         for refresh in (
@@ -120,7 +120,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await provider.open()
                 refresh_task = asyncio.create_task(refresh(provider))
                 await refresh_started.wait()
-                self.assertEqual(provider.runtime._active_operations, 1)
+                self.assertEqual(provider._active_operations, 1)
 
                 close_task = asyncio.create_task(provider.close())
                 await close_started.wait()
@@ -158,8 +158,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
         await provider.open()
         chat = await provider.chats.create(title="Context lifetime")
-        send_lock = provider.runtime.send_lock(chat.id)
-        self.assertIs(send_lock, provider.runtime.send_lock(chat.id))
+        send_lock = provider.send_lock(chat.id)
+        self.assertIs(send_lock, provider.send_lock(chat.id))
         operation = chat.responses.create("first")
         first_finished = asyncio.Event()
         child_task: asyncio.Task | None = None
@@ -184,7 +184,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         response = await asyncio.wait_for(child_task, timeout=1)
 
         self.assertEqual(response.text, "answer")
-        self.assertTrue(provider.runtime.closed)
+        self.assertTrue(provider.closed)
 
     async def test_cancel_during_hook_closes_stream_and_releases_provider_resources(self) -> None:
         stream_closed = asyncio.Event()
@@ -222,8 +222,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
             await waiter
 
         self.assertTrue(stream_closed.is_set())
-        self.assertEqual(provider.runtime._active_operations, 0)
-        self.assertFalse(provider.runtime.send_lock(chat.id).locked())
+        self.assertEqual(provider._active_operations, 0)
+        self.assertFalse(provider.send_lock(chat.id).locked())
         await asyncio.wait_for(provider.close(), timeout=1)
         self.assertTrue(provider_closed.is_set())
 

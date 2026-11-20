@@ -200,7 +200,9 @@ def conversation(value, *, _action_uuid=None):
                                 "sources": (
                                     pending_sources
                                     if role == "assistant" and is_last_text
-                                    else sources_from(block) if native_blocks else ()
+                                    else sources_from(block)
+                                    if native_blocks
+                                    else ()
                                 ),
                                 "files": (
                                     pending_files if role == "assistant" and is_last_text else ()

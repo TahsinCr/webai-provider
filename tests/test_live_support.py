@@ -1670,13 +1670,10 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
                     return chat_obj
 
+                from webaiprovider import Account, AsyncChatGPTProvider
                 from webaiprovider.core.async_hooks import AsyncOperationHooks
-                from webaiprovider.core.runtime import ProviderRuntime
 
-                runtime = ProviderRuntime(
-                    provider_id="chatgpt",
-                    account_id="personal",
-                )
+                backing = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {}, id="personal"))
                 session = SimpleNamespace(
                     capabilities={
                         Capability.MODELS,
@@ -1686,7 +1683,13 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         Capability.RENAME,
                         Capability.CHAT_BRANCH,
                     },
-                    runtime=runtime,
+                    hooks=AsyncOperationHooks(),
+                    new_context=backing.new_context,
+                    send_lock=backing.send_lock,
+                    activity=backing.activity,
+                    emit=backing.emit,
+                    emit_safe=backing.emit_safe,
+                    has_event_subscribers=False,
                     _require_provider=lambda: provider_impl,
                     _branch_chat_data=provider_impl.branch_chat,
                     _get_chat_data=fake_get_chat,

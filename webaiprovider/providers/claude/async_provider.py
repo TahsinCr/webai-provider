@@ -171,9 +171,7 @@ class AsyncClaudeProvider(
         values = await self.client.request("project_chats", project_id=project_id)
         if not isinstance(values, list):
             raise ClaudeCompatibilityError("Claude project conversation response changed")
-        return Page(
-            tuple(conversation(dict(x, project_uuid=project_id)) for x in values)
-        )
+        return Page(tuple(conversation(dict(x, project_uuid=project_id)) for x in values))
 
     async def _create_project_data(
         self,
@@ -191,7 +189,7 @@ class AsyncClaudeProvider(
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
-        async with self.runtime.project_lock(project_id):
+        async with self.project_lock(project_id):
             await self.client.request("delete_project", project_id=project_id)
 
     async def _stream_provider_events(

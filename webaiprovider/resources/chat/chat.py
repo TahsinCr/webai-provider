@@ -158,16 +158,15 @@ class AsyncBranchableChat(AsyncChat):
         if self.provider is None:
             raise ProviderError("Chat is not attached to an open provider")
         provider = self.provider
-        runtime = provider.runtime
-        context = runtime.new_context(
+        context = provider.new_context(
             "chat.branch",
             resource_id=self.remote_id,
             parameters={"message_id": message_id, "title": title},
         )
 
         async def work(ctx) -> AsyncChat:
-            lock = runtime.send_lock(self.remote_id)
-            async with runtime.activity(send_lock_id=id(lock)):
+            lock = provider.send_lock(self.remote_id)
+            async with provider.activity(send_lock_id=id(lock)):
                 async with lock:
                     provider._require_provider()
                     branched = await provider._branch_chat_data(
@@ -192,9 +191,9 @@ class AsyncBranchableChat(AsyncChat):
             created_chat: AsyncChat = ctx.result
             if created_chat.remote_id and not created_chat.metadata.get("pending_branch"):
                 await _publish_collection_change(
-                    runtime, "chats", "create", created_chat, operation_id=ctx.operation_id
+                    provider, "chats", "create", created_chat, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "chat.branched",
                 operation_id=ctx.operation_id,
                 resource_id=created_chat.remote_id,
@@ -204,7 +203,7 @@ class AsyncBranchableChat(AsyncChat):
         return await execute_with_hooks(
             operation_name="chat.branch",
             context=context,
-            hooks_chain=(runtime.hooks, provider.chats.hooks),
+            hooks_chain=(provider.hooks, provider.chats.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -228,8 +227,7 @@ class AsyncMovableChat(AsyncChat):
             raise ProviderError("Chat is not attached to a provider session")
         target = _resolve_project_arg(provider, project)
         target_id = (target.remote_id or target.id) if target is not None else None
-        runtime = provider.runtime
-        context = runtime.new_context(
+        context = provider.new_context(
             "chat.move",
             resource_id=self.remote_id or self.id,
             parameters={"project_id": target_id},
@@ -246,8 +244,8 @@ class AsyncMovableChat(AsyncChat):
                 if effective_id == target_id
                 else _resolve_project_arg(provider, effective_id)
             )
-            lock = runtime.send_lock(self.remote_id or self.id)
-            async with runtime.activity(send_lock_id=id(lock)), lock:
+            lock = provider.send_lock(self.remote_id or self.id)
+            async with provider.activity(send_lock_id=id(lock)), lock:
                 if not allow_reassignment:
                     if self.project is not None:
                         raise UnsupportedOperationError(
@@ -273,9 +271,9 @@ class AsyncMovableChat(AsyncChat):
         async def on_success(ctx) -> None:
             if self.remote_id and not self.temporary:
                 await _publish_collection_change(
-                    runtime, "chats", "update", self, operation_id=ctx.operation_id
+                    provider, "chats", "update", self, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "chat.moved",
                 operation_id=ctx.operation_id,
                 resource_id=self.remote_id or self.id,
@@ -285,7 +283,7 @@ class AsyncMovableChat(AsyncChat):
         return await execute_with_hooks(
             operation_name="chat.move",
             context=context,
-            hooks_chain=(runtime.hooks, provider.chats.hooks),
+            hooks_chain=(provider.hooks, provider.chats.hooks),
             work=work,
             on_success_event=on_success,
         )

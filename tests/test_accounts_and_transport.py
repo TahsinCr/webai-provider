@@ -127,7 +127,6 @@ class AccountsTests(unittest.TestCase):
         self.assertTrue(status.saved_snapshot)
         self.assertIsNone(status.reason)
 
-
     def test_blocking_provider_reads_session_status_on_caller_without_starting_loop(self):
         caller = threading.get_ident()
         threads = []

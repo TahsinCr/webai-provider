@@ -24,7 +24,7 @@ class AsyncProjectInstruction:
 
     async def get(self) -> str:
         provider = self.project.provider
-        if self.project.remote_id and provider is not None and provider.runtime.opened:
+        if self.project.remote_id and provider is not None and provider.opened:
             remote = await provider._get_project_data(self.project.remote_id)
             self.project._apply_provider_project(remote, replace_resources=False)
         return self._text

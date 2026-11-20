@@ -189,7 +189,10 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             fresh_cache = BoundedCache(max_entries=16, max_bytes=4096, ttl=60)
             with (
                 patch.object(transport_http, "_DNS_CACHE", fresh_cache),
-                patch("webaiprovider.transport.async_http._check_ipv6_connectivity", return_value=False),
+                patch(
+                    "webaiprovider.transport.async_http._check_ipv6_connectivity",
+                    return_value=False,
+                ),
                 patch("asyncio.get_running_loop") as loop_getter,
             ):
                 loop_getter.return_value.getaddrinfo = AsyncMock(
@@ -628,7 +631,9 @@ class BlockingTransportTests(unittest.TestCase):
                 with (
                     patch("webaiprovider.transport.http._prepare_curl_session_sync"),
                     patch.object(_CurlStream, "receive", receive),
-                    patch.object(Session, "stream", side_effect=AssertionError("Stream worker used")),
+                    patch.object(
+                        Session, "stream", side_effect=AssertionError("Stream worker used")
+                    ),
                     HTTPTransport(
                         f"http://127.0.0.1:{server.server_port}",
                         config=TransportConfig(max_stream_bytes=60_000),

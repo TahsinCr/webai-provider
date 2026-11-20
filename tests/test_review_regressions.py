@@ -148,7 +148,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(started["second"].wait(), 1)
         release["first"].set()
         await asyncio.sleep(0)
-        self.assertFalse(provider.runtime.closed)
+        self.assertFalse(provider.closed)
         release["second"].set()
         self.assertEqual(await asyncio.gather(first, second), ["first", "second"])
         provider._close_session.assert_awaited_once_with()
@@ -496,7 +496,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def active():
-            async with provider.runtime.activity():
+            async with provider.activity():
                 entered.set()
                 await release.wait()
 
@@ -512,7 +512,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.accounts import session_exists
 
         self.assertFalse(session_exists(provider.credential_file))
-        self.assertTrue(provider.runtime.closed)
+        self.assertTrue(provider.closed)
         provider.client.close.assert_awaited_once_with()
         with self.assertRaises(ProviderError):
             await provider.authenticate()
@@ -598,7 +598,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         mutation = asyncio.create_task(provider.projects.update(proj, title="After"))
         await entered.wait()
         closing = asyncio.create_task(provider.close())
-        while not provider.runtime.closing:
+        while not provider.closing:
             await asyncio.sleep(0)
         try:
             with self.assertRaises(ProviderError):

@@ -707,9 +707,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(save_calls), 1)
                     self.assertTrue(http_session._dirty)
 
-                    http_session._last_persisted_at -= (
-                        _SECONDARY_PERSIST_INTERVAL + 1
-                    )
+                    http_session._last_persisted_at -= _SECONDARY_PERSIST_INTERVAL + 1
                     await http_session.send("GET", "/fifth")
                     self.assertEqual(len(save_calls), 2)
                     self.assertFalse(http_session._dirty)

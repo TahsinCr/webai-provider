@@ -97,7 +97,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
     ) -> Page[_AsyncChatT]:
         include_projects = bool(options.get("include_projects", False))
         session = self.provider
-        async with session.runtime.activity():
+        async with session.activity():
             session._require_provider()
             limit_arg = page_limit or self._default_page_size
             if not include_projects and limit_arg < 25:
@@ -192,7 +192,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
             projects = await session.projects._collect_items(limit=project_limit)
             return await self._fetch_project_chats(projects, slots, per_project_limit=validated)
 
-        async with session.runtime.activity():
+        async with session.activity():
             session._require_provider()
             normal_task = asyncio.create_task(normal_chats())
             projects_task = asyncio.create_task(project_chats())
@@ -220,7 +220,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         self, item_id: str, *, metadata_only: bool = False
     ) -> Conversation:
         session = self.provider
-        async with session.runtime.activity():
+        async with session.activity():
             session._require_provider()
             load = session._get_chat_metadata if metadata_only else session._get_chat_data
             self._mark_remote_read()
@@ -276,8 +276,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         resolved_project = (
             _resolve_project_arg(self.provider, project) if project is not None else None
         )
-        runtime = self.provider.runtime
-        context = runtime.new_context(
+        provider = self.provider
+        context = provider.new_context(
             "chat.create",
             parameters={"title": title, "project": resolved_project, "temporary": temporary},
         )
@@ -291,7 +291,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
 
         async def on_success(ctx) -> None:
             chat: AsyncChat = ctx.result
-            await runtime.emit(
+            await provider.emit(
                 "chat.prepared",
                 operation_id=ctx.operation_id,
                 resource_id=chat.id,
@@ -301,7 +301,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         return await execute_with_hooks(
             operation_name="chat.create",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -319,8 +319,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         else:
             target = await self.get(str(chat), include_projects=True)
 
-        runtime = self.provider.runtime
-        context = runtime.new_context(
+        provider = self.provider
+        context = provider.new_context(
             "chat.update",
             resource_id=target.remote_id or target.id,
             parameters={"target": target, "title": title},
@@ -330,8 +330,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
             new_title = ctx.parameters["title"]
             if new_title is not None and new_title != target.title:
                 if target.remote_id:
-                    lock = runtime.send_lock(target.remote_id)
-                    async with runtime.activity(send_lock_id=id(lock)):
+                    lock = provider.send_lock(target.remote_id)
+                    async with provider.activity(send_lock_id=id(lock)):
                         async with lock:
                             self.provider._require_provider()
                             await self.provider._rename_chat_data(target.remote_id, new_title)
@@ -342,9 +342,9 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         async def on_success(ctx) -> None:
             if ctx.metadata.get("remote_rename"):
                 await _publish_collection_change(
-                    runtime, "chats", "update", target, operation_id=ctx.operation_id
+                    provider, "chats", "update", target, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "chat.updated",
                 operation_id=ctx.operation_id,
                 resource_id=target.remote_id or target.id,
@@ -354,7 +354,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         return await execute_with_hooks(
             operation_name="chat.update",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )
@@ -367,9 +367,9 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         else:
             target = await self.get(str(chat), include_projects=True)
 
-        runtime = self.provider.runtime
+        provider = self.provider
         rid = target.remote_id or target.id
-        context = runtime.new_context(
+        context = provider.new_context(
             "chat.delete",
             resource_id=rid,
             parameters={"target": target},
@@ -377,8 +377,8 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
 
         async def work(_ctx) -> None:
             if target.remote_id:
-                lock = runtime.send_lock(target.remote_id)
-                async with runtime.activity(send_lock_id=id(lock)):
+                lock = provider.send_lock(target.remote_id)
+                async with provider.activity(send_lock_id=id(lock)):
                     async with lock:
                         self.provider._require_provider()
                         await self.provider._delete_chat_data(target.remote_id)
@@ -386,9 +386,9 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         async def on_success(ctx) -> None:
             if target.remote_id:
                 await _publish_collection_change(
-                    runtime, "chats", "delete", target.remote_id, operation_id=ctx.operation_id
+                    provider, "chats", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
-            await runtime.emit(
+            await provider.emit(
                 "chat.deleted",
                 operation_id=ctx.operation_id,
                 resource_id=rid,
@@ -397,7 +397,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         await execute_with_hooks(
             operation_name="chat.delete",
             context=context,
-            hooks_chain=(runtime.hooks, self.hooks),
+            hooks_chain=(provider.hooks, self.hooks),
             work=work,
             on_success_event=on_success,
         )

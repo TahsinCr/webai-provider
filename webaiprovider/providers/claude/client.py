@@ -94,7 +94,9 @@ def organization_from_bootstrap(data, selected):
 
 class ClaudeClient:
     def __init__(self, credential_file, *, session=None, transport=None):
-        self.session = session or AsyncHttpSession("https://claude.ai", credential_file, "sessionKey")
+        self.session = session or AsyncHttpSession(
+            "https://claude.ai", credential_file, "sessionKey"
+        )
         self.http = transport or self.session
         if transport is not None and self.http.origin != "https://claude.ai":
             raise ValueError("Provider transport origin does not match its account")

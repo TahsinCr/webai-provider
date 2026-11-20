@@ -305,7 +305,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         async def read() -> _HistoryRead:
             # SingleFlight shields its worker from waiter cancellation. Track
             # the worker itself so shutdown cannot close its transport early.
-            async with provider.runtime.activity():
+            async with provider.activity():
                 provider._require_provider()
                 self._history_read += 1
                 read_id = self._history_read
@@ -320,7 +320,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         if fresh:
             result = await read()
         else:
-            if provider.runtime.closing and not provider.runtime.has_active_operation():
+            if provider.closing and not provider.has_active_operation():
                 raise ProviderError("Provider is closing or is closed")
             if self._history_flight is None:
                 self._history_flight = SingleFlight()

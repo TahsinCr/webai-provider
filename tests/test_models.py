@@ -343,9 +343,7 @@ class BlockingCatalogTests(unittest.TestCase):
             self.assertEqual(threading.get_ident(), caller)
             return item is model
 
-        with patch.object(
-            provider, "_call", side_effect=AssertionError("Unexpected loop call")
-        ):
+        with patch.object(provider, "_call", side_effect=AssertionError("Unexpected loop call")):
             self.assertEqual(provider.models.list(predicate, limit=1), [model])
             self.assertEqual(provider.models.resolve(model), ModelSelection(model))
         loader.assert_awaited_once_with(True)

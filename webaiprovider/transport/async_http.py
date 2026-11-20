@@ -242,9 +242,7 @@ class AsyncHTTPTransport(AsyncTransport):
         sender = getattr(client, "request", None)
         if callable(sender):
             return await sender(method, url, allow_redirects=False, **options)
-        return await getattr(client, method.lower())(
-            url, allow_redirects=False, **options
-        )
+        return await getattr(client, method.lower())(url, allow_redirects=False, **options)
 
     async def _buffer_response_async(self, response) -> _BufferedResponse:
         self._check_declared_size(response)
@@ -337,9 +335,7 @@ class AsyncHTTPTransport(AsyncTransport):
             ) as response:
                 yield response
             return
-        async with client.stream(
-            method, url, allow_redirects=False, **options
-        ) as response:
+        async with client.stream(method, url, allow_redirects=False, **options) as response:
             yield response
 
     @asynccontextmanager

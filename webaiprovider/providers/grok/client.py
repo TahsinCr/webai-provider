@@ -60,7 +60,9 @@ def _iter_bounded_lines(response):
 
 class GrokClient:
     def __init__(self, credential_file, *, client_factory=None, transport=None):
-        self.session = AsyncHttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
+        self.session = AsyncHttpSession(
+            ORIGIN, credential_file, None, client_factory=client_factory
+        )
         self.http = transport or self.session
         if transport is not None and self.http.origin != "https://grok.com":
             raise ValueError("Provider transport origin does not match its account")

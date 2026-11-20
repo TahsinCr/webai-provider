@@ -65,7 +65,9 @@ class BaseChatGPTProvider(BaseProvider):
         channel = item.get("channel")
         public_recipient = item.get("recipient") in (None, "all")
         summary = isinstance(content, dict) and content.get("content_type") in (
-            "thoughts", "reasoning_recap", "reasoning_summary"
+            "thoughts",
+            "reasoning_recap",
+            "reasoning_summary",
         )
         if summary or (role == "assistant" and not public_recipient):
             channel = "analysis"

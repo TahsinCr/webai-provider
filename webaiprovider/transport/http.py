@@ -47,6 +47,8 @@ _DNS_CACHE: BoundedCache[tuple[str, int, bool], tuple[str, ...]] = BoundedCache(
 )
 _IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
+
+
 def _create_ipv6_probe_socket() -> socket.socket:
     return socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
 

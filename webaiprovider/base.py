@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
 from enum import Enum
 from importlib import import_module
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+
+from .core.types import OperationContext
 
 if TYPE_CHECKING:
     from .accounts.account import Account
@@ -107,6 +110,26 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     @property
     def provider(self) -> str:
         return self.type.value
+
+    def new_operation_id(self) -> str:
+        return str(uuid.uuid4())
+
+    def new_context(
+        self,
+        name: str,
+        *,
+        resource_id: str | None = None,
+        operation_id: str | None = None,
+        **fields: Any,
+    ) -> OperationContext:
+        return OperationContext(
+            name=name,
+            operation_id=operation_id or self.new_operation_id(),
+            provider_id=self.id,
+            account_id=self.account_id,
+            resource_id=resource_id,
+            **fields,
+        )
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} type={self.type.value!r} account={self.account.id!r}>"

@@ -679,7 +679,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             att = Attachment.from_bytes(b"hello", name="notes.txt", mime_type="text/plain")
             msg = Message("Read", attachments=[att])
             op = chat.responses.create(msg)
-            ctx = provider.runtime.new_context(
+            ctx = provider.new_context(
                 "chat.send.prepare",
                 resource_id=chat.id,
                 operation=op,
@@ -1089,6 +1089,7 @@ class TestSyncApi(unittest.TestCase):
         ):
             project = provider.projects.create("Notes", memory_share=False)
             chat = provider.chats.create("Draft", project=project)
+
             @provider.hooks.before("chat.send")
             def before_send(context):
                 self.assertEqual(threading.get_ident(), caller)
@@ -1229,8 +1230,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             hook_ran.set()
 
         async with provider:
-            with patch.object(provider.runtime, "emit", new_callable=AsyncMock) as emit:
-                async with provider.runtime.send_lock("chat"):
+            with patch.object(provider, "emit", new_callable=AsyncMock) as emit:
+                async with provider.send_lock("chat"):
                     operation = asyncio.create_task(chat.move_to(selected))
                     await asyncio.wait_for(hook_ran.wait(), timeout=1)
                     provider._move_chat_data.assert_not_awaited()

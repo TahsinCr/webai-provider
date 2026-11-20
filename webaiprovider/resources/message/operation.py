@@ -147,9 +147,8 @@ class AsyncMessageOperation:
         if self._state_machine.can_transition(target):
             self._state_machine.transition(target)
 
-    def _runtime_and_hooks(self) -> tuple[Any, tuple[AsyncOperationHooks, ...]]:
+    def _provider_and_hooks(self) -> tuple[Any, tuple[AsyncOperationHooks, ...]]:
         provider = getattr(self.chat, "provider", None)
-        runtime = getattr(provider, "runtime", None) if provider is not None else None
         chain: list[AsyncOperationHooks] = []
         if provider is not None and isinstance(
             getattr(provider, "hooks", None), AsyncOperationHooks
@@ -161,7 +160,7 @@ class AsyncMessageOperation:
         ):
             chain.append(responses.hooks)
         chain.append(self.hooks)
-        return runtime, tuple(chain)
+        return provider, tuple(chain)
 
     def cancel(self) -> None:
         loop = self._loop
@@ -283,10 +282,14 @@ class AsyncMessageOperation:
         collected_text: list[str] = []
         collected_sources: list[Source] = []
         collected_artifacts: list[Artifact] = []
-        session = getattr(self.chat, "provider", None)
-        runtime, hooks_chain = self._runtime_and_hooks()
+        session, hooks_chain = self._provider_and_hooks()
+        emitter = session if session is not None and hasattr(session, "emit") else None
 
-        op_id = runtime.new_operation_id() if runtime is not None else self.message.id
+        op_id = (
+            session.new_operation_id()
+            if session is not None and hasattr(session, "new_operation_id")
+            else self.message.id
+        )
         context = OperationContext(
             name="chat.send",
             operation_id=op_id,
@@ -310,8 +313,8 @@ class AsyncMessageOperation:
                 self.message.model = context.model
 
             self._transition_to(OperationState.SENDING)
-            if runtime is not None:
-                await runtime.emit(
+            if emitter is not None:
+                await emitter.emit(
                     "chat.send.started",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,
@@ -368,24 +371,24 @@ class AsyncMessageOperation:
             self.message.response = response
             if self.chat is not None and hasattr(self.chat, "responses"):
                 response = self.chat.responses._reconcile_live_response(self, response)
-            if runtime is not None:
+            if emitter is not None:
                 context.resource_id = self.chat.remote_id or self.chat.id
                 context.result = response
             self._response = response
 
             self._transition_to(OperationState.COMPLETED)
-            if runtime is not None:
+            if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
                     await _publish_collection_change(
-                        runtime,
+                        emitter,
                         "chat.responses",
                         "update" if action in ("edit", "retry") else "create",
                         response,
                         scope_id=self.chat.remote_id,
                         operation_id=context.operation_id,
                     )
-                await runtime.emit_safe(
+                await emitter.emit_safe(
                     "chat.send.completed",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,
@@ -409,10 +412,10 @@ class AsyncMessageOperation:
             context.error = error
             self._cancelled = True
             self._transition_to(OperationState.CANCELLED)
-            if runtime is not None:
+            if emitter is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.shield(
-                        runtime.emit(
+                        emitter.emit(
                             "chat.send.cancelled",
                             operation_id=context.operation_id,
                             resource_id=self.chat.remote_id or self.chat.id,
@@ -427,9 +430,9 @@ class AsyncMessageOperation:
         except Exception as exc:
             context.error = exc
             self._transition_to(OperationState.FAILED)
-            if runtime is not None:
+            if emitter is not None:
                 with contextlib.suppress(Exception):
-                    await runtime.emit(
+                    await emitter.emit(
                         "chat.send.failed",
                         operation_id=context.operation_id,
                         resource_id=self.chat.remote_id or self.chat.id,
