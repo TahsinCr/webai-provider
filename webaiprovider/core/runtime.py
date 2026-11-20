@@ -22,14 +22,12 @@ from eventflow import (
 )
 
 from ..errors import ProviderError
-from .hooks import OperationHooks
-from .operations import build_message_request_pipeline
+from .async_hooks import AsyncOperationHooks
 from .state import (
     _LIFECYCLE_TERMINAL_STATES,
     _LIFECYCLE_TRANSITIONS,
     LifecycleState,
 )
-from .telemetry import ProviderTelemetry
 from .types import OperationContext
 
 
@@ -65,14 +63,12 @@ class ProviderRuntime:
         self._sync_event_pool: BoundedWorkPool | None = None
         self._sync_event_lock = threading.RLock()
         self._event_sequence = 0
-        self.hooks = OperationHooks()
-        self.telemetry = ProviderTelemetry()
+        self.hooks = AsyncOperationHooks()
         self.lifecycle = StateMachine(
             initial=LifecycleState.CREATED,
             transitions=_LIFECYCLE_TRANSITIONS,
             terminal=_LIFECYCLE_TERMINAL_STATES,
         )
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._scope: AsyncResourceScope | None = None
         self._opened = False
         self._closed = False
@@ -81,8 +77,7 @@ class ProviderRuntime:
         self._lifecycle_condition = asyncio.Condition()
         self._close_task: asyncio.Task[None] | None = None
         self._active_operations = 0
-        self._send_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
-        self._project_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
 
     @property
     def opened(self) -> bool:
@@ -125,22 +120,22 @@ class ProviderRuntime:
             for entry in _ACTIVE_OPERATIONS.get()
         )
 
-    def send_lock(self, conversation_id: str) -> asyncio.Lock:
-        lock = self._send_locks.get(conversation_id)
+    def _lock(self, kind: str, remote_id: str) -> asyncio.Lock:
+        key = (kind, remote_id)
+        lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
-            self._send_locks[conversation_id] = lock
+            self._locks[key] = lock
         return lock
+
+    def send_lock(self, conversation_id: str) -> asyncio.Lock:
+        return self._lock("chat", conversation_id)
 
     def bind_send_lock(self, conversation_id: str, lock: asyncio.Lock) -> None:
-        self._send_locks[conversation_id] = lock
+        self._locks["chat", conversation_id] = lock
 
     def project_lock(self, project_id: str) -> asyncio.Lock:
-        lock = self._project_locks.get(project_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._project_locks[project_id] = lock
-        return lock
+        return self._lock("project", project_id)
 
     @contextlib.contextmanager
     def operation_marker(self, *, send_lock_id: int | None = None):
@@ -170,13 +165,6 @@ class ProviderRuntime:
                     self._active_operations -= 1
                     self._lifecycle_condition.notify_all()
 
-    def build_send_pipeline(self, model_resolver: Callable[[Any], Awaitable[Any]]):
-        return build_message_request_pipeline(
-            provider_id=self.provider_id,
-            account_id=self.account_id,
-            model_resolver=model_resolver,
-        )
-
     async def emit(
         self,
         name: str,
@@ -189,11 +177,12 @@ class ProviderRuntime:
 
         Async ``self.events`` delivery is awaited directly without dropping.
         When ``self.sync_events`` has subscribers, delivery runs on a bounded
-        single-worker ``BoundedWorkPool(max_workers=1, max_pending=512)``; if the
-        queue saturates, the dropped sync dispatch is recorded in
-        ``self.telemetry.sync_event_drops`` and logged.
+        single-worker pool. Saturated sync dispatches are logged.
         """
         self._event_sequence += 1
+        sync_subscribers = self.sync_events.subscriber_count
+        if not sync_subscribers and not self.events.subscriber_count:
+            return
         event = EventEnvelope(
             event=name,
             correlation_id=operation_id,
@@ -205,19 +194,17 @@ class ProviderRuntime:
                 "payload": payload,
             },
         )
-        if self.sync_events.subscriber_count:
+        if sync_subscribers:
             with self._sync_event_lock:
                 if self._sync_event_pool is None:
                     self._sync_event_pool = BoundedWorkPool(max_workers=1, max_pending=512)
                 try:
                     self._sync_event_pool.submit(self.sync_events.publish, event)
                 except Exception as error:
-                    self.telemetry.record_sync_event_drop()
                     _log.warning(
-                        "Sync event dispatch skipped: event=%s error=%s drops=%d",
+                        "Sync event dispatch skipped: event=%s error=%s",
                         name,
                         type(error).__name__,
-                        self.telemetry.sync_event_drops,
                     )
         await self.events.publish(event)
 
@@ -234,7 +221,10 @@ class ProviderRuntime:
         try:
             await self.events.close()
         finally:
-            await asyncio.to_thread(self._close_sync_events)
+            if self._sync_event_pool is None:
+                self.sync_events.close()
+            else:
+                await asyncio.to_thread(self._close_sync_events)
 
     async def emit_safe(
         self,
@@ -253,22 +243,11 @@ class ProviderRuntime:
             _log.warning("Event dispatch failed: event=%s error=%s", name, type(error).__name__)
 
     async def open(
-        self, prepare_fn: Callable[[], Awaitable[None]], close_fn: Callable[[], Awaitable[None]]
-    ) -> None:
-        await self._open(prepare_fn, close_fn, only_if_closed=False)
-
-    async def ensure_open(
-        self, prepare_fn: Callable[[], Awaitable[None]], close_fn: Callable[[], Awaitable[None]]
-    ) -> bool:
-        """Open the runtime if not already opened; return True when opened by this call."""
-        return await self._open(prepare_fn, close_fn, only_if_closed=True)
-
-    async def _open(
         self,
         prepare_fn: Callable[[], Awaitable[None]],
         close_fn: Callable[[], Awaitable[None]],
         *,
-        only_if_closed: bool,
+        reuse_open: bool = False,
     ) -> bool:
         """Transition under the lifecycle lock; publish events after releasing it.
 
@@ -279,7 +258,7 @@ class ProviderRuntime:
         opened_here = False
         try:
             async with self._lifecycle_lock:
-                if only_if_closed and self._opened:
+                if reuse_open and self._opened:
                     return False
                 opened_here = await self._open_unlocked(prepare_fn, close_fn, pending)
         finally:
@@ -299,7 +278,6 @@ class ProviderRuntime:
             raise ProviderError("A closed provider cannot be reopened")
         if self._opened:
             return False
-        self._loop = asyncio.get_running_loop()
         if self.lifecycle.can_transition(LifecycleState.OPENING):
             self.lifecycle.transition(LifecycleState.OPENING)
         pending.append(("provider.opening", None))

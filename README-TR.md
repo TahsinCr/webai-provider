@@ -66,7 +66,7 @@ with ChatGPTProvider(account) as provider:
 - `chat.responses.create()`, `edit()` ve `retry()` mesaj işlemlerini hazırlar. Akış olayları için `operation.stream()`, tamamlanmış `Response` için `operation.wait()` kullanın. Yanıt; ilişkili kullanıcı mesajını, kaynakları, çıktıları ve canlı gönderim için süre bilgilerini içerir.
 - Bir sohbeti son yanıtlarıyla birlikte tek geçmiş okumasında açmak için `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)` kullanın. Senkron sağlayıcıda `await` kaldırılır. Limit, dönen yanıt sayısını belirler.
 - Projeye dosya veya metin eklemek için `project.attachments.create()`, ekleri görmek için `list()`, bir eki silmek için `delete()` kullanın.
-- Sağlayıcılar `flowevent` tabanlı `ProviderRuntime` kullanır. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `SyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
+- Sağlayıcılar `flowevent` tabanlı `ProviderRuntime` kullanır. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Her başarılı uzak okumada kayıt kimliklerini topluca almak için `collection.read.completed` olayına abone olun. `collection.changed`, doğrulanan ekleme, güncelleme ve silmeleri bildirir. İki olayın da `event.metadata["payload"]` alanında bir `items` listesi bulunur. Olay zarfı hesabı ve iç içe koleksiyonlarda üst kaydın kimliğini taşır. Mesaj düzenlemeleri ve yeniden denemeler sohbet kapsamında bildirilir. Olay verisi mesaj metni, dosya içeriği veya oturum bilgisi içermez.
 - Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
 
@@ -102,12 +102,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | --- | --- |
 | `AsyncTransport` / `Transport` | Asenkron ve senkron uzantı sözleşmeleri |
 | `AsyncHTTPTransport` | Akış bağlamı sunan asenkron HTTP istemcisi; varsayılanı curl-cffi’dir |
-| `AsyncRequestTransport` | Akışı `request(stream=True)` ile açan asenkron istemci |
 | `HTTPTransport` | Senkron curl_cffi istemcisi |
 | `HttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
-| `ThreadedTransport` | Kapsamı belirli senkron transport için sınırlı köprü |
 
-Claude ve Grok `HttpSession` kullanır. Gemini, yerel RPC ve çerez yenileme akışı için `AsyncRequestTransport` kullanır. ChatGPT, mevcut istemcisinin arkasında `HTTPTransport` kullanır ve bunu `ThreadedTransport` üzerinden asenkron sunar. Sağlayıcılar kendi istemcilerini ve eşzamanlama kapılarını yönetir.
+Claude ve Grok `HttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Mevcut senkron sağlayıcı API’si, sağlayıcının asenkron bağlantısını portal üzerinden paylaşır.
 
 Özel bir uygulama, `AsyncTransport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
 

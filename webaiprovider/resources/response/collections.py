@@ -16,7 +16,8 @@ from ...collections import (
     validate_limit,
     validate_predicate,
 )
-from ...core.hooks import OperationHooks, SyncOperationHooks
+from ...core.async_hooks import AsyncOperationHooks
+from ...core.hooks import OperationHooks
 from ...errors import ProviderError, RemoteNotFound, UnsupportedOperationError
 from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
@@ -160,7 +161,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 
     def __init__(self, chat: AsyncChat) -> None:
         self.chat = chat
-        self.hooks = OperationHooks()
+        self.hooks = AsyncOperationHooks()
         self._turns: list[Response] = []
         self._known_responses: dict[str, Response] = {}
         self._known_messages: dict[str, AsyncMessage] = {}
@@ -716,7 +717,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 class ResponsesCollection(RemoteCollection[Response, Response]):
     def __init__(self, owner: Provider[Any, Any], chat: AsyncChat) -> None:
         super().__init__(owner, chat.responses)
-        self.hooks = SyncOperationHooks(chat.responses.hooks)
+        self.hooks = OperationHooks(chat.responses.hooks)
 
     def _wrap(self, item: Response, *, chat_view: Chat | None = None) -> Response:
         return self._owner._wrap_response(item, chat_view=chat_view)

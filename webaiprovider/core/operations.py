@@ -12,7 +12,7 @@ from ..resources.chat.types import DEFAULT_CHAT_TITLE
 from ..resources.message.protocol import ProviderRequest
 from ..resources.message.types import MessageAction
 from ..resources.model.model import EffortRef, ModelRef, ModelSelection
-from .hooks import OperationHooks
+from .async_hooks import AsyncOperationHooks
 from .types import OperationContext
 
 _log = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ async def execute_with_hooks(
     *,
     operation_name: str,
     context: OperationContext,
-    hooks_chain: Sequence[OperationHooks],
+    hooks_chain: Sequence[AsyncOperationHooks],
     work: Callable[[OperationContext], Awaitable[Any]],
     on_success_event: Callable[[OperationContext], Awaitable[None]] | None = None,
     on_cancelled_event: Callable[[OperationContext], Awaitable[None]] | None = None,
@@ -172,7 +172,7 @@ async def execute_with_hooks(
     """Execute one operation through before -> work -> success/error/cancelled -> finally."""
     cancelled = False
     try:
-        context = await OperationHooks.run_before(hooks_chain, operation_name, context)
+        context = await AsyncOperationHooks.run_before(hooks_chain, operation_name, context)
         result = await work(context)
         context.result = result
         if on_success_event is not None:
@@ -186,7 +186,7 @@ async def execute_with_hooks(
                     operation_name,
                     type(event_error).__name__,
                 )
-        await OperationHooks.run_lifecycle(hooks_chain, "on_success", operation_name, context)
+        await AsyncOperationHooks.run_lifecycle(hooks_chain, "on_success", operation_name, context)
         return context.result
     except (asyncio.CancelledError, OperationCancelledError) as error:
         cancelled = True
@@ -195,19 +195,23 @@ async def execute_with_hooks(
         if on_cancelled_event is not None:
             await asyncio.shield(on_cancelled_event(context))
         await asyncio.shield(
-            OperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
+            AsyncOperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
         )
         raise
     except Exception as error:
         context.error = error
         if on_error_event is not None:
             await on_error_event(context)
-        await OperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
+        await AsyncOperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
         raise
     finally:
         if cancelled:
             await asyncio.shield(
-                OperationHooks.run_lifecycle(hooks_chain, "on_finally", operation_name, context)
+                AsyncOperationHooks.run_lifecycle(
+                    hooks_chain, "on_finally", operation_name, context
+                )
             )
         else:
-            await OperationHooks.run_lifecycle(hooks_chain, "on_finally", operation_name, context)
+            await AsyncOperationHooks.run_lifecycle(
+                hooks_chain, "on_finally", operation_name, context
+            )

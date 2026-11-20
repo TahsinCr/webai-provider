@@ -23,6 +23,7 @@ from webaiprovider import (
     Attachment,
     Capability,
     LifecycleState,
+    OperationHooks,
     OutputBegin,
     OutputDelta,
     OutputEnd,
@@ -31,7 +32,6 @@ from webaiprovider import (
     RemoteNotFound,
     Response,
     SourcesCollection,
-    SyncOperationHooks,
     TimingMetrics,
     UnsupportedOperationError,
 )
@@ -332,12 +332,12 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
             "EventFilter",
             "AsyncProvider",
             "LifecycleState",
-            "OperationHooks",
+            "AsyncOperationHooks",
             "Provider",
             "Response",
             "Source",
             "SourcesCollection",
-            "SyncOperationHooks",
+            "OperationHooks",
             "TimingMetrics",
         }
         self.assertTrue(expected.issubset(set(webaiprovider.__all__)))
@@ -1092,7 +1092,7 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
         reentered_ids: list[list[str]] = []
 
         self.assertIsInstance(sync_provider.events, EventBus)
-        self.assertIsInstance(sync_provider.hooks, SyncOperationHooks)
+        self.assertIsInstance(sync_provider.hooks, OperationHooks)
         self.assertIsInstance(sync_provider._provider.events, AsyncEventBus)
 
         def on_opened(_event: EventEnvelope[str]) -> None:
@@ -1377,7 +1377,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(BaseProviderType, PublicProviderType)
 
-    async def test_p2_07_sync_event_pool_overflow_records_drop_in_telemetry(self) -> None:
+    async def test_sync_event_pool_overflow_is_logged_without_dropping_async_delivery(self) -> None:
         provider = _ScriptedAsyncProvider(_account())
         async_seen: list[str] = []
 
@@ -1392,9 +1392,9 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("pool full")
 
         provider.runtime._sync_event_pool = _FullPool()  # type: ignore[assignment]
-        await provider.runtime.emit("custom.test")
-        self.assertEqual(provider.runtime.telemetry.sync_event_drops, 1)
-        self.assertEqual(provider.runtime.telemetry.snapshot()["sync_event_drops"], 1)
+        with self.assertLogs("webaiprovider.core.runtime", level="WARNING") as captured:
+            await provider.runtime.emit("custom.test")
+        self.assertIn("Sync event dispatch skipped", captured.output[0])
         self.assertEqual(async_seen, ["custom.test"])
 
 

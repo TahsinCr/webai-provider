@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
+- Use FlowEvent's cache and single-flight primitives for bounded continuation state and overlapping discovery reads.
 - Assign, transfer, or detach ChatGPT chats with `chat.move_to(project)` or `chat.move_to(None)`. The operation uses the conversation's send lock and applies the destination selected by hooks consistently.
 - Keep browser authentication in ChatGPT's auth module. Construct `BrowserSession` directly with a credential store or path.
 - Preserve concrete provider and resource types in IDEs, including collection queries and context managers. Construct chat and project resources through their typed collections.
@@ -66,6 +68,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Expose the origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
 - Add an optional C extension for parts of ChatGPT's Sentinel runtime. The Python implementation remains available when the extension cannot be loaded, and the public provider API stays the same.
 - Add tag-triggered PyPI Trusted Publishing. The wheel workflow builds for CPython 3.10–3.14 on Linux and macOS (x86-64 and ARM64) and Windows (x86-64), and checks that the native extension loads from the installed wheel. The source distribution includes the C sources for local builds.
+
+### Removed
+
+- Remove the unused `ThreadedTransport` adapter. The blocking provider API continues to share its active connection through the portal.
+- Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
 
 ### Fixed
 

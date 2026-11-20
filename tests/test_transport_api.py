@@ -5,7 +5,7 @@ import socket
 import tempfile
 import threading
 import unittest
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -32,11 +32,10 @@ from webaiprovider.resources.message.protocol import (
 from webaiprovider.transport import (
     AsyncHTTPTransport,
     HTTPTransport,
-    PortalTransport,
-    ThreadedTransport,
     TransportConfig,
 )
 from webaiprovider.transport.http import _open_curl_stream
+from webaiprovider.transport.portal import PortalTransport
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
@@ -170,7 +169,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
         import webaiprovider.transport.http as transport_http
-        from webaiprovider.core import MultiDimensionBoundedCache
+        from webaiprovider.core.cache import BoundedCache
 
         session = AsyncSession()
         responses = [
@@ -187,7 +186,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         session.request = AsyncMock(side_effect=fake_request)
         try:
             transport = AsyncHTTPTransport("https://claude.ai", client_getter=lambda: session)
-            fresh_cache = MultiDimensionBoundedCache(max_entries=16, max_bytes=4096, default_ttl=60)
+            fresh_cache = BoundedCache(max_entries=16, max_bytes=4096, ttl=60)
             with (
                 patch.object(transport_http, "_DNS_CACHE", fresh_cache),
                 patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
@@ -463,71 +462,6 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 cls(Account.from_cookies(provider_id, {}), transport=transport)
         client.request.assert_not_awaited()
 
-    async def test_threaded_stream_is_incremental_and_early_exit_joins_worker(self):
-        closed = threading.Event()
-        read = 0
-
-        class Bytes:
-            def __iter__(self):
-                nonlocal read
-                while not closed.is_set():
-                    read += 1
-                    yield b"part"
-
-            def close(self):
-                closed.set()
-
-        client = FakeHTTPClient(lambda _: FakeHTTPResponse(200, stream=Bytes()))
-        self.addCleanup(client.close)
-        native = HTTPTransport("https://chatgpt.com", client_getter=lambda: client)
-
-        @contextmanager
-        def scope():
-            yield native
-
-        transport = ThreadedTransport("https://chatgpt.com", scope)
-        async with transport.stream("GET", "/stream") as response:
-            iterator = response.aiter_bytes()
-            self.assertEqual(await anext(iterator), b"part")
-        self.assertTrue(closed.is_set())
-        self.assertLess(read, 40)
-
-    async def test_threaded_cancellation_closes_a_blocking_read_and_joins_it(self):
-        entered, released, finished = threading.Event(), threading.Event(), threading.Event()
-
-        class Bytes:
-            def __iter__(self):
-                try:
-                    entered.set()
-                    if not released.wait(2):
-                        raise TimeoutError("Stream did not close on cancellation")
-                    yield b"late"
-                finally:
-                    finished.set()
-
-            def close(self):
-                released.set()
-
-        with FakeHTTPClient(lambda _: FakeHTTPResponse(200, stream=Bytes())) as client:
-
-            @contextmanager
-            def scope():
-                yield HTTPTransport("https://chatgpt.com", client_getter=lambda: client)
-
-            async def consume():
-                async with ThreadedTransport("https://chatgpt.com", scope).stream(
-                    "GET", "/"
-                ) as response:
-                    return [chunk async for chunk in response.aiter_bytes()]
-
-            task = asyncio.create_task(consume())
-            self.assertTrue(await asyncio.to_thread(entered.wait, 1))
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 1)
-        self.assertTrue(released.is_set())
-        self.assertTrue(finished.is_set())
-
     async def test_portal_transport_cancels_inflight_async_stream_immediately_on_close(self):
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
@@ -714,7 +648,7 @@ class BlockingTransportTests(unittest.TestCase):
         from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 
         import webaiprovider.transport.http as transport_http
-        from webaiprovider.core import MultiDimensionBoundedCache
+        from webaiprovider.core.cache import BoundedCache
 
         outcomes = [
             CurlTimeout("curl: (28) Resolving timed out"),
@@ -734,7 +668,7 @@ class BlockingTransportTests(unittest.TestCase):
             created.append(sess)
             return sess
 
-        fresh_cache = MultiDimensionBoundedCache(max_entries=16, max_bytes=4096, default_ttl=60)
+        fresh_cache = BoundedCache(max_entries=16, max_bytes=4096, ttl=60)
         with (
             patch.object(transport_http, "_DNS_CACHE", fresh_cache),
             patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),

@@ -13,8 +13,9 @@ from ...collections import (
     RemoteCollection,
     _publish_collection_change,
 )
+from ...core.async_hooks import AsyncOperationHooks
 from ...core.files import DownloadSource, download_source
-from ...core.hooks import OperationHooks, SyncOperationHooks
+from ...core.hooks import OperationHooks
 from ...core.operations import execute_with_hooks
 from ...errors import (
     FeatureUnavailable,
@@ -47,7 +48,7 @@ class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
     ) -> None:
         self.provider = provider
         self._build = build
-        self.hooks = OperationHooks()
+        self.hooks = AsyncOperationHooks()
 
     def _new(self, **fields: Any) -> _AsyncProjectT:
         return self._build(provider=self.provider, **fields)
@@ -257,7 +258,7 @@ class ProjectsCollection(RemoteCollection[AsyncProject, _ProjectT]):
     ) -> None:
         super().__init__(owner, owner._provider.projects)
         self._build = build
-        self.hooks = SyncOperationHooks(self._collection.hooks)
+        self.hooks = OperationHooks(self._collection.hooks)
 
     def _wrap(self, item: AsyncProject) -> _ProjectT:
         return self._build(self._owner, item)
@@ -337,7 +338,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
         super().__init__()
         self.project = project
         self._items: list[Attachment] = []
-        self.hooks = OperationHooks()
+        self.hooks = AsyncOperationHooks()
 
     @property
     def _attachment_type(self) -> type[Attachment]:
@@ -818,7 +819,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 class ProjectAttachments(RemoteCollection[Attachment, Attachment]):
     def __init__(self, owner: Provider[Any, Any], project: AsyncProject) -> None:
         super().__init__(owner, project.attachments)
-        self.hooks = SyncOperationHooks(project.attachments.hooks)
+        self.hooks = OperationHooks(project.attachments.hooks)
 
     def create(
         self,

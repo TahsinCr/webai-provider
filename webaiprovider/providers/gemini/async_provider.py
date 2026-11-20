@@ -13,7 +13,7 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
-from ...core import MultiDimensionBoundedCache
+from ...core.cache import BoundedCache
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
@@ -103,18 +103,16 @@ class AsyncGeminiProvider(
         self._gate = asyncio.Lock()
         self._connect_gate = asyncio.Lock()
         self._temporary: dict[str, list[Any]] = {}
-        self._chat_metadata = MultiDimensionBoundedCache(
+        self._chat_metadata = BoundedCache(
             max_entries=128,
-            default_ttl=_CHAT_METADATA_TTL_SECONDS,
+            ttl=_CHAT_METADATA_TTL_SECONDS,
             clock=lambda: time.monotonic(),
         )
-        self._project_contexts: MultiDimensionBoundedCache[str, list[Any]] = (
-            MultiDimensionBoundedCache(
-                max_entries=32,
-                max_bytes=32768,
-                default_ttl=120.0,
-                clock=lambda: time.monotonic(),
-            )
+        self._project_contexts: BoundedCache[str, list[Any]] = BoundedCache(
+            max_entries=32,
+            max_bytes=32768,
+            ttl=120.0,
+            clock=lambda: time.monotonic(),
         )
         self.rpc: GeminiRPC = GeminiRPC(self._connect)
         self.notebooks: Notebooks = notebooks or Notebooks(account.id)
@@ -274,7 +272,7 @@ class AsyncGeminiProvider(
     async def _delete_chat_data(self, conversation_id: str) -> None:
         await self._connect()
         await self.rpc.call("GzXR5e", [conversation_id], "/app", allow_empty=True)
-        self._chat_metadata.pop(conversation_id, None)
+        self._chat_metadata.remove(conversation_id)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
@@ -427,7 +425,7 @@ class AsyncGeminiProvider(
             self._take_chat_metadata(request.conversation_id) if request.conversation_id else None
         )
         usable = AsyncGeminiProvider._usable_chat_metadata(cached, request.conversation_id)
-        if usable and not request.action:
+        if cached is not None and usable and not request.action:
             if timing is not None:
                 timing.increment("pre_send_conversation_cache_hit")
             return request, list(cached), None

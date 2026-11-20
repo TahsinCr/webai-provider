@@ -64,13 +64,6 @@ class PortalBridge:
     def call(self, coro: Awaitable[T], *, timeout: float | None = None) -> T:
         return self._acquire().call(coro, timeout=timeout)
 
-    def cancel(self) -> None:
-        with _SHARED_LOCK:
-            entry = _SHARED_PORTALS.get(self._name)
-            portal = entry[0] if entry is not None else None
-        if portal is not None and portal.running:
-            portal.cancel()
-
     def __enter__(self) -> PortalBridge:
         self.start()
         return self

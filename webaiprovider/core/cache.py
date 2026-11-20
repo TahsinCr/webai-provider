@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from eventflow import VersionedCache
 
@@ -30,65 +30,27 @@ def _default_size_calculator(key: Any, value: Any) -> int:
     return size
 
 
-class MultiDimensionBoundedCache(Generic[K, V]):
-    __slots__ = ("_cache", "_sequence", "_default_ttl")
+class BoundedCache(VersionedCache[K, V]):
+    """Bounded memory cache for callers without externally versioned records."""
+
+    __slots__ = ()
 
     def __init__(
         self,
+        *,
         max_entries: int = 128,
         max_bytes: int = 1_000_000,
-        default_ttl: float | None = 300.0,
-        getsizeof: Callable[[K, V], int] | None = None,
-        clock: Callable[[], float] | None = None,
+        ttl: float | None = 300.0,
+        getsizeof: Callable[[K, V], int] = _default_size_calculator,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._sequence: int = 0
-        self._default_ttl = default_ttl
-        calculator = getsizeof if getsizeof is not None else _default_size_calculator
-        effective_clock = clock if clock is not None else (lambda: time.monotonic())
-        self._cache: VersionedCache[K, V] = VersionedCache(
+        super().__init__(
             max_entries=max_entries,
             max_bytes=max_bytes,
-            ttl=default_ttl,
-            getsizeof=calculator,
-            clock=effective_clock,
+            ttl=ttl,
+            getsizeof=getsizeof,
+            clock=clock,
         )
 
-    def get(self, key: K, default: V | None = None, *, version: int | None = None) -> V | None:
-        val = self._cache.get(key, version=version)
-        return val if val is not None else default
-
-    def put(
-        self,
-        key: K,
-        value: V,
-        *,
-        version: int | None = None,
-        ttl: float | None = None,
-    ) -> bool:
-        if version is None:
-            self._sequence += 1
-            effective_version = self._sequence
-        else:
-            effective_version = version
-            if version > self._sequence:
-                self._sequence = version
-
-        effective_ttl = ttl if ttl is not None else self._default_ttl
-        return self._cache.put(key, value, version=effective_version, ttl=effective_ttl)
-
-    def remove(self, key: K) -> bool:
-        return self._cache.remove(key) is not None
-
-    def pop(self, key: K, default: Any = None) -> V | None:
-        val = self._cache.remove(key)
-        return val if val is not None else default
-
-    def clear(self) -> None:
-        self._cache.clear()
-
-    def stats(self) -> Any:
-        return self._cache.stats()
-
-    @property
-    def current_bytes(self) -> int:
-        return self._cache.stats().bytes
+    def put(self, key: K, value: V, *, version: int = 0, ttl: float | None = None) -> bool:
+        return super().put(key, value, version=version, ttl=ttl)

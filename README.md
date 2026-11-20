@@ -66,7 +66,7 @@ with ChatGPTProvider(account) as provider:
 - `chat.responses.create()`, `edit()`, and `retry()` prepare message operations. Use `operation.stream()` for events or `operation.wait()` for the completed `Response`. It exposes the associated user message, sources, artifacts, and timing for live sends.
 - To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.
 - Use `project.attachments.create()` to add a file or text, `list()` to inspect project attachments, and `delete()` to remove one.
-- Providers share a `ProviderRuntime` backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
+- Providers share a `ProviderRuntime` backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Subscribe to `collection.read.completed` for one batch of item identities per successful remote read and to `collection.changed` for confirmed creates, updates, and deletes. Both events put an `items` list in `event.metadata["payload"]`. The envelope carries the account and, for nested collections, the parent resource ID. Message revisions use the chat scope. Payloads omit message text, file bodies, and credentials.
 - Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.
 
@@ -102,12 +102,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | --- | --- |
 | `AsyncTransport` / `Transport` | Async and blocking extension contracts |
 | `AsyncHTTPTransport` | Async HTTP client with streaming context; defaults to curl-cffi |
-| `AsyncRequestTransport` | Async client that opens streams with `request(stream=True)` |
 | `HTTPTransport` | Blocking curl_cffi transport |
 | `HttpSession` | Account cookie persistence over the shared async transport |
-| `ThreadedTransport` | Bounded bridge for a scoped blocking transport |
 
-Claude and Grok use `HttpSession`; Gemini uses `AsyncRequestTransport` for its native RPC and cookie-refresh flow. ChatGPT uses `HTTPTransport` behind its existing client and exposes it asynchronously through `ThreadedTransport`. Providers retain ownership of their native clients and synchronization gates.
+Claude and Grok use `HttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The current blocking provider API shares the provider's async connection through its portal.
 
 A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
 

@@ -9,8 +9,11 @@ import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from eventflow import SingleFlight
+
 from ...accounts import read_session_async
-from ...core import ConcurrencyCoordinator, MultiDimensionBoundedCache, gather_bounded
+from ...core.cache import BoundedCache
+from ...core.concurrency import gather_bounded
 from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
@@ -97,9 +100,9 @@ class ClaudeClient:
             raise ValueError("Provider transport origin does not match its account")
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
-        self._coordinator = ConcurrencyCoordinator()
-        self._continuations: MultiDimensionBoundedCache[str, tuple[str | None, bool]] = (
-            MultiDimensionBoundedCache(max_entries=128, max_bytes=32768, default_ttl=300.0)
+        self._discovery = SingleFlight()
+        self._continuations: BoundedCache[str, tuple[str | None, bool]] = BoundedCache(
+            max_entries=128, max_bytes=32768, ttl=300.0
         )
         self._discovered_at = 0.0
 
@@ -139,7 +142,7 @@ class ClaudeClient:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - started)
             return self.catalog
         try:
-            return await self._coordinator.deduplicate("discover", self._discover)
+            return await self._discovery.run("discover", self._discover)
         finally:
             if started is not None:
                 timing.record("model_catalog_ms", time.perf_counter_ns() - started)
@@ -154,7 +157,7 @@ class ClaudeClient:
         return "/api/organizations/" + remote_id(self.organization)
 
     async def close(self):
-        await self._coordinator.aclose()
+        await self._discovery.aclose()
         self._continuations.clear()
         self.organization = None
         self.catalog = None

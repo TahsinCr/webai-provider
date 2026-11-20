@@ -66,7 +66,7 @@ with ChatGPTProvider(account) as provider:
 - Методы `chat.responses.create()`, `edit()` и `retry()` подготавливают операции с сообщениями. Используйте `operation.stream()` для потока событий или `operation.wait()` для получения готового `Response`. Ответ содержит связанное сообщение пользователя, источники, артефакты и данные о времени для текущей отправки.
 - Чтобы открыть чат вместе с последними ответами за одно чтение истории, используйте `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. В синхронном API вызов выполняется без `await`. Лимит определяет число возвращаемых ответов.
 - Добавляйте файлы и текст в проект через `project.attachments.create()`. Для просмотра вложений используйте `list()`, для удаления — `delete()`.
-- Провайдеры используют `ProviderRuntime` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `SyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
+- Провайдеры используют `ProviderRuntime` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Событие `collection.read.completed` передаёт пакет идентификаторов после успешного удалённого чтения. `collection.changed` сообщает о подтверждённых добавлениях, обновлениях и удалениях. В обоих событиях список `items` доступен в `event.metadata["payload"]`. Метаданные содержат аккаунт и идентификатор родительского ресурса для вложенных коллекций. Изменения ответов относятся к соответствующему чату. События не содержат текст сообщений, содержимое файлов или учётные данные.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `ProviderError`, например `FeatureUnavailable`.
 
@@ -102,12 +102,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | --- | --- |
 | `AsyncTransport` / `Transport` | Контракты асинхронных и синхронных расширений |
 | `AsyncHTTPTransport` | Асинхронный HTTP-клиент с потоковым контекстом; по умолчанию используется curl-cffi |
-| `AsyncRequestTransport` | Асинхронный клиент, открывающий поток через `request(stream=True)` |
 | `HTTPTransport` | Синхронный curl_cffi-клиент |
 | `HttpSession` | Сохранение cookies аккаунта через общий асинхронный transport |
-| `ThreadedTransport` | Ограниченный мост для scoped синхронного transport |
 
-Claude и Grok используют `HttpSession`. Gemini использует `AsyncRequestTransport` для собственного RPC и обновления cookies. ChatGPT использует `HTTPTransport` внутри своего клиента и предоставляет его асинхронно через `ThreadedTransport`. Провайдеры управляют собственными клиентами и синхронизацией.
+Claude и Grok используют `HttpSession`. Gemini и ChatGPT выполняют веб-запросы через `AsyncHTTPTransport`. Текущий синхронный API использует асинхронное соединение провайдера через портал.
 
 Собственная реализация может предоставить `send`, `stream` и `close` для `AsyncTransport` либо настроить встроенную реализацию через `client_factory`. Стандартные параметры HTTP, такие как заголовки, параметры, JSON и данные, передаются выбранному backend. Форматы multipart и специфичные для backend параметры относятся к его API расширения.
 

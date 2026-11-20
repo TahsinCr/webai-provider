@@ -204,9 +204,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
 
     async def test_hooks_await_future_results_before_continuing(self) -> None:
-        from webaiprovider.resources.message.operation import OperationHooks
+        from webaiprovider.core.async_hooks import AsyncOperationHooks
 
-        hooks = OperationHooks()
+        hooks = AsyncOperationHooks()
         pending = asyncio.get_running_loop().create_future()
         hooks.on("output.delta", lambda event: pending)
         emission = asyncio.create_task(hooks.emit(OutputDelta(delta="text")))

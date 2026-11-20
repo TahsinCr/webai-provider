@@ -13,8 +13,9 @@ from ...collections import (
     _report_read,
     validate_limit,
 )
+from ...core.async_hooks import AsyncOperationHooks
 from ...core.concurrency import gather_bounded
-from ...core.hooks import OperationHooks, SyncOperationHooks
+from ...core.hooks import OperationHooks
 from ...core.operations import execute_with_hooks
 from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
 from ..project.project import AsyncProject, Project
@@ -86,7 +87,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
         self._build = build
         self._default_page_size = provider._chat_page_size
         self._followup_page_size = provider._chat_followup_page_size
-        self.hooks = OperationHooks()
+        self.hooks = AsyncOperationHooks()
 
     async def _fetch_page(
         self,
@@ -408,7 +409,7 @@ class ChatsCollection(RemoteCollection[AsyncChat, _ChatT]):
     ) -> None:
         super().__init__(owner, owner._provider.chats)
         self._build = build
-        self.hooks = SyncOperationHooks(self._collection.hooks)
+        self.hooks = OperationHooks(self._collection.hooks)
 
     def _wrap(self, item: AsyncChat) -> _ChatT:
         return self._build(self._owner, item)

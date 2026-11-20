@@ -8,8 +8,9 @@ from functools import partial
 from types import SimpleNamespace
 
 from webaiprovider.core.bridges import PortalBridge
-from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport, PortalTransport
+from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport
 from webaiprovider.transport.frames import JSPBFrameDecoder, SSEFrameDecoder
+from webaiprovider.transport.portal import PortalTransport
 
 from ._runner import Case, async_case, time_sync
 

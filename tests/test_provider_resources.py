@@ -259,7 +259,6 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertIn("msg-assistant-99", [r.id for r in await chat.responses.list()])
-        self.assertEqual(self.provider.telemetry.snapshot()["successful"], 1)
         self.assertIsInstance(events[0], ThinkingBegin)
         self.assertEqual(
             [event.delta for event in events if isinstance(event, ThinkingDelta)],

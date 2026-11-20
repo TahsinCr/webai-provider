@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
-from ...core import MultiDimensionBoundedCache
+from ...core.cache import BoundedCache
 from ...core.concurrency import gather_bounded, maybe_await
 from ...core.files import same_file_version
 from ...core.json import json_loads
@@ -133,11 +133,13 @@ class ChatGPTClient:
         self.pending_branches: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._owned_temporary_conversations = self.temporary_conversations
         self._owned_pending_branches = self.pending_branches
-        self._continuation_cache = MultiDimensionBoundedCache(
-            max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
-            max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
-            default_ttl=_CONTINUATION_CACHE_TTL_SECONDS,
-            getsizeof=lambda key, value: len(key) + value[2],
+        self._continuation_cache: BoundedCache[str, tuple[float, dict[str, Any], int]] = (
+            BoundedCache(
+                max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
+                max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
+                ttl=_CONTINUATION_CACHE_TTL_SECONDS,
+                getsizeof=lambda key, value: len(key) + value[2],
+            )
         )
         self._sentinel_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
@@ -336,7 +338,7 @@ class ChatGPTClient:
         pending = getattr(self, "pending_branches", None)
         if isinstance(pending, dict):
             pending.pop(conversation_id, None)
-        self._continuation_cache.pop(conversation_id, None)
+        self._continuation_cache.remove(conversation_id)
 
     async def refresh_auth(self) -> None:
         try:

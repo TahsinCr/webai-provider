@@ -9,11 +9,10 @@ from eventflow import AsyncEventBus, EventEnvelope
 from .accounts.status import SessionState, SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .collections import _publish_collection_change
-from .core.hooks import OperationHooks
-from .core.operations import run_pipeline_unwrapped
+from .core.async_hooks import AsyncOperationHooks
+from .core.operations import build_message_request_pipeline, run_pipeline_unwrapped
 from .core.runtime import ProviderRuntime
 from .core.state import LifecycleState
-from .core.telemetry import ProviderTelemetry
 from .errors import FeatureUnavailable, ProviderError
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
@@ -110,12 +109,15 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             account_id=self.account_id,
         )
         self.events: AsyncEventBus[EventEnvelope[str]] = self.runtime.events
-        self.hooks: OperationHooks = self.runtime.hooks
-        self.telemetry: ProviderTelemetry = self.runtime.telemetry
+        self.hooks: AsyncOperationHooks = self.runtime.hooks
         self._chats = self._make_chats()
         self._projects = self._make_projects()
         self.models = AsyncModelsCollection(self._load_models, provider=self)
-        self._send_pipeline = self.runtime.build_send_pipeline(self.models.resolve)
+        self._send_pipeline = build_message_request_pipeline(
+            provider_id=self.id,
+            account_id=self.account_id,
+            model_resolver=self.models.resolve,
+        )
 
     def _make_chats(self) -> _ChatsT:
         return cast("_ChatsT", AsyncChatsCollection(self, AsyncChat))
@@ -536,9 +538,10 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         opened_here = False
         try:
             async with self.runtime.activity():
-                opened_here = await self.runtime.ensure_open(
+                opened_here = await self.runtime.open(
                     self._prepare_session,
                     self._close_session_resources,
+                    reuse_open=True,
                 )
                 chat = await self.chats.create()
                 return await chat.responses.create(

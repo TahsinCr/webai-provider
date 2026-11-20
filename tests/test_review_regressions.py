@@ -352,9 +352,9 @@ class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
                     TransportConfig(**{field: value})
 
     async def test_hook_failure_is_sanitized_and_does_not_stop_later_hooks(self):
-        from webaiprovider.resources.message.operation import OperationHooks
+        from webaiprovider.core.async_hooks import AsyncOperationHooks
 
-        hooks = OperationHooks()
+        hooks = AsyncOperationHooks()
         calls = []
 
         def fail(_event):
@@ -362,7 +362,7 @@ class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
 
         hooks.on("*", fail)
         hooks.on("*", lambda event: calls.append(event))
-        with self.assertLogs("webaiprovider.core.hooks", level="WARNING") as logs:
+        with self.assertLogs("webaiprovider.core.async_hooks", level="WARNING") as logs:
             await hooks.emit(OutputDelta(delta="private-message"))
         self.assertEqual(len(calls), 1)
         self.assertIn("ValueError", logs.output[0])

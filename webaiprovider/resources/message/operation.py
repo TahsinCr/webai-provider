@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 from eventflow import StateMachine
 
 from ...collections import _publish_collection_change
-from ...core.hooks import OperationHooks, SyncOperationHooks
+from ...core.async_hooks import AsyncOperationHooks
+from ...core.hooks import OperationHooks
 from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
 from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
@@ -117,7 +118,7 @@ class AsyncMessageOperation:
     ) -> None:
         self.chat = chat
         self.message = message
-        self.hooks = OperationHooks()
+        self.hooks = AsyncOperationHooks()
         self._executor = executor
         self._response: Response | None = None
         self._assistant_message_id: str | None = None
@@ -146,14 +147,18 @@ class AsyncMessageOperation:
         if self._state_machine.can_transition(target):
             self._state_machine.transition(target)
 
-    def _runtime_and_hooks(self) -> tuple[Any, tuple[OperationHooks, ...]]:
+    def _runtime_and_hooks(self) -> tuple[Any, tuple[AsyncOperationHooks, ...]]:
         provider = getattr(self.chat, "provider", None)
         runtime = getattr(provider, "runtime", None) if provider is not None else None
-        chain: list[OperationHooks] = []
-        if provider is not None and isinstance(getattr(provider, "hooks", None), OperationHooks):
+        chain: list[AsyncOperationHooks] = []
+        if provider is not None and isinstance(
+            getattr(provider, "hooks", None), AsyncOperationHooks
+        ):
             chain.append(provider.hooks)
         responses = getattr(self.chat, "responses", None)
-        if responses is not None and isinstance(getattr(responses, "hooks", None), OperationHooks):
+        if responses is not None and isinstance(
+            getattr(responses, "hooks", None), AsyncOperationHooks
+        ):
             chain.append(responses.hooks)
         chain.append(self.hooks)
         return runtime, tuple(chain)
@@ -280,9 +285,6 @@ class AsyncMessageOperation:
         collected_artifacts: list[Artifact] = []
         session = getattr(self.chat, "provider", None)
         runtime, hooks_chain = self._runtime_and_hooks()
-        telemetry = getattr(session, "telemetry", None)
-        if telemetry is not None:
-            telemetry.record_call()
 
         op_id = runtime.new_operation_id() if runtime is not None else self.message.id
         context = OperationContext(
@@ -301,7 +303,7 @@ class AsyncMessageOperation:
 
         try:
             assert self._executor is not None
-            context = await OperationHooks.run_before(hooks_chain, "chat.send", context)
+            context = await AsyncOperationHooks.run_before(hooks_chain, "chat.send", context)
             if context.prompt is not None and context.prompt != self.message.content:
                 self.message.content = context.prompt
             if context.model is not None and context.model is not self.message.model:
@@ -325,14 +327,10 @@ class AsyncMessageOperation:
                 if isinstance(event, OutputDelta):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
-                        if telemetry is not None:
-                            telemetry.record_ttft(first_token_at - started_at)
                     collected_text.append(event.delta)
                 elif isinstance(event, OutputReplace):
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
-                        if telemetry is not None:
-                            telemetry.record_ttft(first_token_at - started_at)
                     collected_text = [event.text]
                 elif isinstance(event, OutputEnd) and not collected_text and event.text:
                     collected_text.append(event.text)
@@ -376,8 +374,6 @@ class AsyncMessageOperation:
             self._response = response
 
             self._transition_to(OperationState.COMPLETED)
-            if telemetry is not None:
-                telemetry.record_success(duration_s)
             if runtime is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
@@ -395,7 +391,7 @@ class AsyncMessageOperation:
                     resource_id=self.chat.remote_id or self.chat.id,
                     payload={"message_id": response.id},
                 )
-            res_success = await OperationHooks.run_lifecycle(
+            res_success = await AsyncOperationHooks.run_lifecycle(
                 hooks_chain, "on_success", "chat.send", context
             )
             self._hook_results["on_success"] = res_success
@@ -413,8 +409,6 @@ class AsyncMessageOperation:
             context.error = error
             self._cancelled = True
             self._transition_to(OperationState.CANCELLED)
-            if telemetry is not None:
-                telemetry.record_cancelled()
             if runtime is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.shield(
@@ -425,7 +419,7 @@ class AsyncMessageOperation:
                         )
                     )
             res_cancel = await asyncio.shield(
-                OperationHooks.run_lifecycle(hooks_chain, "on_cancelled", "chat.send", context)
+                AsyncOperationHooks.run_lifecycle(hooks_chain, "on_cancelled", "chat.send", context)
             )
             self._hook_results["on_cancelled"] = res_cancel
             await self._finish(TerminalStatus("cancelled", error))
@@ -433,8 +427,6 @@ class AsyncMessageOperation:
         except Exception as exc:
             context.error = exc
             self._transition_to(OperationState.FAILED)
-            if telemetry is not None:
-                telemetry.record_failure(time.perf_counter() - started_at)
             if runtime is not None:
                 with contextlib.suppress(Exception):
                     await runtime.emit(
@@ -443,7 +435,7 @@ class AsyncMessageOperation:
                         resource_id=self.chat.remote_id or self.chat.id,
                         payload={"error_type": type(exc).__name__},
                     )
-            res_error = await OperationHooks.run_lifecycle(
+            res_error = await AsyncOperationHooks.run_lifecycle(
                 hooks_chain, "on_error", "chat.send", context
             )
             self._hook_results["on_error"] = res_error
@@ -455,12 +447,12 @@ class AsyncMessageOperation:
             finally:
                 if cancelled:
                     res_fin = await asyncio.shield(
-                        OperationHooks.run_lifecycle(
+                        AsyncOperationHooks.run_lifecycle(
                             hooks_chain, "on_finally", "chat.send", context
                         )
                     )
                 else:
-                    res_fin = await OperationHooks.run_lifecycle(
+                    res_fin = await AsyncOperationHooks.run_lifecycle(
                         hooks_chain, "on_finally", "chat.send", context
                     )
                 self._hook_results["on_finally"] = res_fin
@@ -482,7 +474,7 @@ class MessageOperation:
     def __init__(self, owner: Provider[Any, Any], operation: AsyncMessageOperation) -> None:
         self._owner = owner
         self._operation = operation
-        self.hooks = SyncOperationHooks(operation.hooks)
+        self.hooks = OperationHooks(operation.hooks)
 
     @property
     def message(self) -> Message:

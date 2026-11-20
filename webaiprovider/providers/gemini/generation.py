@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from ...core import gather_bounded
+from ...core.concurrency import gather_bounded
 from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing

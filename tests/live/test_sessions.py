@@ -3,8 +3,8 @@
 from eventflow import AsyncEventBus
 
 from webaiprovider import (
+    AsyncOperationHooks,
     LifecycleState,
-    OperationHooks,
 )
 from webaiprovider.accounts.status import SessionState, SessionStatus
 from webaiprovider.base import Capability
@@ -20,7 +20,7 @@ class AsyncSessionApiTests(LiveAsyncTestCase):
         )
         self.assertEqual(self.context.session.lifecycle_state, LifecycleState.OPEN)
         self.assertIsInstance(self.context.session.events, AsyncEventBus)
-        self.assertIsInstance(self.context.session.hooks, OperationHooks)
+        self.assertIsInstance(self.context.session.hooks, AsyncOperationHooks)
 
         if Capability.AUTH in self.context.session.capabilities:
             status = await self.call_api("session.status", self.context.session.session_status)

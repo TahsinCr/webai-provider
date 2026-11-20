@@ -9,9 +9,8 @@ from eventflow import EventBus, EventEnvelope
 from .accounts.status import SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .core.bridges import PortalBridge
-from .core.hooks import SyncOperationHooks
+from .core.hooks import OperationHooks
 from .core.state import LifecycleState
-from .core.telemetry import ProviderTelemetry
 from .resources.chat.chat import AsyncChat, Chat
 from .resources.chat.collections import ChatsCollection
 from .resources.message.message import AsyncMessage, Message
@@ -25,7 +24,8 @@ from .resources.model.types import Models
 from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .resources.response.response import Response
-from .transport import AsyncTransport, PortalTransport, Transport
+from .transport import AsyncTransport, Transport
+from .transport.portal import PortalTransport
 
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
@@ -78,7 +78,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._portal_started = False
         self._closed = False
         self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
-        self.hooks: SyncOperationHooks = SyncOperationHooks(self._provider.runtime.hooks)
+        self.hooks: OperationHooks = OperationHooks(self._provider.runtime.hooks)
         self._chats = self._make_chats()
         self._projects = self._make_projects()
         self.models = ModelsCollection(self)
@@ -130,10 +130,6 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     @property
     def lifecycle_state(self) -> LifecycleState:
         return self._provider.lifecycle_state
-
-    @property
-    def telemetry(self) -> ProviderTelemetry:
-        return self._provider.telemetry
 
     def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
         if self._closed:

@@ -14,9 +14,9 @@ from .collections import (
     Collection,
     RemoteCollection,
 )
-from .core.hooks import SyncOperationHooks
+from .core.async_hooks import AsyncOperationHooks
+from .core.hooks import OperationHooks
 from .core.state import LifecycleState, OperationState
-from .core.telemetry import ProviderTelemetry
 from .errors import (
     AccountPaused,
     AmbiguousMatchError,
@@ -67,7 +67,6 @@ from .resources.message.operation import (
     ArtifactDiscovered,
     AsyncMessageOperation,
     MessageOperation,
-    OperationHooks,
     OutputBegin,
     OutputDelta,
     OutputEnd,
@@ -211,13 +210,12 @@ __all__ = [
     "AsyncMessage",
     "MessageOperation",
     "AsyncMessageOperation",
+    "AsyncOperationHooks",
     "OperationHooks",
-    "SyncOperationHooks",
     "OperationState",
     "Project",
     "AsyncProject",
     "ProjectInstruction",
     "AsyncProjectInstruction",
     "Response",
-    "ProviderTelemetry",
 ]

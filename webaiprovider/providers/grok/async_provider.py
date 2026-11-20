@@ -10,7 +10,8 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import ProviderType
 from ...collections import Page
-from ...core import MultiDimensionBoundedCache, gather_bounded
+from ...core.cache import BoundedCache
+from ...core.concurrency import gather_bounded
 from ...errors import AccountPaused, ProviderError, RateLimited
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
@@ -92,16 +93,16 @@ class AsyncGrokProvider(
         self._gate = asyncio.Lock()
         self._catalog: ModelCatalog | None = None
         self._catalog_at = 0.0
-        self._continuations = MultiDimensionBoundedCache(
+        self._continuations = BoundedCache(
             max_entries=_CONTINUATION_LIMIT,
-            default_ttl=_CONTINUATION_TTL,
+            ttl=_CONTINUATION_TTL,
         )
 
     def _active_transport(self) -> AsyncTransport | None:
         return self.client.http
 
     def _take_continuation(self, conversation_id: str) -> str | None:
-        return self._continuations.pop(conversation_id, None)
+        return self._continuations.remove(conversation_id)
 
     def _remember_continuation(self, conversation_id: str, response_id: str) -> None:
         if (
@@ -236,7 +237,7 @@ class AsyncGrokProvider(
         await self.client.request(
             "DELETE", "/rest/app-chat/conversations/" + remote_id(conversation_id)
         )
-        self._continuations.pop(conversation_id, None)
+        self._continuations.remove(conversation_id)
 
     async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
         await self.editor.move_chat(
@@ -375,7 +376,7 @@ class AsyncGrokProvider(
         is_retry = request.action == MessageAction.RETRY
         is_edit = request.action == MessageAction.EDIT
         if is_retry or is_edit:
-            self._continuations.pop(conversation_id, None)
+            self._continuations.remove(conversation_id)
             history = await self._history(conversation_id)
         else:
             cached_parent = self._take_continuation(conversation_id)

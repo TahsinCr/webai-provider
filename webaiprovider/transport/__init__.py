@@ -11,11 +11,8 @@ from .base import (
 from .http import AsyncHTTPTransport, HTTPTransport
 from .retry import parse_retry_after
 from .session import HttpSession
-from .threaded import PortalTransport, ThreadedTransport
 
 __all__ = [
-    "PortalTransport",
-    "ThreadedTransport",
     "AsyncTransport",
     "Transport",
     "TransportConfig",

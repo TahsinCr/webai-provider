@@ -1670,7 +1670,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
                     return chat_obj
 
-                from webaiprovider.core.hooks import OperationHooks
+                from webaiprovider.core.async_hooks import AsyncOperationHooks
                 from webaiprovider.core.runtime import ProviderRuntime
 
                 runtime = ProviderRuntime(
@@ -1693,7 +1693,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     _delete_chat_data=fake_delete_chat,
                     models=SimpleNamespace(refresh=AsyncMock(return_value=[])),
                     chats=SimpleNamespace(
-                        hooks=OperationHooks(),
+                        hooks=AsyncOperationHooks(),
                         create=AsyncMock(),
                         get=AsyncMock(
                             side_effect=lambda cid: Conversation(

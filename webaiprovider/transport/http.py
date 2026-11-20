@@ -16,7 +16,7 @@ from contextlib import (
 )
 from urllib.parse import urlsplit
 
-from ..core import MultiDimensionBoundedCache
+from ..core.cache import BoundedCache
 from ..core.timing import current_send_timing
 from ..errors import ProviderError
 from .base import AsyncTransport, Transport, _AsyncStreamResponse, _StreamResponse
@@ -41,8 +41,8 @@ _PROXY_ENV_VARS = (
     "all_proxy",
 )
 _IDEMPOTENT_METHODS = frozenset(("GET", "HEAD"))
-_DNS_CACHE: MultiDimensionBoundedCache[tuple[str, int, bool], tuple[str, ...]] = (
-    MultiDimensionBoundedCache(max_entries=64, max_bytes=32768, default_ttl=300.0)
+_DNS_CACHE: BoundedCache[tuple[str, int, bool], tuple[str, ...]] = BoundedCache(
+    max_entries=64, max_bytes=32768, ttl=300.0
 )
 _IPV6_CACHE_TTL = 180.0
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
