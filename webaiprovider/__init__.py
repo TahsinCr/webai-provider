@@ -33,11 +33,10 @@ from .errors import (
 from .provider import Provider, ProviderType
 from .providers.chatgpt.async_provider import AsyncChatGPTProvider
 from .providers.chatgpt.catalogs import ChatGPTModels
-from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
+from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection, ChatGPTProjectsCollection
 from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from .providers.chatgpt.provider import (
     ChatGPTChat,
-    ChatGPTProjectsCollection,
     ChatGPTProvider,
 )
 from .providers.chatgpt.resources import AsyncChatGPTChat

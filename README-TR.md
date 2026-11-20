@@ -59,7 +59,7 @@ with ChatGPTProvider(account) as provider:
 ## Temel API
 
 - `BaseProvider`, hesap ve sağlayıcı kimliğini taşır. Asenkron işlemler için `AsyncProvider`, bloklayan çağrılar için `Provider` kullanın. Sağlayıcıya özgü özellikler için `AsyncChatGPTProvider` gibi ilgili sınıfı seçin.
-- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir.
+- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir. Bir ChatGPT sohbetini projeye eklemek veya taşımak için `chat.move_to(project)`, projeden çıkarmak için `chat.move_to(None)` kullanın.
 - Uzak koleksiyonlar sağlayıcı verisini istek üzerine okur. `list(limit=50)` sayfalamayı yönetir, `limit=0` uzak istek yapmaz, `limit=None` ulaşılabilen tüm sayfaları okur. Koleksiyonlar `get()`, `search()`, `find()`, `first()`, `last()` ve `single()` metotlarını paylaşır. `find(single=True)`, birden fazla eşleşmede `AmbiguousMatchError` yükseltir.
 - Model sorguları, sağlayıcı oturumu açılırken yüklenen hesap kataloğunu kullanır. Boş katalog da oturum boyunca saklanır. Kataloğu yeniden yüklemek için `provider.models.refresh()` çağırın.
 - Örtüşen `chat.responses.list()` çağrıları aynı geçmiş isteğini paylaşır. Bağımsız bir istek için `chat.responses.list(fresh=True)` kullanın.

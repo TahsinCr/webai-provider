@@ -17,29 +17,21 @@ from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
-from ...collections import Page, _publish_collection_change
-from ...core import gather_bounded
+from ...collections import Page
 from ...core.concurrency import maybe_await
 from ...core.files import DownloadSource
 from ...core.json import json_dumps
-from ...core.operations import execute_with_hooks
 from ...core.timing import current_send_timing
 from ...errors import (
     FeatureUnavailable,
     ProviderError,
     RateLimited,
     RemoteNotFound,
-    UnsupportedOperationError,
-)
-from ...resources.chat.chat import (
-    AsyncChat,
-    _resolve_project_arg,
 )
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
     ConversationBound,
-    MessageMetadata,
     ProviderRequest,
     ProviderStreamEvent,
     ResponseComplete,
@@ -49,20 +41,19 @@ from ...resources.message.protocol import (
 from ...resources.message.types import target_message
 from ...resources.model.model import ModelCatalog
 from ...resources.project.mutations import ProjectMutationsMixin
-from ...resources.project.project import AsyncProject
 from ...resources.project.types import ProjectData, ProjectOptions
-from ...resources.response.source import sources_from
 from ...transport import (
     AsyncHTTPTransport,
     AsyncTransport,
     TransportConfig,
 )
+from .auth import BrowserSession
 from .base import BaseChatGPTProvider
-from .client import ChatGPTClient
+from .client import ChatGPTClient, prepare_chatgpt_attachments
 from .collections import AsyncChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
 from .errors import ChatGPTAuthenticationError, ChatGPTError
-from .formats import message_files, message_parts, text_from_parts
+from .formats import emit_post_send_events, message_files
 from .projects import ChatGPTProjectEditor
 from .resources import (
     AsyncChatGPTChat,
@@ -73,7 +64,6 @@ from .resources import (
     ChatGPTResponse,
     ChatGPTSource,
 )
-from .session import BrowserSession, SessionPaths
 
 if TYPE_CHECKING:
     from ...accounts.account import Account
@@ -93,110 +83,6 @@ async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None
     raise ProviderError(
         "Deletion could not be confirmed by the server; the local record was preserved. Sync before retrying."
     )
-
-
-async def _prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
-    items = request.attachments
-    attachments: list[Any] = [None] * len(items)
-    pending_uploads: list[tuple[int, dict[str, Any]]] = []
-    for index, item in enumerate(items):
-        if isinstance(item, dict) and ("bytes" in item or "path" in item):
-            pending_uploads.append((index, item))
-        else:
-            attachments[index] = item
-
-    async def run_upload(entry: tuple[int, dict[str, Any]]) -> tuple[int, Any]:
-        index, spec = entry
-        result = await maybe_await(
-            client.upload_file(
-                spec.get("name") or (Path(spec["path"]).name if spec.get("path") else "attachment"),
-                spec.get("mime_type") or "application/octet-stream",
-                spec["bytes"] if spec.get("bytes") is not None else Path(spec["path"]),
-                project_id=request.project_id or None,
-            )
-        )
-        return index, result
-
-    if len(pending_uploads) == 1:
-        index, uploaded = await run_upload(pending_uploads[0])
-        attachments[index] = uploaded
-    elif len(pending_uploads) > 1:
-        results = await gather_bounded(pending_uploads, run_upload, limit=3)
-        for index, uploaded in results:
-            attachments[index] = uploaded
-    return attachments
-
-
-def _emit_chatgpt_post_send_events(
-    remote_id: str,
-    completed: dict[str, Any],
-    previous: object,
-    request: ProviderRequest,
-    publish: Callable[[tuple[str, object]], None],
-    *,
-    emit_bound: bool = True,
-) -> None:
-    response_messages = completed.get("messages", [])
-    previous_ids = set(previous or ())
-    summaries = []
-    for item in response_messages:
-        if item.get("id") in previous_ids or item.get("recipient") not in (None, "all"):
-            continue
-        if (item.get("metadata") or {}).get("is_visually_hidden_from_conversation"):
-            continue
-        if (item.get("author") or {}).get("role") != "assistant":
-            continue
-        content = item.get("content") or {}
-        if item.get("channel") == "analysis" or content.get("content_type") in (
-            "thoughts",
-            "reasoning_recap",
-            "reasoning_summary",
-        ):
-            text = text_from_parts(message_parts(content))
-            if text:
-                summaries.append(text)
-    if summaries:
-        publish(("event", TextReplacement("\n\n".join(summaries), "analysis")))
-
-    final = None
-    last_user_index = None
-    for index in range(len(response_messages) - 1, -1, -1):
-        item = response_messages[index]
-        role = (item.get("author") or {}).get("role")
-        if (
-            final is None
-            and role == "assistant"
-            and item.get("channel") != "analysis"
-            and item.get("recipient") in (None, "all")
-        ):
-            final = item
-        if last_user_index is None and role == "user":
-            last_user_index = index
-        if final is not None and last_user_index is not None:
-            break
-    if final:
-        turn_start = (last_user_index + 1) if last_user_index is not None else 0
-        user = response_messages[last_user_index] if last_user_index is not None else {}
-        metadata = final.get("metadata") or {}
-        publish(
-            (
-                "event",
-                MessageMetadata(
-                    final.get("id"),
-                    user.get("id"),
-                    metadata.get("model_slug") or request.model,
-                    metadata.get("reasoning_effort") or request.effort,
-                    sources_from(final),
-                    files=message_files(*response_messages[turn_start:]),
-                ),
-            )
-        )
-    if emit_bound:
-        publish(("event", ConversationBound(remote_id)))
-
-
-class _Stopped(Exception):
-    pass
 
 
 class AsyncChatGPTProvider(
@@ -231,7 +117,7 @@ class AsyncChatGPTProvider(
             raise ValueError("ChatGPT transport must use the ChatGPT origin")
         self._provided_transport = transport
         self._owned_transport: AsyncHTTPTransport | None = None
-        self.session_state = session or BrowserSession(SessionPaths(account.store()))
+        self.session_state = session or BrowserSession(account.store())
         resolved_factory = ChatGPTClient if client_factory is None else client_factory
         self._factory = resolved_factory
         self._persistent_client = resolved_factory is ChatGPTClient
@@ -348,7 +234,7 @@ class AsyncChatGPTProvider(
                     await self.session_state.load_async()
                 except ChatGPTAuthenticationError:
                     auth_ready = False
-                    stored = await read_session_async(self.session_state.paths.session_file)
+                    stored = await read_session_async(self.session_state.session_file)
                     cookies = stored.get("cookies", stored)
                     if not isinstance(cookies, dict):
                         raise
@@ -391,7 +277,7 @@ class AsyncChatGPTProvider(
                     await self._provided_transport.close()
 
     async def _session_status(self) -> SessionStatus:
-        saved = session_exists(self.session_state.paths.session_file)
+        saved = session_exists(self.session_state.session_file)
         return SessionStatus(
             SessionState.UNKNOWN if saved else SessionState.LOGIN_REQUIRED,
             saved,
@@ -416,7 +302,7 @@ class AsyncChatGPTProvider(
                 raise
         return SessionStatus(
             SessionState.AUTHENTICATED,
-            session_exists(self.session_state.paths.session_file),
+            session_exists(self.session_state.session_file),
         )
 
     async def authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
@@ -426,7 +312,7 @@ class AsyncChatGPTProvider(
     async def _forget_session(self) -> SessionStatus:
         async with self._gate:
             await self._discard_client()
-            await asyncio.to_thread(delete_session, self.session_state.paths.session_file)
+            await asyncio.to_thread(delete_session, self.session_state.session_file)
             self._temporary_conversations.clear()
             self._pending_branches.clear()
         return SessionStatus(SessionState.LOGIN_REQUIRED, False, "browser_session_retained")
@@ -665,7 +551,7 @@ class AsyncChatGPTProvider(
                         )
                     client.temporary_conversations = self._temporary_conversations
                     client.pending_branches = self._pending_branches
-                    attachments = await _prepare_chatgpt_attachments(client, request)
+                    attachments = await prepare_chatgpt_attachments(client, request)
                     remote_id, completed, previous = await maybe_await(
                         client.send_prompt(
                             request.conversation_id,
@@ -683,7 +569,7 @@ class AsyncChatGPTProvider(
                             ),
                         )
                     )
-                    _emit_chatgpt_post_send_events(
+                    emit_post_send_events(
                         remote_id,
                         completed,
                         previous,
@@ -904,61 +790,3 @@ class AsyncChatGPTProvider(
                 raise ValueError("Provider did not return a file download URL")
             headers = dict(client.headers) if urlsplit(target).netloc == "chatgpt.com" else {}
             return DownloadSource(target, sandbox_path.rsplit("/", 1)[-1], True, headers)
-
-    async def move_project_chat(
-        self, chat: AsyncChat | str, project: AsyncProject | str | None
-    ) -> AsyncChat:
-        """Move a ChatGPT chat that already belongs to a project into another project or detach it."""
-        target_chat = (
-            chat
-            if isinstance(chat, AsyncChat)
-            else await self.chats.get(chat, include_projects=True)
-        )
-        if target_chat.provider is not self:
-            raise ValueError("Chat must belong to this ChatGPT provider session")
-        if target_chat.project is None:
-            raise UnsupportedOperationError(
-                "Chat does not belong to a project; use chat.move_to(project) instead"
-            )
-        target_project = _resolve_project_arg(self, project)
-        if target_project is not None and target_chat.remote_id and not target_project.remote_id:
-            raise UnsupportedOperationError(
-                "A remote chat cannot be moved into a project that is not persisted remotely"
-            )
-        target_id = (
-            (target_project.remote_id or target_project.id) if target_project is not None else None
-        )
-        runtime = self.runtime
-        context = runtime.new_context(
-            "chat.move",
-            resource_id=target_chat.remote_id or target_chat.id,
-            parameters={"project_id": target_id},
-        )
-
-        async def work(ctx) -> AsyncChat:
-            if target_chat.remote_id:
-                async with runtime.activity():
-                    self._require_provider()
-                    await self._move_chat_data(target_chat.remote_id, ctx.parameters["project_id"])
-            target_chat.project = target_project
-            return target_chat
-
-        async def on_success(ctx) -> None:
-            if target_chat.remote_id and not target_chat.temporary:
-                await _publish_collection_change(
-                    runtime, "chats", "update", target_chat, operation_id=ctx.operation_id
-                )
-            await runtime.emit(
-                "chat.moved",
-                operation_id=ctx.operation_id,
-                resource_id=target_chat.remote_id or target_chat.id,
-                payload={"project_id": target_id},
-            )
-
-        return await execute_with_hooks(
-            operation_name="chat.move",
-            context=context,
-            hooks_chain=(runtime.hooks, self.chats.hooks),
-            work=work,
-            on_success_event=on_success,
-        )

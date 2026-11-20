@@ -156,8 +156,8 @@ class AsyncProjectApiTests(LiveAsyncTestCase):
                         second_project_entry["remote_id"] = str(project2.remote_id)
                         self.context.save()
                         await self.call_api(
-                            "chatgpt.move_project_chat",
-                            lambda: self.context.session.move_project_chat(loose_chat, project2),
+                            "chatgpt.chat.move_to",
+                            lambda: loose_chat.move_to(project2),
                         )
                         self.assertIsNotNone(loose_chat.project)
                         assert loose_chat.project is not None

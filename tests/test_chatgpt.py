@@ -27,7 +27,6 @@ from webaiprovider.providers.chatgpt import (
     AsyncChatGPTProvider,
     BrowserSession,
     ChatGPTClient,
-    SessionPaths,
 )
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.discovery import project_id
@@ -175,7 +174,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        self.session = BrowserSession(SessionPaths(root / "session", root / "profile"))
+        self.session = BrowserSession(root / "session")
         self.requests = []
 
         def respond(request):
@@ -641,7 +640,7 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            session = BrowserSession(SessionPaths(root / "missing.json", root / "profile"))
+            session = BrowserSession(root / "missing.json")
             with self.assertRaises(AuthenticationError):
                 session.load()
 
@@ -650,7 +649,7 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            session = BrowserSession(root / "session.json")
             http = MagicMock()
             http.get.return_value.status_code = 200
             http.get.return_value.json.return_value = {"accessToken": "verified-token"}
@@ -708,18 +707,18 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            session = BrowserSession(root / "session.json")
             session.save(
                 "https://chatgpt.com/backend-api/conversations", {"authorization": "previous"}
             )
-            before = session.paths.session_file.read_bytes()
+            before = session.session_file.read_bytes()
             http = MagicMock()
             http.get.return_value.status_code = 302
             factory = MagicMock()
             factory.return_value.__enter__.return_value = http
             with patch("curl_cffi.requests.Session", factory), self.assertRaises(ProviderError):
                 session.import_cookies({"__Secure-next-auth.session-token": "login"})
-            self.assertEqual(session.paths.session_file.read_bytes(), before)
+            self.assertEqual(session.session_file.read_bytes(), before)
             http.get.assert_called_once()
 
     async def test_async_bootstrap_saves_provider_token_and_browser_headers(self):
@@ -727,7 +726,7 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            session = BrowserSession(root / "session.json")
             response = MagicMock()
             response.status_code = 200
             response.json.return_value = {"accessToken": "async-verified-token"}
@@ -753,7 +752,7 @@ class _ChatGPTProviderFixture:
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
-        self.session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+        self.session = BrowserSession(root / "session.json")
         self.client = FakeClient(self.session)
         self.provider = AsyncChatGPTProvider(
             provider_account("chatgpt"), session=self.session, client_factory=lambda _: self.client
@@ -783,17 +782,18 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
 
     async def test_session_snapshot_is_not_mistaken_for_verified_authentication(self):
         self.assertEqual((await self.provider.session_status()).state, SessionState.LOGIN_REQUIRED)
-        self.session.paths.session_file.write_text("{}")
+        self.session.session_file.write_text("{}")
         self.assertEqual((await self.provider.session_status()).state, SessionState.UNKNOWN)
         self.assertEqual((await self.provider.authenticate()).state, SessionState.AUTHENTICATED)
 
     async def test_forget_session_retains_browser_profile(self):
-        self.session.paths.session_file.write_text("{}")
-        self.session.paths.profile.mkdir()
+        self.session.session_file.write_text("{}")
+        profile = self.session.session_file.parent / "profile"
+        profile.mkdir()
         result = await self.provider.forget_session()
         self.assertEqual(result.state, SessionState.LOGIN_REQUIRED)
-        self.assertFalse(self.session.paths.session_file.exists())
-        self.assertTrue(self.session.paths.profile.exists())
+        self.assertFalse(self.session.session_file.exists())
+        self.assertTrue(profile.exists())
 
     async def test_history_keeps_provenance_thinking_channel_sources_and_native_fields(self):
         page = await self.provider._list_chats_data(limit=1)
@@ -1690,7 +1690,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.get_conversation.assert_awaited_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
-        from webaiprovider.providers.chatgpt.async_provider import _prepare_chatgpt_attachments
+        from webaiprovider.providers.chatgpt.client import prepare_chatgpt_attachments
 
         entered = 0
         both_entered = asyncio.Event()
@@ -1712,7 +1712,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 {"bytes": b"b", "name": "second.txt", "mime_type": "text/plain"},
             ),
         )
-        result = await _prepare_chatgpt_attachments(self.client, request)
+        result = await prepare_chatgpt_attachments(self.client, request)
         self.assertEqual([item["id"] for item in result], ["id-first.txt", "id-second.txt"])
 
     async def test_stream_request_emits_mid_stream_bound_once_and_skips_trailing_duplicate(self):
@@ -1940,7 +1940,7 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
         self.http = FakeAsyncHTTPClient(lambda req: self._http_handler(req))
         self.transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: self.http)
         self.client = ChatGPTClient(
-            BrowserSession(SessionPaths(root / "session", root / "profile")),
+            BrowserSession(root / "session"),
             authenticate=False,
             transport=self.transport,
         )

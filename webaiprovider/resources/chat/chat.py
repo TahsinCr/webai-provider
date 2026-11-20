@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...collections import _publish_collection_change
 from ...core.files import DownloadSource, download_source
@@ -210,38 +210,64 @@ class AsyncBranchableChat(AsyncChat):
         )
 
 
+_MovableChatT = TypeVar("_MovableChatT", bound="AsyncMovableChat")
+
+
 class AsyncMovableChat(AsyncChat):
-    async def move_to(self: AsyncChat, project: AsyncProject | str) -> AsyncChat:
-        if self.provider is None:
-            raise ProviderError("Chat is not attached to a provider session")
-        if self.project is not None:
-            raise UnsupportedOperationError(
-                "Moving a chat that already belongs to a project is not supported by the common chat contract"
-            )
-        target = _resolve_project_arg(self.provider, project)
-        if target is None:
-            raise UnsupportedOperationError("Moving a chat requires a target project")
-        if self.remote_id and not target.remote_id:
-            raise UnsupportedOperationError(
-                "A remote chat cannot be moved into a project that is not persisted remotely"
-            )
+    async def move_to(self: _MovableChatT, project: AsyncProject | str) -> _MovableChatT:
+        return await self._move_to(project, allow_reassignment=False)
+
+    async def _move_to(
+        self: _MovableChatT,
+        project: AsyncProject | str | None,
+        *,
+        allow_reassignment: bool,
+    ) -> _MovableChatT:
         provider = self.provider
+        if provider is None:
+            raise ProviderError("Chat is not attached to a provider session")
+        target = _resolve_project_arg(provider, project)
+        target_id = (target.remote_id or target.id) if target is not None else None
         runtime = provider.runtime
-        target_id = target.remote_id or target.id
         context = runtime.new_context(
             "chat.move",
             resource_id=self.remote_id or self.id,
             parameters={"project_id": target_id},
         )
 
-        async def work(ctx) -> AsyncChat:
-            if self.remote_id:
-                lock = runtime.send_lock(self.remote_id)
-                async with runtime.activity(send_lock_id=id(lock)):
-                    async with lock:
-                        provider._require_provider()
-                        await provider._move_chat_data(self.remote_id, ctx.parameters["project_id"])
-            self.project = target
+        async def work(ctx) -> _MovableChatT:
+            effective_id = ctx.parameters["project_id"]
+            if effective_id is not None and (
+                not isinstance(effective_id, str) or not effective_id.strip()
+            ):
+                raise ValueError("Project ID must be a non-empty string")
+            destination = (
+                target
+                if effective_id == target_id
+                else _resolve_project_arg(provider, effective_id)
+            )
+            lock = runtime.send_lock(self.remote_id or self.id)
+            async with runtime.activity(send_lock_id=id(lock)), lock:
+                if not allow_reassignment:
+                    if self.project is not None:
+                        raise UnsupportedOperationError(
+                            "Moving a chat that already belongs to a project is not supported by the common chat contract"
+                        )
+                    if destination is None:
+                        raise UnsupportedOperationError("Moving a chat requires a target project")
+                if self.remote_id:
+                    if destination is not None and not destination.remote_id:
+                        raise UnsupportedOperationError(
+                            "A remote chat cannot be moved into a project that is not persisted remotely"
+                        )
+                    provider._require_provider()
+                    await provider._move_chat_data(
+                        self.remote_id, destination.remote_id if destination is not None else None
+                    )
+                self.project = destination
+                ctx.parameters["project_id"] = (
+                    destination.remote_id or destination.id if destination is not None else None
+                )
             return self
 
         async def on_success(ctx) -> None:
@@ -253,7 +279,7 @@ class AsyncMovableChat(AsyncChat):
                 "chat.moved",
                 operation_id=ctx.operation_id,
                 resource_id=self.remote_id or self.id,
-                payload={"project_id": target_id},
+                payload={"project_id": ctx.parameters["project_id"]},
             )
 
         return await execute_with_hooks(

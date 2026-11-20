@@ -19,7 +19,7 @@ from webaiprovider import (
 )
 from webaiprovider.core.timing import SendTiming
 from webaiprovider.errors import ProviderError, RateLimited
-from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession, SessionPaths
+from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
@@ -893,7 +893,7 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             root = Path(directory)
-            session = BrowserSession(SessionPaths(root / "session.json", root / "profile"))
+            session = BrowserSession(root / "session.json")
             with patch("curl_cffi.requests.Session", build_session_cls(False)):
                 session.import_cookies({"oai-did": "did-1"})
             ok_client = instances[-1]

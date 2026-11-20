@@ -1102,10 +1102,10 @@ class TestSyncApi(unittest.TestCase):
         self.assertTrue(provider._provider.thread_ids)
         self.assertEqual(len(set(provider._provider.thread_ids)), 1)
 
-    def test_sync_include_projects_and_chatgpt_move_project_chat(self) -> None:
+    def test_sync_include_projects_and_chatgpt_move_to(self) -> None:
         from webaiprovider.base import Capability
         from webaiprovider.collections import Page
-        from webaiprovider.errors import FeatureUnavailable, UnsupportedOperationError
+        from webaiprovider.errors import FeatureUnavailable
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -1185,23 +1185,17 @@ class TestSyncApi(unittest.TestCase):
             p1 = provider.projects.get("p-1")
             p2 = provider.projects.get("p-2")
 
-            with self.assertRaises(UnsupportedOperationError):
-                provider.move_project_chat(loose, p1)
-
             loose.move_to(p1)
             self.assertIsNotNone(loose.project)
             assert loose.project is not None
             self.assertEqual(loose.project.remote_id, "p-1")
 
-            with self.assertRaises(UnsupportedOperationError):
-                loose.move_to(p2)
-
-            moved = provider.move_project_chat(loose, p2)
+            moved = loose.move_to(p2)
             self.assertIsNotNone(moved.project)
             assert moved.project is not None
             self.assertEqual(moved.project.remote_id, "p-2")
 
-            detached = provider.move_project_chat(moved, None)
+            detached = moved.move_to(None)
             self.assertIsNone(detached.project)
             self.assertEqual(
                 provider._provider.moved,
@@ -1210,6 +1204,36 @@ class TestSyncApi(unittest.TestCase):
 
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_chatgpt_move_serializes_with_sends_and_applies_the_hook_target(self) -> None:
+        account = Account.from_cookies("chatgpt", {})
+        provider = AsyncChatGPTProvider(account)
+        provider._prepare_session = AsyncMock()
+        provider._close_session = AsyncMock()
+        provider._move_chat_data = AsyncMock()
+        chat = provider.chats._new(remote_id="chat")
+        chat.project = provider.projects._new(remote_id="old")
+        selected = provider.projects._new(remote_id="original")
+        hook_ran = asyncio.Event()
+
+        @provider.chats.hooks.before("chat.move")
+        def retarget(context):
+            context.parameters["project_id"] = "updated"
+            hook_ran.set()
+
+        async with provider:
+            with patch.object(provider.runtime, "emit", new_callable=AsyncMock) as emit:
+                async with provider.runtime.send_lock("chat"):
+                    operation = asyncio.create_task(chat.move_to(selected))
+                    await asyncio.wait_for(hook_ran.wait(), timeout=1)
+                    provider._move_chat_data.assert_not_awaited()
+                self.assertIs(await operation, chat)
+
+        provider._move_chat_data.assert_awaited_once_with("chat", "updated")
+        assert chat.project is not None
+        self.assertEqual(chat.project.remote_id, "updated")
+        moved = next(call for call in emit.await_args_list if call.args == ("chat.moved",))
+        self.assertEqual(moved.kwargs["payload"], {"project_id": "updated"})
+
     async def test_project_writes_confirm_incomplete_editor_results_without_replay(self) -> None:
         from dataclasses import replace
         from types import SimpleNamespace

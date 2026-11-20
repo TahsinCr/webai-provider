@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from ...resources.chat.chat import (
     AsyncBranchableChat,
     AsyncMovableChat,
@@ -16,11 +18,19 @@ from ...resources.response.source import Source
 
 
 class AsyncChatGPTChat(AsyncBranchableChat, AsyncMovableChat):
-    pass
+    async def move_to(self, project: AsyncProject | str | None) -> AsyncChatGPTChat:
+        """Assign, transfer, or detach this conversation."""
+        return await self._move_to(project, allow_reassignment=True)
 
 
 class ChatGPTChat(BranchableChat, MovableChat, Chat):
     __slots__ = ()
+
+    def move_to(self, project: Project | AsyncProject | str | None) -> ChatGPTChat:
+        """Assign, transfer, or detach this conversation."""
+        target = project._resource if isinstance(project, Project) else project
+        self._owner._call(cast(AsyncChatGPTChat, self._resource).move_to(target))
+        return self
 
 
 class AsyncChatGPTProject(AsyncProject):

@@ -23,15 +23,17 @@ from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core import MultiDimensionBoundedCache
-from ...core.concurrency import maybe_await
+from ...core.concurrency import gather_bounded, maybe_await
 from ...core.files import same_file_version
 from ...core.json import json_loads
 from ...core.timing import SendTiming, current_send_timing
 from ...errors import RateLimited
+from ...resources.message.protocol import ProviderRequest
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.frames import SSEFrameDecoder
 from ...transport.http import _is_ip_literal
 from ...transport.retry import parse_retry_after
+from .auth import BrowserSession
 from .catalogs import parse_model_catalog
 from .constants import CHATGPT_ORIGIN, DEFAULT_PAGE_SIZE
 from .discovery import (
@@ -46,7 +48,6 @@ from .discovery import (
 from .errors import ChatGPTAuthenticationError, ChatGPTError, SentinelCompatibilityError
 from .formats import message_parts, text_from_parts
 from .sentinel import SentinelRuntime
-from .session import BrowserSession
 
 _CONTINUATION_CACHE_TTL_SECONDS = 60.0
 _CONTINUATION_CACHE_MAX_ITEMS = 8
@@ -78,6 +79,38 @@ def _cached_system_timezone(tz_env: str) -> str | None:
 def system_timezone():
     """Use an actual IANA identifier, omitting the optional field if unknown."""
     return _cached_system_timezone(os.environ.get("TZ", ""))
+
+
+async def prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
+    items = request.attachments
+    attachments: list[Any] = [None] * len(items)
+    pending_uploads: list[tuple[int, dict[str, Any]]] = []
+    for index, item in enumerate(items):
+        if isinstance(item, dict) and ("bytes" in item or "path" in item):
+            pending_uploads.append((index, item))
+        else:
+            attachments[index] = item
+
+    async def run_upload(entry: tuple[int, dict[str, Any]]) -> tuple[int, Any]:
+        index, spec = entry
+        result = await maybe_await(
+            client.upload_file(
+                spec.get("name") or (Path(spec["path"]).name if spec.get("path") else "attachment"),
+                spec.get("mime_type") or "application/octet-stream",
+                spec["bytes"] if spec.get("bytes") is not None else Path(spec["path"]),
+                project_id=request.project_id or None,
+            )
+        )
+        return index, result
+
+    if len(pending_uploads) == 1:
+        index, uploaded = await run_upload(pending_uploads[0])
+        attachments[index] = uploaded
+    elif len(pending_uploads) > 1:
+        results = await gather_bounded(pending_uploads, run_upload, limit=3)
+        for index, uploaded in results:
+            attachments[index] = uploaded
+    return attachments
 
 
 class ChatGPTClient:

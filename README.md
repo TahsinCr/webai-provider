@@ -59,7 +59,7 @@ with ChatGPTProvider(account) as provider:
 ## Core API
 
 - `BaseProvider` provides account and provider identity. Use `AsyncProvider` for async work and `Provider` for blocking calls. Use a provider-specific class such as `AsyncChatGPTProvider` for additional features.
-- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory.
+- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory. For ChatGPT chats, use `chat.move_to(project)` to assign or transfer a chat and `chat.move_to(None)` to detach it.
 - Remote collections read provider data on demand. `list(limit=50)` hides pagination, `limit=0` skips remote work, and `limit=None` reads all available pages. Collections share `get()`, `search()`, `find()`, `first()`, `last()`, and `single()`. `find(single=True)` raises `AmbiguousMatchError` if more than one item matches.
 - Model queries reuse the account catalog loaded when the provider session opens, including an empty catalog. Call `provider.models.refresh()` to reload it.
 - Overlapping calls to `chat.responses.list()` share a history request. Use `chat.responses.list(fresh=True)` for a separate request.

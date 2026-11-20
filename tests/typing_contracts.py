@@ -32,6 +32,7 @@ from webaiprovider.providers.grok import AsyncGrokChat, AsyncGrokProvider, GrokC
 def check(account: Account) -> None:
     p = ChatGPTProvider(account)
     assert_type(p.chats.get("test"), ChatGPTChat)
+    assert_type(p.chats.get("test").move_to(None), ChatGPTChat)
     assert_type(p.chats.list(), list[ChatGPTChat])
     assert_type(p.projects.create("name", memory_share=False), ChatGPTProject)
     assert_type(Provider(account).chats.get("test"), Chat)
@@ -44,7 +45,9 @@ def check(account: Account) -> None:
 
 async def check_async(account: Account) -> None:
     p = AsyncChatGPTProvider(account)
-    assert_type(await p.chats.get("test"), AsyncChatGPTChat)
+    chat = await p.chats.get("test")
+    assert_type(chat, AsyncChatGPTChat)
+    assert_type(await chat.move_to(None), AsyncChatGPTChat)
     assert_type(await p.chats.list(), list[AsyncChatGPTChat])
     assert_type(await p.projects.create("name", memory_share=False), AsyncChatGPTProject)
     assert_type(await AsyncProvider(account).chats.get("test"), AsyncChat)

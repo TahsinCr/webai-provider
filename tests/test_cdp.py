@@ -10,7 +10,7 @@ from unittest.mock import patch
 from curl_cffi import CurlECode, CurlError, CurlOpt, CurlWsFlag
 
 from webaiprovider.accounts import cdp
-from webaiprovider.providers.chatgpt.session import capture_chatgpt_auth
+from webaiprovider.providers.chatgpt.auth import capture_chatgpt_auth
 
 
 class FakeSocket:

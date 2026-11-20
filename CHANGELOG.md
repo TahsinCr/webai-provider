@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Assign, transfer, or detach ChatGPT chats with `chat.move_to(project)` or `chat.move_to(None)`. The operation uses the conversation's send lock and applies the destination selected by hooks consistently.
+- Keep browser authentication in ChatGPT's auth module. Construct `BrowserSession` directly with a credential store or path.
 - Preserve concrete provider and resource types in IDEs, including collection queries and context managers. Construct chat and project resources through their typed collections.
 - Use curl_cffi for local browser debugging WebSockets and remove the separate websocket-client dependency. Require curl_cffi 0.17 or later for blocking WebSocket timeouts and message limits.
 - Define the shared `BaseProvider` as an abstract class with typed chat, project, and model collections.
