@@ -40,8 +40,11 @@ from webaiprovider.transport.async_http import _check_ipv6_connectivity, _open_c
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_async_close_drains_the_stream_and_rejects_reentrant_close(self):
+    async def test_async_close_drains_stream_and_survives_cancellation(self):
         order = []
+        request_close, started_close, closing_client, release_client = (
+            asyncio.Event() for _ in range(4)
+        )
 
         class Client:
             @asynccontextmanager
@@ -52,25 +55,43 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                     order.append("stream")
 
             async def close(self):
+                closing_client.set()
+                await release_client.wait()
                 order.append("client")
 
         transport = AsyncHTTPTransport("https://example.com", client_factory=lambda **_: Client())
         self.addAsyncCleanup(transport.close)
-        started_close = asyncio.Event()
 
         async def close():
+            await request_close.wait()
             started_close.set()
             await transport.close()
 
-        async with transport.stream("GET", "/fixture") as stream:
-            with self.assertRaisesRegex(ProviderError, "active HTTP call"):
-                await transport.close()
-            closing = asyncio.create_task(close())
-            await started_close.wait()
+        closing = asyncio.create_task(close())
+        try:
+            async with transport.stream("GET", "/fixture") as stream:
+                for delegate in (False, True):
+                    with self.assertRaisesRegex(ProviderError, "active HTTP call"):
+                        if delegate:
+                            await asyncio.wait_for(
+                                asyncio.create_task(transport.close()), timeout=1
+                            )
+                        else:
+                            await transport.close()
+                request_close.set()
+                await asyncio.wait_for(started_close.wait(), timeout=1)
+                self.assertFalse(closing.done())
+                self.assertEqual(order, [])
+                self.assertEqual([chunk async for chunk in stream.aiter_bytes()], [b"data"])
+            await asyncio.wait_for(closing_client.wait(), timeout=1)
+            closing.cancel()
+            await asyncio.sleep(0)
             self.assertFalse(closing.done())
-            self.assertEqual(order, [])
-            self.assertEqual([chunk async for chunk in stream.aiter_bytes()], [b"data"])
-        await asyncio.wait_for(closing, timeout=1)
+        finally:
+            request_close.set()
+            release_client.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(closing, timeout=1)
         self.assertEqual(order, ["stream", "client"])
 
     async def test_native_stream_timing_reports_first_byte_and_connection_reuse(self):

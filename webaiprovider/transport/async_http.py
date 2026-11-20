@@ -3,8 +3,8 @@
 import asyncio
 import socket
 import time
-from collections import Counter
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextvars import ContextVar
 from io import BytesIO
 
 from ..core.timing import current_send_timing
@@ -166,25 +166,30 @@ class AsyncHTTPTransport(AsyncTransport):
         self._close_lock = asyncio.Lock()
         self._idle = asyncio.Event()
         self._idle.set()
-        self._callers: Counter[asyncio.Task | None] = Counter()
+        self._active_requests: set[object] = set()
+        self._request_context: ContextVar[object | None] = ContextVar(
+            "webai_http_request", default=None
+        )
 
     @asynccontextmanager
     async def _activity(self):
         caller = asyncio.current_task()
-        if not self._callers[caller]:
-            async with self._close_lock:
-                self._callers[caller] = 1
-                self._idle.clear()
+        request = object()
+        if self._request_context.get() in self._active_requests:
+            self._active_requests.add(request)
         else:
-            self._callers[caller] += 1
+            async with self._close_lock:
+                self._active_requests.add(request)
+                self._idle.clear()
+        token = self._request_context.set(request)
         try:
             yield
         finally:
-            self._callers[caller] -= 1
-            if not self._callers[caller]:
-                del self._callers[caller]
-                if not self._callers:
-                    self._idle.set()
+            if asyncio.current_task() is caller:
+                self._request_context.reset(token)
+            self._active_requests.remove(request)
+            if not self._active_requests:
+                self._idle.set()
 
     def _connect(self):
         if self._client_getter is not None:
@@ -419,19 +424,29 @@ class AsyncHTTPTransport(AsyncTransport):
     async def _before_close(self):
         await self._after()
 
+    async def _close_clients(self):
+        try:
+            await self._before_close()
+        finally:
+            if self.client is not None:
+                self._retired_clients[id(self.client)] = self.client
+                self.client = None
+            for client_id, client in tuple(self._retired_clients.items()):
+                await client.close()
+                self._retired_clients.pop(client_id)
+
     async def close(self):
-        if self._callers[asyncio.current_task()]:
+        if self._request_context.get() in self._active_requests:
             raise ProviderError("Cannot close the transport from an active HTTP call")
         async with self._close_lock:
             await self._idle.wait()
-            try:
-                await self._before_close()
-            finally:
-                retired = list(self._retired_clients.values())
-                self._retired_clients.clear()
-                self._owned_refs.clear()
-                client, self.client = self.client, None
-                if client is not None:
-                    retired.append(client)
-                for item in retired:
-                    await item.close()
+            cleanup = asyncio.create_task(self._close_clients())
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
