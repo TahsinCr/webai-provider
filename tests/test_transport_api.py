@@ -40,6 +40,39 @@ from webaiprovider.transport.async_http import _check_ipv6_connectivity, _open_c
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_close_drains_the_stream_and_rejects_reentrant_close(self):
+        order = []
+
+        class Client:
+            @asynccontextmanager
+            async def stream(self, *_args, **_kwargs):
+                try:
+                    yield FakeHTTPResponse(200, content=b"data")
+                finally:
+                    order.append("stream")
+
+            async def close(self):
+                order.append("client")
+
+        transport = AsyncHTTPTransport("https://example.com", client_factory=lambda **_: Client())
+        self.addAsyncCleanup(transport.close)
+        started_close = asyncio.Event()
+
+        async def close():
+            started_close.set()
+            await transport.close()
+
+        async with transport.stream("GET", "/fixture") as stream:
+            with self.assertRaisesRegex(ProviderError, "active HTTP call"):
+                await transport.close()
+            closing = asyncio.create_task(close())
+            await started_close.wait()
+            self.assertFalse(closing.done())
+            self.assertEqual(order, [])
+            self.assertEqual([chunk async for chunk in stream.aiter_bytes()], [b"data"])
+        await asyncio.wait_for(closing, timeout=1)
+        self.assertEqual(order, ["stream", "client"])
+
     async def test_native_stream_timing_reports_first_byte_and_connection_reuse(self):
         from curl_cffi import CurlInfo
 

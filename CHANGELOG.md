@@ -93,6 +93,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Drain active asynchronous HTTP requests and streams before closing their clients.
 - Deliver synchronous events emitted during a blocking call on that call's thread.
 
 - Let blocking HTTP requests and streams finish before closing their client. Keep a client in use by another request alive during timeout recovery.

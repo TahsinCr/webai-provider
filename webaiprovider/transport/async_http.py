@@ -3,6 +3,7 @@
 import asyncio
 import socket
 import time
+from collections import Counter
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from io import BytesIO
 
@@ -162,6 +163,28 @@ class AsyncHTTPTransport(AsyncTransport):
         self._owned_refs: dict[int, int] = {}
         self._retired_clients: dict[int, object] = {}
         self._dns = _OriginDNS(self.origin)
+        self._close_lock = asyncio.Lock()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._callers: Counter[asyncio.Task | None] = Counter()
+
+    @asynccontextmanager
+    async def _activity(self):
+        caller = asyncio.current_task()
+        if not self._callers[caller]:
+            async with self._close_lock:
+                self._callers[caller] = 1
+                self._idle.clear()
+        else:
+            self._callers[caller] += 1
+        try:
+            yield
+        finally:
+            self._callers[caller] -= 1
+            if not self._callers[caller]:
+                del self._callers[caller]
+                if not self._callers:
+                    self._idle.set()
 
     def _connect(self):
         if self._client_getter is not None:
@@ -273,6 +296,10 @@ class AsyncHTTPTransport(AsyncTransport):
         return self._acquire_client()
 
     async def send(self, method, path, *, check_status=True, **options):
+        async with self._activity():
+            return await self._send_request(method, path, check_status=check_status, **options)
+
+    async def _send_request(self, method, path, *, check_status, **options):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
@@ -340,6 +367,14 @@ class AsyncHTTPTransport(AsyncTransport):
 
     @asynccontextmanager
     async def stream(self, method, path, *, check_status=True, **options):
+        async with (
+            self._activity(),
+            self._stream_response(method, path, check_status=check_status, **options) as response,
+        ):
+            yield response
+
+    @asynccontextmanager
+    async def _stream_response(self, method, path, *, check_status, **options):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
@@ -381,15 +416,22 @@ class AsyncHTTPTransport(AsyncTransport):
         finally:
             await self._after()
 
+    async def _before_close(self):
+        await self._after()
+
     async def close(self):
-        try:
-            await self._after()
-        finally:
-            retired = list(self._retired_clients.values())
-            self._retired_clients.clear()
-            self._owned_refs.clear()
-            client, self.client = self.client, None
-            if client is not None:
-                retired.append(client)
-            for item in retired:
-                await item.close()
+        if self._callers[asyncio.current_task()]:
+            raise ProviderError("Cannot close the transport from an active HTTP call")
+        async with self._close_lock:
+            await self._idle.wait()
+            try:
+                await self._before_close()
+            finally:
+                retired = list(self._retired_clients.values())
+                self._retired_clients.clear()
+                self._owned_refs.clear()
+                client, self.client = self.client, None
+                if client is not None:
+                    retired.append(client)
+                for item in retired:
+                    await item.close()

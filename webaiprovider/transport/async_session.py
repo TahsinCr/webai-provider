@@ -81,12 +81,6 @@ class AsyncHttpSession(_SessionCookies, AsyncHTTPTransport):
             else:
                 self._record_persisted(cookies, now)
 
-    async def close(self):
-        saved_after = self._after_response
-        self._after_response = None
-        try:
-            if self._dirty or self.client is not None:
-                await self.persist(force=True)
-            await super().close()
-        finally:
-            self._after_response = saved_after
+    async def _before_close(self):
+        if self._dirty or self.client is not None:
+            await self.persist(force=True)
