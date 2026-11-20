@@ -128,7 +128,7 @@ class AccountsTests(unittest.TestCase):
         self.assertIsNone(status.reason)
 
 
-    def test_blocking_provider_reads_session_status_on_caller_without_portal(self):
+    def test_blocking_provider_reads_session_status_on_caller_without_starting_loop(self):
         caller = threading.get_ident()
         threads = []
 
@@ -142,9 +142,9 @@ class AccountsTests(unittest.TestCase):
                     provider = Provider(Account.from_cookies(kind, {"fixture": "saved"}))
                     try:
                         with patch.object(
-                            type(provider._portal),
-                            "call",
-                            side_effect=AssertionError("Status must not start the portal"),
+                            provider,
+                            "_call",
+                            side_effect=AssertionError("Status must not start the loop"),
                         ):
                             status = provider.session_status()
                         self.assertEqual(status.state, SessionState.UNKNOWN)

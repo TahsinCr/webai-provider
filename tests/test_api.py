@@ -1056,7 +1056,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSyncApi(unittest.TestCase):
-    def test_sync_chat_project_and_stream_share_one_portal(self) -> None:
+    def test_sync_chat_project_and_stream_run_on_the_caller(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
         class RecordingChatGPTProvider(AsyncChatGPTProvider):
@@ -1100,7 +1100,7 @@ class TestSyncApi(unittest.TestCase):
         )
         self.assertFalse(provider._provider.memory_share)
         self.assertTrue(provider._provider.thread_ids)
-        self.assertEqual(len(set(provider._provider.thread_ids)), 1)
+        self.assertEqual(set(provider._provider.thread_ids), {threading.get_ident()})
 
     def test_sync_include_projects_and_chatgpt_move_to(self) -> None:
         from webaiprovider.base import Capability
@@ -1435,7 +1435,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                     executor=sync_base._operation._executor,
                 )
 
-            custom_async_op = provider._portal.call(make_custom())
+            custom_async_op = provider._call(make_custom())
             custom_sync_op = MessageOperation(provider, custom_async_op)
             self.assertEqual(
                 [type(e) for e in custom_sync_op.stream()],

@@ -80,7 +80,9 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
-- Remove the unused `ThreadedTransport` adapter. The blocking provider API continues to share its active connection through the portal.
+- Remove the background provider portal and threaded HTTP facade. Blocking provider operations and their synchronous event callbacks run on the calling thread. Calls on a shared provider instance are serialized.
+
+- Remove the unused `ThreadedTransport` adapter.
 - Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
 
 ### Fixed

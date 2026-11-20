@@ -36,7 +36,6 @@ from webaiprovider.transport import (
     TransportConfig,
 )
 from webaiprovider.transport.async_http import _check_ipv6_connectivity, _open_curl_stream
-from webaiprovider.transport.portal import PortalTransport
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
@@ -463,59 +462,62 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 cls(Account.from_cookies(provider_id, {}), transport=transport)
         client.request.assert_not_awaited()
 
-    async def test_portal_transport_cancels_inflight_async_stream_immediately_on_close(self):
-        loop = asyncio.get_running_loop()
-        started = asyncio.Event()
-        exited = asyncio.Event()
 
-        class HungStream:
-            async def aiter_content(self):
-                started.set()
-                await asyncio.Event().wait()
-                yield b"never"
+class BlockingTransportTests(unittest.TestCase):
+    def test_blocking_stream_close_cancels_a_pending_read(self):
+        started = threading.Event()
+        received = threading.Event()
+        chunks = []
+        exits = []
+        errors = []
 
-        async_tr = SimpleNamespace(
-            origin="https://chatgpt.com",
-            config=TransportConfig(),
-            url=lambda path: "https://chatgpt.com" + path,
-            close=AsyncMock(),
-        )
+        async def hung_chunks():
+            yield b"first"
+            started.set()
+            await asyncio.Event().wait()
+            yield b"never"
 
         @asynccontextmanager
         async def open_stream(*_args, **_kwargs):
             try:
-                yield FakeHTTPResponse(200, stream=HungStream().aiter_content())
+                yield FakeHTTPResponse(200, stream=hung_chunks())
             finally:
-                exited.set()
+                exits.append(True)
 
-        async_tr.stream = open_stream
-        portal = PortalTransport(
-            lambda coro: asyncio.run_coroutine_threadsafe(coro, loop).result(),
-            lambda: async_tr,
+        transport = AsyncHTTPTransport(
+            "https://chatgpt.com", client_getter=lambda: SimpleNamespace(stream=open_stream)
         )
-
-        read_done = threading.Event()
+        provider = Provider(Account.from_cookies("chatgpt", {}), transport=transport)
+        provider._provider._prepare_session = AsyncMock()
+        provider._provider._close_session = AsyncMock()
+        provider.open()
+        self.addCleanup(provider.close)
         holder = []
 
-        def worker():
+        def read():
             try:
-                with portal.stream("POST", "/backend-api/f/conversation") as stream:
+                with provider.transport.stream("POST", "/fixture") as stream:
                     holder.append(stream)
-                    list(stream.iter_bytes())
-            finally:
-                read_done.set()
+                    for chunk in stream.iter_bytes():
+                        chunks.append(chunk)
+                        received.set()
+            except BaseException as failure:
+                errors.append(failure)
 
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-        await asyncio.to_thread(holder[0].close)
-        await asyncio.wait_for(exited.wait(), timeout=1.0)
-        self.assertTrue(await asyncio.to_thread(read_done.wait, 1.0))
-        await asyncio.to_thread(portal.close)
-        async_tr.close.assert_awaited_once_with()
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        self.assertTrue(started.wait(timeout=2))
+        self.assertTrue(received.wait(timeout=2))
+        closer = threading.Thread(target=holder[0].close, daemon=True)
+        closer.start()
+        closer.join(timeout=2)
+        reader.join(timeout=2)
+        self.assertFalse(closer.is_alive())
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(chunks, [b"first"])
+        self.assertEqual(exits, [True])
+        self.assertEqual(errors, [])
 
-
-class BlockingTransportTests(unittest.TestCase):
     def test_default_buffered_curl_transport_runs_in_caller_and_bounds_body(self):
         from curl_cffi.requests import Session
         from curl_cffi.requests.exceptions import Timeout
@@ -711,7 +713,7 @@ class BlockingTransportTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_sync_facade_uses_one_portal_for_raw_requests_and_stream_cleanup(self):
+    def test_sync_raw_requests_and_stream_cleanup_run_on_the_caller(self):
         threads = set()
         closed = threading.Event()
         exits = []
@@ -764,8 +766,7 @@ class BlockingTransportTests(unittest.TestCase):
                 provider.transport.stream("GET", "/stream"),
             ):
                 raise ValueError("caller failure")
-        self.assertEqual(len(threads), 1)
-        self.assertNotIn(threading.get_ident(), threads)
+        self.assertEqual(threads, {threading.get_ident()})
         self.assertTrue(closed.is_set())
         self.assertEqual(len(exits), 3)
 

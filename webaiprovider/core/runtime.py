@@ -60,6 +60,7 @@ class ProviderRuntime:
         self.account_id = account_id
         self.events = AsyncEventBus(error_policy=ErrorPolicy.ISOLATE)
         self.sync_events = EventBus(error_policy=ErrorPolicy.ISOLATE)
+        self._dispatch_sync_event: Callable[[EventEnvelope[str]], None] | None = None
         self._sync_event_pool: BoundedWorkPool | None = None
         self._sync_event_lock = threading.RLock()
         self._event_sequence = 0
@@ -194,7 +195,9 @@ class ProviderRuntime:
                 "payload": payload,
             },
         )
-        if sync_subscribers:
+        if sync_subscribers and self._dispatch_sync_event is not None:
+            self._dispatch_sync_event(event)
+        elif sync_subscribers:
             with self._sync_event_lock:
                 if self._sync_event_pool is None:
                     self._sync_event_pool = BoundedWorkPool(max_workers=1, max_pending=512)
@@ -221,10 +224,11 @@ class ProviderRuntime:
         try:
             await self.events.close()
         finally:
-            if self._sync_event_pool is None:
-                self.sync_events.close()
-            else:
-                await asyncio.to_thread(self._close_sync_events)
+            if self._dispatch_sync_event is None:
+                if self._sync_event_pool is None:
+                    self.sync_events.close()
+                else:
+                    await asyncio.to_thread(self._close_sync_events)
 
     async def emit_safe(
         self,

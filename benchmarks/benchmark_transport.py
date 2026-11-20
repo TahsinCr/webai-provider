@@ -6,11 +6,11 @@ import json
 from contextlib import asynccontextmanager, contextmanager
 from functools import partial
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from webaiprovider.core.bridges import PortalBridge
+from webaiprovider import Account, Provider
 from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport
 from webaiprovider.transport.frames import JSPBFrameDecoder, SSEFrameDecoder
-from webaiprovider.transport.portal import PortalTransport
 
 from ._runner import Case, async_case, time_sync
 
@@ -39,7 +39,7 @@ def _sync_transport(count: int) -> HTTPTransport:
     return HTTPTransport(_ORIGIN, client_getter=lambda: client)
 
 
-def _async_transport(count: int, size: int) -> AsyncHTTPTransport:
+def _async_transport(count: int, size: int, *, origin: str = _ORIGIN) -> AsyncHTTPTransport:
     @asynccontextmanager
     async def stream(*args, **options):
         yield SimpleNamespace(
@@ -47,7 +47,7 @@ def _async_transport(count: int, size: int) -> AsyncHTTPTransport:
         )
 
     client = SimpleNamespace(stream=stream)
-    return AsyncHTTPTransport(_ORIGIN, client_getter=lambda: client)
+    return AsyncHTTPTransport(origin, client_getter=lambda: client)
 
 
 def _buffered(count: int) -> tuple[Case, Case]:
@@ -74,17 +74,22 @@ def _buffered(count: int) -> tuple[Case, Case]:
     )
 
 
-def _portal_stream(loops: int) -> float:
-    transport = _async_transport(_STREAM_CHUNKS, 64)
-    with PortalBridge() as portal:
-        facade = PortalTransport(portal.call, lambda: transport)
+def _provider_stream(loops: int) -> float:
+    transport = _async_transport(_STREAM_CHUNKS, 64, origin="https://claude.ai")
+    provider = Provider(Account.from_cookies("claude", {}), transport=transport)
+    provider._provider._prepare_session = AsyncMock()
+    provider._provider._close_session = AsyncMock()
+    provider.open()
+    try:
 
         def consume():
-            with facade.stream("GET", "/fixture") as response:
+            with provider.transport.stream("GET", "/fixture") as response:
                 if sum(map(len, response.iter_bytes())) != _STREAM_CHUNKS * 64:
                     raise AssertionError("Unexpected stream size")
 
         return time_sync(loops, consume)
+    finally:
+        provider.close()
 
 
 def _frame_case(*, jspb: bool) -> Case:
@@ -118,7 +123,7 @@ def cases() -> tuple[Case, ...]:
     return (
         *_buffered(1),
         *_buffered(_BODY_CHUNKS),
-        Case("transport.portal.stream.4000", _portal_stream, {"chunks": _STREAM_CHUNKS}),
+        Case("transport.provider.stream.4000", _provider_stream, {"chunks": _STREAM_CHUNKS}),
         _frame_case(jspb=False),
         _frame_case(jspb=True),
     )

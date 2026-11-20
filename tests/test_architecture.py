@@ -1082,7 +1082,7 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
         self.assertEqual(len(loops), 2)
         self.assertIs(loops[0], loops[1])
 
-    def test_sync_off_loop_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
+    def test_sync_caller_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
         sync_provider = _ScriptedSyncProvider(_account())
         async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
         async_provider.seed_paginated(5, page_size=50)
@@ -1113,7 +1113,8 @@ class TestSyncFacadeOffLoopAndConcurrency(unittest.TestCase):
             self.assertTrue(callback_done.wait(timeout=3.0))
             self.assertEqual(reentered_ids, [["c-0", "c-1", "c-2"]])
             self.assertEqual(len(async_provider.loop_threads), 1)
-            self.assertNotIn(callback_threads[0], async_provider.loop_threads)
+            self.assertEqual(callback_threads, [threading.get_ident()])
+            self.assertEqual(async_provider.loop_threads, {threading.get_ident()})
 
             # Multi-thread sync facade concurrency sharing single runtime
             def worker(idx: int) -> str:

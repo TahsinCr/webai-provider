@@ -45,7 +45,7 @@ asyncio.run(main())
 
 `Account.from_browser()` uses the default browser when `browser` is omitted. Browser-cookie access may require the browser to be closed or the operating system keyring to be unlocked. To supply credentials directly, use `Account.from_cookies(provider, cookies)` and keep the cookie values in your own secure store.
 
-For blocking code, use the provider-specific sync class. It keeps one event-loop portal alive for the provider's lifetime:
+For blocking code, use the provider-specific sync class. Each provider reuses one event loop and runs operations on the calling thread:
 
 ```python
 from webaiprovider import Account, ChatGPTProvider, ProviderType
@@ -106,7 +106,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncHttpSession` | Account cookie persistence over the shared async transport |
 | `HttpSession` | Account cookie persistence over blocking HTTP on the calling thread |
 
-Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The current blocking provider API shares the provider's async connection through its portal.
+Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The blocking API drives the same asynchronous HTTP session from the calling thread. Calls on the same provider instance are serialized.
 
 A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
 

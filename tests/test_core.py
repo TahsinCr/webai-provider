@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import BoundedCache
 from webaiprovider.core.concurrency import gather_bounded
 
@@ -65,37 +64,6 @@ class CoreCacheTests(unittest.TestCase):
 
         cache.clear()
         self.assertEqual(cache.stats().entries, 0)
-
-
-class CorePortalBridgeTests(unittest.TestCase):
-    def test_portal_bridge_runs_coroutine_synchronously(self) -> None:
-        with PortalBridge(name="TestPortal") as bridge:
-
-            async def add(a: int, b: int) -> int:
-                await asyncio.sleep(0.001)
-                return a + b
-
-            result = bridge.call(add(15, 27))
-            self.assertEqual(result, 42)
-
-    def test_portal_bridge_shares_one_loop_and_closes_on_last_release(self) -> None:
-        import threading
-
-        async def loop_and_thread():
-            return id(asyncio.get_running_loop()), threading.get_ident()
-
-        first = PortalBridge()
-        second = PortalBridge()
-        try:
-            id1 = first.call(loop_and_thread())
-            id2 = second.call(loop_and_thread())
-            self.assertEqual(id1, id2)
-
-            first.close()
-            # Closing one handle must keep the shared portal alive for the second.
-            self.assertEqual(second.call(loop_and_thread()), id1)
-        finally:
-            second.close()
 
 
 if __name__ == "__main__":

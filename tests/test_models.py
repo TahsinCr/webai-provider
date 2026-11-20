@@ -329,7 +329,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingCatalogTests(unittest.TestCase):
-    def test_loaded_catalog_lists_and_resolves_on_caller_without_portal(self):
+    def test_loaded_catalog_lists_and_resolves_on_caller_without_starting_loop(self):
         provider = Provider(Account.from_cookies("grok", {}))
         self.addCleanup(provider.close)
         model = ModelRef("grok", "fast", "Grok 3")
@@ -344,7 +344,7 @@ class BlockingCatalogTests(unittest.TestCase):
             return item is model
 
         with patch.object(
-            type(provider._portal), "call", side_effect=AssertionError("Unexpected portal call")
+            provider, "_call", side_effect=AssertionError("Unexpected loop call")
         ):
             self.assertEqual(provider.models.list(predicate, limit=1), [model])
             self.assertEqual(provider.models.resolve(model), ModelSelection(model))

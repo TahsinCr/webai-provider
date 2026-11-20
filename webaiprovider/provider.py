@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable
+from contextlib import contextmanager
+from threading import Lock, RLock
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from eventflow import EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
 from .base import BaseProvider, Capability, ProviderType, _construct_provider
-from .core.bridges import PortalBridge
 from .core.hooks import OperationHooks
 from .core.state import LifecycleState
 from .errors import ProviderError
@@ -26,7 +28,6 @@ from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .resources.response.response import Response
 from .transport import AsyncTransport, Transport
-from .transport.portal import PortalTransport
 
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
@@ -57,7 +58,7 @@ _ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
 
 
 class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
-    """Synchronous provider API sharing the asynchronous provider implementation."""
+    """Run provider operations on the caller using a session-scoped event loop."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, Provider, args, options, asynchronous=False)
@@ -74,11 +75,15 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         if transport is not None:
             options["transport"] = transport
         self._provider = self._make_async_provider(account, **options)
-        self._portal = PortalBridge()
-        self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
-        self._portal_started = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._call_lock = RLock()
+        self.transport: Transport = _ProviderTransport(self)
         self._closed = False
+        self._closing = False
         self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
+        self._pending_events: deque[EventEnvelope[str]] = deque()
+        self._publishing = False
+        self._provider.runtime._dispatch_sync_event = self._pending_events.append
         self.hooks: OperationHooks = OperationHooks(self._provider.runtime.hooks)
         self._chats = self._make_chats()
         self._projects = self._make_projects()
@@ -142,35 +147,76 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         raise RuntimeError("Use AsyncProvider in async code; Provider cannot block an event loop")
 
     def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
+        task = None
         try:
             self._ensure_blocking_call()
-        except RuntimeError:
-            close = getattr(coroutine, "close", None)
-            if close is not None:
-                close()
-            raise
-        self._portal_started = True
-        return self._portal.call(coroutine)
+            with self._call_lock:
+                self._ensure_blocking_call()
+                if self._loop is None:
+                    self._loop = asyncio.new_event_loop()
+                task = asyncio.ensure_future(coroutine, loop=self._loop)
+                try:
+                    return self._loop.run_until_complete(task)
+                except BaseException:
+                    if not task.done():
+                        task.cancel()
+                        self._loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                    raise
+                finally:
+                    self._publish_pending_events()
+        finally:
+            if task is None:
+                close = getattr(coroutine, "close", None)
+                if close is not None:
+                    close()
+
+    def _publish_pending_events(self) -> None:
+        if self._publishing:
+            return
+        self._publishing = True
+        try:
+            while self._pending_events:
+                self.events.publish(self._pending_events.popleft())
+        finally:
+            self._publishing = False
+            if self._closed:
+                self.events.close()
 
     def open(self: _ProviderT) -> _ProviderT:
-        if self._closed:
-            raise RuntimeError("A closed provider cannot be reopened")
-        if not self._provider.runtime.opened:
-            self._call(self._provider.open())
+        self._ensure_blocking_call()
+        with self._call_lock:
+            if self._closed:
+                raise RuntimeError("A closed provider cannot be reopened")
+            if not self._provider.runtime.opened:
+                self._call(self._provider.open())
         return self
 
     def close(self) -> None:
         if self._closed:
             return
-        try:
-            if self._portal_started:
-                self._call(self._provider.close())
-            else:
-                self._provider.runtime.sync_events.close()
-        finally:
-            if not self._portal_started or self._provider.runtime.closed:
+        if self._loop is not None:
+            self._ensure_blocking_call()
+        with self._call_lock:
+            if self._closed or self._closing:
+                return
+            loop = self._loop
+            if loop is None:
+                self.events.close()
                 self._closed = True
-                self._portal.close()
+                return
+            self._closing = True
+            try:
+                self._call(self._provider.close())
+            finally:
+                self._closing = False
+                if self._provider.runtime.closed:
+                    self._closed = True
+                    try:
+                        loop.run_until_complete(_finish_loop())
+                    finally:
+                        loop.close()
+                        if not self._publishing:
+                            self.events.close()
 
     def authenticate(self) -> SessionStatus:
         return self._call(self._provider.authenticate())
@@ -200,3 +246,137 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
+
+
+async def _finish_loop() -> None:
+    loop = asyncio.get_running_loop()
+    pending = asyncio.all_tasks(loop) - {asyncio.current_task()}
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    await loop.shutdown_asyncgens()
+    await loop.shutdown_default_executor()
+
+
+class _ProviderTransport(Transport):
+    """Expose the provider's existing HTTP session through the synchronous API."""
+
+    def __init__(self, owner: Provider[Any, Any]) -> None:
+        self._owner = owner
+
+    @property
+    def origin(self):
+        return self._owner._provider.transport.origin
+
+    @property
+    def config(self):
+        return self._owner._provider.transport.config
+
+    def url(self, path):
+        return self._owner._provider.transport.url(path)
+
+    def send(self, method, path, **options):
+        return self._owner._call(self._owner._provider.transport.send(method, path, **options))
+
+    def request(self, method, path, **options):
+        return self._owner._call(self._owner._provider.transport.request(method, path, **options))
+
+    @contextmanager
+    def stream(self, method, path, **options):
+        manager = self._owner._provider.transport.stream(method, path, **options)
+        response = self._owner._call(manager.__aenter__())
+        stream = _ProviderStream(self._owner, manager, response)
+        try:
+            yield stream
+        except BaseException as error:
+            if not stream._finish(type(error), error, error.__traceback__):
+                raise
+        else:
+            stream.close()
+
+    def close(self):
+        self._owner._call(self._owner._provider.transport.close())
+
+
+class _ProviderStream:
+    def __init__(self, owner, manager, response):
+        self.status_code = response.status_code
+        self.headers = response.headers
+        self._owner = owner
+        self._manager = manager
+        self._chunks = response.aiter_bytes()
+        self._reader = None
+        self._producer = None
+        self._buffer: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        self._ready = asyncio.Event()
+        self._done = False
+        self._error: Exception | None = None
+        self._closed = False
+        self._state_lock = Lock()
+
+    async def _fill(self):
+        try:
+            async for chunk in self._chunks:
+                await self._buffer.put(chunk)
+                self._ready.set()
+        except Exception as error:
+            self._error = error
+        finally:
+            self._done = True
+            self._ready.set()
+
+    async def _read_batch(self):
+        with self._state_lock:
+            if self._closed:
+                return ()
+            self._reader = asyncio.current_task()
+        try:
+            if self._producer is None:
+                self._producer = asyncio.create_task(self._fill())
+            if self._buffer.empty() and not self._done:
+                await self._ready.wait()
+            self._ready.clear()
+            batch = []
+            while not self._buffer.empty():
+                batch.append(self._buffer.get_nowait())
+            if not batch and self._error is not None:
+                raise self._error
+            return batch
+        except asyncio.CancelledError:
+            if self._closed:
+                return ()
+            raise
+        finally:
+            with self._state_lock:
+                self._reader = None
+
+    def iter_bytes(self):
+        while not self._closed:
+            batch = self._owner._call(self._read_batch())
+            if not batch:
+                return
+            for chunk in batch:
+                if self._closed:
+                    return
+                yield chunk
+
+    async def _exit(self, exception):
+        producer = self._producer
+        if producer is not None and not producer.done():
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+        return await self._manager.__aexit__(*exception)
+
+    def _finish(self, *exception):
+        with self._state_lock:
+            if self._closed:
+                return False
+            self._closed = True
+            reader = self._reader
+            if reader is not None:
+                reader.get_loop().call_soon_threadsafe(reader.cancel)
+        return self._owner._call(self._exit(exception))
+
+    def close(self):
+        self._finish(None, None, None)

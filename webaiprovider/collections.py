@@ -688,7 +688,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
 
 
 class RemoteCollection(BaseCollection[U], Generic[_ItemT, U]):
-    """Stateless synchronous facade over an AsyncRemoteCollection via LoopPortal."""
+    """Synchronous view of the provider's remote collection."""
 
     def __init__(self, owner: Provider[Any, Any], collection: AsyncBaseCollection[_ItemT]) -> None:
         self._owner = owner
