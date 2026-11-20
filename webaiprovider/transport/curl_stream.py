@@ -108,6 +108,7 @@ def open_blocking_curl_stream(session, method, url, options):
                 proxies_list=[session.proxies, options.pop("proxies", None)],
                 verify_list=[session.verify, options.pop("verify", None)],
                 trust_env=session.trust_env,
+                impersonate=options.pop("impersonate", None) or session.impersonate,
                 allow_redirects=False,
                 accept_encoding=options.pop("accept_encoding", "gzip, deflate, br"),
                 curl_options=session.curl_options,

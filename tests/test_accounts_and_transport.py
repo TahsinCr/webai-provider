@@ -34,7 +34,7 @@ from webaiprovider.errors import (
     RemoteNotFound,
 )
 from webaiprovider.transport import (
-    HttpSession,
+    AsyncHttpSession,
     parse_retry_after,
 )
 
@@ -243,7 +243,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             p = Path(folder) / "claude.json"
             save_session(p, {"sessionKey": "sk-test"})
-            session = HttpSession("https://claude.ai", p, "sessionKey")
+            session = AsyncHttpSession("https://claude.ai", p, "sessionKey")
             self.assertEqual(session.url("/api/user"), "https://claude.ai/api/user")
 
             for invalid in (

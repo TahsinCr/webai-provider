@@ -177,7 +177,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             persist=AsyncMock(),
         )
         with patch(
-            "webaiprovider.providers.grok.client.HttpSession",
+            "webaiprovider.providers.grok.client.AsyncHttpSession",
             return_value=bind_stream(session, "https://grok.com"),
         ):
             transport = GrokClient(Path("unused"))
@@ -191,7 +191,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_authentication_uses_protected_user_settings_resource(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
         with patch(
-            "webaiprovider.providers.grok.client.HttpSession",
+            "webaiprovider.providers.grok.client.AsyncHttpSession",
             return_value=bind_stream(session, "https://grok.com"),
         ):
             transport = GrokClient(Path("unused"))
@@ -204,7 +204,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_authentication_rejects_missing_resource_payload(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value=None))
         with patch(
-            "webaiprovider.providers.grok.client.HttpSession",
+            "webaiprovider.providers.grok.client.AsyncHttpSession",
             return_value=bind_stream(session, "https://grok.com"),
         ):
             transport = GrokClient(Path("unused"))

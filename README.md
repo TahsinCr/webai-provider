@@ -78,10 +78,10 @@ Every provider exposes `provider.transport` for origin-scoped `send`, JSON `requ
 
 ```python
 from webaiprovider import Account, AsyncClaudeProvider, ProviderType
-from webaiprovider.transport import HttpSession, TransportConfig
+from webaiprovider.transport import AsyncHttpSession, TransportConfig
 
 account = Account.from_browser(ProviderType.CLAUDE)
-transport = HttpSession(
+transport = AsyncHttpSession(
     "https://claude.ai",
     account.store(),
     "sessionKey",
@@ -103,9 +103,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Async and blocking extension contracts |
 | `AsyncHTTPTransport` | Async HTTP client with streaming context; defaults to curl-cffi |
 | `HTTPTransport` | Blocking curl_cffi transport |
-| `HttpSession` | Account cookie persistence over the shared async transport |
+| `AsyncHttpSession` | Account cookie persistence over the shared async transport |
+| `HttpSession` | Account cookie persistence over blocking HTTP on the calling thread |
 
-Claude and Grok use `HttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The current blocking provider API shares the provider's async connection through its portal.
+Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The current blocking provider API shares the provider's async connection through its portal.
 
 A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
 

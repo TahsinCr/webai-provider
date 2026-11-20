@@ -10,7 +10,7 @@ from .base import (
 )
 from .http import AsyncHTTPTransport, HTTPTransport
 from .retry import parse_retry_after
-from .session import HttpSession
+from .session import AsyncHttpSession, HttpSession
 
 __all__ = [
     "AsyncTransport",
@@ -21,6 +21,7 @@ __all__ = [
     "AsyncStreamResponse",
     "AsyncHTTPTransport",
     "HTTPTransport",
+    "AsyncHttpSession",
     "HttpSession",
     "parse_retry_after",
 ]

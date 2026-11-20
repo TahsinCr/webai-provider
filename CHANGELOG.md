@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Provide a calling-thread `HttpSession` for saved-account HTTP requests and streams. The asynchronous counterpart is `AsyncHttpSession`.
+
 - Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.
 
 - Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.

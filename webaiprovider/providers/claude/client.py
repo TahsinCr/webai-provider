@@ -31,7 +31,7 @@ from ...resources.message.protocol import (
 from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
-from ...transport import HttpSession
+from ...transport import AsyncHttpSession
 from ...transport.frames import SSEFrameDecoder
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
@@ -94,7 +94,7 @@ def organization_from_bootstrap(data, selected):
 
 class ClaudeClient:
     def __init__(self, credential_file, *, session=None, transport=None):
-        self.session = session or HttpSession("https://claude.ai", credential_file, "sessionKey")
+        self.session = session or AsyncHttpSession("https://claude.ai", credential_file, "sessionKey")
         self.http = transport or self.session
         if transport is not None and self.http.origin != "https://claude.ai":
             raise ValueError("Provider transport origin does not match its account")

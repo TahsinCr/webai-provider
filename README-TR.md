@@ -78,10 +78,10 @@ Tüm sağlayıcılar, kendi origin’iyle sınırlı `send`, JSON `request` ve p
 
 ```python
 from webaiprovider import Account, AsyncClaudeProvider, ProviderType
-from webaiprovider.transport import HttpSession, TransportConfig
+from webaiprovider.transport import AsyncHttpSession, TransportConfig
 
 account = Account.from_browser(ProviderType.CLAUDE)
-transport = HttpSession(
+transport = AsyncHttpSession(
     "https://claude.ai",
     account.store(),
     "sessionKey",
@@ -103,9 +103,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Asenkron ve senkron uzantı sözleşmeleri |
 | `AsyncHTTPTransport` | Akış bağlamı sunan asenkron HTTP istemcisi; varsayılanı curl-cffi’dir |
 | `HTTPTransport` | Senkron curl_cffi istemcisi |
-| `HttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
+| `AsyncHttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
+| `HttpSession` | Hesap çerezlerini kaydeden, çağıran thread’de çalışan senkron HTTP oturumu |
 
-Claude ve Grok `HttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Mevcut senkron sağlayıcı API’si, sağlayıcının asenkron bağlantısını portal üzerinden paylaşır.
+Claude ve Grok `AsyncHttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Mevcut senkron sağlayıcı API’si, sağlayıcının asenkron bağlantısını portal üzerinden paylaşır.
 
 Özel bir uygulama, `AsyncTransport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
 

@@ -78,10 +78,10 @@ with ChatGPTProvider(account) as provider:
 
 ```python
 from webaiprovider import Account, AsyncClaudeProvider, ProviderType
-from webaiprovider.transport import HttpSession, TransportConfig
+from webaiprovider.transport import AsyncHttpSession, TransportConfig
 
 account = Account.from_browser(ProviderType.CLAUDE)
-transport = HttpSession(
+transport = AsyncHttpSession(
     "https://claude.ai",
     account.store(),
     "sessionKey",
@@ -103,9 +103,10 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncTransport` / `Transport` | Контракты асинхронных и синхронных расширений |
 | `AsyncHTTPTransport` | Асинхронный HTTP-клиент с потоковым контекстом; по умолчанию используется curl-cffi |
 | `HTTPTransport` | Синхронный curl_cffi-клиент |
-| `HttpSession` | Сохранение cookies аккаунта через общий асинхронный transport |
+| `AsyncHttpSession` | Сохранение cookies аккаунта через общий асинхронный transport |
+| `HttpSession` | Сохранение cookies аккаунта через синхронный HTTP в вызывающем потоке |
 
-Claude и Grok используют `HttpSession`. Gemini и ChatGPT выполняют веб-запросы через `AsyncHTTPTransport`. Текущий синхронный API использует асинхронное соединение провайдера через портал.
+Claude и Grok используют `AsyncHttpSession`. Gemini и ChatGPT выполняют веб-запросы через `AsyncHTTPTransport`. Текущий синхронный API использует асинхронное соединение провайдера через портал.
 
 Собственная реализация может предоставить `send`, `stream` и `close` для `AsyncTransport` либо настроить встроенную реализацию через `client_factory`. Стандартные параметры HTTP, такие как заголовки, параметры, JSON и данные, передаются выбранному backend. Форматы multipart и специфичные для backend параметры относятся к его API расширения.
 

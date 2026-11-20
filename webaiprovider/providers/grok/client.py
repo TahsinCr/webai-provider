@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from ...core.json import json_loads
 from ...errors import AccountPaused, ProviderError
-from ...transport import HttpSession
+from ...transport import AsyncHttpSession
 from ...transport.frames import SSEFrameDecoder, aiter_bounded_lines
 from .base import validate_upload_candidate
 
@@ -60,7 +60,7 @@ def _iter_bounded_lines(response):
 
 class GrokClient:
     def __init__(self, credential_file, *, client_factory=None, transport=None):
-        self.session = HttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
+        self.session = AsyncHttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
         self.http = transport or self.session
         if transport is not None and self.http.origin != "https://grok.com":
             raise ValueError("Provider transport origin does not match its account")

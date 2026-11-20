@@ -21,7 +21,40 @@ from webaiprovider.providers.claude.client import ClaudeClient, organization_fro
 from webaiprovider.providers.claude.errors import ClaudeRequestNotSent
 from webaiprovider.providers.gemini.projects import GeminiProjectEditor
 from webaiprovider.providers.gemini.rpc import GeminiRPC
-from webaiprovider.transport import HttpSession
+from webaiprovider.transport import AsyncHttpSession, HttpSession
+
+
+class BlockingSessionTests(unittest.TestCase):
+    def test_saved_account_http_request_runs_on_caller_and_persists_cookies(self):
+        from curl_cffi.requests import Session
+
+        caller = threading.get_ident()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.json"
+            save_session(path, {"sessionKey": "fixture"})
+
+            def request(client, method, url, *, allow_redirects, content_callback, **options):
+                self.assertEqual(threading.get_ident(), caller)
+                self.assertFalse(allow_redirects)
+                self.assertEqual(client.cookies.get("sessionKey"), "fixture")
+                self.assertEqual(client.impersonate, "chrome")
+                self.assertEqual(client.headers["origin"], "https://claude.ai")
+                client.cookies.set("sessionKey", "rotated", domain="claude.ai")
+                content_callback(b'{"ok":true}')
+                return FakeHTTPResponse(200)
+
+            with (
+                patch.object(Session, "request", autospec=True, side_effect=request) as send,
+                patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                HttpSession("https://claude.ai", path, "sessionKey") as session,
+            ):
+                with self.assertRaises(ValueError):
+                    session.request("GET", "https://example.test/")
+                send.assert_not_called()
+                self.assertEqual(session.request("GET", "/fixture"), {"ok": True})
+                self.assertEqual(read_session(path)["sessionKey"], "rotated")
+                self.assertTrue(session.authenticated)
+                send.assert_called_once()
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
@@ -36,7 +69,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             close=AsyncMock(),
         )
         self.factory = Mock(return_value=self.client)
-        self.session = HttpSession(
+        self.session = AsyncHttpSession(
             "https://claude.ai", self.path, "sessionKey", client_factory=self.factory
         )
         self.addAsyncCleanup(self.session.close)
@@ -107,7 +140,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             (429, RateLimited),
         ]:
             with self.subTest(status=status), self.assertRaises(kind):
-                HttpSession.check(FakeHTTPResponse(status, headers={"retry-after": "2"}))
+                AsyncHttpSession.check(FakeHTTPResponse(status, headers={"retry-after": "2"}))
 
     def test_rate_limit_accepts_http_date_retry_after(self):
         now = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -119,12 +152,12 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.transport.base.time.time", return_value=now.timestamp()),
             self.assertRaises(RateLimited) as error,
         ):
-            HttpSession.check(response)
+            AsyncHttpSession.check(response)
         self.assertEqual(error.exception.retry_after, 30)
 
         response = FakeHTTPResponse(429, headers={"retry-after": "not-a-date"})
         with self.assertRaises(RateLimited) as error:
-            HttpSession.check(response)
+            AsyncHttpSession.check(response)
         self.assertIsNone(error.exception.retry_after)
 
     def test_invalid_credentials_are_rejected(self):
@@ -647,7 +680,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 save_calls.append(dict(cookies))
                 await original_save(target_path, cookies)
 
-            http_session = HttpSession(
+            http_session = AsyncHttpSession(
                 "https://claude.ai",
                 path,
                 "sessionKey",
@@ -765,7 +798,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     save_calls.append(dict(cookies))
                     await original_save(target_path, cookies)
 
-                http_session = HttpSession(
+                http_session = AsyncHttpSession(
                     origin,
                     path,
                     required_cookie,
@@ -789,7 +822,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         import webaiprovider.transport.session as session_module
         from webaiprovider.accounts.credentials import save_session
-        from webaiprovider.transport.session import HttpSession
+        from webaiprovider.transport.session import AsyncHttpSession
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"
@@ -799,7 +832,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 cookies=SimpleNamespace(jar=[], get_dict=lambda: dict(jar_cookies)),
                 close=AsyncMock(),
             )
-            http_session = HttpSession(
+            http_session = AsyncHttpSession(
                 "https://claude.ai",
                 path,
                 "sessionKey",
