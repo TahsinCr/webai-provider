@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
@@ -17,6 +17,18 @@ from .types import Models
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
+
+
+def _resolve_model_selection(
+    target: Models | EffortRef | ModelRef | ModelSelection | str,
+    models: Sequence[ModelRef],
+) -> ModelSelection:
+    result = SelectionResolver.resolve(target, models)
+    if isinstance(result, ModelRef):
+        return ModelSelection(result)
+    if isinstance(result, ModelSelection):
+        return result
+    raise TypeError("Selection did not resolve to a model")
 
 
 class AsyncModelsCollection(AsyncCollection[ModelRef]):
@@ -95,12 +107,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         self,
         target: Models | EffortRef | ModelRef | ModelSelection | str,
     ) -> ModelSelection:
-        result = SelectionResolver.resolve(target, await self.list())
-        if isinstance(result, ModelRef):
-            return ModelSelection(result)
-        if isinstance(result, ModelSelection):
-            return result
-        raise TypeError("Selection did not resolve to a model")
+        return _resolve_model_selection(target, await self.list())
 
 
 class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
@@ -113,8 +120,11 @@ class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
         *,
         limit: int | None = None,
     ) -> list[ModelRef]:
-        async_pred = self._wrap_predicate(predicate)
-        return self._owner._call(self._collection.list(async_pred, limit=limit))
+        self._owner._ensure_blocking_call()
+        items = self._collection._items
+        if items is not None:
+            return self._filter_items(items, predicate, limit=limit)
+        return self._owner._call(self._collection.list(predicate, limit=limit))
 
     def refresh(self) -> list[ModelRef]:
         return self._owner._call(self._collection.refresh())
@@ -122,4 +132,8 @@ class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
     def resolve(
         self, target: Models | EffortRef | ModelRef | ModelSelection | str
     ) -> ModelSelection:
+        self._owner._ensure_blocking_call()
+        items = self._collection._items
+        if items is not None:
+            return _resolve_model_selection(target, items)
         return self._owner._call(self._collection.resolve(target))

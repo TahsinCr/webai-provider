@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 import unittest
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
 from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
+from webaiprovider.provider import Provider
 from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels, parse_model_catalog
 from webaiprovider.providers.claude.catalogs import (
     ClaudeModels,
@@ -324,6 +326,29 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             await catalog.refresh()
         self.assertEqual((await catalog.list())[0], model)
         self.assertEqual(loads, 2)
+
+
+class BlockingCatalogTests(unittest.TestCase):
+    def test_loaded_catalog_lists_and_resolves_on_caller_without_portal(self):
+        provider = Provider(Account.from_cookies("grok", {}))
+        self.addCleanup(provider.close)
+        model = ModelRef("grok", "fast", "Grok 3")
+        loader = AsyncMock(return_value=[model])
+        provider._provider.models._loader = loader
+
+        self.assertEqual(provider.models.list(), [model])
+        caller = threading.get_ident()
+
+        def predicate(item):
+            self.assertEqual(threading.get_ident(), caller)
+            return item is model
+
+        with patch.object(
+            type(provider._portal), "call", side_effect=AssertionError("Unexpected portal call")
+        ):
+            self.assertEqual(provider.models.list(predicate, limit=1), [model])
+            self.assertEqual(provider.models.resolve(model), ModelSelection(model))
+        loader.assert_awaited_once_with(True)
 
 
 class EntitlementTests(unittest.TestCase):
