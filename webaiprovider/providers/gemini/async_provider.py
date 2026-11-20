@@ -179,7 +179,7 @@ class AsyncGeminiProvider(
         await self._connect()
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
-    async def _session_status(self) -> SessionStatus:
+    def _session_status(self) -> SessionStatus:
         saved = session_exists(self.cookie_file)
         if self._client:
             state = SessionState.AUTHENTICATED

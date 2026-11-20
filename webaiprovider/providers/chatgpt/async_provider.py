@@ -276,7 +276,7 @@ class AsyncChatGPTProvider(
                 if self._provided_transport is not None:
                     await self._provided_transport.close()
 
-    async def _session_status(self) -> SessionStatus:
+    def _session_status(self) -> SessionStatus:
         saved = session_exists(self.session_state.session_file)
         return SessionStatus(
             SessionState.UNKNOWN if saved else SessionState.LOGIN_REQUIRED,

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.fakes import FakeHTTPResponse
+from webaiprovider import Provider
 from webaiprovider.accounts import (
     Account,
     FileCredentialStore,
@@ -124,6 +126,34 @@ class AccountsTests(unittest.TestCase):
         self.assertEqual(status.state, SessionState.AUTHENTICATED)
         self.assertTrue(status.saved_snapshot)
         self.assertIsNone(status.reason)
+
+
+    def test_blocking_provider_reads_session_status_on_caller_without_portal(self):
+        caller = threading.get_ident()
+        threads = []
+
+        def exists(_store):
+            threads.append(threading.get_ident())
+            return True
+
+        with patch.object(MemoryCredentialStore, "exists", exists):
+            for kind in ("chatgpt", "claude", "gemini", "grok"):
+                with self.subTest(provider=kind):
+                    provider = Provider(Account.from_cookies(kind, {"fixture": "saved"}))
+                    try:
+                        with patch.object(
+                            type(provider._portal),
+                            "call",
+                            side_effect=AssertionError("Status must not start the portal"),
+                        ):
+                            status = provider.session_status()
+                        self.assertEqual(status.state, SessionState.UNKNOWN)
+                        self.assertTrue(status.saved_snapshot)
+                    finally:
+                        provider.close()
+                    with self.assertRaisesRegex(RuntimeError, "provider is closed"):
+                        provider.session_status()
+        self.assertEqual(threads, [caller] * 4)
 
 
 class AuthTests(unittest.TestCase):

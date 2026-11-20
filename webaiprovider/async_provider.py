@@ -340,7 +340,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def _authenticate(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "not_implemented")
 
-    async def _session_status(self) -> SessionStatus:
+    def _session_status(self) -> SessionStatus:
         return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
 
     async def _forget_session(self) -> SessionStatus:
@@ -409,7 +409,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
 
     async def session_status(self) -> SessionStatus:
         async with self.runtime.activity():
-            return await self._session_status()
+            return self._session_status()
 
     async def forget_session(self) -> SessionStatus:
         async with self.runtime.activity(), self.models._lock:

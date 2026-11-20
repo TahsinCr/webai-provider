@@ -6,6 +6,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Read the synchronous provider session status on the calling thread without starting the background portal.
+
 - Provide a calling-thread `HttpSession` for saved-account HTTP requests and streams. The asynchronous counterpart is `AsyncHttpSession`.
 
 - Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.

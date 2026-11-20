@@ -11,6 +11,7 @@ from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .core.bridges import PortalBridge
 from .core.hooks import OperationHooks
 from .core.state import LifecycleState
+from .errors import ProviderError
 from .resources.chat.chat import AsyncChat, Chat
 from .resources.chat.collections import ChatsCollection
 from .resources.message.message import AsyncMessage, Message
@@ -131,23 +132,23 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def lifecycle_state(self) -> LifecycleState:
         return self._provider.lifecycle_state
 
-    def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
+    def _ensure_blocking_call(self) -> None:
         if self._closed:
-            close = getattr(coroutine, "close", None)
-            if close is not None:
-                close()
             raise RuntimeError("The provider is closed")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            pass
-        else:
+            return
+        raise RuntimeError("Use AsyncProvider in async code; Provider cannot block an event loop")
+
+    def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
+        try:
+            self._ensure_blocking_call()
+        except RuntimeError:
             close = getattr(coroutine, "close", None)
             if close is not None:
                 close()
-            raise RuntimeError(
-                "Use AsyncProvider in async code; Provider cannot block an event loop"
-            )
+            raise
         self._portal_started = True
         return self._portal.call(coroutine)
 
@@ -175,7 +176,11 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         return self._call(self._provider.authenticate())
 
     def session_status(self) -> SessionStatus:
-        return self._call(self._provider.session_status())
+        self._ensure_blocking_call()
+        runtime = self._provider.runtime
+        if runtime.closing or runtime.closed:
+            raise ProviderError("Provider is closing or is closed")
+        return self._provider._session_status()
 
     def forget_session(self) -> SessionStatus:
         return self._call(self._provider.forget_session())

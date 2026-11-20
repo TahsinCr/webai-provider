@@ -129,7 +129,7 @@ class AsyncGrokProvider(
         await self.client.authenticate()
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
-    async def _session_status(self) -> SessionStatus:
+    def _session_status(self) -> SessionStatus:
         saved = session_exists(self.credential_file)
         if self.client.session.authenticated:
             state = SessionState.AUTHENTICATED
