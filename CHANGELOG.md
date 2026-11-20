@@ -77,6 +77,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Return synchronous chat and message resources from `Provider.ask()` across all four providers.
+
 - Keep synchronous providers available for a cleanup retry after a failed close.
 - Require project mutation confirmations to match the target project and requested change.
 - Run live API scenarios on Python 3.10 with isolated sessions and reuse a shared session on Python 3.11 and later.

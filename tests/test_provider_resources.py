@@ -445,3 +445,8 @@ class ProviderResourceFamilyTests(unittest.TestCase):
                     self.assertIs(type(sent), type(response))
                     self.assertIs(type(sent.message), type(response.message))
                     self.assertEqual(sent.remote_id, "answer-2")
+
+                    standalone = provider.ask("New conversation")
+                    self.assertIs(type(standalone), type(response))
+                    self.assertIs(type(standalone.chat), type(chat))
+                    self.assertIs(type(standalone.message), type(response.message))

@@ -56,7 +56,7 @@ _ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
 
 
 class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
-    """Synchronous provider API backed by one persistent async ProviderRuntime."""
+    """Synchronous provider API sharing the asynchronous provider implementation."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, Provider, args, options, asynchronous=False)
@@ -187,7 +187,8 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
     ) -> Response:
-        return self._call(self._provider.ask(prompt, model=model, attachments=attachments))
+        response = self._call(self._provider.ask(prompt, model=model, attachments=attachments))
+        return self._wrap_response(response)
 
     def __enter__(self: _ProviderT) -> _ProviderT:
         return self.open()
