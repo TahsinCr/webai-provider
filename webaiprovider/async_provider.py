@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from eventflow import AsyncEventBus, EventEnvelope
 
 from .accounts.status import SessionState, SessionStatus
-from .base import BaseProvider, Capability
+from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .collections import _publish_collection_change
 from .core.hooks import OperationHooks
 from .core.operations import run_pipeline_unwrapped
@@ -15,7 +15,6 @@ from .core.runtime import ProviderRuntime
 from .core.state import LifecycleState
 from .core.telemetry import ProviderTelemetry
 from .errors import FeatureUnavailable, ProviderError
-from .provider import ProviderType, _construct_provider
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
@@ -59,7 +58,9 @@ if TYPE_CHECKING:
     from .resources.model.model import ModelCatalog
 
 
-class AsyncProvider(BaseProvider):
+class AsyncProvider(
+    BaseProvider[AsyncChatsCollection, AsyncProjectsCollection, AsyncModelsCollection]
+):
     """Asynchronous provider session backed by one ProviderRuntime."""
 
     def __new__(cls, *args: Any, **options: Any):
@@ -111,14 +112,6 @@ class AsyncProvider(BaseProvider):
         if active is None:
             raise ProviderError("This provider has no configured transport")
         return active
-
-    @property
-    def id(self) -> str:
-        return self.type.value
-
-    @property
-    def account_id(self) -> str:
-        return self.account.id
 
     @property
     def lifecycle_state(self) -> LifecycleState:

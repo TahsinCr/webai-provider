@@ -82,7 +82,9 @@ class PersistentClient:
 class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_reuses_prepared_client_and_discards_it_after_cancel(self):
         PersistentClient.instances.clear()
-        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentClient):
+        with patch(
+            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", PersistentClient
+        ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"), session=object(), client_factory=PersistentClient
             )
@@ -873,7 +875,10 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.client.get_project = get_project
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as browser,
-            patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as delay,
+            patch(
+                "webaiprovider.providers.chatgpt.async_provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as delay,
         ):
             await self.provider._delete_project_data("g-p-created")
             browser.assert_not_awaited()
@@ -932,7 +937,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         )
         with (
             patch(
-                "webaiprovider.providers.chatgpt.provider.AsyncHTTPTransport",
+                "webaiprovider.providers.chatgpt.async_provider.AsyncHTTPTransport",
                 wraps=AsyncHTTPTransport,
             ) as transports,
             patch(
@@ -1419,7 +1424,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await asyncio.wait_for(release_confirm.wait(), 1.0)
 
         with patch(
-            "webaiprovider.providers.chatgpt.provider.confirm_deleted",
+            "webaiprovider.providers.chatgpt.async_provider.confirm_deleted",
             side_effect=blocked_confirm,
         ):
             task = asyncio.create_task(self.provider._delete_chat_data("cid-1"))
@@ -1433,7 +1438,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
     async def test_delete_chat_skips_confirm_deleted_when_server_confirms_patch(self):
         self.client.delete_conversation = AsyncMock(return_value=True)
         with patch(
-            "webaiprovider.providers.chatgpt.provider.confirm_deleted",
+            "webaiprovider.providers.chatgpt.async_provider.confirm_deleted",
             side_effect=AssertionError("unexpected confirm_deleted polling"),
         ):
             await self.provider._delete_chat_data("cid-1")
@@ -1593,7 +1598,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 self.closed.set()
 
         with patch(
-            "webaiprovider.providers.chatgpt.provider.ChatGPTClient", PersistentNativeClient
+            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", PersistentNativeClient
         ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
@@ -1626,7 +1631,9 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 self._conversation_endpoint_verified = True
                 created.append(self)
 
-        with patch("webaiprovider.providers.chatgpt.provider.ChatGPTClient", InspectableClient):
+        with patch(
+            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", InspectableClient
+        ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
                 session=self.session,
@@ -1683,7 +1690,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.get_conversation.assert_awaited_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
-        from webaiprovider.providers.chatgpt.provider import _prepare_chatgpt_attachments
+        from webaiprovider.providers.chatgpt.async_provider import _prepare_chatgpt_attachments
 
         entered = 0
         both_entered = asyncio.Event()

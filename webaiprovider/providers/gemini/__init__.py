@@ -20,7 +20,7 @@ _EXPORTS = {
     "GeminiSource": "resources",
     "AsyncGeminiChat": "resources",
     "GeminiProvider": "provider",
-    "AsyncGeminiProvider": "provider",
+    "AsyncGeminiProvider": "async_provider",
     "Notebooks": "notebooks",
 }
 __all__ = list(_EXPORTS)

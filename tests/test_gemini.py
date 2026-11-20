@@ -131,7 +131,9 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             models=(),
             discover_models=AsyncMock(return_value=(first,)),
         )
-        with patch("webaiprovider.providers.gemini.provider.session_exists", return_value=True):
+        with patch(
+            "webaiprovider.providers.gemini.async_provider.session_exists", return_value=True
+        ):
             await asyncio.gather(provider._prepare_session(), provider._load_catalog())
         client.open.assert_awaited_once_with()
         client.discover_models.assert_awaited_once_with()
@@ -965,23 +967,27 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider.rpc.call.await_count, 0)
 
     async def test_chat_metadata_cache_expires_after_verification_ttl(self):
-        from webaiprovider.providers.gemini.provider import _CHAT_METADATA_TTL_SECONDS
+        from webaiprovider.providers.gemini.async_provider import _CHAT_METADATA_TTL_SECONDS
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
         metadata = ["conversation", "request", "response"]
-        with patch("webaiprovider.providers.gemini.provider.time.monotonic", return_value=100.0):
+        with patch(
+            "webaiprovider.providers.gemini.async_provider.time.monotonic", return_value=100.0
+        ):
             provider._remember_chat_metadata("conversation", metadata)
 
         with patch(
-            "webaiprovider.providers.gemini.provider.time.monotonic",
+            "webaiprovider.providers.gemini.async_provider.time.monotonic",
             return_value=100.0 + _CHAT_METADATA_TTL_SECONDS - 1,
         ):
             self.assertEqual(provider._take_chat_metadata("conversation"), metadata)
 
-        with patch("webaiprovider.providers.gemini.provider.time.monotonic", return_value=100.0):
+        with patch(
+            "webaiprovider.providers.gemini.async_provider.time.monotonic", return_value=100.0
+        ):
             provider._remember_chat_metadata("conversation", metadata)
         with patch(
-            "webaiprovider.providers.gemini.provider.time.monotonic",
+            "webaiprovider.providers.gemini.async_provider.time.monotonic",
             return_value=100.0 + _CHAT_METADATA_TTL_SECONDS + 1,
         ):
             self.assertIsNone(provider._take_chat_metadata("conversation"))
@@ -1531,7 +1537,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         notebooks.get.assert_not_awaited()
 
     async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
-        from webaiprovider.providers.gemini import provider as gemini_provider_mod
+        from webaiprovider.providers.gemini import async_provider as gemini_provider_mod
         from webaiprovider.resources.message.protocol import MessageMetadata
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
@@ -1923,7 +1929,10 @@ class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch.object(provider.editor, "delete", new_callable=AsyncMock) as delete,
-            patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as wait,
+            patch(
+                "webaiprovider.providers.gemini.async_provider.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as wait,
         ):
             await provider._delete_project_data("notebooks/abcdef")
             delete.assert_awaited_once_with("notebooks/abcdef")

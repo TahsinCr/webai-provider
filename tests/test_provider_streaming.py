@@ -20,10 +20,10 @@ from webaiprovider.errors import (
     ProviderError,
     RateLimited,
 )
-from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
-from webaiprovider.providers.claude.provider import AsyncClaudeProvider
-from webaiprovider.providers.gemini.provider import AsyncGeminiProvider
-from webaiprovider.providers.grok.provider import AsyncGrokProvider
+from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
+from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
+from webaiprovider.providers.gemini.async_provider import AsyncGeminiProvider
+from webaiprovider.providers.grok.async_provider import AsyncGrokProvider
 from webaiprovider.resources.message.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -255,7 +255,9 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider.client.events = fake_events
 
-        with patch("webaiprovider.providers.claude.provider.session_exists", return_value=True):
+        with patch(
+            "webaiprovider.providers.claude.async_provider.session_exists", return_value=True
+        ):
             events = [event async for event in provider.execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
@@ -290,7 +292,9 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider.client.authenticated = False
 
         with (
-            patch("webaiprovider.providers.claude.provider.session_exists", return_value=False),
+            patch(
+                "webaiprovider.providers.claude.async_provider.session_exists", return_value=False
+            ),
             self.assertRaises(AccountPaused),
         ):
             _ = [event async for event in provider.execute_stream(operation)]

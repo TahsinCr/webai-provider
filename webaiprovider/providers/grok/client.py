@@ -2,20 +2,15 @@
 
 import asyncio
 import base64
-import mimetypes
 import os
 import stat
-from pathlib import Path
 from urllib.parse import quote
 
 from ...core.json import json_loads
 from ...errors import AccountPaused, ProviderError
-from ...resources.message.attachment import GROK_ATTACHMENTS
-from ...resources.project.types import (
-    source_file,
-)
 from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder, aiter_bounded_lines
+from .base import validate_upload_candidate
 
 ORIGIN = "https://grok.com"
 _MAX_LINE_BYTES = 1_048_576
@@ -61,29 +56,6 @@ def _iter_bounded_lines(response):
         max_stream_bytes=_MAX_STREAM_BYTES,
         error_label="Grok stream",
     )
-
-
-def validate_upload_candidate(path=None, *, content=None, name=None, mime_type=None):
-    if content is not None:
-        filename = name or (Path(path).name if path is not None else "attachment")
-        if Path(filename).suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
-            raise ValueError("Grok chat file type is not supported")
-        size = len(content)
-        if not 0 < size <= GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
-        file = None
-    elif path is not None:
-        file = source_file(path, error="Grok chat files must not exceed 3 MiB")
-        if file.suffix.lower() not in GROK_ATTACHMENTS.allowed_extensions:
-            raise ValueError("Grok chat file type is not supported")
-        size = file.stat().st_size
-        if not 0 < size <= GROK_ATTACHMENTS.max_bytes:
-            raise ValueError("Grok chat file is empty or exceeds the 3 MiB limit")
-        filename = name or file.name
-    else:
-        raise ValueError("Grok chat file upload requires a file path or byte content")
-    resolved_mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    return filename, resolved_mime, size, file
 
 
 class GrokClient:

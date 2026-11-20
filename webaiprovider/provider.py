@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from eventflow import EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
-from .base import BaseProvider, Capability, ProviderType
+from .base import BaseProvider, Capability, ProviderType, _construct_provider
 from .core.bridges import PortalBridge
 from .core.hooks import SyncOperationHooks
 from .core.state import LifecycleState
@@ -33,29 +32,7 @@ if TYPE_CHECKING:
     from .resources.project.project import AsyncProject
 
 
-def _provider_class(provider_type: ProviderType, *, asynchronous: bool):
-    names = {
-        ProviderType.CHATGPT: "ChatGPT",
-        ProviderType.CLAUDE: "Claude",
-        ProviderType.GEMINI: "Gemini",
-        ProviderType.GROK: "Grok",
-    }
-    module = import_module(f".providers.{provider_type.value}.provider", __package__)
-    return getattr(module, ("Async" if asynchronous else "") + names[provider_type] + "Provider")
-
-
-def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
-    if cls is base_cls:
-        if not args and "account" not in options:
-            raise TypeError("A provider account is required")
-        account = args[0] if args else options["account"]
-        requested = options.get("type")
-        selected = ProviderType.parse(account.provider if requested is None else requested)
-        return object.__new__(_provider_class(selected, asynchronous=asynchronous))
-    return object.__new__(cls)
-
-
-class Provider(BaseProvider):
+class Provider(BaseProvider[ChatsCollection, ProjectsCollection, ModelsCollection]):
     """Synchronous provider API backed by one persistent async ProviderRuntime."""
 
     def __new__(cls, *args: Any, **options: Any):

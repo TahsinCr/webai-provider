@@ -22,7 +22,7 @@ _EXPORTS = {
     "ClaudeSource": "resources",
     "AsyncClaudeChat": "resources",
     "ClaudeProvider": "provider",
-    "AsyncClaudeProvider": "provider",
+    "AsyncClaudeProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

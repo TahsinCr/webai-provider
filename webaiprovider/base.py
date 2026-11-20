@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar
-
-from .errors import ProviderError, RemoteNotFound
+from importlib import import_module
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 if TYPE_CHECKING:
     from .accounts.account import Account
@@ -46,10 +46,23 @@ class Capability(str, Enum):
     CHAT_BRANCH = "chat_branch"
 
 
-class BaseProvider:
-    """Shared account and provider identity for sync and async clients."""
+_ChatsT = TypeVar("_ChatsT")
+_ProjectsT = TypeVar("_ProjectsT")
+_ModelsT = TypeVar("_ModelsT")
+
+
+class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
+    """Account identity and typed resource collections common to both provider APIs."""
 
     provider_type: ClassVar[ProviderType | None] = None
+    chats: _ChatsT
+    projects: _ProjectsT
+    models: _ModelsT
+
+    @abstractmethod
+    def close(self) -> None | Awaitable[None]:
+        """Close the provider and release its owned resources."""
+        raise NotImplementedError
 
     def __init__(
         self,
@@ -71,6 +84,14 @@ class BaseProvider:
         self.type = selected_type
 
     @property
+    def id(self) -> str:
+        return self.type.value
+
+    @property
+    def account_id(self) -> str:
+        return self.account.id
+
+    @property
     def provider(self) -> str:
         return self.type.value
 
@@ -78,17 +99,24 @@ class BaseProvider:
         return f"<{type(self).__name__} type={self.type.value!r} account={self.account.id!r}>"
 
 
-async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
-    """Poll a remote resource until removal is confirmed or raise ProviderError."""
-    for delay in (0, 0.2, 0.5, 1):
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            value = await read()
-        except RemoteNotFound:
-            return
-        if missing(value):
-            return
-    raise ProviderError(
-        "Deletion could not be confirmed by the server; the local record was preserved. Sync before retrying."
-    )
+def _provider_class(provider_type: ProviderType, *, asynchronous: bool):
+    names = {
+        ProviderType.CHATGPT: "ChatGPT",
+        ProviderType.CLAUDE: "Claude",
+        ProviderType.GEMINI: "Gemini",
+        ProviderType.GROK: "Grok",
+    }
+    module_name = "async_provider" if asynchronous else "provider"
+    module = import_module(f".providers.{provider_type.value}.{module_name}", __package__)
+    return getattr(module, ("Async" if asynchronous else "") + names[provider_type] + "Provider")
+
+
+def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
+    if cls is base_cls:
+        if not args and "account" not in options:
+            raise TypeError("A provider account is required")
+        account = args[0] if args else options["account"]
+        requested = options.get("type")
+        selected = ProviderType.parse(account.provider if requested is None else requested)
+        return object.__new__(_provider_class(selected, asynchronous=asynchronous))
+    return object.__new__(cls)

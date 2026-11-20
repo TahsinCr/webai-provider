@@ -6,6 +6,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Define the shared `BaseProvider` as an abstract class with typed chat, project, and model collections.
 - Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.
 
 - Preserve explicit Claude draft titles when the remote chat is created, so an interrupted first send leaves an identifiable chat.

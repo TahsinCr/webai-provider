@@ -18,7 +18,7 @@ _EXPORTS = {
     "GrokSource": "resources",
     "AsyncGrokChat": "resources",
     "GrokProvider": "provider",
-    "AsyncGrokProvider": "provider",
+    "AsyncGrokProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

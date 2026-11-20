@@ -31,24 +31,27 @@ from .errors import (
     UnsupportedOperationError,
 )
 from .provider import Provider, ProviderType
+from .providers.chatgpt.async_provider import AsyncChatGPTProvider
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection
 from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from .providers.chatgpt.provider import (
-    AsyncChatGPTProvider,
     ChatGPTChat,
     ChatGPTProjectsCollection,
     ChatGPTProvider,
 )
 from .providers.chatgpt.resources import AsyncChatGPTChat
+from .providers.claude.async_provider import AsyncClaudeProvider
 from .providers.claude.catalogs import ClaudeModels
-from .providers.claude.provider import AsyncClaudeProvider, ClaudeProvider
+from .providers.claude.provider import ClaudeProvider
 from .providers.claude.resources import AsyncClaudeChat
+from .providers.gemini.async_provider import AsyncGeminiProvider
 from .providers.gemini.catalogs import GeminiModels
-from .providers.gemini.provider import AsyncGeminiProvider, GeminiProvider
+from .providers.gemini.provider import GeminiProvider
 from .providers.gemini.resources import AsyncGeminiChat
+from .providers.grok.async_provider import AsyncGrokProvider
 from .providers.grok.catalogs import GrokModels
-from .providers.grok.provider import AsyncGrokProvider, GrokProvider
+from .providers.grok.provider import GrokProvider
 from .providers.grok.resources import AsyncGrokChat
 from .resources.chat.chat import (
     AsyncBranchableChat,

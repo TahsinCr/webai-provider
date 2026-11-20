@@ -4,6 +4,7 @@ import asyncio
 import threading
 import unittest
 from functools import partial
+from importlib import import_module
 from unittest.mock import ANY, AsyncMock, patch
 
 import webaiprovider
@@ -523,6 +524,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             with self.subTest(provider=kind):
                 native_async = getattr(webaiprovider, f"Async{title}Provider")
                 native_sync = getattr(webaiprovider, f"{title}Provider")
+                module = f"webaiprovider.providers.{kind}"
+                shared = getattr(import_module(f"{module}.base"), f"Base{title}Provider")
+                self.assertEqual(native_async.__module__, f"{module}.async_provider")
+                self.assertEqual(native_sync.__module__, f"{module}.provider")
+                self.assertTrue(issubclass(native_async, shared))
+                self.assertTrue(issubclass(native_sync, shared))
+                self.assertTrue(issubclass(shared, webaiprovider.BaseProvider))
                 asynchronous = AsyncProvider(account)
                 synchronous = Provider(account, type=ProviderType.parse(kind))
                 try:

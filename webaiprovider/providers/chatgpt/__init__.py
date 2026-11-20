@@ -24,7 +24,7 @@ _EXPORTS = {
     "ChatGPTProjectsCollection": "provider",
     "AsyncChatGPTProjectsCollection": "collections",
     "ChatGPTProvider": "provider",
-    "AsyncChatGPTProvider": "provider",
+    "AsyncChatGPTProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

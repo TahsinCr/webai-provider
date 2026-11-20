@@ -710,7 +710,9 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         try:
             loaded = await provider.projects.list(limit=None)
-            with patch("webaiprovider.base.asyncio.sleep", new_callable=AsyncMock) as delay:
+            with patch(
+                "webaiprovider.resources.project.mutations.asyncio.sleep", new_callable=AsyncMock
+            ) as delay:
                 result = await provider.projects.update(loaded[0], title="New Name")
             delay.assert_awaited_once_with(0.4)
             self.assertEqual(result.title, "New Name")

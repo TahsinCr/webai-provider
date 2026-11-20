@@ -412,7 +412,7 @@ class NativeDownloadTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         from webaiprovider import Account
-        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+        from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
 
         provider = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {}))
         client = Mock()

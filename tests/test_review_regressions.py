@@ -15,7 +15,7 @@ from webaiprovider import (
     OutputDelta,
     ProviderError,
 )
-from webaiprovider.providers.claude.provider import AsyncClaudeProvider
+from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
 from webaiprovider.resources.message.operation import ThinkingEnd, ThinkingReplace
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
@@ -443,7 +443,7 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.state.value, "CANCELLED")
 
     async def test_repeated_upload_cancellation_waits_for_blocking_close(self):
-        from webaiprovider.providers.chatgpt.provider import AsyncChatGPTProvider
+        from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
 
         started = asyncio.Event()
         closing = asyncio.Event()

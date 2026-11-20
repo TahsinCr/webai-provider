@@ -680,7 +680,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         try:
-            with patch("webaiprovider.providers.grok.provider.conversation", return_value=record):
+            with patch(
+                "webaiprovider.providers.grok.async_provider.conversation", return_value=record
+            ):
                 active = await provider._get_chat_data("chat")
                 idle = await provider._get_chat_data("chat")
         finally:
@@ -994,7 +996,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             path.write_bytes(b"# Project notes\n")
 
             with patch(
-                "webaiprovider.providers.grok.client.mimetypes.guess_type",
+                "webaiprovider.providers.grok.projects.mimetypes.guess_type",
                 return_value=("text/plain", None),
             ):
                 await editor.add_source("workspace", kind="file", path=path)
