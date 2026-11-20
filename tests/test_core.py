@@ -6,7 +6,6 @@ import unittest
 from webaiprovider.core.bridges import PortalBridge
 from webaiprovider.core.cache import MultiDimensionBoundedCache
 from webaiprovider.core.concurrency import ConcurrencyCoordinator, gather_bounded
-from webaiprovider.core.scope import ProviderResourceScope
 from webaiprovider.core.telemetry import (
     ProviderTelemetry,
     correlation_context,
@@ -114,17 +113,6 @@ class CoreCacheTests(unittest.TestCase):
 
         cache.clear()
         self.assertEqual(cache.stats().entries, 0)
-
-
-class CoreScopeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_resource_scope_executes_lifo_cleanups(self) -> None:
-        order: list[str] = []
-
-        async with ProviderResourceScope() as scope:
-            scope.defer(lambda: order.append("socket_closed"))
-            scope.defer(lambda: order.append("temp_file_deleted"))
-
-        self.assertEqual(order, ["temp_file_deleted", "socket_closed"])
 
 
 class CorePortalBridgeTests(unittest.TestCase):

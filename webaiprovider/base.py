@@ -57,8 +57,6 @@ class BaseProvider:
         *,
         type: ProviderType | str | None = None,
     ) -> None:
-        from .provider import ProviderType
-
         account_type = ProviderType.parse(account.provider)
         expected_type = self.provider_type
         requested_type = ProviderType.parse(type) if type is not None else expected_type

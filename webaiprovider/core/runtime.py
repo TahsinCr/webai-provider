@@ -13,6 +13,7 @@ from weakref import WeakValueDictionary
 
 from eventflow import (
     AsyncEventBus,
+    AsyncResourceScope,
     BoundedWorkPool,
     ErrorPolicy,
     EventBus,
@@ -23,7 +24,6 @@ from eventflow import (
 from ..errors import ProviderError
 from .hooks import OperationHooks
 from .operations import build_message_request_pipeline
-from .scope import ProviderResourceScope
 from .state import (
     _LIFECYCLE_TERMINAL_STATES,
     _LIFECYCLE_TRANSITIONS,
@@ -73,7 +73,7 @@ class ProviderRuntime:
             terminal=_LIFECYCLE_TERMINAL_STATES,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._scope: ProviderResourceScope | None = None
+        self._scope: AsyncResourceScope | None = None
         self._opened = False
         self._closed = False
         self._closing = False
@@ -303,7 +303,6 @@ class ProviderRuntime:
         if self.lifecycle.can_transition(LifecycleState.OPENING):
             self.lifecycle.transition(LifecycleState.OPENING)
         pending.append(("provider.opening", None))
-        scope = ProviderResourceScope()
         try:
             await prepare_fn()
         except BaseException as error:
@@ -312,8 +311,8 @@ class ProviderRuntime:
             pending.append(("provider.open_failed", {"error_type": type(error).__name__}))
             with contextlib.suppress(Exception):
                 await close_fn()
-            await scope.aclose()
             raise
+        scope = AsyncResourceScope()
         scope.defer(close_fn)
         self._scope = scope
         self._opened = True

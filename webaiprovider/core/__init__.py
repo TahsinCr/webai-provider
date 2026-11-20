@@ -7,7 +7,6 @@ from .hooks import OperationHooks, SyncOperationHooks
 from .json import json_dumps, json_dumps_bytes, json_loads
 from .operations import execute_with_hooks, run_pipeline_unwrapped
 from .runtime import ProviderRuntime
-from .scope import ProviderResourceScope
 from .state import LifecycleState, OperationState
 from .telemetry import (
     OperationMetrics,
@@ -27,7 +26,6 @@ __all__ = [
     "OperationMetrics",
     "OperationState",
     "PortalBridge",
-    "ProviderResourceScope",
     "ProviderRuntime",
     "ProviderTelemetry",
     "SyncOperationHooks",
