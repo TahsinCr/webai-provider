@@ -17,6 +17,7 @@ from ...core import MultiDimensionBoundedCache
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
+from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
     ConversationBound,
@@ -30,6 +31,7 @@ from ...resources.message.protocol import (
 from ...resources.message.types import MessageAction, target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
+from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...resources.response.artifact import files_from
@@ -60,12 +62,16 @@ if TYPE_CHECKING:
 _CHAT_METADATA_TTL_SECONDS = 1800.0
 
 
-class AsyncGeminiProvider(ProjectMutationsMixin, BaseGeminiProvider, AsyncProvider):
+class AsyncGeminiProvider(
+    ProjectMutationsMixin,
+    AsyncProvider[
+        AsyncChatsCollection[AsyncGeminiChat], AsyncProjectsCollection[AsyncGeminiProject]
+    ],
+    BaseGeminiProvider,
+):
     stream_idle_timeout = 300
     stream_total_timeout = 600
 
-    _chat_type = AsyncGeminiChat
-    _project_type = AsyncGeminiProject
     _message_type = AsyncGeminiMessage
     _response_type = GeminiResponse
     _source_type = GeminiSource
@@ -73,6 +79,12 @@ class AsyncGeminiProvider(ProjectMutationsMixin, BaseGeminiProvider, AsyncProvid
     _attachment_type = GeminiAttachment
 
     _chat_followup_page_size = 100
+
+    def _make_chats(self) -> AsyncChatsCollection[AsyncGeminiChat]:
+        return AsyncChatsCollection(self, AsyncGeminiChat)
+
+    def _make_projects(self) -> AsyncProjectsCollection[AsyncGeminiProject]:
+        return AsyncProjectsCollection(self, AsyncGeminiProject)
 
     def __init__(
         self,

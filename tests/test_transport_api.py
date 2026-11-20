@@ -674,7 +674,8 @@ class BlockingTransportTests(unittest.TestCase):
             pass
 
         class CommonProvider(Provider):
-            async_provider_type = CommonAsyncProvider
+            def _make_async_provider(self, account, **options):
+                return CommonAsyncProvider(account, **options)
 
         with CommonProvider(account, transport=transport) as provider:
             self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})

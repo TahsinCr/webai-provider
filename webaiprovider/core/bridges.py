@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Coroutine
+from collections.abc import Awaitable
 from types import TracebackType
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from eventflow import LoopPortal
 
@@ -61,7 +61,7 @@ class PortalBridge:
         if portal_to_close is not None and portal_to_close.running:
             portal_to_close.close()
 
-    def call(self, coro: Coroutine[Any, Any, T], *, timeout: float | None = None) -> T:
+    def call(self, coro: Awaitable[T], *, timeout: float | None = None) -> T:
         return self._acquire().call(coro, timeout=timeout)
 
     def cancel(self) -> None:

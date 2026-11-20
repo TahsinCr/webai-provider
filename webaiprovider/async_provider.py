@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from eventflow import AsyncEventBus, EventEnvelope
 
@@ -53,31 +53,48 @@ from .resources.response.source import Source
 from .transport import AsyncTransport
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeVar as DefaultTypeVar
+
     from .accounts.account import Account
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
 
 
-class AsyncProvider(
-    BaseProvider[AsyncChatsCollection, AsyncProjectsCollection, AsyncModelsCollection]
-):
+if TYPE_CHECKING:
+    _ChatsT = DefaultTypeVar(
+        "_ChatsT",
+        bound=AsyncChatsCollection[Any],
+        covariant=True,
+        default=AsyncChatsCollection[AsyncChat],
+    )
+    _ProjectsT = DefaultTypeVar(
+        "_ProjectsT",
+        bound=AsyncProjectsCollection[Any],
+        covariant=True,
+        default=AsyncProjectsCollection[AsyncProject],
+    )
+else:
+    _ChatsT = TypeVar("_ChatsT", covariant=True)
+    _ProjectsT = TypeVar("_ProjectsT", covariant=True)
+
+
+_ProviderT = TypeVar("_ProviderT", bound="AsyncProvider[Any, Any]")
+
+
+class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     """Asynchronous provider session backed by one ProviderRuntime."""
 
-    def __new__(cls, *args: Any, **options: Any):
+    def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
 
-    _chat_type = AsyncChat
     _chat_page_size = 50
     _chat_initial_page_floor = 1
     _chat_followup_page_size: int | None = None
-    _project_type = AsyncProject
     _message_type = AsyncMessage
     _response_type = Response
     _source_type = Source
     _artifact_type = Artifact
     _attachment_type = Attachment
-    _projects_collection_type = AsyncProjectsCollection
-    capabilities: frozenset[Capability] = frozenset()
 
     def __init__(
         self,
@@ -95,10 +112,16 @@ class AsyncProvider(
         self.events: AsyncEventBus[EventEnvelope[str]] = self.runtime.events
         self.hooks: OperationHooks = self.runtime.hooks
         self.telemetry: ProviderTelemetry = self.runtime.telemetry
-        self.chats = AsyncChatsCollection(self)
-        self.projects = self._projects_collection_type(self)
+        self._chats = self._make_chats()
+        self._projects = self._make_projects()
         self.models = AsyncModelsCollection(self._load_models, provider=self)
         self._send_pipeline = self.runtime.build_send_pipeline(self.models.resolve)
+
+    def _make_chats(self) -> _ChatsT:
+        return cast("_ChatsT", AsyncChatsCollection(self, AsyncChat))
+
+    def _make_projects(self) -> _ProjectsT:
+        return cast("_ProjectsT", AsyncProjectsCollection(self, AsyncProject))
 
     def _active_transport(self) -> AsyncTransport | None:
         return None
@@ -125,11 +148,11 @@ class AsyncProvider(
             catalog = await self._load_catalog(force=refresh)
             return _model_refs_from_catalog(self.type.value, catalog)
 
-    async def open(self) -> AsyncProvider:
+    async def open(self: _ProviderT) -> _ProviderT:
         await self.runtime.open(self._prepare_session, self._close_session_resources)
         return self
 
-    def _require_provider(self) -> AsyncProvider:
+    def _require_provider(self) -> AsyncProvider[Any, Any]:
         if not self.runtime.opened:
             raise ProviderError("Open the provider before using its resources")
         return self
@@ -527,7 +550,7 @@ class AsyncProvider(
             if opened_here:
                 await self.close()
 
-    async def __aenter__(self) -> AsyncProvider:
+    async def __aenter__(self: _ProviderT) -> _ProviderT:
         return await self.open()
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

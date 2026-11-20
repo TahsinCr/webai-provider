@@ -195,7 +195,7 @@ class BaseGrokProvider(BaseProvider):
 
     provider_type = ProviderType.GROK
 
-    capabilities = frozenset(
+    _capabilities = frozenset(
         {
             Capability.CHAT,
             Capability.TEMPORARY,

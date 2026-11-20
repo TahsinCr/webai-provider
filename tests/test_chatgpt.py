@@ -1874,7 +1874,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         provider._catalog = catalog
         await provider.open()
         try:
-            chat = provider._chat_type(title="Source Chat", remote_id="c_root", provider=provider)
+            chat = provider.chats._new(title="Source Chat", remote_id="c_root")
             branched = await chat.branch("m_root_a")
             self.assertEqual(branched.remote_id, "preview-branch-1")
             self.assertEqual(

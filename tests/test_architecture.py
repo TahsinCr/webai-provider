@@ -284,11 +284,13 @@ class _PagedRecordsAsyncProvider(_ScriptedAsyncProvider):
 
 
 class _ScriptedSyncProvider(Provider):
-    async_provider_type = _ScriptedAsyncProvider
+    def _make_async_provider(self, account, **options):
+        return _ScriptedAsyncProvider(account, **options)
 
 
 class _PagedSyncProvider(Provider):
-    async_provider_type = _PagedRecordsAsyncProvider
+    def _make_async_provider(self, account, **options):
+        return _PagedRecordsAsyncProvider(account, **options)
 
 
 class TestPublicSurfaceAndExports(unittest.TestCase):
@@ -1402,7 +1404,11 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.message.types import MessageAction
 
         class _BranchableAsyncProvider(_ScriptedAsyncProvider):
-            _chat_type = AsyncBranchableChat
+            def _make_chats(self):
+                from webaiprovider.resources.chat.collections import AsyncChatsCollection
+
+                return AsyncChatsCollection(self, AsyncBranchableChat)
+
             capabilities = _ScriptedAsyncProvider.capabilities | {
                 Capability.CHAT_BRANCH,
                 Capability.MESSAGE_RETRY,
@@ -1456,8 +1462,13 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
             pass
 
         class _BranchableSyncProvider(Provider):
-            async_provider_type = _BranchableAsyncProvider
-            chat_wrapper_type = _BranchableChat
+            def _make_async_provider(self, account, **options):
+                return _BranchableAsyncProvider(account, **options)
+
+            def _make_chats(self):
+                from webaiprovider.resources.chat.collections import ChatsCollection
+
+                return ChatsCollection(self, _BranchableChat)
 
         return (
             _BranchableAsyncProvider,

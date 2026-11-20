@@ -1688,7 +1688,6 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     },
                     runtime=runtime,
                     _require_provider=lambda: provider_impl,
-                    _chat_type=AsyncChatGPTChat,
                     _branch_chat_data=provider_impl.branch_chat,
                     _get_chat_data=fake_get_chat,
                     _delete_chat_data=fake_delete_chat,

@@ -330,7 +330,11 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         return result.items
 
     def _apply_history(
-        self, conversation: Conversation, provider: AsyncProvider, *, limit: int | None = None
+        self,
+        conversation: Conversation,
+        provider: AsyncProvider[Any, Any],
+        *,
+        limit: int | None = None,
     ) -> list[Response]:
         if not isinstance(conversation, Conversation):
             raise ProviderError("Provider returned an invalid conversation")
@@ -710,7 +714,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 
 
 class ResponsesCollection(RemoteCollection[Response, Response]):
-    def __init__(self, owner: Provider, chat: AsyncChat) -> None:
+    def __init__(self, owner: Provider[Any, Any], chat: AsyncChat) -> None:
         super().__init__(owner, chat.responses)
         self.hooks = SyncOperationHooks(chat.responses.hooks)
 

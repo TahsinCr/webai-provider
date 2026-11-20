@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 def _resolve_project_arg(
-    provider: AsyncProvider,
+    provider: AsyncProvider[Any, Any],
     project: AsyncProject | str | None,
 ) -> AsyncProject | None:
     if project is None:
@@ -36,11 +36,11 @@ def _resolve_project_arg(
         if project.provider is not provider:
             raise ValueError("Project and chat must belong to the same provider session")
         return project
-    return provider._project_type(remote_id=str(project), provider=provider)
+    return provider.projects._new(remote_id=str(project))
 
 
 def _project_from_data(
-    provider: AsyncProvider,
+    provider: AsyncProvider[Any, Any],
     data: ProjectData | None,
     projects: Mapping[str, AsyncProject] | None = None,
 ) -> AsyncProject | None:
@@ -52,11 +52,7 @@ def _project_from_data(
         if data.name and not existing.title:
             existing.title = data.name
         return existing
-    created = provider._project_type(
-        title=data.name,
-        remote_id=remote_id,
-        provider=provider,
-    )
+    created = provider.projects._new(title=data.name, remote_id=remote_id)
     if data.instructions is not None or data.resources:
         created._apply_provider_project(data)
     return created
@@ -70,7 +66,7 @@ class AsyncChat:
         id: str | None = None,
         title: str = "",
         *,
-        provider: AsyncProvider | None = None,
+        provider: AsyncProvider[Any, Any] | None = None,
         remote_id: str | None = None,
         project: AsyncProject | None = None,
         temporary: bool = False,
@@ -270,7 +266,7 @@ class AsyncMovableChat(AsyncChat):
 
 
 class _ChatCapability:
-    _owner: Provider
+    _owner: Provider[Any, Any]
 
 
 class BranchableChat(_ChatCapability):
@@ -295,7 +291,7 @@ class MovableChat(_ChatCapability):
 class Chat:
     responses_collection_type = None
 
-    def __init__(self, owner: Provider, resource: AsyncChat) -> None:
+    def __init__(self, owner: Provider[Any, Any], resource: AsyncChat) -> None:
         self._owner = owner
         self._resource = resource
         from ..response.collections import ResponsesCollection

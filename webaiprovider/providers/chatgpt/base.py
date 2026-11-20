@@ -17,7 +17,7 @@ class BaseChatGPTProvider(BaseProvider):
 
     provider_type = ProviderType.CHATGPT
 
-    capabilities = frozenset(
+    _capabilities = frozenset(
         {
             Capability.CHAT,
             Capability.DELETE,

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 from ...collections import AsyncRemoteCollection, Page, RemoteCollection
 from ...errors import ProviderError
 from ..chat.chat import AsyncChat, Chat
-from ..chat.collections import _chat_from_conversation
 from ..chat.types import Conversation
 from .project import AsyncProject
 
@@ -53,7 +52,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         project_map = {self.project.remote_id: self.project}
         chats = []
         for item in page.items:
-            chat = _chat_from_conversation(item, provider, project_map)
+            chat = provider.chats._from_data(item, project_map)
             if chat.project is None:
                 chat.project = self.project
             chats.append(chat)
@@ -61,7 +60,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
 
 
 class ProjectChatsCollection(RemoteCollection[AsyncChat, Chat]):
-    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+    def __init__(self, owner: Provider[Any, Any], project: AsyncProject) -> None:
         super().__init__(owner, project.chats)
 
     def _wrap(self, item: AsyncChat) -> Chat:

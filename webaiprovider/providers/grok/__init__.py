@@ -1,8 +1,24 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import resolve_lazy_export
+
+if TYPE_CHECKING:
+    from .async_provider import AsyncGrokProvider as AsyncGrokProvider
+    from .catalogs import GrokModels as GrokModels
+    from .client import GrokClient as GrokClient
+    from .provider import GrokProvider as GrokProvider
+    from .resources import AsyncGrokChat as AsyncGrokChat
+    from .resources import AsyncGrokMessage as AsyncGrokMessage
+    from .resources import AsyncGrokProject as AsyncGrokProject
+    from .resources import GrokArtifact as GrokArtifact
+    from .resources import GrokAttachment as GrokAttachment
+    from .resources import GrokChat as GrokChat
+    from .resources import GrokMessage as GrokMessage
+    from .resources import GrokProject as GrokProject
+    from .resources import GrokResponse as GrokResponse
+    from .resources import GrokSource as GrokSource
 
 _EXPORTS = {
     "GrokClient": "client",

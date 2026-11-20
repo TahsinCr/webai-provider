@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...base import Capability
 from ...collections import (
@@ -26,24 +26,11 @@ if TYPE_CHECKING:
     from ...provider import Provider
     from ..response.response import Response
 
+_ChatT = TypeVar("_ChatT", bound=Chat, covariant=True)
+_AsyncChatT = TypeVar("_AsyncChatT", bound=AsyncChat, covariant=True)
+
 _PROJECT_CHAT_CONCURRENCY = 4
 _MAX_PROJECT_CHAT_PAGES = 500
-
-
-def _chat_from_conversation(
-    item: Conversation,
-    provider: AsyncProvider,
-    projects: Mapping[str, AsyncProject] | None = None,
-) -> AsyncChat:
-    project = _project_from_data(provider, item.project, projects)
-    return provider._chat_type(
-        title=item.title,
-        remote_id=item.id,
-        project=project,
-        temporary=bool(item.metadata.get("temporary", False)),
-        metadata=item.metadata,
-        provider=provider,
-    )
 
 
 def _require_conversation_page(page: Any, *, label: str = "conversation") -> Page[Conversation]:
@@ -53,9 +40,9 @@ def _require_conversation_page(page: Any, *, label: str = "conversation") -> Pag
 
 
 def _merge_chat_lists(
-    normal_chats: list[AsyncChat],
-    project_chats: list[AsyncChat],
-) -> list[AsyncChat]:
+    normal_chats: list[_AsyncChatT],
+    project_chats: list[_AsyncChatT],
+) -> list[_AsyncChatT]:
     by_key = {chat.remote_id or chat.id: chat for chat in normal_chats}
     for chat in project_chats:
         key = chat.remote_id or chat.id
@@ -70,15 +57,33 @@ def _merge_chat_lists(
     return list(by_key.values())
 
 
-class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
+class AsyncChatsCollection(AsyncRemoteCollection[_AsyncChatT]):
     _collection_name = "chats"
+
+    def _from_data(
+        self, item: Conversation, projects: Mapping[str, AsyncProject] | None = None
+    ) -> _AsyncChatT:
+        project = _project_from_data(self.provider, item.project, projects)
+        return self._new(
+            title=item.title,
+            remote_id=item.id,
+            project=project,
+            temporary=bool(item.metadata.get("temporary", False)),
+            metadata=item.metadata,
+        )
+
+    def _new(self, **fields: Any) -> _AsyncChatT:
+        return self._build(provider=self.provider, **fields)
 
     @property
     def _read_provider(self):
         return self.provider
 
-    def __init__(self, provider: AsyncProvider) -> None:
+    def __init__(
+        self, provider: AsyncProvider[Any, Any], build: Callable[..., _AsyncChatT]
+    ) -> None:
         self.provider = provider
+        self._build = build
         self._default_page_size = provider._chat_page_size
         self._followup_page_size = provider._chat_followup_page_size
         self.hooks = OperationHooks()
@@ -88,7 +93,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         cursor: str | None,
         page_limit: int | None,
         **options: Any,
-    ) -> Page[AsyncChat]:
+    ) -> Page[_AsyncChatT]:
         include_projects = bool(options.get("include_projects", False))
         session = self.provider
         async with session.runtime.activity():
@@ -105,7 +110,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             raw_page = await session._list_chats_data(cursor=cursor, limit=limit_arg)
             page = _require_conversation_page(raw_page)
             chats = tuple(
-                _chat_from_conversation(item, session)
+                self._from_data(item)
                 for item in page.items
                 if include_projects or item.project is None
             )
@@ -117,17 +122,17 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         slots: asyncio.Semaphore,
         *,
         per_project_limit: int | None = None,
-    ) -> list[AsyncChat]:
+    ) -> list[_AsyncChatT]:
         project_map = {p.remote_id: p for p in projects if p.remote_id}
         session = self.provider
 
-        async def fetch_one(project: AsyncProject) -> list[AsyncChat]:
+        async def fetch_one(project: AsyncProject) -> list[_AsyncChatT]:
             async with slots:
                 return await fetch_pages(project)
 
-        async def fetch_pages(project: AsyncProject) -> list[AsyncChat]:
+        async def fetch_pages(project: AsyncProject) -> list[_AsyncChatT]:
             assert project.remote_id is not None
-            chats: list[AsyncChat] = []
+            chats: list[_AsyncChatT] = []
             seen_ids: set[str] = set()
             cursor: str | None = None
             seen_cursors: set[str] = set()
@@ -141,7 +146,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
                     if item.id in seen_ids:
                         continue
                     seen_ids.add(item.id)
-                    chat = _chat_from_conversation(item, session, project_map)
+                    chat = self._from_data(item, project_map)
                     if chat.project is None:
                         chat.project = project
                     chats.append(chat)
@@ -169,7 +174,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         )
         return [chat for batch in batches for chat in batch]
 
-    async def _collect_with_projects(self, *, limit: int | None) -> list[AsyncChat]:
+    async def _collect_with_projects(self, *, limit: int | None) -> list[_AsyncChatT]:
         validated = validate_limit(limit)
         if validated == 0:
             return []
@@ -220,19 +225,21 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             self._mark_remote_read()
             return await load(item_id)
 
-    async def _fetch_by_id(self, item_id: str, *, metadata_only: bool = False) -> AsyncChat | None:
+    async def _fetch_by_id(
+        self, item_id: str, *, metadata_only: bool = False
+    ) -> _AsyncChatT | None:
         try:
             conv = await self._fetch_conversation(item_id, metadata_only=metadata_only)
         except FeatureUnavailable:
             return None
         if not isinstance(conv, Conversation):
             return None
-        return _chat_from_conversation(conv, self.provider)
+        return self._from_data(conv)
 
     @_report_read
     async def get(
         self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
-    ) -> AsyncChat:
+    ) -> _AsyncChatT:
         """Get a chat, preferring a metadata-only lookup when requested and supported."""
         direct = await self._fetch_by_id(item_id, metadata_only=metadata_only)
         if direct is not None:
@@ -244,7 +251,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
     @_report_read
     async def get_with_responses(
         self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
-    ) -> tuple[AsyncChat, list[Response]]:
+    ) -> tuple[_AsyncChatT, list[Response]]:
         """Read a chat and its latest responses from the same remote history snapshot."""
         validated = validate_limit(limit)
         conversation = await self._fetch_conversation(item_id, metadata_only=validated == 0)
@@ -252,7 +259,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             raise ProviderError("Provider returned an invalid conversation")
         if not include_projects and conversation.project is not None:
             raise RemoteNotFound(f"Record was not found: {item_id}")
-        chat = _chat_from_conversation(conversation, self.provider)
+        chat = self._from_data(conversation)
         if validated == 0:
             return chat, []
         responses = chat.responses._apply_history(conversation, self.provider, limit=validated)
@@ -264,7 +271,7 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         *,
         project: AsyncProject | str | None = None,
         temporary: bool = False,
-    ) -> AsyncChat:
+    ) -> _AsyncChatT:
         resolved_project = (
             _resolve_project_arg(self.provider, project) if project is not None else None
         )
@@ -274,10 +281,9 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
             parameters={"title": title, "project": resolved_project, "temporary": temporary},
         )
 
-        async def work(ctx) -> AsyncChat:
-            return self.provider._chat_type(
+        async def work(ctx) -> _AsyncChatT:
+            return self._new(
                 title=ctx.parameters["title"],
-                provider=self.provider,
                 project=ctx.parameters["project"],
                 temporary=ctx.parameters["temporary"],
             )
@@ -396,17 +402,20 @@ class AsyncChatsCollection(AsyncRemoteCollection[AsyncChat]):
         )
 
 
-class ChatsCollection(RemoteCollection[AsyncChat, Chat]):
-    def __init__(self, owner: Provider) -> None:
+class ChatsCollection(RemoteCollection[AsyncChat, _ChatT]):
+    def __init__(
+        self, owner: Provider[Any, Any], build: Callable[[Provider[Any, Any], AsyncChat], _ChatT]
+    ) -> None:
         super().__init__(owner, owner._provider.chats)
+        self._build = build
         self.hooks = SyncOperationHooks(self._collection.hooks)
 
-    def _wrap(self, item: AsyncChat) -> Chat:
-        return self._owner._wrap_chat(item)
+    def _wrap(self, item: AsyncChat) -> _ChatT:
+        return self._build(self._owner, item)
 
     def get(
         self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
-    ) -> Chat:
+    ) -> _ChatT:
         return self._wrap(
             self._owner._call(
                 self._collection.get(
@@ -417,7 +426,7 @@ class ChatsCollection(RemoteCollection[AsyncChat, Chat]):
 
     def get_with_responses(
         self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
-    ) -> tuple[Chat, list[Response]]:
+    ) -> tuple[_ChatT, list[Response]]:
         resource, responses = self._owner._call(
             self._collection.get_with_responses(
                 item_id, limit=limit, include_projects=include_projects
@@ -432,7 +441,7 @@ class ChatsCollection(RemoteCollection[AsyncChat, Chat]):
         *,
         project: Project | AsyncProject | str | None = None,
         temporary: bool = False,
-    ) -> Chat:
+    ) -> _ChatT:
         target = project._resource if isinstance(project, Project) else project
         chat = self._owner._call(
             self._collection.create(title, project=target, temporary=temporary)
@@ -445,7 +454,7 @@ class ChatsCollection(RemoteCollection[AsyncChat, Chat]):
         *,
         title: str | None = None,
         **fields: Any,
-    ) -> Chat:
+    ) -> _ChatT:
         if fields:
             raise TypeError(f"Unsupported chat fields: {', '.join(fields)}")
         target = chat._resource if isinstance(chat, Chat) else chat

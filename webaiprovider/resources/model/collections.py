@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...collections import (
     AsyncCollection,
@@ -26,7 +26,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         self,
         loader: Callable[[bool], Awaitable[list[ModelRef]]],
         *,
-        provider: AsyncProvider | None = None,
+        provider: AsyncProvider[Any, Any] | None = None,
     ) -> None:
         self._loader = loader
         self._provider = provider
@@ -104,7 +104,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
 
 
 class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
-    def __init__(self, owner: Provider) -> None:
+    def __init__(self, owner: Provider[Any, Any]) -> None:
         super().__init__(owner, owner._provider.models)
 
     def list(

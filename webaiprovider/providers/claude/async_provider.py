@@ -15,6 +15,7 @@ from ...core import gather_bounded
 from ...core.files import DownloadSource, NativeDownloadClient, cookie_header
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
+from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS
 from ...resources.message.protocol import (
@@ -27,6 +28,7 @@ from ...resources.message.protocol import (
     TextReplacement,
 )
 from ...resources.model.model import ModelCatalog
+from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
@@ -49,14 +51,24 @@ if TYPE_CHECKING:
     from ...accounts.account import Account
 
 
-class AsyncClaudeProvider(ProjectMutationsMixin, BaseClaudeProvider, AsyncProvider):
-    _chat_type = AsyncClaudeChat
-    _project_type = AsyncClaudeProject
+class AsyncClaudeProvider(
+    ProjectMutationsMixin,
+    AsyncProvider[
+        AsyncChatsCollection[AsyncClaudeChat], AsyncProjectsCollection[AsyncClaudeProject]
+    ],
+    BaseClaudeProvider,
+):
     _message_type = AsyncClaudeMessage
     _response_type = ClaudeResponse
     _source_type = ClaudeSource
     _artifact_type = ClaudeArtifact
     _attachment_type = ClaudeAttachment
+
+    def _make_chats(self) -> AsyncChatsCollection[AsyncClaudeChat]:
+        return AsyncChatsCollection(self, AsyncClaudeChat)
+
+    def _make_projects(self) -> AsyncProjectsCollection[AsyncClaudeProject]:
+        return AsyncProjectsCollection(self, AsyncClaudeProject)
 
     def __init__(
         self,

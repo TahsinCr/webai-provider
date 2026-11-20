@@ -10,7 +10,7 @@ class BaseGeminiProvider(BaseProvider):
 
     provider_type = ProviderType.GEMINI
 
-    capabilities = frozenset(
+    _capabilities = frozenset(
         {
             Capability.CHAT,
             Capability.HISTORY,

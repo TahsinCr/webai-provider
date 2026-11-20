@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ...errors import ProviderError
 from .types import ProjectData as ProviderProject
@@ -49,7 +49,7 @@ class AsyncProject:
         id: str | None = None,
         title: str = "",
         *,
-        provider: AsyncProvider | None = None,
+        provider: AsyncProvider[Any, Any] | None = None,
         remote_id: str | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
@@ -104,7 +104,7 @@ class AsyncProject:
 
 
 class Project:
-    def __init__(self, owner: Provider, resource: AsyncProject) -> None:
+    def __init__(self, owner: Provider[Any, Any], resource: AsyncProject) -> None:
         self._owner = owner
         self._resource = resource
         self.instruction = ProjectInstruction(owner, resource)
@@ -137,7 +137,7 @@ class Project:
 
 
 class ProjectInstruction:
-    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+    def __init__(self, owner: Provider[Any, Any], project: AsyncProject) -> None:
         self._owner = owner
         self._instruction = project.instruction
 

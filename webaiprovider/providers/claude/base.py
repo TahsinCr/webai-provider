@@ -10,7 +10,7 @@ class BaseClaudeProvider(BaseProvider):
 
     provider_type = ProviderType.CLAUDE
 
-    capabilities = frozenset(
+    _capabilities = frozenset(
         {
             Capability.CHAT,
             Capability.TEMPORARY,

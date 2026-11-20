@@ -13,6 +13,7 @@ from ...base import ProviderType
 from ...collections import Page
 from ...core import MultiDimensionBoundedCache, gather_bounded
 from ...errors import AccountPaused, ProviderError, RateLimited
+from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
     ConversationBound,
@@ -24,6 +25,7 @@ from ...resources.message.protocol import (
 )
 from ...resources.message.types import MessageAction
 from ...resources.model.model import ModelCatalog
+from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...resources.response.source import sources_from
@@ -60,9 +62,11 @@ _CONTINUATION_TTL = 1800.0
 _CONTINUATION_LIMIT = 128
 
 
-class AsyncGrokProvider(ProjectMutationsMixin, BaseGrokProvider, AsyncProvider):
-    _chat_type = AsyncGrokChat
-    _project_type = AsyncGrokProject
+class AsyncGrokProvider(
+    ProjectMutationsMixin,
+    AsyncProvider[AsyncChatsCollection[AsyncGrokChat], AsyncProjectsCollection[AsyncGrokProject]],
+    BaseGrokProvider,
+):
     _message_type = AsyncGrokMessage
     _response_type = GrokResponse
     _source_type = GrokSource
@@ -70,6 +74,12 @@ class AsyncGrokProvider(ProjectMutationsMixin, BaseGrokProvider, AsyncProvider):
     _attachment_type = GrokAttachment
 
     _chat_page_size = 100
+
+    def _make_chats(self) -> AsyncChatsCollection[AsyncGrokChat]:
+        return AsyncChatsCollection(self, AsyncGrokChat)
+
+    def _make_projects(self) -> AsyncProjectsCollection[AsyncGrokProject]:
+        return AsyncProjectsCollection(self, AsyncGrokProject)
 
     def __init__(
         self,

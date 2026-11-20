@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from time import monotonic_ns
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, cast
 
 from .errors import AmbiguousMatchError, ProviderError, RemoteNotFound
 
 if TYPE_CHECKING:
+    from .async_provider import AsyncProvider
     from .provider import Provider
 
-T = TypeVar("T")
-U = TypeVar("U")
+T = TypeVar("T", covariant=True)
+U = TypeVar("U", covariant=True)
+_ItemT = TypeVar("_ItemT")
 Predicate = Callable[[T], bool]
 
 
@@ -263,20 +265,28 @@ def _event_item(item: object) -> dict[str, Any]:
     return record
 
 
-def _report_read(method):
+_ReadParams = ParamSpec("_ReadParams")
+_ReadResult = TypeVar("_ReadResult")
+
+
+def _report_read(
+    method: Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]],
+) -> Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]]:
     """Emit once for the outer query, only if the source was read."""
+
+    invoke: Callable[..., Coroutine[Any, Any, _ReadResult]] = method
 
     @wraps(method)
     async def report(self, *args, **options):
         provider, scope_id = self._read_context()
         current = _active_read.get()
         if provider is None or (current is not None and current.collection is self):
-            return await method(self, *args, **options)
+            return await invoke(self, *args, **options)
         read = _Read(self)
         token = _active_read.set(read)
         missing = None
         try:
-            result = await method(self, *args, **options)
+            result = await invoke(self, *args, **options)
         except RemoteNotFound as error:
             missing = error
             result = None
@@ -316,7 +326,7 @@ def _report_read(method):
             raise missing
         return result
 
-    return report
+    return cast("Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]]", report)
 
 
 async def _publish_collection_change(
@@ -491,30 +501,30 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
         return await self.list(pred, limit=limit, **options)
 
 
-class Collection(BaseCollection[T]):
+class Collection(BaseCollection[_ItemT]):
     """Synchronous collection operating over in-memory objects without network I/O."""
 
-    def __init__(self, items: Iterable[T] | None = None) -> None:
-        self._items: list[T] = list(items) if items is not None else []
+    def __init__(self, items: Iterable[_ItemT] | None = None) -> None:
+        self._items: list[_ItemT] = list(items) if items is not None else []
 
     def list(
         self,
-        predicate: Callable[[T], bool] | None = None,
+        predicate: Callable[[_ItemT], bool] | None = None,
         *,
         limit: int | None = None,
-    ) -> list[T]:
+    ) -> list[_ItemT]:
         return self._filter_items(self._items, predicate, limit=limit)
 
-    def get(self, item_id: str, /) -> T:
+    def get(self, item_id: str, /) -> _ItemT:
         return self._get_from(self._items, item_id)
 
-    def first(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+    def first(self, predicate: Callable[[_ItemT], bool] | None = None) -> _ItemT | None:
         return self._first_matching(self._items, predicate)
 
-    def last(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+    def last(self, predicate: Callable[[_ItemT], bool] | None = None) -> _ItemT | None:
         return self._last_matching(self._items, predicate)
 
-    def single(self, predicate: Callable[[T], bool] | None = None) -> T | None:
+    def single(self, predicate: Callable[[_ItemT], bool] | None = None) -> _ItemT | None:
         return self._single_matching(self._items, predicate)
 
     def find(
@@ -527,7 +537,7 @@ class Collection(BaseCollection[T]):
         endswith: bool = False,
         single: bool = False,
         last: bool = False,
-    ) -> T | None:
+    ) -> _ItemT | None:
         pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
         if single:
             return self.single(pred)
@@ -544,14 +554,14 @@ class Collection(BaseCollection[T]):
         startswith: bool = False,
         endswith: bool = False,
         limit: int | None = None,
-    ) -> list[T]:
+    ) -> list[_ItemT]:
         pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
         return self.list(pred, limit=limit)
 
     def __len__(self) -> int:
         return len(self._items)
 
-    def __iter__(self) -> Iterator[T]:
+    def __iter__(self) -> Iterator[_ItemT]:
         return iter(self._items)
 
     def __getitem__(self, index: Any) -> Any:
@@ -564,23 +574,23 @@ class Collection(BaseCollection[T]):
         )
 
 
-class AsyncCollection(AsyncBaseCollection[T]):
+class AsyncCollection(AsyncBaseCollection[_ItemT]):
     """Asynchronously query a loaded in-memory collection."""
 
-    def __init__(self, items: Iterable[T] = ()) -> None:
-        self._items: tuple[T, ...] | None = tuple(items)
+    def __init__(self, items: Iterable[_ItemT] = ()) -> None:
+        self._items: tuple[_ItemT, ...] | None = tuple(items)
 
-    async def _load_items(self) -> Sequence[T]:
+    async def _load_items(self) -> Sequence[_ItemT]:
         return self._items or ()
 
-    async def _iter_batches(self, *, limit: int | None = None) -> AsyncIterator[Sequence[T]]:
+    async def _iter_batches(self, *, limit: int | None = None) -> AsyncIterator[Sequence[_ItemT]]:
         items = await self._load_items()
         yield items if limit is None else items[:limit]
 
     @_report_read
     async def list(
-        self, predicate: Predicate[T] | None = None, *, limit: int | None = None
-    ) -> list[T]:
+        self, predicate: Predicate[_ItemT] | None = None, *, limit: int | None = None
+    ) -> list[_ItemT]:
         return await self._collect_items(predicate, limit=limit)
 
 
@@ -591,7 +601,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
         return self._read_provider, self._scope_id
 
     @property
-    def _read_provider(self):
+    def _read_provider(self) -> AsyncProvider[Any, Any] | None:
         return None
 
     @property
@@ -602,7 +612,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
     _default_page_size = 50
     _followup_page_size: int | None = None
 
-    def _item_key(self, item: T) -> str:
+    def _item_key(self, item: object) -> str:
         return getattr(item, "remote_id", None) or self._extract_id(item) or str(id(item))
 
     async def _fetch_page(
@@ -677,20 +687,22 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
             raise
 
 
-class RemoteCollection(BaseCollection[U], Generic[T, U]):
+class RemoteCollection(BaseCollection[U], Generic[_ItemT, U]):
     """Stateless synchronous facade over an AsyncRemoteCollection via LoopPortal."""
 
-    def __init__(self, owner: Provider, collection: AsyncBaseCollection[T]) -> None:
+    def __init__(self, owner: Provider[Any, Any], collection: AsyncBaseCollection[_ItemT]) -> None:
         self._owner = owner
         self._collection = collection
 
-    def _wrap(self, item: T) -> U:
+    def _wrap(self, item: _ItemT) -> U:
         return item  # type: ignore[return-value]
 
-    def _wrap_optional(self, item: T | None) -> U | None:
+    def _wrap_optional(self, item: _ItemT | None) -> U | None:
         return self._wrap(item) if item is not None else None
 
-    def _wrap_predicate(self, predicate: Callable[[U], bool] | None) -> Callable[[T], bool] | None:
+    def _wrap_predicate(
+        self, predicate: Callable[[U], bool] | None
+    ) -> Callable[[_ItemT], bool] | None:
         if predicate is None:
             return None
         validate_predicate(predicate)

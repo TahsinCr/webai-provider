@@ -541,7 +541,10 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     self.assertIs(type(synchronous), native_sync)
                     self.assertIs(type(synchronous._provider), native_async)
                     self.assertIs(synchronous.capabilities, synchronous._provider.capabilities)
-                    for chat_type in (asynchronous._chat_type, synchronous.chat_wrapper_type):
+                    for chat_type in (
+                        type(await asynchronous.chats.create()),
+                        type(synchronous.chats._wrap(asynchronous.chats._new())),
+                    ):
                         for operation in ("branch", "move_to"):
                             self.assertEqual(
                                 callable(getattr(chat_type, operation, None)),
@@ -1079,7 +1082,9 @@ class TestSyncApi(unittest.TestCase):
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
-            patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider),
+            patch.object(
+                ChatGPTProvider, "_make_async_provider", side_effect=RecordingChatGPTProvider
+            ),
             ChatGPTProvider(account) as provider,
         ):
             project = provider.projects.create("Notes", memory_share=False)
@@ -1162,7 +1167,9 @@ class TestSyncApi(unittest.TestCase):
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
-            patch.object(ChatGPTProvider, "async_provider_type", RecordingChatGPTProvider),
+            patch.object(
+                ChatGPTProvider, "_make_async_provider", side_effect=RecordingChatGPTProvider
+            ),
             ChatGPTProvider(account) as provider,
         ):
             self.assertEqual(provider.chats.search("Proj Chat"), [])
@@ -1305,10 +1312,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("claude", {"sessionKey": "fixture"})
         async with ConcurrentProvider(account) as provider:
-            project = provider._project_type(
-                title=provider.remote.name,
-                remote_id=provider.remote.id,
-                provider=provider,
+            project = provider.projects._new(
+                title=provider.remote.name, remote_id=provider.remote.id
             )
             project._apply_provider_project(provider.remote)
 
@@ -1352,7 +1357,9 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
         with (
-            patch.object(ChatGPTProvider, "async_provider_type", BufferedStreamProvider),
+            patch.object(
+                ChatGPTProvider, "_make_async_provider", side_effect=BufferedStreamProvider
+            ),
             ChatGPTProvider(account) as provider,
         ):
             chat = provider.chats.create()
@@ -1374,7 +1381,9 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 raise ProviderError("stream aborted")
 
         with (
-            patch.object(ChatGPTProvider, "async_provider_type", FailingBufferedProvider),
+            patch.object(
+                ChatGPTProvider, "_make_async_provider", side_effect=FailingBufferedProvider
+            ),
             ChatGPTProvider(account) as provider,
         ):
             chat = provider.chats.create()

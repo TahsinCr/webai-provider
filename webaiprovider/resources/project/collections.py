@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...collections import (
     AsyncRemoteCollection,
@@ -30,33 +31,38 @@ if TYPE_CHECKING:
     from ...provider import Provider
 
 
-def _project_from_data(provider: AsyncProvider, item: ProviderProject) -> AsyncProject:
-    project = provider._project_type(
-        title=item.name,
-        remote_id=item.id,
-        provider=provider,
-    )
-    project._apply_provider_project(item)
-    return project
+_ProjectT = TypeVar("_ProjectT", bound=Project, covariant=True)
+_AsyncProjectT = TypeVar("_AsyncProjectT", bound=AsyncProject, covariant=True)
 
 
-class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
+class AsyncProjectsCollection(AsyncRemoteCollection[_AsyncProjectT]):
     _collection_name = "projects"
 
     @property
     def _read_provider(self):
         return self.provider
 
-    def __init__(self, provider: AsyncProvider) -> None:
+    def __init__(
+        self, provider: AsyncProvider[Any, Any], build: Callable[..., _AsyncProjectT]
+    ) -> None:
         self.provider = provider
+        self._build = build
         self.hooks = OperationHooks()
+
+    def _new(self, **fields: Any) -> _AsyncProjectT:
+        return self._build(provider=self.provider, **fields)
+
+    def _from_data(self, item: ProviderProject) -> _AsyncProjectT:
+        project = self._new(title=item.name, remote_id=item.id)
+        project._apply_provider_project(item)
+        return project
 
     async def _fetch_page(
         self,
         cursor: str | None,
         page_limit: int | None,
         **options: Any,
-    ) -> Page[AsyncProject]:
+    ) -> Page[_AsyncProjectT]:
         del page_limit, options
         async with self.provider.runtime.activity():
             self.provider._require_provider()
@@ -66,11 +72,11 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
         ):
             raise ProviderError("Provider returned an invalid project page")
         return Page(
-            tuple(_project_from_data(self.provider, item) for item in page.items),
+            tuple(self._from_data(item) for item in page.items),
             page.next_cursor,
         )
 
-    async def _fetch_by_id(self, item_id: str) -> AsyncProject | None:
+    async def _fetch_by_id(self, item_id: str) -> _AsyncProjectT | None:
         async with self.provider.runtime.activity():
             self.provider._require_provider()
             try:
@@ -80,29 +86,27 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
                 return None
             if not isinstance(data, ProviderProject):
                 return None
-            return _project_from_data(self.provider, data)
+            return self._from_data(data)
 
     async def create(
         self,
         title: str,
         *,
         instruction: str | None = None,
-    ) -> AsyncProject:
+    ) -> _AsyncProjectT:
         return await self._create_project(title, instruction)
 
     async def _create_project(
         self, title: str, instruction: str | None, **options: Any
-    ) -> AsyncProject:
+    ) -> _AsyncProjectT:
         runtime = self.provider.runtime
         context = runtime.new_context(
             "project.create",
             parameters={"title": title, "instruction": instruction, **options},
         )
 
-        async def work(ctx) -> AsyncProject:
-            project = self.provider._project_type(
-                title=ctx.parameters["title"], provider=self.provider
-            )
+        async def work(ctx) -> _AsyncProjectT:
+            project = self._new(title=ctx.parameters["title"])
             if ctx.parameters["instruction"] is not None:
                 project.instruction._text = ctx.parameters["instruction"]
             async with runtime.activity():
@@ -245,20 +249,25 @@ class AsyncProjectsCollection(AsyncRemoteCollection[AsyncProject]):
         )
 
 
-class ProjectsCollection(RemoteCollection[AsyncProject, Project]):
-    def __init__(self, owner: Provider) -> None:
+class ProjectsCollection(RemoteCollection[AsyncProject, _ProjectT]):
+    def __init__(
+        self,
+        owner: Provider[Any, Any],
+        build: Callable[[Provider[Any, Any], AsyncProject], _ProjectT],
+    ) -> None:
         super().__init__(owner, owner._provider.projects)
+        self._build = build
         self.hooks = SyncOperationHooks(self._collection.hooks)
 
-    def _wrap(self, item: AsyncProject) -> Project:
-        return self._owner._wrap_project(item)
+    def _wrap(self, item: AsyncProject) -> _ProjectT:
+        return self._build(self._owner, item)
 
     def create(
         self,
         title: str,
         *,
         instruction: str | None = None,
-    ) -> Project:
+    ) -> _ProjectT:
         project = self._owner._call(self._collection.create(title, instruction=instruction))
         return self._wrap(project)
 
@@ -269,7 +278,7 @@ class ProjectsCollection(RemoteCollection[AsyncProject, Project]):
         title: str | None = None,
         instruction: str | None = None,
         **fields: Any,
-    ) -> Project:
+    ) -> _ProjectT:
         if fields:
             raise TypeError(f"Unsupported project fields: {', '.join(fields)}")
         target = project._resource if isinstance(project, Project) else project
@@ -807,7 +816,7 @@ class AsyncProjectAttachments(AsyncRemoteCollection[Attachment]):
 
 
 class ProjectAttachments(RemoteCollection[Attachment, Attachment]):
-    def __init__(self, owner: Provider, project: AsyncProject) -> None:
+    def __init__(self, owner: Provider[Any, Any], project: AsyncProject) -> None:
         super().__init__(owner, project.attachments)
         self.hooks = SyncOperationHooks(project.attachments.hooks)
 

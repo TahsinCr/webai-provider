@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from eventflow import EventBus, EventEnvelope
 
@@ -27,23 +28,38 @@ from .resources.response.response import Response
 from .transport import AsyncTransport, PortalTransport, Transport
 
 if TYPE_CHECKING:
+    from typing_extensions import TypeVar as DefaultTypeVar
+
     from .accounts.account import Account
     from .async_provider import AsyncProvider
     from .resources.project.project import AsyncProject
 
 
-class Provider(BaseProvider[ChatsCollection, ProjectsCollection, ModelsCollection]):
+if TYPE_CHECKING:
+    _ChatsT = DefaultTypeVar(
+        "_ChatsT", bound=ChatsCollection[Any], covariant=True, default=ChatsCollection[Chat]
+    )
+    _ProjectsT = DefaultTypeVar(
+        "_ProjectsT",
+        bound=ProjectsCollection[Any],
+        covariant=True,
+        default=ProjectsCollection[Project],
+    )
+else:
+    _ChatsT = TypeVar("_ChatsT", covariant=True)
+    _ProjectsT = TypeVar("_ProjectsT", covariant=True)
+
+_ResultT = TypeVar("_ResultT")
+
+
+_ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
+
+
+class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     """Synchronous provider API backed by one persistent async ProviderRuntime."""
 
-    def __new__(cls, *args: Any, **options: Any):
+    def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
         return _construct_provider(cls, Provider, args, options, asynchronous=False)
-
-    async_provider_type: type[AsyncProvider] | None = None
-    chat_wrapper_type = None
-    project_wrapper_type = None
-    message_wrapper_type = Message
-    projects_collection_type = None
-    models_collection_type = None
 
     def __init__(
         self,
@@ -53,35 +69,44 @@ class Provider(BaseProvider[ChatsCollection, ProjectsCollection, ModelsCollectio
         transport: AsyncTransport | None = None,
     ) -> None:
         super().__init__(account, type=type)
-        provider_type = self.async_provider_type
-        if provider_type is None:
-            from .async_provider import AsyncProvider
-
-            provider_type = AsyncProvider
         options: dict[str, Any] = {"type": self.type}
         if transport is not None:
             options["transport"] = transport
-        self._provider = provider_type(account, **options)
+        self._provider = self._make_async_provider(account, **options)
         self._portal = PortalBridge()
         self.transport: Transport = PortalTransport(self._call, lambda: self._provider.transport)
         self._portal_started = False
         self._closed = False
         self.events: EventBus[EventEnvelope[str]] = self._provider.runtime.sync_events
         self.hooks: SyncOperationHooks = SyncOperationHooks(self._provider.runtime.hooks)
-        self.chats = ChatsCollection(self)
-        self.projects = (self.projects_collection_type or ProjectsCollection)(self)
-        self.models = (self.models_collection_type or ModelsCollection)(self)
+        self._chats = self._make_chats()
+        self._projects = self._make_projects()
+        self.models = ModelsCollection(self)
+
+    def _make_async_provider(self, account: Account, **options: Any) -> AsyncProvider[Any, Any]:
+        from .async_provider import AsyncProvider
+
+        return AsyncProvider(account, **options)
+
+    def _make_chats(self) -> _ChatsT:
+        return cast("_ChatsT", ChatsCollection(self, Chat))
+
+    def _make_projects(self) -> _ProjectsT:
+        return cast("_ProjectsT", ProjectsCollection(self, Project))
 
     def _wrap_chat(self, resource: AsyncChat) -> Chat:
-        return (self.chat_wrapper_type or Chat)(self, resource)
+        return self.chats._wrap(resource)
 
     def _wrap_project(self, resource: AsyncProject) -> Project:
-        return (self.project_wrapper_type or Project)(self, resource)
+        return self.projects._wrap(resource)
+
+    def _wrap_message(self, resource: AsyncMessage) -> Message:
+        return Message._from_async(self, resource)
 
     def _wrap_response(self, item: Response, *, chat_view: Chat | None = None) -> Response:
         message = item.message
         if isinstance(message, AsyncMessage):
-            message = self.message_wrapper_type._from_async(self, message)
+            message = self._wrap_message(message)
         chat = item.chat
         if isinstance(chat, AsyncChat):
             chat = chat_view if chat_view is not None else self._wrap_chat(chat)
@@ -110,25 +135,27 @@ class Provider(BaseProvider[ChatsCollection, ProjectsCollection, ModelsCollectio
     def telemetry(self) -> ProviderTelemetry:
         return self._provider.telemetry
 
-    def _call(self, coroutine: Any) -> Any:
+    def _call(self, coroutine: Awaitable[_ResultT]) -> _ResultT:
         if self._closed:
-            if hasattr(coroutine, "close"):
-                coroutine.close()
+            close = getattr(coroutine, "close", None)
+            if close is not None:
+                close()
             raise RuntimeError("The provider is closed")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             pass
         else:
-            if hasattr(coroutine, "close"):
-                coroutine.close()
+            close = getattr(coroutine, "close", None)
+            if close is not None:
+                close()
             raise RuntimeError(
                 "Use AsyncProvider in async code; Provider cannot block an event loop"
             )
         self._portal_started = True
         return self._portal.call(coroutine)
 
-    def open(self) -> Provider:
+    def open(self: _ProviderT) -> _ProviderT:
         if self._closed:
             raise RuntimeError("A closed provider cannot be reopened")
         if not self._provider.runtime.opened:
@@ -166,7 +193,7 @@ class Provider(BaseProvider[ChatsCollection, ProjectsCollection, ModelsCollectio
     ) -> Response:
         return self._call(self._provider.ask(prompt, model=model, attachments=attachments))
 
-    def __enter__(self) -> Provider:
+    def __enter__(self: _ProviderT) -> _ProviderT:
         return self.open()
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

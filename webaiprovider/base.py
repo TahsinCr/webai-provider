@@ -46,8 +46,8 @@ class Capability(str, Enum):
     CHAT_BRANCH = "chat_branch"
 
 
-_ChatsT = TypeVar("_ChatsT")
-_ProjectsT = TypeVar("_ProjectsT")
+_ChatsT = TypeVar("_ChatsT", covariant=True)
+_ProjectsT = TypeVar("_ProjectsT", covariant=True)
 _ModelsT = TypeVar("_ModelsT")
 
 
@@ -55,9 +55,22 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     """Account identity and typed resource collections common to both provider APIs."""
 
     provider_type: ClassVar[ProviderType | None] = None
-    chats: _ChatsT
-    projects: _ProjectsT
+    _capabilities: ClassVar[frozenset[Capability]] = frozenset()
+    _chats: _ChatsT
+    _projects: _ProjectsT
     models: _ModelsT
+
+    @property
+    def chats(self) -> _ChatsT:
+        return self._chats
+
+    @property
+    def projects(self) -> _ProjectsT:
+        return self._projects
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return self._capabilities
 
     @abstractmethod
     def close(self) -> None | Awaitable[None]:

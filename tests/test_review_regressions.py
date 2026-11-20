@@ -246,9 +246,9 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNot(next(iter(retried.attachments)), next(iter(original.attachments)))
 
             with self.assertRaisesRegex(ValueError, "different provider session"):
-                await first.projects.update(second._project_type(title="foreign", provider=second))
+                await first.projects.update(second.projects._new(title="foreign"))
             with self.assertRaisesRegex(ValueError, "different provider session"):
-                await first.projects.delete(second._project_type(title="foreign", provider=second))
+                await first.projects.delete(second.projects._new(title="foreign"))
             with self.assertRaisesRegex(ValueError, "different provider session"):
                 await first.chats.delete(foreign_chat)
 
@@ -267,11 +267,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             "Initial",
             "Original instructions",
         )
-        project = provider._project_type(
-            title=remote.name,
-            remote_id=remote.id,
-            provider=provider,
-        )
+        project = provider.projects._new(title=remote.name, remote_id=remote.id)
         project._apply_provider_project(remote)
         write_started, release_write = asyncio.Event(), asyncio.Event()
         writes = []
@@ -627,9 +623,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[Page((remote,), "next"), Page((remote,), None)]
         )
         async with provider:
-            project = provider._project_type(
-                title="Project", remote_id="project", provider=provider
-            )
+            project = provider.projects._new(title="Project", remote_id="project")
             listed = await project.chats.list()
             self.assertEqual([c.remote_id for c in listed], ["chat"])
 

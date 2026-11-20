@@ -479,14 +479,14 @@ class AsyncMessageOperation:
 
 
 class MessageOperation:
-    def __init__(self, owner: Provider, operation: AsyncMessageOperation) -> None:
+    def __init__(self, owner: Provider[Any, Any], operation: AsyncMessageOperation) -> None:
         self._owner = owner
         self._operation = operation
         self.hooks = SyncOperationHooks(operation.hooks)
 
     @property
     def message(self) -> Message:
-        return self._owner.message_wrapper_type._from_async(self._owner, self._operation.message)
+        return self._owner._wrap_message(self._operation.message)
 
     @property
     def chat(self) -> Chat:

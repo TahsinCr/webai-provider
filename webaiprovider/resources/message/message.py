@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable, Mapping
 from copy import copy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...errors import UnsupportedOperationError
 from ..chat.chat import AsyncChat, Chat
@@ -102,6 +102,9 @@ class AsyncMessage:
         )
 
 
+_MessageT = TypeVar("_MessageT", bound="Message")
+
+
 class Message:
     """Synchronous view and input value for a message."""
 
@@ -119,7 +122,7 @@ class Message:
         metadata: Mapping[str, Any] | None = None,
         chat: Chat | AsyncChat | None = None,
     ) -> None:
-        self._owner: Provider | None = None
+        self._owner: Provider[Any, Any] | None = None
         self._chat: Chat | AsyncChat | None = chat
         async_chat = chat._resource if isinstance(chat, Chat) else chat
         self._resource = self._resource_type(
@@ -134,7 +137,9 @@ class Message:
         )
 
     @classmethod
-    def _from_async(cls, owner: Provider, resource: AsyncMessage) -> Message:
+    def _from_async(
+        cls: type[_MessageT], owner: Provider[Any, Any], resource: AsyncMessage
+    ) -> _MessageT:
         message = cls.__new__(cls)
         message._owner = owner
         message._chat = None

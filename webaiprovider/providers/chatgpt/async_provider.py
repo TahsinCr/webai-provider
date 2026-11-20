@@ -35,6 +35,7 @@ from ...resources.chat.chat import (
     AsyncChat,
     _resolve_project_arg,
 )
+from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import (
     ConversationBound,
@@ -198,17 +199,24 @@ class _Stopped(Exception):
     pass
 
 
-class AsyncChatGPTProvider(ProjectMutationsMixin, BaseChatGPTProvider, AsyncProvider):
+class AsyncChatGPTProvider(
+    ProjectMutationsMixin,
+    AsyncProvider[AsyncChatsCollection[AsyncChatGPTChat], AsyncChatGPTProjectsCollection],
+    BaseChatGPTProvider,
+):
     _chat_page_size = DEFAULT_PAGE_SIZE
     _chat_initial_page_floor = 100
-    _chat_type = AsyncChatGPTChat
-    _project_type = AsyncChatGPTProject
     _message_type = AsyncChatGPTMessage
     _response_type = ChatGPTResponse
     _source_type = ChatGPTSource
     _artifact_type = ChatGPTArtifact
     _attachment_type = ChatGPTAttachment
-    _projects_collection_type = AsyncChatGPTProjectsCollection
+
+    def _make_chats(self) -> AsyncChatsCollection[AsyncChatGPTChat]:
+        return AsyncChatsCollection(self, AsyncChatGPTChat)
+
+    def _make_projects(self) -> AsyncChatGPTProjectsCollection:
+        return AsyncChatGPTProjectsCollection(self, AsyncChatGPTProject)
 
     def __init__(
         self,
