@@ -30,6 +30,7 @@ from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .resources.response.response import Response
 from .transport import AsyncTransport, Transport
+from .transport.base import TransportResponse
 
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from .accounts.account import Account
     from .async_provider import AsyncProvider
     from .resources.project.project import AsyncProject
+    from .resources.project.types import ProjectData, ProjectOptions
 
 
 if TYPE_CHECKING:
@@ -120,7 +122,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._publish_lock = Lock()
         self._publishing = 0
         self._close_events_requested = False
-        self._provider.bind_sync_events(self.events, self._enqueue_event)
+        self._provider._bind_sync_events(self.events, self._enqueue_event)
         self.hooks: OperationHooks = OperationHooks(self._provider.hooks)
         self._chats = self._make_chats()
         self._projects = self._make_projects()
@@ -378,6 +380,18 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             raise ProviderError("Provider is closing or is closed")
         return self._provider._session_status()
 
+    def conversation_attachment_count(self, conversation_id: str) -> int | None:
+        return self._call(self._provider.conversation_attachment_count(conversation_id))
+
+    def upload_file(self, path: Any) -> dict[str, Any]:
+        return self._call(self._provider.upload_file(path))
+
+    def project_options(self, project_id: str | None = None) -> ProjectOptions:
+        return self._call(self._provider.project_options(project_id))
+
+    def update_project(self, project: ProjectData) -> ProjectData:
+        return self._call(self._provider.update_project(project))
+
     def forget_session(self) -> SessionStatus:
         return self._call(self._provider.forget_session())
 
@@ -432,18 +446,21 @@ class _ProviderTransport(Transport):
             self._owner._ensure_blocking_call()
             self._owner._provider.transport.record_rate_limit(retry_after)
 
-    async def _request(self, method, path, options, *, decode: bool):
+    async def _send(self, method: str, path: str, options: dict[str, Any]) -> TransportResponse:
         provider = self._owner._provider
-        async with provider.activity():
-            transport = provider.transport
-            operation = transport.request if decode else transport.send
-            return await operation(method, path, **options)
+        async with provider._activity():
+            return await provider.transport.send(method, path, **options)
 
-    def send(self, method, path, **options):
-        return self._owner._call(self._request(method, path, options, decode=False))
+    async def _request(self, method: str, path: str, options: dict[str, Any]) -> Any:
+        provider = self._owner._provider
+        async with provider._activity():
+            return await provider.transport.request(method, path, **options)
 
-    def request(self, method, path, **options):
-        return self._owner._call(self._request(method, path, options, decode=True))
+    def send(self, method: str, path: str, **options) -> TransportResponse:
+        return self._owner._call(self._send(method, path, options))
+
+    def request(self, method: str, path: str, **options) -> Any:
+        return self._owner._call(self._request(method, path, options))
 
     async def _open_stream(self, caller: int, method, path, options):
         owner = self._owner

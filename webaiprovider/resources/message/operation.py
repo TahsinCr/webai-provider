@@ -283,10 +283,10 @@ class AsyncMessageOperation:
         collected_sources: list[Source] = []
         collected_artifacts: list[Artifact] = []
         session, hooks_chain = self._provider_and_hooks()
-        emitter = session if session is not None and hasattr(session, "emit") else None
+        emitter = session if session is not None and hasattr(session, "_emit") else None
 
         op_id = (
-            session.new_operation_id()
+            session._new_operation_id()
             if session is not None and hasattr(session, "new_operation_id")
             else self.message.id
         )
@@ -314,7 +314,7 @@ class AsyncMessageOperation:
 
             self._transition_to(OperationState.SENDING)
             if emitter is not None:
-                await emitter.emit(
+                await emitter._emit(
                     "chat.send.started",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,
@@ -388,7 +388,7 @@ class AsyncMessageOperation:
                         scope_id=self.chat.remote_id,
                         operation_id=context.operation_id,
                     )
-                await emitter.emit_safe(
+                await emitter._emit_safe(
                     "chat.send.completed",
                     operation_id=context.operation_id,
                     resource_id=self.chat.remote_id or self.chat.id,
@@ -415,7 +415,7 @@ class AsyncMessageOperation:
             if emitter is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.shield(
-                        emitter.emit(
+                        emitter._emit(
                             "chat.send.cancelled",
                             operation_id=context.operation_id,
                             resource_id=self.chat.remote_id or self.chat.id,
@@ -432,7 +432,7 @@ class AsyncMessageOperation:
             self._transition_to(OperationState.FAILED)
             if emitter is not None:
                 with contextlib.suppress(Exception):
-                    await emitter.emit(
+                    await emitter._emit(
                         "chat.send.failed",
                         operation_id=context.operation_id,
                         resource_id=self.chat.remote_id or self.chat.id,

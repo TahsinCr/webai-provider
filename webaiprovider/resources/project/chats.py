@@ -40,7 +40,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
             raise ProviderError("Project is not attached to an open provider")
         if not self.project.remote_id:
             return Page(())
-        async with provider.activity():
+        async with provider._activity():
             provider._require_provider()
             page = await provider._list_project_chats_data(
                 self.project.remote_id, cursor=cursor, limit=page_limit

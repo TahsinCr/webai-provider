@@ -84,6 +84,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 
+- Make provider coordination helpers internal. Use the provider event bus and operation hooks as the public interfaces.
+
 - Remove unused JSON serialization and duplicate cleanup journal routing from the live test runner.
 
 - Remove the background provider portal and threaded HTTP facade. Synchronous callers drive a shared event loop, allowing independent requests to overlap.
@@ -93,9 +95,11 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Serialize chat moves with mutations of the known source and destination projects.
+- Preserve the blocking transport response type for raw HTTP sends. Match the provider utility methods and ChatGPT authentication options across both API variants.
+
+- Lock the current source and selected destination during chat moves, including when the caller holds an older chat snapshot.
 - Invalidate the loaded model catalog after reauthentication.
-- Drain active asynchronous HTTP requests and streams before closing their clients.
+- Drain asynchronous HTTP requests and streams before closing their clients. Finish an in-progress client shutdown when its caller is cancelled, and reject attempts to await shutdown from inside the active stream.
 - Deliver synchronous events emitted during a blocking call on that call's thread.
 
 - Let blocking HTTP requests and streams finish before closing their client. Keep a client in use by another request alive during timeout recovery.

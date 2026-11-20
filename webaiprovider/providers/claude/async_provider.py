@@ -147,7 +147,9 @@ class AsyncClaudeProvider(
     async def _delete_chat_data(self, conversation_id: str) -> None:
         await self.client.request("delete_chat", conversation_id=conversation_id)
 
-    async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
+    async def _move_chat_data(
+        self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
+    ) -> None:
         await self.client.request(
             "move_chat", conversation_id=conversation_id, project_id=project_id
         )

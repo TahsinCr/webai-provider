@@ -1052,7 +1052,6 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             side_effect=[
                 {"workspaceId": "new", "name": "Project", "customPersonality": "Instructions"},
                 None,
-                {"conversationId": "chat", "title": "Chat", "workspaceId": "old"},
                 None,
                 None,
                 {"conversationId": "chat", "title": "Chat", "workspaceId": "new"},
@@ -1062,7 +1061,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         try:
             project = await provider._create_project_data(" Project ", "Instructions")
             await provider._delete_project_data("new")
-            await provider._move_chat_data("chat", "new")
+            await provider._move_chat_data("chat", "new", source_project_id="old")
         finally:
             await provider.close()
 
@@ -1077,23 +1076,21 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [call.args[:2] for call in calls[2:]],
             [
-                ("GET", "/rest/app-chat/conversations/chat"),
                 ("POST", "/rest/workspaces/new/conversations"),
                 ("DELETE", "/rest/workspaces/old/conversations/chat"),
                 ("GET", "/rest/app-chat/conversations/chat"),
             ],
         )
-        self.assertEqual(calls[3].kwargs["json"], {"conversationId": "chat"})
+        self.assertEqual(calls[2].kwargs["json"], {"conversationId": "chat"})
 
     async def test_chat_move_detaches_rolls_back_and_skips_unchanged_membership(self):
-        old = {"conversationId": "chat", "workspaceId": "old"}
         for target, replies, expected in (
-            ("old", [old], ["GET"]),
-            (None, [old, None, {"conversationId": "chat"}], ["GET", "DELETE", "GET"]),
+            ("old", [], []),
+            (None, [None, {"conversationId": "chat"}], ["DELETE", "GET"]),
             (
                 "new",
-                [old, None, ProviderError("remove failed"), None],
-                ["GET", "POST", "DELETE", "DELETE"],
+                [None, ProviderError("remove failed"), None],
+                ["POST", "DELETE", "DELETE"],
             ),
         ):
             with self.subTest(target=target):
@@ -1102,13 +1099,13 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     if target == "new":
                         with self.assertRaisesRegex(ProviderError, "remove failed"):
-                            await provider._move_chat_data("chat", target)
+                            await provider._move_chat_data("chat", target, source_project_id="old")
                         rollback = provider.client.request.await_args
                         self.assertEqual(
                             rollback.args, ("DELETE", "/rest/workspaces/new/conversations/chat")
                         )
                     else:
-                        await provider._move_chat_data("chat", target)
+                        await provider._move_chat_data("chat", target, source_project_id="old")
                     self.assertEqual(
                         [call.args[0] for call in provider.client.request.await_args_list],
                         expected,
@@ -1292,7 +1289,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
 
         provider.client.request = AsyncMock(side_effect=request)
         try:
-            await provider._move_chat_data("chat", "ws-2")
+            await provider._move_chat_data("chat", "ws-2", source_project_id="ws-1")
             self.assertEqual(calls, 2)
         finally:
             await provider.close()

@@ -106,7 +106,7 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncHttpSession` | Account cookie persistence over the shared async transport |
 | `HttpSession` | Account cookie persistence over blocking HTTP on the calling thread |
 
-Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The blocking API shares the asynchronous HTTP session and one event loop. Independent requests can overlap while one caller drives the loop. An operation can run on another caller’s thread, and the thread driving the loop can change while it is in progress. Conflicting chat and project mutations are serialized by resource locks.
+Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The blocking API shares the asynchronous HTTP session and one event loop. Independent requests can overlap while one caller drives the loop. An operation can run on another caller’s thread, and the thread driving the loop can change while it is in progress. Conflicting chat and project mutations are serialized by resource locks. Synchronous events from each call are delivered in order on its caller’s thread. Callbacks from overlapping calls may be delivered out of sequence. The sequence number records emission order.
 
 A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
 

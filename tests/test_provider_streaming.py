@@ -158,8 +158,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         provider = StreamTestProvider("chatgpt", "acc-test", (TextDelta("answer"),))
         await provider.open()
         chat = await provider.chats.create(title="Context lifetime")
-        send_lock = provider.send_lock(chat.id)
-        self.assertIs(send_lock, provider.send_lock(chat.id))
+        send_lock = provider._send_lock(chat.id)
+        self.assertIs(send_lock, provider._send_lock(chat.id))
         operation = chat.responses.create("first")
         first_finished = asyncio.Event()
         child_task: asyncio.Task | None = None
@@ -223,7 +223,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(stream_closed.is_set())
         self.assertEqual(provider._active_operations, 0)
-        self.assertFalse(provider.send_lock(chat.id).locked())
+        self.assertFalse(provider._send_lock(chat.id).locked())
         await asyncio.wait_for(provider.close(), timeout=1)
         self.assertTrue(provider_closed.is_set())
 
@@ -258,7 +258,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "webaiprovider.providers.claude.async_provider.session_exists", return_value=True
         ):
-            events = [event async for event in provider.execute_stream(operation)]
+            events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
         self.assertEqual(operation.message.id, "claude-user-msg-1")
@@ -297,7 +297,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             ),
             self.assertRaises(AccountPaused),
         ):
-            _ = [event async for event in provider.execute_stream(operation)]
+            _ = [event async for event in provider._execute_stream(operation)]
 
 
 class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
@@ -335,7 +335,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider.client.events = fake_events
 
-        events = [event async for event in provider.execute_stream(operation)]
+        events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "grok-conv-456")
         self.assertEqual(operation.message.id, "grok-user-456")
@@ -374,7 +374,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider.client.events = fake_events
 
         with self.assertRaises(RateLimited) as cm:
-            _ = [event async for event in provider.execute_stream(operation)]
+            _ = [event async for event in provider._execute_stream(operation)]
         self.assertEqual(cm.exception.retry_after, 12.5)
 
 
@@ -417,7 +417,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
-            events = [event async for event in provider.execute_stream(operation)]
+            events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")
         self.assertEqual(operation.message.id, "rc_turn_1:user")
@@ -482,7 +482,7 @@ class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             client_factory=lambda _: mock_client,
         )
 
-        events = [event async for event in provider.execute_stream(operation)]
+        events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "chatgpt-conv-999")
         self.assertEqual(operation.message.id, "chatgpt-u1")

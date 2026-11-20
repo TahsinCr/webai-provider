@@ -311,7 +311,7 @@ async def _collect(operation):
 
 
 async def _collect_provider_stream(provider, operation):
-    return [event async for event in provider.execute_stream(operation)]
+    return [event async for event in provider._execute_stream(operation)]
 
 
 class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
@@ -496,7 +496,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def active():
-            async with provider.activity():
+            async with provider._activity():
                 entered.set()
                 await release.wait()
 

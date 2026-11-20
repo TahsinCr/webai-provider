@@ -160,6 +160,9 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         provider._list_project_chats_data = AsyncMock(
             side_effect=[Page((chat1,), "cursor-2"), Page((chat2,), None)]
         )
+        provider._get_chat_metadata = AsyncMock(
+            side_effect=(Conversation("chat-2", "Loose chat"), chat1)
+        )
         provider._move_chat_data = AsyncMock()
         await provider.open()
         self.addAsyncCleanup(provider.close)
@@ -173,7 +176,9 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         chat = AsyncGrokChat(title="Loose chat", provider=provider, remote_id="chat-2")
         self.assertIsNone(chat.project)
         await chat.move_to(project)
-        provider._move_chat_data.assert_awaited_once_with("chat-2", "project-1")
+        provider._move_chat_data.assert_awaited_once_with(
+            "chat-2", "project-1", source_project_id=None
+        )
         self.assertIsNotNone(chat.project)
         assert chat.project is not None
         self.assertEqual(chat.project.remote_id, "project-1")
@@ -356,7 +361,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         temp_chat = await provider.chats.create("Incognito", temporary=True)
         self.assertTrue(temp_chat.temporary)
         op = temp_chat.responses.create("secret")
-        ctx = provider.new_context(
+        ctx = provider._new_context(
             "chat.send.prepare",
             resource_id=temp_chat.id,
             operation=op,

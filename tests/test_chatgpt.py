@@ -1556,7 +1556,9 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             options = await asyncio.wait_for(self.provider._project_options("g-p-1"), 1.0)
             catalog = await asyncio.wait_for(self.provider._load_catalog(), 1.0)
             await asyncio.wait_for(self.provider._rename_chat_data("c-0", "New Title"), 1.0)
-            await asyncio.wait_for(self.provider._move_chat_data("c-0", None), 1.0)
+            await asyncio.wait_for(
+                self.provider._move_chat_data("c-0", None, source_project_id=None), 1.0
+            )
 
         self.assertEqual(page1.items[0].id, "c-0")
         self.assertEqual(page2.items[0].id, "c-1")

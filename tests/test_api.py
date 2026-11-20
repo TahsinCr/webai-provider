@@ -41,11 +41,13 @@ from webaiprovider import (
 )
 from webaiprovider.accounts.status import SessionState, SessionStatus
 from webaiprovider.errors import ProviderError, RemoteNotFound, UnsupportedOperationError
+from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model.model import (
     EffortSet,
     ModelRef,
 )
+from webaiprovider.resources.project.types import ProjectData
 
 
 class TestApi(unittest.IsolatedAsyncioTestCase):
@@ -152,7 +154,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             yield OutputDelta(delta="World!")
             yield OutputEnd()
 
-        mock_provider.execute_stream = fake_stream
+        mock_provider._execute_stream = fake_stream
         events = []
         async for ev in op.stream():
             events.append(ev)
@@ -190,7 +192,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             yield OutputDelta(delta="shared result")
             yield OutputEnd()
 
-        provider.execute_stream = fake_stream
+        provider._execute_stream = fake_stream
         operation = chat.responses.create("prompt")
         first = asyncio.create_task(operation.start())
         second = asyncio.create_task(operation.wait())
@@ -304,7 +306,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             )
             yield OutputEnd()
 
-        mock_provider.execute_stream = fake_stream
+        mock_provider._execute_stream = fake_stream
         response = await op.start()
         self.assertEqual(response.text, "Relativity explained.")
         self.assertEqual(len(response.sources), 1)
@@ -680,7 +682,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             att = Attachment.from_bytes(b"hello", name="notes.txt", mime_type="text/plain")
             msg = Message("Read", attachments=[att])
             op = chat.responses.create(msg)
-            ctx = provider.new_context(
+            ctx = provider._new_context(
                 "chat.send.prepare",
                 resource_id=chat.id,
                 operation=op,
@@ -1172,7 +1174,14 @@ class TestSyncApi(unittest.TestCase):
                 del project_id
                 raise FeatureUnavailable(Capability.PROJECTS)
 
-            async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
+            async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
+                project_id = self.moved[-1][1] if self.moved else None
+                project = ProjectData(project_id, "") if project_id else None
+                return Conversation(conversation_id, "Loose", project=project)
+
+            async def _move_chat_data(
+                self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
+            ) -> None:
                 self.moved.append((conversation_id, project_id))
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
@@ -1245,7 +1254,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         provider.projects.hooks.before("project.delete", lambda _: entered.set())
 
         async with provider:
-            async with provider.project_lock("project"):
+            async with provider._project_lock("project"):
                 operation = asyncio.create_task(provider.projects.delete(project))
                 await asyncio.wait_for(entered.wait(), timeout=1)
                 provider._delete_project_data.assert_not_awaited()
@@ -1257,9 +1266,12 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         provider = AsyncChatGPTProvider(account)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
+        provider._get_chat_metadata = AsyncMock(
+            return_value=Conversation("chat", "Chat", project=ProjectData("old", "Old"))
+        )
         provider._move_chat_data = AsyncMock()
         chat = provider.chats._new(remote_id="chat")
-        chat.project = provider.projects._new(remote_id="old")
+        chat.project = provider.projects._new(remote_id="stale")
         selected = provider.projects._new(remote_id="original")
         hook_ran = asyncio.Event()
 
@@ -1269,13 +1281,13 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             hook_ran.set()
 
         async with provider:
-            with patch.object(provider, "emit", new_callable=AsyncMock) as emit:
+            with patch.object(provider, "_emit", new_callable=AsyncMock) as emit:
                 for lock in (
-                    provider.send_lock("chat"),
-                    provider.project_lock("old"),
-                    provider.project_lock("updated"),
+                    provider._send_lock("chat"),
+                    provider._project_lock("old"),
+                    provider._project_lock("updated"),
                 ):
-                    chat.project = provider.projects._new(remote_id="old")
+                    chat.project = provider.projects._new(remote_id="stale")
                     hook_ran.clear()
                     provider._move_chat_data.reset_mock()
                     async with lock:
@@ -1284,7 +1296,9 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                         provider._move_chat_data.assert_not_awaited()
                     self.assertIs(await operation, chat)
 
-        provider._move_chat_data.assert_awaited_once_with("chat", "updated")
+        provider._move_chat_data.assert_awaited_once_with(
+            "chat", "updated", source_project_id="old"
+        )
         assert chat.project is not None
         self.assertEqual(chat.project.remote_id, "updated")
         moved = next(call for call in emit.await_args_list if call.args == ("chat.moved",))

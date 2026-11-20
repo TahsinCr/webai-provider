@@ -80,11 +80,10 @@ class GrokProjectEditor:
         conversation_id: str,
         project_id: str | None,
         *,
+        source_project_id: str | None,
         fetch_metadata: Callable[[str], Awaitable[Any]],
     ) -> None:
-        metadata = await fetch_metadata(conversation_id)
-        chat = conversation(metadata)
-        old_project = chat.project.id if chat.project is not None else None
+        old_project = source_project_id
         if old_project == project_id:
             return
         conversation_path = "/conversations/" + remote_id(conversation_id)

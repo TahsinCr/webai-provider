@@ -305,7 +305,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         async def read() -> _HistoryRead:
             # SingleFlight shields its worker from waiter cancellation. Track
             # the worker itself so shutdown cannot close its transport early.
-            async with provider.activity():
+            async with provider._activity():
                 provider._require_provider()
                 self._history_read += 1
                 read_id = self._history_read
@@ -320,7 +320,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         if fresh:
             result = await read()
         else:
-            if provider.closing and not provider.has_active_operation():
+            if provider.closing and not provider._has_active_operation():
                 raise ProviderError("Provider is closing or is closed")
             if self._history_flight is None:
                 self._history_flight = SingleFlight()
@@ -535,7 +535,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         provider = self.chat.provider
         if provider is None:
             raise ProviderError("No provider session is attached to this chat")
-        stream = provider._require_provider().execute_stream(operation)
+        stream = provider._require_provider()._execute_stream(operation)
         try:
             async for event in stream:
                 yield event

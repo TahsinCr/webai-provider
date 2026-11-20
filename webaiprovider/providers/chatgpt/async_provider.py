@@ -381,7 +381,9 @@ class AsyncChatGPTProvider(
                 )
             ).json()
             preview = result.get("conversation") if isinstance(result, dict) else None
-            remote = preview.get("conversation_id") if isinstance(preview, dict) else None
+            if not isinstance(preview, dict):
+                raise ValueError("ChatGPT did not confirm a new conversation")
+            remote = preview.get("conversation_id")
             if not isinstance(remote, str) or not remote or remote == conversation_id:
                 raise ValueError("ChatGPT did not confirm a new conversation")
             if quote(remote, safe="") != remote:
@@ -433,7 +435,9 @@ class AsyncChatGPTProvider(
 
         await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
-    async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
+    async def _move_chat_data(
+        self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
+    ) -> None:
         async with self._client_scope() as client:
             await maybe_await(client.move_conversation(conversation_id, project_id))
 
@@ -491,6 +495,7 @@ class AsyncChatGPTProvider(
     async def _delete_project_data(self, project_id: str) -> None:
         async with self._client_scope() as client:
             url = "https://chatgpt.com/backend-api/gizmos/" + quote(project_id, safe="")
+            response = None
             for attempt in (0, 1):
                 try:
                     response = await maybe_await(client.request("DELETE", url, expect_json=False))
@@ -502,7 +507,9 @@ class AsyncChatGPTProvider(
                         await asyncio.sleep(0.25)
                         continue
                     raise
-        payload = response.json() if getattr(response, "content", None) else None
+        payload = (
+            response.json() if response is not None and getattr(response, "content", None) else None
+        )
         if isinstance(payload, dict) and payload.get("success") is False:
             raise ChatGPTError("ChatGPT refused to delete the project.")
         confirmed = getattr(response, "status_code", None) in (200, 202, 204)
@@ -541,7 +548,7 @@ class AsyncChatGPTProvider(
                 timing = current_send_timing()
                 scope_started = time.perf_counter_ns() if timing is not None else None
                 async with self._client_scope() as client:
-                    if scope_started is not None:
+                    if timing is not None and scope_started is not None:
                         timing.record(
                             "provider_client_ready_ms", time.perf_counter_ns() - scope_started
                         )

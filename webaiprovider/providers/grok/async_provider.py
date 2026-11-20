@@ -167,7 +167,7 @@ class AsyncGrokProvider(
     async def _list_chats_data(
         self, *, cursor: str | None = None, limit: int = 50
     ) -> Page[Conversation]:
-        query = {"pageSize": max(1, min(int(limit), 100))}
+        query: dict[str, int | str] = {"pageSize": max(1, min(int(limit), 100))}
         if cursor:
             query["pageToken"] = cursor
         data = await self.client.request("GET", "/rest/app-chat/conversations", params=query)
@@ -239,15 +239,18 @@ class AsyncGrokProvider(
         )
         self._continuations.remove(conversation_id)
 
-    async def _move_chat_data(self, conversation_id: str, project_id: str | None) -> None:
+    async def _move_chat_data(
+        self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
+    ) -> None:
         await self.editor.move_chat(
             conversation_id,
             project_id,
+            source_project_id=source_project_id,
             fetch_metadata=self._conversation_metadata,
         )
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
-        query = {"pageSize": 50}
+        query: dict[str, int | str] = {"pageSize": 50}
         if cursor:
             query["pageToken"] = cursor
         data = await self.client.request("GET", "/rest/workspaces", params=query)

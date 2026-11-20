@@ -292,7 +292,7 @@ def _report_read(
             result = None
         finally:
             _active_read.reset(token)
-        if read.started_ns is not None and provider.has_event_subscribers:
+        if read.started_ns is not None and provider._has_event_subscribers:
             if isinstance(result, tuple):
                 result_items = [result[0]]
             elif isinstance(result, list):
@@ -307,7 +307,7 @@ def _report_read(
                 and (not args or args[0] is None)
                 and options.get("predicate") is None
             )
-            await provider.emit_safe(
+            await provider._emit_safe(
                 "collection.read.completed",
                 resource_id=scope_id,
                 payload={
@@ -333,7 +333,7 @@ async def _publish_collection_change(
         return
     record = {"id": item} if isinstance(item, str) else _event_item(item)
     if record["id"]:
-        await provider.emit_safe(
+        await provider._emit_safe(
             "collection.changed",
             operation_id=operation_id,
             resource_id=scope_id,

@@ -331,7 +331,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.provider.client.request.reset_mock()
         self.provider.client.request.side_effect = ProviderError("network")
         with self.assertRaises(ProviderError):
-            await self.provider._move_chat_data(CHAT, PROJECT)
+            await self.provider._move_chat_data(CHAT, PROJECT, source_project_id=None)
         self.provider.client.request.assert_awaited_once()
 
     async def test_truncated_stream_is_not_success(self):

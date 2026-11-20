@@ -157,15 +157,15 @@ class AsyncBranchableChat(AsyncChat):
         if self.provider is None:
             raise ProviderError("Chat is not attached to an open provider")
         provider = self.provider
-        context = provider.new_context(
+        context = provider._new_context(
             "chat.branch",
             resource_id=self.remote_id,
             parameters={"message_id": message_id, "title": title},
         )
 
         async def work(ctx) -> AsyncChat:
-            lock = provider.send_lock(self.remote_id)
-            async with provider.activity(send_lock_id=id(lock)):
+            lock = provider._send_lock(self.remote_id)
+            async with provider._activity(send_lock_id=id(lock)):
                 async with lock:
                     provider._require_provider()
                     branched = await provider._branch_chat_data(
@@ -192,7 +192,7 @@ class AsyncBranchableChat(AsyncChat):
                 await _publish_collection_change(
                     provider, "chats", "create", created_chat, operation_id=ctx.operation_id
                 )
-            await provider.emit(
+            await provider._emit(
                 "chat.branched",
                 operation_id=ctx.operation_id,
                 resource_id=created_chat.remote_id,
@@ -226,7 +226,7 @@ class AsyncMovableChat(AsyncChat):
             raise ProviderError("Chat is not attached to a provider session")
         target = _resolve_project_arg(provider, project)
         target_id = (target.remote_id or target.id) if target is not None else None
-        context = provider.new_context(
+        context = provider._new_context(
             "chat.move",
             resource_id=self.remote_id or self.id,
             parameters={"project_id": target_id},
@@ -243,10 +243,15 @@ class AsyncMovableChat(AsyncChat):
                 if effective_id == target_id
                 else _resolve_project_arg(provider, effective_id)
             )
-            lock = provider.send_lock(self.remote_id or self.id)
-            async with provider.activity(send_lock_id=id(lock)), lock:
+            lock = provider._send_lock(self.remote_id or self.id)
+            async with provider._activity(send_lock_id=id(lock)), lock:
+                source_id = self.project.remote_id if self.project is not None else None
+                if self.remote_id:
+                    provider._require_provider()
+                    current = await provider._get_chat_metadata(self.remote_id)
+                    source_id = current.project.id if current.project is not None else None
                 if not allow_reassignment:
-                    if self.project is not None:
+                    if source_id is not None or (not self.remote_id and self.project is not None):
                         raise UnsupportedOperationError(
                             "Moving a chat that already belongs to a project is not supported by the common chat contract"
                         )
@@ -257,17 +262,14 @@ class AsyncMovableChat(AsyncChat):
                         raise UnsupportedOperationError(
                             "A remote chat cannot be moved into a project that is not persisted remotely"
                         )
-                    project_ids = {
-                        project.remote_id
-                        for project in (self.project, destination)
-                        if project is not None and project.remote_id
-                    }
+                    destination_id = destination.remote_id if destination is not None else None
                     async with AsyncExitStack() as locks:
-                        for project_id in sorted(project_ids):
-                            await locks.enter_async_context(provider.project_lock(project_id))
-                        provider._require_provider()
+                        for project_id in sorted(
+                            {pid for pid in (source_id, destination_id) if pid}
+                        ):
+                            await locks.enter_async_context(provider._project_lock(project_id))
                         await provider._move_chat_data(
-                            self.remote_id, destination.remote_id if destination else None
+                            self.remote_id, destination_id, source_project_id=source_id
                         )
                 self.project = destination
                 ctx.parameters["project_id"] = (
@@ -280,7 +282,7 @@ class AsyncMovableChat(AsyncChat):
                 await _publish_collection_change(
                     provider, "chats", "update", self, operation_id=ctx.operation_id
                 )
-            await provider.emit(
+            await provider._emit(
                 "chat.moved",
                 operation_id=ctx.operation_id,
                 resource_id=self.remote_id or self.id,

@@ -111,10 +111,16 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     def provider(self) -> str:
         return self.type.value
 
-    def new_operation_id(self) -> str:
+    def attachment_policy(self) -> dict | None:
+        from .resources.message.attachment import policy_for
+
+        policy = policy_for(self.id)
+        return policy.as_dict() if policy else None
+
+    def _new_operation_id(self) -> str:
         return str(uuid.uuid4())
 
-    def new_context(
+    def _new_context(
         self,
         name: str,
         *,
@@ -124,7 +130,7 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     ) -> OperationContext:
         return OperationContext(
             name=name,
-            operation_id=operation_id or self.new_operation_id(),
+            operation_id=operation_id or self._new_operation_id(),
             provider_id=self.id,
             account_id=self.account_id,
             resource_id=resource_id,
