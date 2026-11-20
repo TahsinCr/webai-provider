@@ -645,7 +645,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         from webaiprovider.transport import async_session as session_module
-        from webaiprovider.transport.session_cookies import _SECONDARY_PERSIST_INTERVAL
+        from webaiprovider.transport.cookie_persistence import _SECONDARY_PERSIST_INTERVAL
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.json"

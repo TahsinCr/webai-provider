@@ -171,10 +171,10 @@ class BrowserSession:
         """Bootstrap a profile's web session natively on the active event loop."""
         from curl_cffi.requests import AsyncSession
 
+        from ...transport.async_http import _prepare_curl_session_async
         from ...transport.http import (
             _invalidate_host_dns,
             _is_curl_timeout,
-            _prepare_curl_session_async,
             curl_cookie_jar,
         )
 

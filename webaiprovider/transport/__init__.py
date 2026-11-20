@@ -1,5 +1,6 @@
 """Reusable public HTTP transport and client execution strategies."""
 
+from .async_http import AsyncHTTPTransport
 from .async_session import AsyncHttpSession
 from .base import (
     AsyncStreamResponse,
@@ -9,7 +10,7 @@ from .base import (
     TransportConfig,
     TransportResponse,
 )
-from .http import AsyncHTTPTransport, HTTPTransport
+from .http import HTTPTransport
 from .retry import parse_retry_after
 from .session import HttpSession
 

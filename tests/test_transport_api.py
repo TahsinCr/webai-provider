@@ -35,7 +35,7 @@ from webaiprovider.transport import (
     HTTPTransport,
     TransportConfig,
 )
-from webaiprovider.transport.http import _open_curl_stream
+from webaiprovider.transport.async_http import _check_ipv6_connectivity, _open_curl_stream
 from webaiprovider.transport.portal import PortalTransport
 
 
@@ -190,7 +190,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
             fresh_cache = BoundedCache(max_entries=16, max_bytes=4096, ttl=60)
             with (
                 patch.object(transport_http, "_DNS_CACHE", fresh_cache),
-                patch.object(transport_http, "_has_ipv6_connectivity", return_value=False),
+                patch("webaiprovider.transport.async_http._check_ipv6_connectivity", return_value=False),
                 patch("asyncio.get_running_loop") as loop_getter,
             ):
                 loop_getter.return_value.getaddrinfo = AsyncMock(
@@ -581,7 +581,7 @@ class BlockingTransportTests(unittest.TestCase):
         from curl_cffi.requests import Session
 
         from webaiprovider.errors import AccountPaused
-        from webaiprovider.transport.curl_stream import _CurlStream
+        from webaiprovider.transport.blocking_stream import _CurlStream
 
         release = threading.Event()
         requests = []
@@ -914,7 +914,7 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
         transport_http._ipv6_connectivity_cache = None
         try:
             with patch.object(transport_http, "_create_ipv6_probe_socket", side_effect=fake_socket):
-                self.assertFalse(await transport_http._check_ipv6_connectivity())
+                self.assertFalse(await _check_ipv6_connectivity())
             self.assertIs(socket.socket, socket_type)
             self.assertEqual(len(probe_threads), 1)
             self.assertNotEqual(probe_threads[0], caller_thread)
@@ -924,10 +924,8 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "webaiprovider.transport.http._create_ipv6_probe_socket",
                 side_effect=AssertionError("unexpected"),
             ):
-                self.assertTrue(await transport_http._check_ipv6_connectivity())
+                self.assertTrue(await _check_ipv6_connectivity())
 
-            with patch.object(transport_http, "_has_ipv6_connectivity", return_value=False):
-                self.assertFalse(await transport_http._check_ipv6_connectivity())
         finally:
             transport_http._ipv6_connectivity_cache = previous_cache
 
