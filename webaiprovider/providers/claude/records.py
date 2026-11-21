@@ -46,6 +46,16 @@ def presented_files(block):
             if isinstance(paths, (list, tuple))
             else ()
         )
+    text = block.get("text")
+    hint = CLAUDE_FILE_RULE.markdown_hint
+    if (
+        len(block) == 2
+        and block.get("type") == "text"
+        and isinstance(text, str)
+        and hint is not None
+        and hint not in text
+    ):
+        return ()
     return files_from(block, rule=CLAUDE_FILE_RULE)
 
 
