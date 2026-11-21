@@ -101,8 +101,7 @@ class AsyncClaudeProvider(
         cid = chat.remote_id
         options = {"temporary": chat.temporary}
         if cid and not self.client._lookup_cached_continuation(cid, options, None)[0]:
-            history = await self.client.request("history", conversation_id=cid)
-            self.client._remember_prepared_chat(cid, history, options)
+            await self.client.request("continuation", conversation_id=cid, **options)
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         raw = await self.client.request("history", conversation_id=conversation_id)

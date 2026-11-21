@@ -10,6 +10,7 @@ from unittest.mock import ANY, AsyncMock, Mock
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
 from webaiprovider.collections import Page
+from webaiprovider.core.concurrency import maybe_await
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.attachment import Attachment
@@ -17,6 +18,7 @@ from webaiprovider.resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     PartClosed,
+    ProviderRequest,
     ResponseComplete,
     ResponseVerifying,
     TextDelta,
@@ -37,6 +39,79 @@ from webaiprovider.resources.response.operation import (
     ThinkingEnd,
 )
 from webaiprovider.resources.response.parts import TextPart, ThinkingPart
+
+
+class ChatPreparationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepare_reuses_context_in_the_next_send_for_each_mode(self) -> None:
+        for provider_type, mock in ((Provider, Mock), (AsyncProvider, AsyncMock)):
+            for name in ("claude", "gemini", "grok"):
+                with self.subTest(mode=provider_type.__name__, provider=name):
+                    provider = provider_type(Account.from_cookies(name, {}))
+                    provider._prepare_session = mock()
+                    provider._close_session = mock()
+                    await maybe_await(provider.open())
+                    try:
+                        await self.check_prepared_send(provider, mock, name)
+                    finally:
+                        await maybe_await(provider.close())
+
+    async def check_prepared_send(self, provider, mock, name: str) -> None:
+        if name == "claude":
+            cid = "11111111-1111-4111-8111-111111111111"
+            organization = "22222222-2222-4222-8222-222222222222"
+            path = f"/api/organizations/{organization}/chat_conversations/{cid}"
+            client = provider.client
+            client.organization = organization
+            client.http.request = read = mock(return_value={"current_leaf_message_uuid": "parent"})
+        elif name == "gemini":
+            cid = "c_prepare"
+            turn = [[cid, "r_prepare"], None, [["Hi"]], [[["rc_prepare", ["Hello"]]]]]
+            provider.rpc.call = read = mock(return_value=[[[turn]]])
+            project_id = "notebooks/abcdef"
+            project = provider.projects._new(remote_id=project_id)
+            native = [None, [None] * 12 + [[1, "project context"]]]
+            provider.notebooks.get = project_read = mock(
+                return_value=NativeProject(project_id, "Notebook", metadata={"native": native})
+            )
+        else:
+            cid = "conversation"
+            rows = [
+                {"responseId": "user", "sender": "human"},
+                {"responseId": "parent", "parentResponseId": "user", "sender": "assistant"},
+            ]
+            provider._response_nodes = read = mock(
+                return_value={"responseNodes": rows, "lastResponseId": "parent"}
+            )
+
+        chat = provider.chats._new(remote_id=cid, project=project if name == "gemini" else None)
+        read.assert_not_called()
+        await maybe_await(chat.prepare())
+        await maybe_await(chat.prepare())
+
+        request = ProviderRequest("Next message", conversation_id=cid)
+        if name == "claude":
+            parent, _, _ = await maybe_await(
+                client._prepare_stream_conversation(cid, path, {"conversation_id": cid}, None)
+            )
+            self.assertEqual(parent, "parent")
+            read.assert_called_once_with("GET", path)
+            client._continuations.remove(cid)
+            read.return_value = {"uuid": cid}
+            await maybe_await(chat.prepare())
+            self.assertIsNone(client._continuations.get(cid))
+        elif name == "gemini":
+            _, metadata, _ = await maybe_await(provider._load_chat_continuation(request, None))
+            self.assertEqual(metadata[:3], [cid, "r_prepare", "rc_prepare"])
+            self.assertEqual(
+                await maybe_await(provider._resolve_project_context(project_id, None)),
+                (project_id, [1, "project context"]),
+            )
+            project_read.assert_called_once_with(project_id)
+            read.assert_called_once_with("hNvQHb", [cid, 1, None, 1, [1], [4], None, 1], "/app")
+        else:
+            parent = await maybe_await(provider._resolve_parent_response_id(request, [], []))
+            self.assertEqual(parent, "parent")
+            read.assert_called_once_with(cid)
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):

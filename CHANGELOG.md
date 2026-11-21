@@ -12,6 +12,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Use the lightweight Claude conversation read when preparing a chat, and reuse the cached continuation on the next normal send.
+
 - Group provider output blocks from the same turn into one historical response. Use `response.text` for visible text and `response.parts` for individual blocks.
 
 - Resolve synchronous model ID lookups from the loaded catalog on the calling thread.

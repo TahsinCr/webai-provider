@@ -546,6 +546,8 @@ class BaseClaudeClient:
         if cid is None:
             raise ValueError("Conversation required")
         path = base + "/chat_conversations/" + cid
+        if mode == "continuation":
+            return "GET", path, {}, cid
         if mode == "delete_chat":
             self._continuations.remove(cid)
             return "DELETE", path, {}, cid
@@ -563,7 +565,11 @@ class BaseClaudeClient:
     def _finalize_single_request(
         self, mode: str, cid: str | None, v: dict[str, Any], result: Any
     ) -> Any:
-        if mode == "history" and cid is not None:
+        if mode in ("history", "continuation") and cid is not None:
+            if mode == "continuation":
+                if not isinstance(result, dict):
+                    raise ClaudeCompatibilityError("Claude continuation response changed")
+                self._finalize_history_continuation(cid, result, v)
             if isinstance(result, dict) and "current_leaf_message_uuid" in result:
                 self._continuations.put(
                     cid,
@@ -624,10 +630,6 @@ class BaseClaudeClient:
             self._continuations.remove(cid)
             parent, v = self._apply_history_action(history, v)
         return parent, v, is_temp
-
-    def _remember_prepared_chat(self, cid: str, history: dict[str, Any], options: dict) -> None:
-        parent, _, temporary = self._finalize_history_continuation(cid, history, options)
-        self._continuations.put(cid, (parent, temporary))
 
     @staticmethod
     def _collect_pending_uploads(
