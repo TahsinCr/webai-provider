@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
-from contextlib import AsyncExitStack, ExitStack
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...collections import _async_publish_collection_change, _publish_collection_change
+from ...core.async_hooks import AsyncOperationHooks
+from ...core.hooks import OperationHooks
 from ...errors import ProviderError, UnsupportedOperationError
 from ...transport.downloader import DownloadSource, async_download_source, download_source
 from ..operations import async_execute_with_hooks, execute_with_hooks
@@ -156,7 +157,7 @@ class _BaseChat:
         source_id: str | None,
         *,
         allow_reassignment: bool,
-    ) -> tuple[str | None, list[str]]:
+    ) -> str | None:
         if not allow_reassignment:
             if source_id is not None or (not self.remote_id and self.project is not None):
                 raise UnsupportedOperationError(
@@ -165,14 +166,12 @@ class _BaseChat:
             if destination is None:
                 raise UnsupportedOperationError("Moving a chat requires a target project")
         if not self.remote_id:
-            return None, []
+            return None
         if destination is not None and not destination.remote_id:
             raise UnsupportedOperationError(
                 "A remote chat cannot be moved into a project that is not persisted remotely"
             )
-        destination_id = destination.remote_id if destination is not None else None
-        lock_ids = sorted({pid for pid in (source_id, destination_id) if pid})
-        return destination_id, lock_ids
+        return destination.remote_id if destination is not None else None
 
     def _finalize_move_state(self, ctx: Any, destination: Any) -> None:
         self.project = destination
@@ -210,6 +209,7 @@ class AsyncChat(_BaseChat):
         )
         from ..response.collections import AsyncResponsesCollection
 
+        self.hooks = AsyncOperationHooks()
         self.responses = AsyncResponsesCollection(self)
 
     async def prepare(self) -> None:
@@ -335,16 +335,13 @@ class AsyncMovableChat(AsyncChat):
                     provider._require_provider()
                     current = await provider._get_chat_metadata(self.remote_id)
                     source_id = current.project.id if current.project is not None else None
-                destination_id, lock_ids = self._validate_move_rules(
+                destination_id = self._validate_move_rules(
                     destination, source_id, allow_reassignment=allow_reassignment
                 )
                 if self.remote_id:
-                    async with AsyncExitStack() as locks:
-                        for project_id in lock_ids:
-                            await locks.enter_async_context(provider._project_lock(project_id))
-                        await provider._move_chat_data(
-                            self.remote_id, destination_id, source_project_id=source_id
-                        )
+                    await provider._move_chat_data(
+                        self.remote_id, destination_id, source_project_id=source_id
+                    )
                 self._finalize_move_state(ctx, destination)
             return self
 
@@ -392,6 +389,7 @@ class Chat(_BaseChat):
         )
         from ..response.collections import ResponsesCollection
 
+        self.hooks = OperationHooks()
         self.responses = ResponsesCollection(self)
 
     def prepare(self) -> None:
@@ -514,16 +512,13 @@ class MovableChat(Chat):
                     provider._require_provider()
                     current = provider._get_chat_metadata(self.remote_id)
                     source_id = current.project.id if current.project is not None else None
-                destination_id, lock_ids = self._validate_move_rules(
+                destination_id = self._validate_move_rules(
                     destination, source_id, allow_reassignment=allow_reassignment
                 )
                 if self.remote_id:
-                    with ExitStack() as locks:
-                        for project_id in lock_ids:
-                            locks.enter_context(provider._project_lock(project_id))
-                        provider._move_chat_data(
-                            self.remote_id, destination_id, source_project_id=source_id
-                        )
+                    provider._move_chat_data(
+                        self.remote_id, destination_id, source_project_id=source_id
+                    )
                 self._finalize_move_state(ctx, destination)
             return self
 

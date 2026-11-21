@@ -4,7 +4,7 @@ import contextlib
 import contextvars
 import logging
 import threading
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Generator, Iterator
 from time import monotonic
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
@@ -188,6 +188,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             return lock
 
     def _send_lock(self, conversation_id: str) -> threading.Lock:
+        self._check_parked_send(conversation_id)
         return self._lock("chat", conversation_id)
 
     def _bind_send_lock(self, conversation_id: str, lock: threading.Lock) -> None:
@@ -397,7 +398,6 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def _prepare_chat(self, chat: Any) -> None:
         conversation_id = chat.remote_id or chat.id
-        self._check_parked_send(conversation_id)
         lock = self._send_lock(conversation_id)
         with self._activity(send_lock_id=id(lock)), lock:
             self._require_provider()
@@ -406,32 +406,30 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def _warm_chat(self, chat: Any) -> None:
         """Prepare provider-specific continuation data while the chat is locked."""
 
-    def _execute_stream(self, operation: Any) -> Generator[StreamEvent | _StreamPause, None, None]:
+    def _execute_stream(
+        self, operation: MessageOperation
+    ) -> Generator[StreamEvent | _StreamPause, None, None]:
         chat = operation.chat
-        conversation_id = chat.remote_id or chat.id
-        self._check_parked_send(conversation_id)
-        lock = self._send_lock(conversation_id)
-        lock_id = id(lock)
-        with self._activity(send_lock_id=lock_id):
-            while (deadline := _stream_deadline.get()) is not None:
-                remaining = deadline - monotonic()
-                if remaining > 0 and lock.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
-                    if monotonic() < deadline:
-                        break
-                    lock.release()
-                yield _STREAM_PAUSED
-            else:
-                lock.acquire()
+        lock = self._send_lock(chat.remote_id or chat.id)
+        # The operation releases this scope after publishing its terminal record.
+        scope = operation._send_scope
+        scope.enter_context(self._activity(send_lock_id=id(lock)))
+        while (deadline := _stream_deadline.get()) is not None:
+            remaining = deadline - monotonic()
+            if remaining > 0 and lock.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+                if monotonic() < deadline:
+                    break
+                lock.release()
+            yield _STREAM_PAUSED
+        else:
+            lock.acquire()
+        scope.callback(lock.release)
 
-            events = None
-            try:
-                events = self._execute_stream_events(operation, lock)
-                yield from events
-            finally:
-                try:
-                    _close_iterator(events)
-                finally:
-                    lock.release()
+        events = self._execute_stream_events(operation, lock)
+        try:
+            yield from events
+        finally:
+            _close_iterator(events)
 
     def _execute_stream_events(
         self, operation: Any, send_lock: threading.Lock
@@ -643,39 +641,15 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         *,
         name: str | None = None,
         instructions: str | None = None,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         with self._project_lock(project_id):
-            staged = current() if callable(current) else current
             return self._patch_project(
-                project_id, name=name, instructions=instructions, current=staged
+                project_id, name=name, instructions=instructions, current=current
             )
 
     def _delete_project_data(self, project_id: str) -> None:
         raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
-
-    def _add_project_resource_data(
-        self,
-        project_id: str,
-        kind: str,
-        *,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
-        **values: Any,
-    ) -> ProjectData:
-        with self._project_lock(project_id):
-            staged = current() if callable(current) else current
-            return self._add_project_resource(project_id, kind, current=staged, **values)
-
-    def _remove_project_resource_data(
-        self,
-        project_id: str,
-        resource_id: str,
-        *,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
-    ) -> ProjectData:
-        with self._project_lock(project_id):
-            staged = current() if callable(current) else current
-            return self._remove_project_resource(project_id, resource_id, current=staged)
 
     def _resolve_download_data(
         self,

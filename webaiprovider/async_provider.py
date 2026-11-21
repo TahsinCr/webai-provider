@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import contextvars
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
@@ -48,9 +48,12 @@ if TYPE_CHECKING:
     from .accounts.account import Account
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
+    from .resources.response.operation import AsyncMessageOperation
 
 
 if TYPE_CHECKING:
+    from .resources.response.operation import AsyncMessageOperation
+
     _ChatsT = DefaultTypeVar(
         "_ChatsT",
         bound=AsyncChatsCollection[Any],
@@ -393,19 +396,21 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def _warm_chat(self, chat: Any) -> None:
         """Prepare provider-specific continuation data while the chat is locked."""
 
-    async def _execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
+    async def _execute_stream(
+        self, operation: AsyncMessageOperation
+    ) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat
-        conversation_id = chat.remote_id or chat.id
-        lock = self._send_lock(conversation_id)
-        lock_id = id(lock)
+        lock = self._send_lock(chat.remote_id or chat.id)
+        # The operation releases this scope after publishing its terminal record.
+        scope = operation._send_scope
+        await scope.enter_async_context(self._activity(send_lock_id=id(lock)))
+        await scope.enter_async_context(lock)
         events = self._execute_stream_events(operation, lock)
-        async with self._activity(send_lock_id=lock_id):
-            try:
-                async with lock:
-                    async for event in events:
-                        yield event
-            finally:
-                await _async_close_iterator(events)
+        try:
+            async for event in events:
+                yield event
+        finally:
+            await _async_close_iterator(events)
 
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
@@ -619,39 +624,15 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         *,
         name: str | None = None,
         instructions: str | None = None,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
+        current: ProjectData | None = None,
     ) -> ProjectData:
         async with self._project_lock(project_id):
-            staged = current() if callable(current) else current
             return await self._patch_project(
-                project_id, name=name, instructions=instructions, current=staged
+                project_id, name=name, instructions=instructions, current=current
             )
 
     async def _delete_project_data(self, project_id: str) -> None:
         raise FeatureUnavailable(Capability.PROJECT_DELETE, "not_implemented")
-
-    async def _add_project_resource_data(
-        self,
-        project_id: str,
-        kind: str,
-        *,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
-        **values: Any,
-    ) -> ProjectData:
-        async with self._project_lock(project_id):
-            staged = current() if callable(current) else current
-            return await self._add_project_resource(project_id, kind, current=staged, **values)
-
-    async def _remove_project_resource_data(
-        self,
-        project_id: str,
-        resource_id: str,
-        *,
-        current: ProjectData | Callable[[], ProjectData | None] | None = None,
-    ) -> ProjectData:
-        async with self._project_lock(project_id):
-            staged = current() if callable(current) else current
-            return await self._remove_project_resource(project_id, resource_id, current=staged)
 
     async def _resolve_download_data(
         self,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from copy import copy
 from dataclasses import dataclass
 from time import monotonic_ns
@@ -18,8 +18,6 @@ from ...collections import (
     validate_limit,
     validate_predicate,
 )
-from ...core.async_hooks import AsyncOperationHooks
-from ...core.hooks import OperationHooks
 from ...errors import ProviderError, RemoteNotFound, UnsupportedOperationError
 from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
@@ -32,8 +30,6 @@ from .artifact import Artifact
 from .operation import (
     AsyncMessageOperation,
     MessageOperation,
-    _async_close_iterator,
-    _close_iterator,
 )
 from .parts import ResponsePart, TextPart, ThinkingPart
 from .response import Response
@@ -41,7 +37,6 @@ from .source import Source
 
 if TYPE_CHECKING:
     from ..chat.chat import Chat
-    from .operation import StreamEvent
 
 
 def _build_sources(raw_sources: Iterable[Any], source_type: type[Source]) -> tuple[Source, ...]:
@@ -165,14 +160,18 @@ class _BaseResponsesCollection:
 
     _collection_name = "chat.responses"
     _default_message_type: type[Any] = AsyncMessage
-    _operation_type: type[Any] = AsyncMessageOperation
     chat: Any
     _turns: list[Response]
     _known_responses: dict[str, Response]
     _known_messages: dict[str, Any]
     _history_read: int
     _history_applied: int
-    _execute_send: Callable[[Any], Any]
+
+    def _execute_send(self, operation: AsyncMessageOperation | MessageOperation) -> Any:
+        provider = self.chat.provider
+        if provider is None:
+            raise ProviderError("No provider session is attached to this chat")
+        return provider._require_provider()._execute_stream(operation)
 
     @property
     def _read_provider(self):
@@ -652,11 +651,9 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
     """Conversation turn collection pairing assistant Responses with their triggering user Messages."""
 
     _default_message_type = AsyncMessage
-    _operation_type = AsyncMessageOperation
 
     def __init__(self, chat: AsyncChat) -> None:
         self._init_responses_state(chat)
-        self.hooks = AsyncOperationHooks()
         self._history_flight: SingleFlight[str] | None = None
 
     async def _load_history(self, *, fresh: bool = False) -> list[Response]:
@@ -729,17 +726,6 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
         )
         return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
 
-    async def _execute_send(self, operation: AsyncMessageOperation) -> AsyncIterator[StreamEvent]:
-        provider = self.chat.provider
-        if provider is None:
-            raise ProviderError("No provider session is attached to this chat")
-        stream = provider._require_provider()._execute_stream(operation)
-        try:
-            async for event in stream:
-                yield event
-        finally:
-            await _async_close_iterator(stream)
-
     def update(
         self,
         target: Response | AsyncMessage | Message | str,
@@ -782,18 +768,27 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
     """Blocking conversation turn collection running directly on the caller thread."""
 
     _default_message_type = Message
-    _operation_type = MessageOperation
 
     def __init__(self, chat: Chat) -> None:
         self._init_responses_state(chat)
-        self.hooks = OperationHooks()
-        self._history_lock = threading.Lock()
+        self._history_lock = threading.RLock()
+
+    def _track_local_message(self, message: Any) -> Response:
+        with self._history_lock:
+            return super()._track_local_message(message)
+
+    def _reconcile_live_response(self, operation: Any, response: Response) -> Response:
+        with self._history_lock:
+            result = super()._reconcile_live_response(operation, response)
+            self._history_applied = self._history_read + 1
+            return result
 
     def _load_history(self, *, fresh: bool = False) -> list[Response]:
         del fresh
         remote_id = self.chat.remote_id
         if not remote_id:
-            return list(self._turns)
+            with self._history_lock:
+                return list(self._turns)
         provider = self.chat.provider
         if provider is None:
             raise ProviderError("Chat is not attached to an open provider")
@@ -842,20 +837,11 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         attachments: Iterable[Attachment] | Attachments | None = None,
         **metadata: Any,
     ) -> MessageOperation:
-        msg = self._prepare_create_message(
-            message, model=model, attachments=attachments, metadata=metadata
-        )
+        with self._history_lock:
+            msg = self._prepare_create_message(
+                message, model=model, attachments=attachments, metadata=metadata
+            )
         return MessageOperation(self.chat, msg, executor=self._execute_send)
-
-    def _execute_send(self, operation: MessageOperation) -> Iterator[StreamEvent]:
-        provider = self.chat.provider
-        if provider is None:
-            raise ProviderError("No provider session is attached to this chat")
-        stream = provider._require_provider()._execute_stream(operation)
-        try:
-            yield from stream
-        finally:
-            _close_iterator(stream)
 
     def update(
         self,
@@ -865,7 +851,8 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        msg = self._resolve_known_message(target)
+        with self._history_lock:
+            msg = self._resolve_known_message(target)
         new_content = content if content is not None else msg.content
         return self.edit(msg, new_content, model=model, **options)
 
@@ -877,7 +864,8 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        msg = self._build_edit_message(target, new_content, model=model, options=options)
+        with self._history_lock:
+            msg = self._build_edit_message(target, new_content, model=model, options=options)
         return MessageOperation(self.chat, msg, executor=self._execute_send)
 
     def retry(
@@ -887,8 +875,10 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        msg = self._build_retry_message(target, model=model, options=options)
+        with self._history_lock:
+            msg = self._build_retry_message(target, model=model, options=options)
         return MessageOperation(self.chat, msg, executor=self._execute_send)
 
     def delete(self, target: Response | Message | AsyncMessage | str) -> None:
-        self._delete_local(target)
+        with self._history_lock:
+            self._delete_local(target)

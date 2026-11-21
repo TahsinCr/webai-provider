@@ -7,8 +7,10 @@ import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AsyncExitStack, ExitStack
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
+from enum import Enum
 from math import inf, isnan
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +19,6 @@ from eventflow import StateMachine
 from ...collections import _async_publish_collection_change, _publish_collection_change
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
-from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
 from ...core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
 from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
@@ -29,6 +30,62 @@ from .source import Source
 
 if TYPE_CHECKING:
     from ..chat.chat import AsyncChat, Chat
+
+
+class OperationState(str, Enum):
+    PENDING = "PENDING"
+    PREPARING = "PREPARING"
+    SENDING = "SENDING"
+    STREAMING = "STREAMING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+_OPERATION_TRANSITIONS: dict[OperationState, set[OperationState]] = {
+    OperationState.PENDING: {OperationState.PREPARING, OperationState.CANCELLED},
+    OperationState.PREPARING: {
+        OperationState.SENDING,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
+    },
+    OperationState.SENDING: {
+        OperationState.STREAMING,
+        OperationState.COMPLETED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
+    },
+    OperationState.STREAMING: {
+        OperationState.COMPLETED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
+    },
+    OperationState.COMPLETED: set(),
+    OperationState.FAILED: set(),
+    OperationState.CANCELLED: set(),
+}
+_OPERATION_TERMINAL_STATES = {
+    OperationState.COMPLETED,
+    OperationState.FAILED,
+    OperationState.CANCELLED,
+}
+
+
+class OperationEvent(str, Enum):
+    THINKING_BEGIN = "thinking.begin"
+    THINKING_DELTA = "thinking.delta"
+    THINKING_REPLACE = "thinking.replace"
+    THINKING_END = "thinking.end"
+    OUTPUT_BEGIN = "output.begin"
+    OUTPUT_DELTA = "output.delta"
+    OUTPUT_REPLACE = "output.replace"
+    OUTPUT_END = "output.end"
+    GENERATION_END = "generation.end"
+    VERIFICATION_BEGIN = "verification.begin"
+    RESPONSE_PARTS_RESOLVED = "response.parts.resolved"
+    SOURCE_DISCOVERED = "source.discovered"
+    ARTIFACT_DISCOVERED = "artifact.discovered"
+    STATUS_TERMINAL = "status.terminal"
 
 
 def _close_iterator(stream: Iterator[Any] | None) -> None:
@@ -57,96 +114,96 @@ async def _async_close_iterator(stream: AsyncIterator[Any] | None) -> None:
 
 @dataclass(frozen=True, slots=True)
 class StreamEvent:
-    event: str = field(init=False, default="")
+    event: OperationEvent
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingBegin(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
-    event: str = field(init=False, default="thinking.begin")
+    event: OperationEvent = field(init=False, default=OperationEvent.THINKING_BEGIN)
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingDelta(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     delta: str = ""
-    event: str = field(init=False, default="thinking.delta")
+    event: OperationEvent = field(init=False, default=OperationEvent.THINKING_DELTA)
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingReplace(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
-    event: str = field(init=False, default="thinking.replace")
+    event: OperationEvent = field(init=False, default=OperationEvent.THINKING_REPLACE)
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingEnd(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
-    event: str = field(init=False, default="thinking.end")
+    event: OperationEvent = field(init=False, default=OperationEvent.THINKING_END)
 
 
 @dataclass(frozen=True, slots=True)
 class OutputBegin(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
-    event: str = field(init=False, default="output.begin")
+    event: OperationEvent = field(init=False, default=OperationEvent.OUTPUT_BEGIN)
 
 
 @dataclass(frozen=True, slots=True)
 class OutputDelta(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     delta: str = ""
-    event: str = field(init=False, default="output.delta")
+    event: OperationEvent = field(init=False, default=OperationEvent.OUTPUT_DELTA)
 
 
 @dataclass(frozen=True, slots=True)
 class OutputReplace(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
-    event: str = field(init=False, default="output.replace")
+    event: OperationEvent = field(init=False, default=OperationEvent.OUTPUT_REPLACE)
 
 
 @dataclass(frozen=True, slots=True)
 class OutputEnd(StreamEvent):
     part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
-    event: str = field(init=False, default="output.end")
+    event: OperationEvent = field(init=False, default=OperationEvent.OUTPUT_END)
 
 
 @dataclass(frozen=True, slots=True)
 class GenerationEnd(StreamEvent):
-    event: str = field(init=False, default="generation.end")
+    event: OperationEvent = field(init=False, default=OperationEvent.GENERATION_END)
 
 
 @dataclass(frozen=True, slots=True)
 class VerificationBegin(StreamEvent):
-    event: str = field(init=False, default="verification.begin")
+    event: OperationEvent = field(init=False, default=OperationEvent.VERIFICATION_BEGIN)
 
 
 @dataclass(frozen=True, slots=True)
 class ResponsePartsResolved(StreamEvent):
     parts: tuple[ResponsePart, ...] = ()
-    event: str = field(init=False, default="response.parts.resolved")
+    event: OperationEvent = field(init=False, default=OperationEvent.RESPONSE_PARTS_RESOLVED)
 
 
 @dataclass(frozen=True, slots=True)
 class SourceDiscovered(StreamEvent):
     source: Source = field(default_factory=lambda: Source("", ""))
-    event: str = field(init=False, default="source.discovered")
+    event: OperationEvent = field(init=False, default=OperationEvent.SOURCE_DISCOVERED)
 
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDiscovered(StreamEvent):
     artifact: Artifact = field(default_factory=lambda: Artifact("", "", ""))
-    event: str = field(init=False, default="artifact.discovered")
+    event: OperationEvent = field(init=False, default=OperationEvent.ARTIFACT_DISCOVERED)
 
 
 @dataclass(frozen=True, slots=True)
 class TerminalStatus(StreamEvent):
     status: str = "completed"
     error: Any = None
-    event: str = field(init=False, default="status.terminal")
+    event: OperationEvent = field(init=False, default=OperationEvent.STATUS_TERMINAL)
 
 
 class _StreamAccumulator:
@@ -230,7 +287,6 @@ class _BaseMessageOperation:
     _hooks_type: type[Any]
     chat: Any
     message: Any
-    hooks: Any
 
     def _event_offset(self, after: StreamEvent | None) -> int:
         if after is None:
@@ -243,7 +299,6 @@ class _BaseMessageOperation:
     def _init_operation_state(self, chat: Any, message: Any, executor: Any) -> None:
         self.chat = chat
         self.message = message
-        self.hooks = self._hooks_type()
         self._executor = executor
         self._response: Response | None = None
         self._assistant_message_id: str | None = None
@@ -278,12 +333,7 @@ class _BaseMessageOperation:
         chain: list[Any] = []
         if provider is not None and isinstance(getattr(provider, "hooks", None), self._hooks_type):
             chain.append(provider.hooks)
-        responses = getattr(self.chat, "responses", None)
-        if responses is not None and isinstance(
-            getattr(responses, "hooks", None), self._hooks_type
-        ):
-            chain.append(responses.hooks)
-        chain.append(self.hooks)
+        chain.append(self.chat.hooks)
         return provider, tuple(chain)
 
     def _build_send_context(self, session: Any) -> OperationContext:
@@ -326,6 +376,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
         self._stream_task: asyncio.Task[Response] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._condition = asyncio.Condition()
+        self._send_scope = AsyncExitStack()
 
     def cancel(self) -> None:
         loop = self._loop
@@ -337,7 +388,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
             if current_loop is not loop:
                 loop.call_soon_threadsafe(self.cancel)
                 return
-        if self._completed:
+        if self._completed or self.state in _OPERATION_TERMINAL_STATES:
             return
         self._cancelled = True
         self._transition_to(OperationState.CANCELLED)
@@ -373,17 +424,36 @@ class AsyncMessageOperation(_BaseMessageOperation):
         self._events.append(event)
         async with self._condition:
             self._condition.notify_all()
-        await self.hooks.emit(event)
+        await self.chat.hooks.emit(event)
 
-    async def _finish(self, status: TerminalStatus) -> None:
-        self._completed = True
-        await self._publish(status)
+    async def _record_terminal(self, status: TerminalStatus) -> None:
+        # Final state is observable before a contender can acquire the chat lock.
+        async with self._condition:
+            self._completed = True
+            self._events.append(status)
+            self._condition.notify_all()
+        await self._send_scope.aclose()
 
     async def wait_for(
-        self, stage_name: str, *, timeout: float | None = None, after: StreamEvent | None = None
+        self,
+        event_kind: OperationEvent,
+        *,
+        timeout: float | None = None,
+        after: StreamEvent | None = None,
     ) -> StreamEvent | None:
+        if not isinstance(event_kind, OperationEvent):
+            raise TypeError("Expected an OperationEvent")
+        if timeout is not None and isnan(timeout):
+            raise ValueError("Stage timeout must not be NaN")
         offset = self._event_offset(after)
-        self._ensure_started()
+        if timeout is not None and timeout <= 0:
+            for index in range(offset, len(self._events)):
+                event = self._events[index]
+                if event.event is event_kind:
+                    return event
+            return None
+        if not self._completed:
+            self._ensure_started()
 
         async def wait_for_event() -> StreamEvent | None:
             index = offset
@@ -392,7 +462,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
                     while index < len(self._events):
                         event = self._events[index]
                         index += 1
-                        if event.event == stage_name:
+                        if event.event is event_kind:
                             return event
                     if self._completed:
                         return None
@@ -410,22 +480,18 @@ class AsyncMessageOperation(_BaseMessageOperation):
     ) -> tuple[list[StreamEvent], int, bool]:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        task = self._ensure_started()
-        while True:
-            async with self._condition:
-                await self._condition.wait_for(
-                    lambda current=index: current < len(self._events) or self._completed
-                )
-                done = index >= len(self._events)
-                if not done:
-                    end = min(len(self._events), index + limit)
-                    chunk = self._events[index:end]
-                    index = end
-            if done:
+        task = self._stream_task if self._completed else self._ensure_started()
+        async with self._condition:
+            await self._condition.wait_for(lambda: index < len(self._events) or self._completed)
+            end = min(len(self._events), index + limit)
+            if end > index:
+                return self._events[index:end], end, False
+        if task is not None:
+            if task is not asyncio.current_task():
                 await task
-                return [], index, True
-            if chunk:
-                return chunk, index, False
+        elif self._cancelled:
+            raise OperationCancelledError("Operation cancelled")
+        return [], index, True
 
     async def stream(self) -> AsyncIterator[StreamEvent]:
         index = 0
@@ -439,7 +505,6 @@ class AsyncMessageOperation(_BaseMessageOperation):
 
     async def _run_internal(self) -> Response:
         accumulator = _StreamAccumulator(time.perf_counter())
-        stream: AsyncIterator[StreamEvent] | None = None
         session, hooks_chain = self._provider_and_hooks()
         emitter = session if session is not None and hasattr(session, "_emit") else None
         context = self._build_send_context(session)
@@ -458,20 +523,23 @@ class AsyncMessageOperation(_BaseMessageOperation):
                 )
 
             stream = self._executor(self)
-            async for event in stream:
-                if self._cancelled:
-                    raise OperationCancelledError("Operation cancelled")
-                self._transition_to(OperationState.STREAMING)
-                accumulator.record(event)
-                await self._publish(event)
+            try:
+                async for event in stream:
+                    if self._cancelled:
+                        raise OperationCancelledError("Operation cancelled")
+                    self._transition_to(OperationState.STREAMING)
+                    accumulator.record(event)
+                    await self._publish(event)
+            finally:
+                await _async_close_iterator(stream)
 
             response = accumulator.build_response(self, session)
-            if emitter is not None:
-                context.resource_id = self.chat.remote_id or self.chat.id
-                context.result = response
+            context.resource_id = self.chat.remote_id or self.chat.id
+            context.result = response
             self._response = response
 
             self._transition_to(OperationState.COMPLETED)
+            await self._record_terminal(TerminalStatus("completed"))
             if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
@@ -492,10 +560,11 @@ class AsyncMessageOperation(_BaseMessageOperation):
             self._hook_results["on_success"] = await AsyncOperationHooks.run_lifecycle(
                 hooks_chain, "on_success", "chat.send", context
             )
-            await self._finish(TerminalStatus("completed"))
             return self._response
 
         except (asyncio.CancelledError, OperationCancelledError) as exc:
+            if self._completed:
+                raise
             cancelled = True
             error = (
                 exc
@@ -506,6 +575,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
             context.error = error
             self._cancelled = True
             self._transition_to(OperationState.CANCELLED)
+            await self._record_terminal(TerminalStatus("cancelled", error))
             if emitter is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.shield(
@@ -518,11 +588,13 @@ class AsyncMessageOperation(_BaseMessageOperation):
             self._hook_results["on_cancelled"] = await asyncio.shield(
                 AsyncOperationHooks.run_lifecycle(hooks_chain, "on_cancelled", "chat.send", context)
             )
-            await self._finish(TerminalStatus("cancelled", error))
             raise error from None
         except Exception as exc:
+            if self._completed:
+                raise
             context.error = exc
             self._transition_to(OperationState.FAILED)
+            await self._record_terminal(TerminalStatus("failed", exc))
             if emitter is not None:
                 with contextlib.suppress(Exception):
                     await emitter._emit(
@@ -534,11 +606,12 @@ class AsyncMessageOperation(_BaseMessageOperation):
             self._hook_results["on_error"] = await AsyncOperationHooks.run_lifecycle(
                 hooks_chain, "on_error", "chat.send", context
             )
-            await self._finish(TerminalStatus("failed", exc))
             raise
         finally:
             try:
-                await _async_close_iterator(stream)
+                await self._send_scope.aclose()
+                if self._events and isinstance(self._events[-1], TerminalStatus):
+                    await self.chat.hooks.emit(self._events[-1])
             finally:
                 fin = AsyncOperationHooks.run_lifecycle(
                     hooks_chain, "on_finally", "chat.send", context
@@ -549,7 +622,12 @@ class AsyncMessageOperation(_BaseMessageOperation):
                     self._condition.notify_all()
 
     async def start(self) -> Response:
-        return await asyncio.shield(self._ensure_started())
+        task = self._ensure_started()
+        if task is asyncio.current_task():
+            if self._response is not None:
+                return self._response
+            raise ProviderError("Cannot wait for a message operation from its callback")
+        return await asyncio.shield(task)
 
     async def wait(self) -> Response:
         return await self.start()
@@ -577,9 +655,7 @@ class MessageOperation(_BaseMessageOperation):
         self._driver_thread: int | None = None
         self._started = False
         self._condition = threading.Condition()
-
-    def on(self, event_name: str, handler: Any = None) -> Any:
-        return self.hooks.on(event_name, handler)
+        self._send_scope = ExitStack()
 
     def cancel(self) -> None:
         with self._condition:
@@ -609,17 +685,17 @@ class MessageOperation(_BaseMessageOperation):
         with self._condition:
             self._events.append(event)
             self._condition.notify_all()
-        self.hooks.emit(event)
+        self.chat.hooks.emit(event)
 
-    def _finish(self, status: TerminalStatus) -> None:
+    def _record_terminal(self, status: TerminalStatus) -> None:
         with self._condition:
+            self._completed = True
             self._events.append(status)
             self._condition.notify_all()
-        self.hooks.emit(status)
+        self._send_scope.close()
 
     def _drive(self) -> Iterator[StreamEvent | _StreamPause]:
         accumulator = _StreamAccumulator(time.perf_counter())
-        stream: Iterator[StreamEvent | _StreamPause] | None = None
         session, hooks_chain = self._provider_and_hooks()
         emitter = session if session is not None and hasattr(session, "_emit") else None
         context = self._build_send_context(session)
@@ -638,18 +714,21 @@ class MessageOperation(_BaseMessageOperation):
                 )
 
             stream = self._executor(self)
-            for event in stream:
-                if self._cancelled:
-                    raise OperationCancelledError("Operation cancelled")
-                if event is _STREAM_PAUSED:
+            try:
+                for event in stream:
+                    if self._cancelled:
+                        raise OperationCancelledError("Operation cancelled")
+                    if event is _STREAM_PAUSED:
+                        yield event
+                        continue
+                    self._transition_to(OperationState.STREAMING)
+                    accumulator.record(event)
+                    self._publish(event)
                     yield event
-                    continue
-                self._transition_to(OperationState.STREAMING)
-                accumulator.record(event)
-                self._publish(event)
-                yield event
-                if self._cancelled:
-                    raise OperationCancelledError("Operation cancelled")
+                    if self._cancelled:
+                        raise OperationCancelledError("Operation cancelled")
+            finally:
+                _close_iterator(stream)
 
             with self._condition:
                 if self._cancelled:
@@ -657,9 +736,9 @@ class MessageOperation(_BaseMessageOperation):
                 response = accumulator.build_response(self, session)
                 self._response = response
                 self._transition_to(OperationState.COMPLETED)
-            if emitter is not None:
-                context.resource_id = self.chat.remote_id or self.chat.id
-                context.result = response
+            context.resource_id = self.chat.remote_id or self.chat.id
+            context.result = response
+            self._record_terminal(TerminalStatus("completed"))
             if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
@@ -680,8 +759,9 @@ class MessageOperation(_BaseMessageOperation):
             self._hook_results["on_success"] = OperationHooks.run_lifecycle(
                 hooks_chain, "on_success", "chat.send", context
             )
-            self._finish(TerminalStatus("completed"))
         except (OperationCancelledError, GeneratorExit) as cause:
+            if self._completed:
+                raise
             error = (
                 cause
                 if isinstance(cause, OperationCancelledError)
@@ -692,6 +772,7 @@ class MessageOperation(_BaseMessageOperation):
             self._cancelled = True
             self._error = error
             self._transition_to(OperationState.CANCELLED)
+            self._record_terminal(TerminalStatus("cancelled", error))
             if emitter is not None:
                 with contextlib.suppress(Exception):
                     emitter._emit(
@@ -702,12 +783,14 @@ class MessageOperation(_BaseMessageOperation):
             self._hook_results["on_cancelled"] = OperationHooks.run_lifecycle(
                 hooks_chain, "on_cancelled", "chat.send", context
             )
-            self._finish(TerminalStatus("cancelled", error))
             raise
         except BaseException as exc:
+            if self._completed:
+                raise
             context.error = exc
             self._error = exc
             self._transition_to(OperationState.FAILED)
+            self._record_terminal(TerminalStatus("failed", exc))
             if emitter is not None:
                 with contextlib.suppress(Exception):
                     emitter._emit(
@@ -719,11 +802,12 @@ class MessageOperation(_BaseMessageOperation):
             self._hook_results["on_error"] = OperationHooks.run_lifecycle(
                 hooks_chain, "on_error", "chat.send", context
             )
-            self._finish(TerminalStatus("failed", exc))
             raise
         finally:
             try:
-                _close_iterator(stream)
+                self._send_scope.close()
+                if self._events and isinstance(self._events[-1], TerminalStatus):
+                    self.chat.hooks.emit(self._events[-1])
             finally:
                 self._hook_results["on_finally"] = OperationHooks.run_lifecycle(
                     hooks_chain, "on_finally", "chat.send", context
@@ -846,9 +930,15 @@ class MessageOperation(_BaseMessageOperation):
             raise
 
     def wait_for(
-        self, stage_name: str, *, timeout: float | None = None, after: StreamEvent | None = None
+        self,
+        event_kind: OperationEvent,
+        *,
+        timeout: float | None = None,
+        after: StreamEvent | None = None,
     ) -> StreamEvent | None:
         """Wait for a stage until the deadline or message completion."""
+        if not isinstance(event_kind, OperationEvent):
+            raise TypeError("Expected an OperationEvent")
         if timeout is not None and isnan(timeout):
             raise ValueError("Stage timeout must not be NaN")
         deadline = None if timeout is None or timeout == inf else time.monotonic() + timeout
@@ -859,7 +949,7 @@ class MessageOperation(_BaseMessageOperation):
                 while index < len(self._events):
                     event = self._events[index]
                     index += 1
-                    if event.event == stage_name:
+                    if event.event is event_kind:
                         return event
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if self._completed or (remaining is not None and remaining <= 0):
@@ -882,7 +972,7 @@ class MessageOperation(_BaseMessageOperation):
                     index += 1
                     if deadline is not None and time.monotonic() >= deadline:
                         return None
-                    if event.event == stage_name:
+                    if event.event is event_kind:
                         return event
             finally:
                 self._release_driver()

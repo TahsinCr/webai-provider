@@ -8,7 +8,14 @@ from importlib import import_module
 from unittest.mock import ANY, AsyncMock, Mock
 
 from tests.streaming_support import StreamTestProvider
-from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
+from webaiprovider import (
+    Account,
+    AsyncMessageOperation,
+    AsyncProvider,
+    OperationEvent,
+    OperationState,
+    Provider,
+)
 from webaiprovider.collections import Page
 from webaiprovider.core.concurrency import maybe_await
 from webaiprovider.errors import ProviderError, UnsupportedOperationError
@@ -219,6 +226,30 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await loaded.instruction.get(), "Be concise")
         self.assertEqual((await loaded.attachments.list())[0].id, "resource-1")
 
+    async def test_project_attachment_waiter_uses_the_committed_snapshot(self) -> None:
+        project = self.provider.projects._new(remote_id="project")
+        project._provider_project = None
+        first_started, release = asyncio.Event(), asyncio.Event()
+        first = Attachment("first", "Notes")
+        second = Attachment("second", "Notes")
+
+        async def add(_project_id, _kind, *, current, **_options):
+            if current is None:
+                first_started.set()
+                await release.wait()
+                return NativeProject("project", "Project", resources=(first,))
+            self.assertEqual([item.id for item in current.resources], ["first"])
+            return NativeProject("project", "Project", resources=(second, first))
+
+        self.provider._add_project_resource = AsyncMock(side_effect=add)
+        first_task = asyncio.create_task(project.attachments.create("A", "text", name="Notes"))
+        await asyncio.wait_for(first_started.wait(), 1)
+        second_task = asyncio.create_task(project.attachments.create("B", "text", name="Notes"))
+        await asyncio.sleep(0)
+        release.set()
+        attachments = await asyncio.wait_for(asyncio.gather(first_task, second_task), 1)
+        self.assertEqual([attachment.id for attachment in attachments], ["first", "second"])
+
     async def test_project_chat_pages_and_move_actions(self) -> None:
         from webaiprovider.providers.grok import AsyncGrokChat
         from webaiprovider.resources.project.project import AsyncProject
@@ -379,20 +410,41 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.provider._stream_provider_events = generate
         self.provider._warm_chat = warm
+
+        async def delete_remote(_remote_id):
+            self.assertIsNotNone(op.response)
+            self.assertEqual(
+                (await op.wait_for(OperationEvent.STATUS_TERMINAL)).status, "completed"
+            )
+
+        self.provider._delete_chat_data = AsyncMock(side_effect=delete_remote)
         op = chat.responses.create("Question")
-        first = await op.wait_for("thinking.begin", timeout=1)
-        second = await op.wait_for("thinking.begin", after=first, timeout=1)
+        first = await op.wait_for(OperationEvent.THINKING_BEGIN, timeout=1)
+        second = await op.wait_for(OperationEvent.THINKING_BEGIN, after=first, timeout=1)
         self.assertNotEqual(first.part_id, second.part_id)
-        self.assertIsNotNone(await op.wait_for("verification.begin", timeout=1))
+        self.assertIsNotNone(await op.wait_for(OperationEvent.VERIFICATION_BEGIN, timeout=1))
+        terminal_hooks = []
+
+        async def terminal_hook(event):
+            # A terminal hook can run another mutation on the same chat.
+            await chat.prepare()
+            terminal_hooks.append(event)
+
+        chat.hooks.on(OperationEvent.STATUS_TERMINAL, terminal_hook)
         prepare = asyncio.create_task(chat.prepare())
+        delete = asyncio.create_task(chat.delete())
         try:
             await asyncio.sleep(0)
             self.assertFalse(warmed.is_set())
-            self.assertIsNone(await op.wait_for("status.terminal", timeout=0.01))
+            self.provider._delete_chat_data.assert_not_awaited()
+            self.assertIsNone(await op.wait_for(OperationEvent.STATUS_TERMINAL, timeout=0.01))
         finally:
             release.set()
         result = await asyncio.wait_for(op.wait(), 1)
         await asyncio.wait_for(prepare, 1)
+        await asyncio.wait_for(delete, 1)
+        self.provider._delete_chat_data.assert_awaited_once_with("confirmed-chat")
+        self.assertEqual(terminal_hooks, [await op.wait_for(OperationEvent.STATUS_TERMINAL)])
         self.assertTrue(warmed.is_set())
         self.assertEqual(result.id, "reply-1")
         self.assertEqual(
@@ -419,9 +471,9 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.provider._stream_provider_events = generate
         chat = await self.provider.chats.create()
         op = chat.responses.create("Question")
-        generated = await op.wait_for("generation.end", timeout=1)
+        generated = await op.wait_for(OperationEvent.GENERATION_END, timeout=1)
         self.assertIsNotNone(generated)
-        terminal = await op.wait_for("status.terminal", after=generated, timeout=1)
+        terminal = await op.wait_for(OperationEvent.STATUS_TERMINAL, after=generated, timeout=1)
         self.assertEqual(terminal.status, "failed")
         with self.assertRaisesRegex(ProviderError, "could not be confirmed"):
             await op.wait()
@@ -546,8 +598,8 @@ class ProviderResourceFamilyTests(unittest.TestCase):
             chat = provider.chats.create()
             chat.prepare()
             op = chat.responses.create("hello")
-            first = op.wait_for("thinking.begin")
-            second = op.wait_for("thinking.begin", after=first)
+            first = op.wait_for(OperationEvent.THINKING_BEGIN)
+            second = op.wait_for(OperationEvent.THINKING_BEGIN, after=first)
             self.assertNotEqual(first.part_id, second.part_id)
             with self.assertRaisesRegex(ProviderError, "paused send"):
                 chat.prepare()

@@ -18,6 +18,7 @@ from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 from webaiprovider import (
     Account,
     AsyncProvider,
+    OperationEvent,
     Provider,
     ProviderType,
 )
@@ -873,14 +874,18 @@ class BlockingTransportTests(unittest.TestCase):
                     operation = MessageOperation(Chat(), Message("fixture"), executor=events)
                     try:
                         started = monotonic()
-                        self.assertIsNone(operation.wait_for("output.delta", timeout=0.10))
+                        self.assertIsNone(
+                            operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=0.10)
+                        )
                         self.assertLess(monotonic() - started, 1)
                         self.assertTrue(request_in.wait(1))
 
                         send_first.set()
                         self.assertTrue(first_sent.wait(1))
                         started = monotonic()
-                        self.assertIsNone(operation.wait_for("output.delta", timeout=0.10))
+                        self.assertIsNone(
+                            operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=0.10)
+                        )
                         self.assertLess(monotonic() - started, 1)
                         self.assertEqual(operation._events, [])
 

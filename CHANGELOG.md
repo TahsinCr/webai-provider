@@ -12,6 +12,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Select stream milestones with `OperationEvent` in `wait_for()`. Register persistent stream and send hooks on `chat.hooks`.
+- Use stable snapshots for local collections and publish response parts and text together. Updating a message attachment replaces the item in the collection.
+- Keep the chat lock through terminal publication, reject same-thread mutations of paused sends, and lock only the chat during moves. Publish confirmed project attachment changes under the project lock.
+
 - Standardize bounded continuation caches across providers. ChatGPT keeps only the active node, model and project for normal follow-up sends. Persisted attachment downloads read conversation data for ownership verification on demand.
 
 - Use the lightweight Claude conversation read when preparing a chat, and reuse the cached continuation on the next normal send.

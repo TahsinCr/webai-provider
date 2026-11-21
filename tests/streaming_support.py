@@ -18,3 +18,8 @@ class StreamTestProvider(AsyncProvider):
         self.requests.append(request)
         for event in self._events:
             yield event  # type: ignore[misc]
+
+
+async def collect_provider_stream(provider, operation):
+    async with operation._send_scope:
+        return [event async for event in provider._execute_stream(operation)]

@@ -4,6 +4,7 @@ from contextlib import suppress
 
 from webaiprovider import (
     ArtifactsCollection,
+    OperationEvent,
     Response,
     ResponseParts,
     ResponsePartsResolved,
@@ -68,14 +69,14 @@ def _assert_response_parts(case, response: Response) -> None:
 
 def _stream_milestone_steps(case, operation, events, response):
     names = [event.event for event in events]
-    case.assertEqual(names.count("generation.end"), 1)
-    case.assertEqual(names.count("status.terminal"), 1)
+    case.assertEqual(names.count(OperationEvent.GENERATION_END), 1)
+    case.assertEqual(names.count(OperationEvent.STATUS_TERMINAL), 1)
     case.assertIsInstance(events[-1], TerminalStatus)
     case.assertEqual(events[-1].status, "completed")
-    generation = names.index("generation.end")
-    case.assertLessEqual(names.count("verification.begin"), 1)
-    if "verification.begin" in names:
-        case.assertGreater(names.index("verification.begin"), generation)
+    generation = names.index(OperationEvent.GENERATION_END)
+    case.assertLessEqual(names.count(OperationEvent.VERIFICATION_BEGIN), 1)
+    if OperationEvent.VERIFICATION_BEGIN in names:
+        case.assertGreater(names.index(OperationEvent.VERIFICATION_BEGIN), generation)
 
     opened = set()
     part_order = {}
@@ -96,21 +97,21 @@ def _stream_milestone_steps(case, operation, events, response):
             if stage == "end":
                 opened.remove(part_id)
     case.assertFalse(opened, "Some parts were still open when generation completed")
-    case.assertIn("output.begin", names)
+    case.assertIn(OperationEvent.OUTPUT_BEGIN, names)
 
     cursor = None
     for event in events:
         if event.event in (
-            "output.begin",
-            "thinking.begin",
-            "generation.end",
-            "verification.begin",
-            "status.terminal",
+            OperationEvent.OUTPUT_BEGIN,
+            OperationEvent.THINKING_BEGIN,
+            OperationEvent.GENERATION_END,
+            OperationEvent.VERIFICATION_BEGIN,
+            OperationEvent.STATUS_TERMINAL,
         ):
             observed = yield operation.wait_for(event.event, after=cursor, timeout=1)
             case.assertTrue(observed is event, f"wait_for did not return the next {event.event}")
             cursor = event
-    observed = yield operation.wait_for("status.terminal", after=cursor, timeout=1)
+    observed = yield operation.wait_for(OperationEvent.STATUS_TERMINAL, after=cursor, timeout=1)
     case.assertTrue(observed is None, "Terminal cursor returned another event")
 
     _assert_response_parts(case, response)
@@ -218,6 +219,8 @@ def _temporary_message_lifecycle_steps(case):
             )
 
         events = []
+        terminal_events = []
+        chat.hooks.on(OperationEvent.STATUS_TERMINAL, terminal_events.append)
 
         def record_event(event) -> None:
             events.append(event)
@@ -234,6 +237,10 @@ def _temporary_message_lifecycle_steps(case):
         case.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
         case.assertIsInstance(response, Response)
         yield from _stream_milestone_steps(case, operation, events, response)
+        case.assertTrue(
+            len(terminal_events) == 1 and terminal_events[0] is events[-1],
+            "Chat hook did not receive the stream terminal event",
+        )
         case.assertIsInstance(response.timing, TimingMetrics)
         case.assertIsInstance(response.sources, SourcesCollection)
         case.assertIsInstance(response.artifacts, ArtifactsCollection)
@@ -249,6 +256,10 @@ def _temporary_message_lifecycle_steps(case):
             "responses.create.followup", followup_op.start, entry=entry, chat=chat
         )
         case.assertTrue(followup_response.text)
+        case.assertTrue(
+            len(terminal_events) == 2 and terminal_events[1].status == "completed",
+            "Chat hook did not receive the follow-up terminal event",
+        )
 
         web_op = chat.responses.create(
             f"{marker} Search the web for the official Python 3.13 release date and include at least one source link. Reply in one short sentence.",

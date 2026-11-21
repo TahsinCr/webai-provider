@@ -190,14 +190,14 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
             new_title = ctx.parameters["title"]
             new_instruction = ctx.parameters["instruction"]
             if target.remote_id:
-                async with provider._activity():
+                async with provider._activity(), provider._project_lock(target.remote_id):
                     provider._require_provider()
                     previous = (target.title, target.instruction._text)
-                    updated = await provider._patch_project_data(
+                    updated = await provider._patch_project(
                         target.remote_id,
                         name=new_title,
                         instructions=new_instruction,
-                        current=lambda: target._provider_project,
+                        current=target._provider_project,
                     )
                     target._apply_provider_project(updated, replace_resources=False)
                     ctx.metadata["remote_update"] = previous != (
@@ -373,14 +373,14 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
             new_title = ctx.parameters["title"]
             new_instruction = ctx.parameters["instruction"]
             if target.remote_id:
-                with provider._activity():
+                with provider._activity(), provider._project_lock(target.remote_id):
                     provider._require_provider()
                     previous = (target.title, target.instruction._text)
-                    updated = provider._patch_project_data(
+                    updated = provider._patch_project(
                         target.remote_id,
                         name=new_title,
                         instructions=new_instruction,
-                        current=lambda: target._provider_project,
+                        current=target._provider_project,
                     )
                     target._apply_provider_project(updated, replace_resources=False)
                     ctx.metadata["remote_update"] = previous != (
@@ -740,11 +740,11 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
     async def _load_attachments(self) -> list[Attachment]:
         provider = self.project.provider
         if self.project.remote_id and provider is not None and provider.opened:
-            async with provider._activity():
+            async with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
                 self._mark_remote_read()
                 remote = await provider._get_project_data(self.project.remote_id)
-            self._apply_loaded_project(remote)
+                self._apply_loaded_project(remote)
         return list(self._items)
 
     async def _iter_batches(self, *, limit=None, **options):
@@ -773,18 +773,18 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
                 return local
             if provider is None:
                 raise ProviderError("Project is not attached to an open provider")
-            known_ids = self._known_resource_ids()
-            async with provider._activity():
+            async with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
-                updated = await provider._add_project_resource_data(
+                known_ids = self._known_resource_ids()
+                updated = await provider._add_project_resource(
                     self.project.remote_id,
                     kind,
-                    current=lambda: self.project._provider_project,
+                    current=self.project._provider_project,
                     **send_options,
                 )
-            return self._finalize_remote_add(
-                updated, known_ids=known_ids, kind=kind, local=local, send_options=send_options
-            )
+                return self._finalize_remote_add(
+                    updated, known_ids=known_ids, kind=kind, local=local, send_options=send_options
+                )
 
         if provider is None:
             return await perform_add()
@@ -832,7 +832,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
             async with provider._activity(), lock:
                 provider._require_provider()
                 created = await batch_add(self.project.remote_id, specs)
-            return self._finalize_batch_add(coerced, created)
+                return self._finalize_batch_add(coerced, created)
 
         async def on_success(ctx) -> None:
             for attachment in ctx.result:
@@ -853,20 +853,23 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         provider = self.project.provider
 
         async def perform_remove() -> None:
-            if not any(item.id == file_id for item in self._items):
-                raise RemoteNotFound(f"Project attachment was not found: {file_id}")
-            updated = None
             if self.project.remote_id:
                 if provider is None:
                     raise ProviderError("Project is not attached to an open provider")
-                async with provider._activity():
+                async with provider._activity(), provider._project_lock(self.project.remote_id):
                     provider._require_provider()
-                    updated = await provider._remove_project_resource_data(
+                    if not any(item.id == file_id for item in self._items):
+                        raise RemoteNotFound(f"Project attachment was not found: {file_id}")
+                    updated = await provider._remove_project_resource(
                         self.project.remote_id,
                         file_id,
-                        current=lambda: self.project._provider_project,
+                        current=self.project._provider_project,
                     )
-            self._apply_removed_ids(updated, {file_id})
+                    self._apply_removed_ids(updated, {file_id})
+            else:
+                if not any(item.id == file_id for item in self._items):
+                    raise RemoteNotFound(f"Project attachment was not found: {file_id}")
+                self._apply_removed_ids(None, {file_id})
 
         if provider is None:
             await perform_remove()
@@ -909,11 +912,6 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         known = {item.id for item in self._items}
         if any(fid not in known for fid in file_ids):
             await self._load_attachments()
-        by_id = {item.id: item for item in self._items}
-        missing = [fid for fid in file_ids if fid not in by_id]
-        if missing:
-            raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
-
         context = provider._new_context(
             "project.attachment.remove_many",
             resource_id=self.project.remote_id or self.project.id,
@@ -921,16 +919,20 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         )
 
         async def perform_batch(_ctx) -> None:
-            payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
             lock = provider._project_lock(self.project.remote_id)
             async with provider._activity(), lock:
                 provider._require_provider()
+                by_id = {item.id: item for item in self._items}
+                missing = [fid for fid in file_ids if fid not in by_id]
+                if missing:
+                    raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
+                payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
                 updated = await batch_remove(
                     self.project.remote_id,
                     payloads,
                     current=self.project._provider_project,
                 )
-            self._apply_removed_ids(updated, set(file_ids))
+                self._apply_removed_ids(updated, set(file_ids))
 
         async def on_success(ctx) -> None:
             for file_id in file_ids:
@@ -998,11 +1000,11 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
     def _load_attachments(self) -> list[Attachment]:
         provider = self.project.provider
         if self.project.remote_id and provider is not None and provider.opened:
-            with provider._activity():
+            with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
                 self._mark_remote_read()
                 remote = provider._get_project_data(self.project.remote_id)
-            self._apply_loaded_project(remote)
+                self._apply_loaded_project(remote)
         return list(self._items)
 
     def _iter_batches(self, *, limit=None, **options):
@@ -1031,18 +1033,18 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
                 return local
             if provider is None:
                 raise ProviderError("Project is not attached to an open provider")
-            known_ids = self._known_resource_ids()
-            with provider._activity():
+            with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
-                updated = provider._add_project_resource_data(
+                known_ids = self._known_resource_ids()
+                updated = provider._add_project_resource(
                     self.project.remote_id,
                     kind,
-                    current=lambda: self.project._provider_project,
+                    current=self.project._provider_project,
                     **send_options,
                 )
-            return self._finalize_remote_add(
-                updated, known_ids=known_ids, kind=kind, local=local, send_options=send_options
-            )
+                return self._finalize_remote_add(
+                    updated, known_ids=known_ids, kind=kind, local=local, send_options=send_options
+                )
 
         if provider is None:
             return perform_add()
@@ -1090,7 +1092,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             with provider._activity(), lock:
                 provider._require_provider()
                 created = batch_add(self.project.remote_id, specs)
-            return self._finalize_batch_add(coerced, created)
+                return self._finalize_batch_add(coerced, created)
 
         def on_success(ctx) -> None:
             for attachment in ctx.result:
@@ -1111,20 +1113,23 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         provider = self.project.provider
 
         def perform_remove() -> None:
-            if not any(item.id == file_id for item in self._items):
-                raise RemoteNotFound(f"Project attachment was not found: {file_id}")
-            updated = None
             if self.project.remote_id:
                 if provider is None:
                     raise ProviderError("Project is not attached to an open provider")
-                with provider._activity():
+                with provider._activity(), provider._project_lock(self.project.remote_id):
                     provider._require_provider()
-                    updated = provider._remove_project_resource_data(
+                    if not any(item.id == file_id for item in self._items):
+                        raise RemoteNotFound(f"Project attachment was not found: {file_id}")
+                    updated = provider._remove_project_resource(
                         self.project.remote_id,
                         file_id,
-                        current=lambda: self.project._provider_project,
+                        current=self.project._provider_project,
                     )
-            self._apply_removed_ids(updated, {file_id})
+                    self._apply_removed_ids(updated, {file_id})
+            else:
+                if not any(item.id == file_id for item in self._items):
+                    raise RemoteNotFound(f"Project attachment was not found: {file_id}")
+                self._apply_removed_ids(None, {file_id})
 
         if provider is None:
             perform_remove()
@@ -1167,11 +1172,6 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         known = {item.id for item in self._items}
         if any(fid not in known for fid in file_ids):
             self._load_attachments()
-        by_id = {item.id: item for item in self._items}
-        missing = [fid for fid in file_ids if fid not in by_id]
-        if missing:
-            raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
-
         context = provider._new_context(
             "project.attachment.remove_many",
             resource_id=self.project.remote_id or self.project.id,
@@ -1179,16 +1179,20 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         )
 
         def perform_batch(_ctx) -> None:
-            payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
             lock = provider._project_lock(self.project.remote_id)
             with provider._activity(), lock:
                 provider._require_provider()
+                by_id = {item.id: item for item in self._items}
+                missing = [fid for fid in file_ids if fid not in by_id]
+                if missing:
+                    raise RemoteNotFound(f"Project attachment was not found: {missing[0]}")
+                payloads = [{"resource_id": fid, "resource": by_id[fid]} for fid in file_ids]
                 updated = batch_remove(
                     self.project.remote_id,
                     payloads,
                     current=self.project._provider_project,
                 )
-            self._apply_removed_ids(updated, set(file_ids))
+                self._apply_removed_ids(updated, set(file_ids))
 
         def on_success(ctx) -> None:
             for file_id in file_ids:

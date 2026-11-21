@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.provider_fakes import provider_account
-from tests.streaming_support import StreamTestProvider
+from tests.streaming_support import StreamTestProvider, collect_provider_stream
 from webaiprovider import (
     Account,
     AsyncChat,
@@ -145,7 +145,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
             except ProviderError as error:
                 nested_errors.append(error)
 
-        operation.hooks.add("output.delta", send_from_hook)
+        operation.chat.hooks.add("output.delta", send_from_hook)
         response = await operation.start()
 
         self.assertEqual(response.text, "answer")
@@ -177,7 +177,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
 
             child_task = asyncio.create_task(followup())
 
-        operation.hooks.add("output.delta", spawn_followup)
+        operation.chat.hooks.add("output.delta", spawn_followup)
         await operation.start()
         first_finished.set()
         assert child_task is not None
@@ -213,7 +213,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
             hook_started.set()
             await release_hook.wait()
 
-        operation.hooks.add("output.delta", block_on_output)
+        operation.chat.hooks.add("output.delta", block_on_output)
         waiter = asyncio.create_task(operation.start())
         await hook_started.wait()
         operation.cancel()
@@ -256,7 +256,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider.client.events = fake_events
 
         with patch("webaiprovider.providers.claude.base.session_exists", return_value=True):
-            events = [event async for event in provider._execute_stream(operation)]
+            events = await collect_provider_stream(provider, operation)
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
         self.assertEqual(operation.message.id, "claude-user-msg-1")
@@ -293,7 +293,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.providers.claude.base.session_exists", return_value=False),
             self.assertRaises(AccountPaused),
         ):
-            _ = [event async for event in provider._execute_stream(operation)]
+            _ = await collect_provider_stream(provider, operation)
 
 
 class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
@@ -331,7 +331,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider.client.events = fake_events
 
-        events = [event async for event in provider._execute_stream(operation)]
+        events = await collect_provider_stream(provider, operation)
 
         self.assertEqual(chat.remote_id, "grok-conv-456")
         self.assertEqual(operation.message.id, "grok-user-456")
@@ -370,7 +370,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider.client.events = fake_events
 
         with self.assertRaises(RateLimited) as cm:
-            _ = [event async for event in provider._execute_stream(operation)]
+            _ = await collect_provider_stream(provider, operation)
         self.assertEqual(cm.exception.retry_after, 12.5)
 
 
@@ -413,7 +413,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
-            events = [event async for event in provider._execute_stream(operation)]
+            events = await collect_provider_stream(provider, operation)
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")
         self.assertEqual(operation.message.id, "rc_turn_1:user")
@@ -478,7 +478,7 @@ class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             client_factory=lambda _: mock_client,
         )
 
-        events = [event async for event in provider._execute_stream(operation)]
+        events = await collect_provider_stream(provider, operation)
 
         self.assertEqual(chat.remote_id, "chatgpt-conv-999")
         self.assertEqual(operation.message.id, "chatgpt-u1")

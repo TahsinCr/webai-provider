@@ -6,7 +6,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from importlib import import_module
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import webaiprovider
 from tests.streaming_support import StreamTestProvider
@@ -28,6 +28,7 @@ from webaiprovider import (
     GrokModels,
     Message,
     Models,
+    OperationEvent,
     OutputBegin,
     OutputDelta,
     OutputEnd,
@@ -135,7 +136,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         deltas: list[str] = []
 
-        @op.hooks.on("output.delta")
+        @op.chat.hooks.on("output.delta")
         def on_delta(delta: OutputDelta) -> None:
             deltas.append(delta.delta)
 
@@ -144,7 +145,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         def on_thought(td: ThinkingDelta) -> None:
             thoughts.append(td.delta)
 
-        op.hooks.add("thinking.delta", on_thought)
+        op.chat.hooks.add("thinking.delta", on_thought)
 
         async def fake_stream(_operation: AsyncMessageOperation):
             yield ThinkingBegin()
@@ -241,8 +242,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         operation = chat.responses.create("send once")
         operation._executor = fake_stream
 
-        stage_wait = asyncio.create_task(operation.wait_for("output.delta", timeout=1))
-        missing_stage = asyncio.create_task(operation.wait_for("thinking.end"))
+        stage_wait = asyncio.create_task(operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=1))
+        missing_stage = asyncio.create_task(operation.wait_for(OperationEvent.THINKING_END))
         await asyncio.wait_for(entered.wait(), timeout=1)
         stream_task = asyncio.create_task(consume(operation.stream()))
         start_task = asyncio.create_task(operation.start())
@@ -255,9 +256,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         replayed = await consume(operation.stream())
 
         self.assertIsInstance(event, OutputDelta)
-        self.assertIs(await operation.wait_for("output.delta"), event)
+        self.assertIs(await operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=0), event)
+        self.assertIsNone(
+            await operation.wait_for(OperationEvent.OUTPUT_DELTA, after=event, timeout=0)
+        )
         self.assertIsNone(await missing_stage)
-        self.assertEqual((await operation.wait_for("status.terminal")).status, "completed")
+        self.assertEqual(
+            (await operation.wait_for(OperationEvent.STATUS_TERMINAL)).status, "completed"
+        )
         self.assertEqual(response.text, "done")
         self.assertEqual(
             [item.event for item in events],
@@ -1098,9 +1104,9 @@ class TestSyncApi(unittest.TestCase):
             yield OutputDelta(" second")
 
         operation = MessageOperation(Chat(), Message("prompt"), executor=events)
-        self.assertIsNone(operation.wait_for("output.delta", timeout=0))
+        self.assertIsNone(operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=0))
         self.assertIsNone(operation.response)
-        self.assertEqual(operation.wait_for("output.delta", timeout=1).delta, "first")
+        self.assertEqual(operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=1).delta, "first")
         self.assertEqual(steps, [])
         self.assertEqual(operation.wait().text, "first second")
 
@@ -1121,7 +1127,7 @@ class TestSyncApi(unittest.TestCase):
             yield OutputDelta(result)
 
         operation = MessageOperation(Chat(), Message("parent"), executor=events)
-        self.assertEqual(operation.wait_for("output.delta", timeout=1).delta, "nested")
+        self.assertEqual(operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=1).delta, "nested")
         operation.cancel()
 
     def test_wait_for_rejects_nan_before_claiming_the_send(self):
@@ -1129,7 +1135,7 @@ class TestSyncApi(unittest.TestCase):
 
         operation = MessageOperation(Chat(), Message("prompt"))
         with self.assertRaisesRegex(ValueError, "NaN"):
-            operation.wait_for("output.delta", timeout=float("nan"))
+            operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=float("nan"))
 
     def test_wait_for_can_resume_after_timing_out_on_the_conversation_lock(self):
         from webaiprovider import Chat, MessageOperation
@@ -1158,7 +1164,7 @@ class TestSyncApi(unittest.TestCase):
             active = worker.submit(first.start)
             try:
                 self.assertTrue(entered.wait(2))
-                self.assertIsNone(second.wait_for("output.delta", timeout=0.02))
+                self.assertIsNone(second.wait_for(OperationEvent.OUTPUT_DELTA, timeout=0.02))
                 self.assertEqual(submitted, ["first"])
             finally:
                 release.set()
@@ -1209,7 +1215,7 @@ class TestSyncApi(unittest.TestCase):
         provider._prepare_session = lambda: None
         provider._close_session = lambda: None
         provider.open()
-        chat = Chat(provider=provider)
+        chat = Chat(remote_id="fixture", provider=provider)
 
         def events(_operation, _send_lock):
             yield OutputDelta("first")
@@ -1217,7 +1223,7 @@ class TestSyncApi(unittest.TestCase):
 
         provider._execute_stream_events = events
         operation = MessageOperation(chat, Message("prompt"), executor=provider._execute_stream)
-        self.assertEqual(operation.wait_for("output.delta").delta, "first")
+        self.assertEqual(operation.wait_for(OperationEvent.OUTPUT_DELTA).delta, "first")
         second = MessageOperation(chat, Message("second"), executor=provider._execute_stream)
         with self.assertRaisesRegex(ProviderError, "paused send"):
             second.start()
@@ -1225,6 +1231,42 @@ class TestSyncApi(unittest.TestCase):
         self.assertTrue(provider.closed)
         with self.assertRaises(OperationCancelledError):
             operation.wait()
+
+    def test_sync_delete_observes_completed_response_before_remote_mutation(self):
+        from webaiprovider import Chat, Message, MessageOperation, OutputDelta
+
+        provider = Provider(Account.from_cookies("grok", {}))
+        provider._prepare_session = Mock()
+        provider._close_session = Mock()
+        delete_started = threading.Event()
+
+        def events(_operation, _send_lock):
+            yield OutputDelta("answer")
+
+        provider._execute_stream_events = events
+        with provider:
+            chat = Chat(remote_id="fixture", provider=provider)
+            operation = MessageOperation(chat, Message("prompt"), executor=provider._execute_stream)
+
+            def delete_remote(_remote_id):
+                self.assertEqual(operation.response.text, "answer")
+                self.assertEqual(
+                    operation.wait_for(OperationEvent.STATUS_TERMINAL).status, "completed"
+                )
+
+            provider._delete_chat_data = Mock(side_effect=delete_remote)
+            provider.chats.hooks.before("chat.delete", lambda _: delete_started.set())
+            self.assertIsNotNone(operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=1))
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                deleting = worker.submit(chat.delete)
+                try:
+                    self.assertTrue(delete_started.wait(timeout=1))
+                    provider._delete_chat_data.assert_not_called()
+                    self.assertEqual(operation.wait().text, "answer")
+                    deleting.result(timeout=1)
+                finally:
+                    operation.cancel()
+            provider._delete_chat_data.assert_called_once_with("fixture")
 
     def test_sync_chat_project_and_stream_run_on_the_caller(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
@@ -1440,25 +1482,21 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         async with provider:
             with patch.object(provider, "_emit", new_callable=AsyncMock) as emit:
-                for lock in (
-                    provider._send_lock("chat"),
-                    provider._project_lock("old"),
-                    provider._project_lock("updated"),
-                ):
-                    chat.project = provider.projects._new(remote_id="stale")
-                    hook_ran.clear()
-                    provider._move_chat_data.reset_mock()
-                    async with lock:
+                async with provider._project_lock("old"), provider._project_lock("updated"):
+                    async with provider._send_lock("chat"):
                         operation = asyncio.create_task(chat.move_to(selected))
                         await asyncio.wait_for(hook_ran.wait(), timeout=1)
                         provider._move_chat_data.assert_not_awaited()
-                    self.assertIs(await operation, chat)
-
-        provider._move_chat_data.assert_awaited_once_with(
-            "chat", "updated", source_project_id="old"
-        )
-        assert chat.project is not None
-        self.assertEqual(chat.project.remote_id, "updated")
+                    self.assertIs(await asyncio.wait_for(operation, timeout=1), chat)
+                provider._move_chat_data.assert_awaited_once_with(
+                    "chat", "updated", source_project_id="old"
+                )
+                previous = chat.project
+                self.assertEqual(previous.remote_id, "updated")
+                provider._move_chat_data.side_effect = RemoteNotFound("Destination was deleted")
+                with self.assertRaises(RemoteNotFound):
+                    await chat.move_to(selected)
+                self.assertIs(chat.project, previous)
         moved = next(call for call in emit.await_args_list if call.args == ("chat.moved",))
         self.assertEqual(moved.kwargs["payload"], {"project_id": "updated"})
 
@@ -1521,7 +1559,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(updated.name, "Updated")
             self.assertEqual(updated.metadata["confirmed"], "update")
 
-            removed = await provider._remove_project_resource_data("project-1", "resource-1")
+            removed = await provider._remove_project_resource("project-1", "resource-1")
             self.assertEqual(removed.resources, ())
             self.assertEqual(removed.metadata["confirmed"], "remove")
 

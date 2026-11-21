@@ -391,14 +391,15 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
 
         async def work(ctx) -> AsyncChat:
             new_title = ctx.parameters["title"]
-            if new_title is not None and new_title != target.title:
-                if target.remote_id:
-                    lock = provider._send_lock(target.remote_id)
-                    async with provider._activity(send_lock_id=id(lock)), lock:
-                        provider._require_provider()
-                        await provider._rename_chat_data(target.remote_id, new_title)
-                    ctx.metadata["remote_rename"] = True
-                target.title = new_title
+            if new_title is not None:
+                lock = provider._send_lock(target.remote_id or target.id)
+                async with provider._activity(send_lock_id=id(lock)), lock:
+                    if new_title != target.title:
+                        if target.remote_id:
+                            provider._require_provider()
+                            await provider._rename_chat_data(target.remote_id, new_title)
+                            ctx.metadata["remote_rename"] = True
+                        target.title = new_title
             return target
 
         async def on_success(ctx) -> None:
@@ -436,11 +437,12 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
         )
 
         async def work(_ctx) -> None:
-            if target.remote_id:
-                lock = provider._send_lock(target.remote_id)
-                async with provider._activity(send_lock_id=id(lock)), lock:
+            lock = provider._send_lock(target.remote_id or target.id)
+            async with provider._activity(send_lock_id=id(lock)), lock:
+                if target.remote_id:
                     provider._require_provider()
                     await provider._delete_chat_data(target.remote_id)
+                    _ctx.resource_id = target.remote_id
 
         async def on_success(ctx) -> None:
             if target.remote_id:
@@ -450,7 +452,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
             await provider._emit(
                 "chat.deleted",
                 operation_id=ctx.operation_id,
-                resource_id=rid,
+                resource_id=ctx.resource_id,
             )
 
         await async_execute_with_hooks(
@@ -621,14 +623,15 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
 
         def work(ctx) -> Any:
             new_title = ctx.parameters["title"]
-            if new_title is not None and new_title != target.title:
-                if target.remote_id:
-                    lock = provider._send_lock(target.remote_id)
-                    with provider._activity(send_lock_id=id(lock)), lock:
-                        provider._require_provider()
-                        provider._rename_chat_data(target.remote_id, new_title)
-                    ctx.metadata["remote_rename"] = True
-                target.title = new_title
+            if new_title is not None:
+                lock = provider._send_lock(target.remote_id or target.id)
+                with provider._activity(send_lock_id=id(lock)), lock:
+                    if new_title != target.title:
+                        if target.remote_id:
+                            provider._require_provider()
+                            provider._rename_chat_data(target.remote_id, new_title)
+                            ctx.metadata["remote_rename"] = True
+                        target.title = new_title
             return target
 
         def on_success(ctx) -> None:
@@ -666,11 +669,12 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
         )
 
         def work(_ctx) -> None:
-            if target.remote_id:
-                lock = provider._send_lock(target.remote_id)
-                with provider._activity(send_lock_id=id(lock)), lock:
+            lock = provider._send_lock(target.remote_id or target.id)
+            with provider._activity(send_lock_id=id(lock)), lock:
+                if target.remote_id:
                     provider._require_provider()
                     provider._delete_chat_data(target.remote_id)
+                    _ctx.resource_id = target.remote_id
 
         def on_success(ctx) -> None:
             if target.remote_id:
@@ -680,7 +684,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
             provider._emit(
                 "chat.deleted",
                 operation_id=ctx.operation_id,
-                resource_id=rid,
+                resource_id=ctx.resource_id,
             )
 
         execute_with_hooks(

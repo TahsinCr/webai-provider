@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from tests.streaming_support import collect_provider_stream
 from webaiprovider import (
     Account,
     AsyncChat,
@@ -46,10 +47,11 @@ class StreamCompletionTests(unittest.IsolatedAsyncioTestCase):
         release_hook = asyncio.Event()
 
         async def terminal_hook(_event):
+            self.assertEqual((await operation.wait()).text, "answer")
             hook_entered.set()
             await release_hook.wait()
 
-        operation.hooks.on("status.terminal", terminal_hook)
+        operation.chat.hooks.on("status.terminal", terminal_hook)
         consumer = asyncio.create_task(_collect(operation))
         await asyncio.wait_for(hook_entered.wait(), 1)
         await asyncio.sleep(0)
@@ -109,7 +111,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         provider._stream_provider_events = stream
         chat = AsyncChat(provider=provider)
         operation = chat.responses.create("prompt")
-        consumer = asyncio.create_task(_collect_provider_stream(provider, operation))
+        consumer = asyncio.create_task(collect_provider_stream(provider, operation))
         await started.wait()
         closing = asyncio.create_task(provider.close())
         await asyncio.sleep(0)
@@ -182,10 +184,10 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
             shared_chat.responses.create("second"),
             other_chat.responses.create("other"),
         ]
-        tasks = [asyncio.create_task(_collect_provider_stream(provider, requests[0]))]
+        tasks = [asyncio.create_task(collect_provider_stream(provider, requests[0]))]
         await first_started.wait()
         tasks.extend(
-            asyncio.create_task(_collect_provider_stream(provider, request))
+            asyncio.create_task(collect_provider_stream(provider, request))
             for request in requests[1:]
         )
         await asyncio.wait_for(other_started.wait(), 1)
@@ -211,7 +213,7 @@ class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
         provider._stream_provider_events = stream
         chat = AsyncChat(provider=provider)
         operation = chat.responses.create("prompt")
-        events = await _collect_provider_stream(provider, operation)
+        events = await collect_provider_stream(provider, operation)
 
         self.assertEqual(
             [event.text for event in events if isinstance(event, ThinkingReplace)],
@@ -311,10 +313,6 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
 async def _collect(operation):
     return [event async for event in operation.stream()]
-
-
-async def _collect_provider_stream(provider, operation):
-    return [event async for event in provider._execute_stream(operation)]
 
 
 class ReportTransportTests(unittest.IsolatedAsyncioTestCase):

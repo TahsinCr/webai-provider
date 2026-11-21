@@ -992,16 +992,16 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                 [("PUT", path), ("GET", path)],
             )
 
-            added = await provider._add_project_resource_data(
+            added = await provider._add_project_resource(
                 "workspace", "text", name="notes.txt", text="Notes"
             )
             self.assertEqual(added.resources[0].id, "/notes.txt")
             with self.assertRaisesRegex(ValueError, "already exists"):
-                await provider._add_project_resource_data(
+                await provider._add_project_resource(
                     "workspace", "text", name="notes.txt", text="Overwrite"
                 )
             provider.client.request.reset_mock()
-            removed = await provider._remove_project_resource_data("workspace", "/notes.txt")
+            removed = await provider._remove_project_resource("workspace", "/notes.txt")
             self.assertEqual(removed.resources, ())
             self.assertEqual(provider.client.request.await_count, 5)
         finally:
@@ -1142,7 +1142,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with self.assertRaisesRegex(ProviderError, "file response"):
-                await provider._remove_project_resource_data("workspace", "source")
+                await provider._remove_project_resource("workspace", "source")
             self.assertTrue(
                 all(call.args[0] == "GET" for call in provider.client.request.await_args_list)
             )

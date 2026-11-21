@@ -17,7 +17,7 @@ from .collections import (
 )
 from .core.async_hooks import AsyncOperationHooks
 from .core.hooks import OperationHooks
-from .core.state import LifecycleState, OperationState
+from .core.state import LifecycleState
 from .errors import (
     AccountPaused,
     AmbiguousMatchError,
@@ -90,6 +90,8 @@ from .resources.response.operation import (
     AsyncMessageOperation,
     GenerationEnd,
     MessageOperation,
+    OperationEvent,
+    OperationState,
     OutputBegin,
     OutputDelta,
     OutputEnd,
@@ -248,6 +250,7 @@ __all__ = [
     "AsyncMessageOperation",
     "AsyncOperationHooks",
     "OperationHooks",
+    "OperationEvent",
     "OperationState",
     "Project",
     "AsyncProject",
