@@ -623,13 +623,9 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     async def cleanup_entries(self, *entries: dict[str, Any] | None) -> None:
         await self.context.cleanup_entries_async(*entries)
 
-    async def consume_stream(self, operation: Any, on_event=None) -> int:
-        events = 0
-        async for _event in operation.stream():
-            events += 1
-            if on_event is not None:
-                on_event()
-        return events
+    async def consume_stream(self, operation: Any, on_event) -> None:
+        async for event in operation.stream():
+            on_event(event)
 
     async def call_api(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
@@ -717,13 +713,9 @@ class LiveSyncTestCase(_LiveReportingMixin, unittest.TestCase):
     def cleanup_entries(self, *entries: dict[str, Any] | None) -> None:
         self.context.cleanup_entries(*entries)
 
-    def consume_stream(self, operation: Any, on_event=None) -> int:
-        events = 0
-        for _event in operation.stream():
-            events += 1
-            if on_event is not None:
-                on_event()
-        return events
+    def consume_stream(self, operation: Any, on_event) -> None:
+        for event in operation.stream():
+            on_event(event)
 
     def call_api(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
         return self.context.call(label, action, expected_errors=expected_errors)

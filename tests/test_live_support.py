@@ -1511,15 +1511,81 @@ class ActionGateSharedBudgetTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_chatgpt_branch_deferred_rename_preview_exclusion_and_rate_limit(self) -> None:
-        from tests.live.test_messages import AsyncMessageApiTests
-        from webaiprovider.base import Capability
-        from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
-        from webaiprovider.resources.response.operation import (
+    @staticmethod
+    def _message_operation(
+        chat, chat_id, prompt, text, *, on_send=None, fail_rate=False, verify=False
+    ):
+        from webaiprovider import (
+            ArtifactDiscovered,
+            AsyncMessage,
+            AsyncMessageOperation,
+            GenerationEnd,
+            OutputBegin,
             OutputDelta,
             OutputEnd,
-            TerminalStatus,
+            ResponsePartsResolved,
+            SourceDiscovered,
+            TextPart,
+            ThinkingBegin,
+            ThinkingDelta,
+            ThinkingEnd,
+            ThinkingPart,
+            VerificationBegin,
         )
+
+        async def execute(operation):
+            if fail_rate:
+                raise RateLimited(1.0, message_submitted=False)
+            if on_send is not None:
+                on_send()
+            chat.id = chat.remote_id = chat_id
+            chat.metadata.pop("pending_branch", None)
+            operation._assistant_message_id = f"m-{chat_id}"
+            for part_id in ("thought-1", "answer", "thought-2"):
+                if part_id == "answer":
+                    yield OutputBegin(part_id=part_id)
+                    yield OutputDelta(text, part_id=part_id)
+                    yield OutputEnd(part_id=part_id)
+                else:
+                    yield ThinkingBegin(part_id=part_id)
+                    yield ThinkingDelta("Thinking", part_id=part_id)
+                    yield ThinkingEnd(part_id=part_id)
+            yield GenerationEnd()
+            if verify:
+                yield VerificationBegin()
+                yield ResponsePartsResolved(
+                    (
+                        ThinkingPart("thought-1", "Thinking"),
+                        TextPart("answer", text),
+                        ThinkingPart("thought-2", "Thinking"),
+                    )
+                )
+            yield SourceDiscovered(Source("s1", "https://example.com", "Example"))
+            yield ArtifactDiscovered(
+                Artifact(
+                    "a1",
+                    "file",
+                    "hello.txt",
+                    "text/plain",
+                    download_url="https://example.com/hello.txt",
+                )
+            )
+
+        return AsyncMessageOperation(chat, AsyncMessage(prompt), executor=execute)
+
+    @staticmethod
+    def _responses(create, **operations):
+        return SimpleNamespace(
+            create=create,
+            _reconcile_live_response=lambda _, response: response,
+            **operations,
+        )
+
+    async def test_chatgpt_branch_deferred_rename_preview_exclusion_and_rate_limit(self) -> None:
+        from tests.live.test_messages import AsyncMessageApiTests
+        from webaiprovider import AsyncMessage, Response
+        from webaiprovider.base import Capability
+        from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
 
         for rate_limit_branch in (False, True):
             with (
@@ -1539,55 +1605,16 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 events_order = []
                 created_entries = []
 
-                def make_op(chat_obj, chat_id, text, *, fail_rate=False):
-                    class StreamOp:
-                        def __init__(self):
-                            self.chat = chat_obj
-                            self.result = SimpleNamespace(
-                                chat_id=chat_id,
-                                chat=chat_obj,
-                                id=f"m-{chat_id}",
-                                text=text,
-                                content=text,
-                                sources=(Source("s1", "https://example.com", "Example"),),
-                                artifacts=(
-                                    Artifact(
-                                        "a1",
-                                        "file",
-                                        "hello.txt",
-                                        "text/plain",
-                                        download_url="https://example.com/hello.txt",
-                                    ),
-                                ),
-                                message=MessageData(
-                                    f"m-{chat_id}",
-                                    "assistant",
-                                    (Content("text", text=text),),
-                                    actions=("retry", "branch"),
-                                ),
-                            )
-
-                        async def start(self):
-                            if fail_rate:
-                                raise RateLimited(1.0, message_submitted=False)
-                            events_order.append(("branched_send", chat_id))
-                            chat_obj.id = chat_id
-                            chat_obj.remote_id = chat_id
-                            chat_obj.metadata.pop("pending_branch", None)
-                            return self.result
-
-                        async def wait(self):
-                            return self.result
-
-                        async def stream(self):
-                            events_order.append(("stream_bound", chat_id))
-                            chat_obj.id = chat_id
-                            chat_obj.remote_id = chat_id
-                            yield OutputDelta(text)
-                            yield OutputEnd(text)
-                            yield TerminalStatus("completed")
-
-                    return StreamOp()
+                def make_op(chat, chat_id, prompt, text, *, fail_rate=False):
+                    return self._message_operation(
+                        chat,
+                        chat_id,
+                        prompt,
+                        text,
+                        on_send=lambda: events_order.append(("send", chat_id)),
+                        fail_rate=fail_rate,
+                        verify=rate_limit_branch,
+                    )
 
                 async def fake_rename_branched(title):
                     events_order.append(("rename_branched", branched.id, title))
@@ -1606,8 +1633,6 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                             raise RemoteNotFound("gone")
                     title = branched.title if cid == "c_branch_real" else root_chat.title
                     return Conversation(cid, title)
-
-                from webaiprovider import AsyncMessage, Response, TimingMetrics
 
                 root_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
                 branch_user = AsyncMessage("u1", role="user", id="u-1", remote_id="u-1")
@@ -1669,12 +1694,12 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         message=branch_user if cid == "preview-1" else root_user,
                         chat=chat_obj,
                         metadata={"actions": ("retry", "branch"), "from_history": True},
-                        timing=TimingMetrics(duration_ms=50),
                     )
-                    chat_obj.responses = SimpleNamespace(
-                        create=lambda *_a, **_kw: make_op(
+                    chat_obj.responses = self._responses(
+                        create=lambda prompt, **_kw: make_op(
                             chat_obj,
                             "c_branch_real" if cid == "preview-1" else "c_root",
+                            prompt,
                             "BR" if cid == "preview-1" else "ROOT",
                             fail_rate=rate_limit_branch if cid == "preview-1" else False,
                         ),
@@ -1707,6 +1732,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     _require_provider=lambda: provider_impl,
                     _branch_chat_data=provider_impl.branch_chat,
                     _get_chat_data=fake_get_chat,
+                    _prepare_chat=AsyncMock(
+                        side_effect=lambda chat: events_order.append(("prepare", chat.remote_id))
+                    ),
                     _delete_chat_data=fake_delete_chat,
                     models=SimpleNamespace(refresh=AsyncMock(return_value=[])),
                     chats=SimpleNamespace(
@@ -1740,9 +1768,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 orig_branch = AsyncChatGPTChat.branch
 
-                async def capture_branch(self, message_id, *, title=None):
+                async def capture_branch(chat, message_id, *, title=None):
                     nonlocal branched
-                    real = await orig_branch(self, message_id, title=title)
+                    real = await orig_branch(chat, message_id, title=title)
                     real.id = "preview-1"
                     real.rename = AsyncMock(side_effect=fake_rename_branched)
                     real_resp = Response(
@@ -1753,9 +1781,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat=real,
                         metadata={"actions": ("retry", "branch"), "from_history": True},
                     )
-                    real.responses = SimpleNamespace(
-                        create=lambda *_a, **_kw: make_op(
-                            real, "c_branch_real", "BR", fail_rate=rate_limit_branch
+                    real.responses = self._responses(
+                        create=lambda prompt, **_kw: make_op(
+                            real, "c_branch_real", prompt, "BR", fail_rate=rate_limit_branch
                         ),
                         list=AsyncMock(return_value=[real_resp]),
                     )
@@ -1800,12 +1828,17 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         await test.test_temporary_message_stream_history_and_cleanup()
                         branch_idx = events_order.index(("branch", "preview-1"))
-                        send_idx = events_order.index(("branched_send", "c_branch_real"))
+                        send_idx = events_order.index(("send", "c_branch_real"))
                         rename_idx = events_order.index(
                             ("rename_branched", "c_branch_real", branched.title)
                         )
                         self.assertLess(branch_idx, send_idx)
                         self.assertLess(send_idx, rename_idx)
+                        self.assertEqual(
+                            events_order[:3],
+                            [("send", "c_root"), ("prepare", "c_root"), ("send", "c_root")],
+                        )
+                        session._prepare_chat.assert_awaited_once_with(root_chat)
                         branch_entries = [
                             e for e in created_entries if "c_root" in e.get("exclude_ids", [])
                         ]
@@ -1820,7 +1853,6 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
         from tests.live.test_messages import AsyncMessageApiTests
         from webaiprovider.base import Capability
         from webaiprovider.providers.chatgpt.resources import AsyncChatGPTChat
-        from webaiprovider.resources.response.operation import OutputDelta
 
         gate = ActionGate(interval=0, limit=30)
         with tempfile.TemporaryDirectory() as directory:
@@ -1838,6 +1870,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 raise RemoteNotFound("gone")
 
             session = SimpleNamespace(
+                _prepare_chat=AsyncMock(),
                 capabilities={
                     Capability.MODELS,
                     Capability.CHAT,
@@ -1854,43 +1887,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
             )
             root_chat = AsyncChatGPTChat(id="c_root", title="Root", provider=session)
 
-            def make_fake_op(target_chat, cid: str, msg_id: str, text: str):
-                result = SimpleNamespace(
-                    id=msg_id,
-                    text=text,
-                    content=text,
-                    message=MessageData(
-                        msg_id,
-                        "assistant",
-                        (Content("text", text),),
-                    ),
-                    sources=(Source("s1", "https://example.com", "Example"),),
-                    artifacts=(
-                        Artifact(
-                            "a1",
-                            "file",
-                            "hello.txt",
-                            "text/plain",
-                            download_url="https://example.com/hello.txt",
-                        ),
-                    ),
-                )
-
-                class _FakeOp:
-                    async def start(self):
-                        target_chat.remote_id = cid
-                        return result
-
-                    async def wait(self):
-                        return result
-
-                    async def stream(self):
-                        target_chat.remote_id = cid
-                        yield OutputDelta(text)
-
-                return _FakeOp()
-
-            from webaiprovider import AsyncMessage, Response, TimingMetrics
+            from webaiprovider import AsyncMessage, Response
 
             root_turn = Response(
                 "ROOT",
@@ -1899,10 +1896,11 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                 message=AsyncMessage("u1", role="user", id="u-1", remote_id="u-1"),
                 chat=root_chat,
                 metadata={"actions": ("branch",), "from_history": True},
-                timing=TimingMetrics(duration_ms=50),
             )
-            root_chat.responses = SimpleNamespace(
-                create=lambda *_a, **_kw: make_fake_op(root_chat, "c_root", "m-c_root", "ROOT"),
+            root_chat.responses = self._responses(
+                create=lambda prompt, **_kw: self._message_operation(
+                    root_chat, "c_root", prompt, "ROOT"
+                ),
                 list=AsyncMock(return_value=[root_turn]),
             )
             root_chat.rename = AsyncMock(
@@ -1917,9 +1915,9 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     metadata={"pending_branch": {"conversation_id": "c_root"}},
                     provider=session,
                 )
-                branched_chat.responses = SimpleNamespace(
-                    create=lambda *_a, **_kw: make_fake_op(
-                        branched_chat, "c_branch_real", "m-c_branch_real", "BR"
+                branched_chat.responses = self._responses(
+                    create=lambda prompt, **_kw: self._message_operation(
+                        branched_chat, "c_branch_real", prompt, "BR"
                     ),
                 )
                 branched_chat.rename = AsyncMock(

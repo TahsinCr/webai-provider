@@ -2,7 +2,17 @@
 
 from contextlib import suppress
 
-from webaiprovider import ArtifactsCollection, Response, SourcesCollection, TimingMetrics
+from webaiprovider import (
+    ArtifactsCollection,
+    Response,
+    ResponseParts,
+    ResponsePartsResolved,
+    SourcesCollection,
+    TerminalStatus,
+    TextPart,
+    ThinkingPart,
+    TimingMetrics,
+)
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 from webaiprovider.resources.message.attachment import Attachment
@@ -11,8 +21,8 @@ from webaiprovider.resources.model.types import Models
 from .support.case import LiveAsyncTestCase, LiveSyncTestCase
 
 
-def _find_streamed_turn(provider, response, history):
-    response_id = getattr(response, "remote_id", None) or response.id
+def _find_streamed_turn(provider, response: Response, history):
+    response_id = response.remote_id or response.id
     for item in reversed(history):
         if item.remote_id == response_id and item.metadata.get("from_history"):
             return item
@@ -41,8 +51,85 @@ def _assert_streamed_turn_in_history(case, response, history) -> None:
     case.assertTrue(all(isinstance(item, Response) for item in history))
     verified = _find_streamed_turn(case.context.account.provider, response, history)
     case.assertIsNotNone(verified, "Streamed response was not found in provider history")
-    if isinstance(response, Response) and verified.timing is not None:
+    _assert_response_parts(case, verified)
+    if verified.timing is not None:
         case.assertIs(verified.timing, response.timing)
+
+
+def _assert_response_parts(case, response: Response) -> None:
+    case.assertIsInstance(response.parts, ResponseParts)
+    case.assertEqual(len({part.id for part in response.parts}), len(response.parts))
+    text_parts = [part.text for part in response.parts if isinstance(part, TextPart)]
+    case.assertTrue(any(text.strip() for text in text_parts), "Response has no visible text")
+    case.assertTrue(
+        response.text == "\n".join(text_parts), "Response text does not match its parts"
+    )
+
+
+def _stream_milestone_steps(case, operation, events, response):
+    names = [event.event for event in events]
+    case.assertEqual(names.count("generation.end"), 1)
+    case.assertEqual(names.count("status.terminal"), 1)
+    case.assertIsInstance(events[-1], TerminalStatus)
+    case.assertEqual(events[-1].status, "completed")
+    generation = names.index("generation.end")
+    case.assertLessEqual(names.count("verification.begin"), 1)
+    if "verification.begin" in names:
+        case.assertGreater(names.index("verification.begin"), generation)
+
+    opened = set()
+    part_order = {}
+    for index, event in enumerate(events):
+        channel, _, stage = event.event.partition(".")
+        if channel not in ("output", "thinking"):
+            continue
+        case.assertLess(index, generation, "Content event followed generation completion")
+        part_id = event.part_id
+        case.assertTrue(part_id, "Content event has no part ID")
+        if stage == "begin":
+            case.assertFalse(part_id in opened, "Part began before its previous end")
+            opened.add(part_id)
+            part_order.setdefault(part_id, channel)
+        else:
+            case.assertTrue(part_id in opened, "Content event has no matching begin")
+            case.assertEqual(part_order[part_id], channel)
+            if stage == "end":
+                opened.remove(part_id)
+    case.assertFalse(opened, "Some parts were still open when generation completed")
+    case.assertIn("output.begin", names)
+
+    cursor = None
+    for event in events:
+        if event.event in (
+            "output.begin",
+            "thinking.begin",
+            "generation.end",
+            "verification.begin",
+            "status.terminal",
+        ):
+            observed = yield operation.wait_for(event.event, after=cursor, timeout=1)
+            case.assertTrue(observed is event, f"wait_for did not return the next {event.event}")
+            cursor = event
+    observed = yield operation.wait_for("status.terminal", after=cursor, timeout=1)
+    case.assertTrue(observed is None, "Terminal cursor returned another event")
+
+    _assert_response_parts(case, response)
+    resolved = next(
+        (event.parts for event in reversed(events) if isinstance(event, ResponsePartsResolved)),
+        (),
+    )
+    if any(isinstance(part, TextPart) for part in resolved):
+        case.assertTrue(tuple(response.parts) == resolved, "Response lost verified parts")
+    elif not resolved:
+        parts = {
+            part.id: "thinking" if isinstance(part, ThinkingPart) else "output"
+            for part in response.parts
+        }
+        case.assertTrue(
+            list(parts.items())
+            == [(key, channel) for key, channel in part_order.items() if key in parts],
+            "Response parts do not preserve streamed order and channels",
+        )
 
 
 def _has_edited_turn(prompt: str, history: list[Response]) -> bool:
@@ -130,28 +217,30 @@ def _temporary_message_lifecycle_steps(case):
                 model=Models.LOW,
             )
 
-        def record_stream_chat() -> None:
+        events = []
+
+        def record_event(event) -> None:
+            events.append(event)
             if not entry.get("remote_id"):
                 case.context.record_chat_id(entry, chat)
 
-        def consume_stream():
-            try:
-                return case.consume_stream(operation, on_event=record_stream_chat)
-            finally:
-                case.context.record_chat_id(entry, chat)
-
-        event_count = yield case.call_or_skip_rate_limit(
-            "responses.create.stream", consume_stream, entry=entry, chat=chat
+        yield case.call_or_skip_rate_limit(
+            "responses.create.stream",
+            lambda: case.consume_stream(operation, record_event),
+            entry=entry,
+            chat=chat,
         )
         response = yield operation.wait()
-        case.context.record_chat_id(entry, chat)
         case.assertTrue(chat.remote_id, "Temporary conversation has no verifiable remote ID")
-        case.assertTrue(event_count, "Message produced no stream events")
-        case.assertTrue(getattr(response, "text", ""), "Message returned no text")
-        if isinstance(response, Response):
-            case.assertIsInstance(response.timing, TimingMetrics)
-            case.assertIsInstance(response.sources, SourcesCollection)
-            case.assertIsInstance(response.artifacts, ArtifactsCollection)
+        case.assertIsInstance(response, Response)
+        yield from _stream_milestone_steps(case, operation, events, response)
+        case.assertIsInstance(response.timing, TimingMetrics)
+        case.assertIsInstance(response.sources, SourcesCollection)
+        case.assertIsInstance(response.artifacts, ArtifactsCollection)
+
+        remote_id = chat.remote_id
+        yield case.call_or_skip_rate_limit("chats.prepare", chat.prepare)
+        case.assertTrue(chat.remote_id == remote_id, "Preparation changed the conversation ID")
 
         followup_op = chat.responses.create(
             f"{marker} Reply with only the single word: GAMMA", model=Models.LOW
@@ -159,7 +248,7 @@ def _temporary_message_lifecycle_steps(case):
         followup_response = yield case.call_or_skip_rate_limit(
             "responses.create.followup", followup_op.start, entry=entry, chat=chat
         )
-        case.assertTrue(getattr(followup_response, "text", ""))
+        case.assertTrue(followup_response.text)
 
         web_op = chat.responses.create(
             f"{marker} Search the web for the official Python 3.13 release date and include at least one source link. Reply in one short sentence.",
@@ -229,7 +318,7 @@ def _temporary_message_lifecycle_steps(case):
             case.context.skip("responses.edit: unsupported")
 
         if Capability.MESSAGE_RETRY in capabilities and len(responses) >= 2:
-            followup_id = getattr(followup_response, "remote_id", None) or followup_response.id
+            followup_id = followup_response.remote_id or followup_response.id
             earlier = next((item for item in responses[:-1] if item.remote_id == followup_id), None)
             case.assertIsNotNone(earlier, "Earlier plain-text turn was not found in history")
             retried_middle = yield case.call_or_skip_rate_limit(
