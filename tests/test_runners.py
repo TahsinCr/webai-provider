@@ -234,6 +234,46 @@ class TestRunnerTests(unittest.TestCase):
                 }
                 self.assertEqual(limits, {expected_limit})
 
+    def test_live_runner_can_skip_offline_suite_and_strips_live_env_from_offline(self) -> None:
+        popen_cls = _fake_popen_factory([0])
+        stdout = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(
+                os.environ,
+                {
+                    "WEBAI_LIVE_PROVIDER": "claude",
+                    "WEBAI_LIVE_SKIP_OFFLINE": "1",
+                },
+                clear=True,
+            ),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
+            patch("run_live_tests.subprocess.run") as run,
+            patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+            contextlib.redirect_stdout(stdout),
+        ):
+            self.assertEqual(run_live_tests.main(), 0)
+        run.assert_not_called()
+        self.assertIn("Offline tests skipped; all live scenarios passed", stdout.getvalue())
+
+        popen_cls = _fake_popen_factory([0])
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(
+                os.environ,
+                {"WEBAI_LIVE_PROVIDER": "claude", "CUSTOM_FLAG": "keep"},
+                clear=True,
+            ),
+            patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
+            patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)) as run,
+            patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(run_live_tests.main(), 0)
+        offline_env = run.call_args.kwargs["env"]
+        self.assertNotIn("WEBAI_LIVE_PROVIDER", offline_env)
+        self.assertEqual(offline_env.get("CUSTOM_FLAG"), "keep")
+
     def test_recovery_matrix_requires_an_explicit_account(self) -> None:
         with patch.dict(
             os.environ,

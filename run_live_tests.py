@@ -226,15 +226,26 @@ def _run_provider(
     return outcome
 
 
+def _offline_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if not key.startswith("WEBAI_LIVE_")}
+
+
+def _skip_offline() -> bool:
+    return os.environ.get("WEBAI_LIVE_SKIP_OFFLINE") == "1" or "--skip-offline" in sys.argv[1:]
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parent
-    normal = subprocess.run(
-        [sys.executable, str(project_root / "run_tests.py")],
-        cwd=project_root,
-        check=False,
-    )
-    if normal.returncode:
-        return normal.returncode
+    ran_offline = not _skip_offline()
+    if ran_offline:
+        normal = subprocess.run(
+            [sys.executable, str(project_root / "run_tests.py")],
+            cwd=project_root,
+            env=_offline_env(),
+            check=False,
+        )
+        if normal.returncode:
+            return normal.returncode
 
     matrix = _matrix()
     if matrix is None:
@@ -322,12 +333,13 @@ def main() -> int:
     if blocked:
         print("\nLive API checks incomplete because cleanup is pending.", file=sys.stderr)
         return 2
+    prefix = "Offline tests passed; " if ran_offline else "Offline tests skipped; "
     if any(item.has_skips for item in outcomes):
         print(
-            "\nOffline tests passed; live API checks completed with skipped scenarios (partial verification only)."
+            f"\n{prefix}live API checks completed with skipped scenarios (partial verification only)."
         )
         return 0
-    print("\nOffline tests passed; all live scenarios passed without skips.")
+    print(f"\n{prefix}all live scenarios passed without skips.")
     return 0
 
 

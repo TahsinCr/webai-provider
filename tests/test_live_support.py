@@ -308,6 +308,7 @@ class LiveCredentialTests(unittest.TestCase):
             journal = Path(temporary) / "live-cleanup.json"
             journal.touch()
             with (
+                patch.dict(os.environ, {}, clear=True),
                 patch("tests.live.support.journal.CONFIG_DIR", journal.parent),
                 patch("tests.live.support.journal.read_private_json", return_value=state),
             ):
