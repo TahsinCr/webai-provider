@@ -1949,3 +1949,32 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     await test.test_temporary_message_stream_history_and_cleanup()
                 self.assertEqual(len(seen_cleanups), 2)
                 self.assertEqual(deleted_ids, {"c_root"})
+
+
+class LiveSyncAndCleanupLimitTests(unittest.TestCase):
+    def test_cleanup_bypasses_action_limit_and_sync_case_runs_without_event_loop(self) -> None:
+        import contextlib
+        import io
+
+        from tests.live.test_chats import SyncChatApiTests
+        from webaiprovider.base import Capability
+
+        gate = ActionGate(interval=0, limit=1)
+        account = LiveAccount("personal", "claude", {})
+
+        def list_chats(*, limit=None, include_projects=False):
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+            return []
+
+        session = SimpleNamespace(
+            capabilities={Capability.CHAT},
+            chats=SimpleNamespace(list=list_chats),
+        )
+        case = SyncChatApiTests("test_chat_metadata_can_be_listed_without_loading_histories")
+        case.context = LiveContext(session, account, gate=gate)
+        with contextlib.redirect_stdout(io.StringIO()):
+            case.test_chat_metadata_can_be_listed_without_loading_histories()
+            with self.assertRaisesRegex(SafetyError, "API-action limit"):
+                case.context.call("extra.step", lambda: None)
+            self.assertEqual(case.context.call("cleanup.delete_chat", lambda: "cleaned"), "cleaned")

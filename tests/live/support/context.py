@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import re
 import secrets
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -57,6 +59,38 @@ def _safe_error_label(exc: Exception) -> str:
     return kind
 
 
+def drive_sync_steps(steps: Iterator[Any]) -> Any:
+    """Execute a step generator synchronously on the caller thread without an event loop."""
+    try:
+        value = next(steps)
+        while True:
+            value = steps.send(value)
+    except StopIteration as done:
+        return done.value
+    finally:
+        steps.close()
+
+
+async def drive_async_steps(steps: Iterator[Any]) -> Any:
+    """Execute a step generator asynchronously, awaiting any yielded awaitables."""
+    try:
+        value = next(steps)
+        while True:
+            if inspect.isawaitable(value):
+                try:
+                    result = await value
+                except BaseException as exc:
+                    value = steps.throw(exc)
+                    continue
+            else:
+                result = value
+            value = steps.send(result)
+    except StopIteration as done:
+        return done.value
+    finally:
+        steps.close()
+
+
 class LiveContext:
     def __init__(
         self,
@@ -82,41 +116,44 @@ class LiveContext:
         self.skipped: list[str] = []
         self._cleanup_attempted: set[int] = set()
 
-    def call(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
-        started = time.monotonic()
-        try:
-            value = self.gate.call(action)
-        except SafetyError:
-            raise
-        except Exception as exc:
-            if isinstance(exc, expected_errors):
-                raise
-            raise LiveApiError(
-                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed "
-                f"({round((time.monotonic() - started) * 1000)} ms)"
-            ) from None
+    @staticmethod
+    def _finish_call(label: str, started: float, value: Any) -> Any:
         elapsed = round((time.monotonic() - started) * 1000)
         print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
         return value
+
+    @staticmethod
+    def _raise_call_error(
+        label: str, exc: Exception, expected_errors: tuple[type[Exception], ...], started: float
+    ) -> None:
+        if isinstance(exc, expected_errors):
+            raise exc
+        raise LiveApiError(
+            f"{label} failed: {_safe_error_label(exc)}; provider details suppressed "
+            f"({round((time.monotonic() - started) * 1000)} ms)"
+        ) from None
+
+    def call(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
+        started = time.monotonic()
+        try:
+            value = self.gate.call(action, bypass_limit=label.startswith("cleanup."))
+        except SafetyError:
+            raise
+        except Exception as exc:
+            self._raise_call_error(label, exc, expected_errors, started)
+        return self._finish_call(label, started, value)
 
     async def call_async(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
     ):
         started = time.monotonic()
         try:
-            value = await self.gate.call_async(action)
+            value = await self.gate.call_async(action, bypass_limit=label.startswith("cleanup."))
         except SafetyError:
             raise
         except Exception as exc:
-            if isinstance(exc, expected_errors):
-                raise
-            raise LiveApiError(
-                f"{label} failed: {_safe_error_label(exc)}; provider details suppressed "
-                f"({round((time.monotonic() - started) * 1000)} ms)"
-            ) from None
-        elapsed = round((time.monotonic() - started) * 1000)
-        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
-        return value
+            self._raise_call_error(label, exc, expected_errors, started)
+        return self._finish_call(label, started, value)
 
     def skip(self, label: str) -> None:
         self.skipped.append(label)
@@ -155,7 +192,7 @@ class LiveContext:
             entry["attempted"] = True
             self.save()
 
-    def cleanup_pending(self) -> None:
+    def _cleanup_pending_steps(self, call_fn) -> Iterator[Any]:
         failures = 0
         last_error: Exception | None = None
         for entry in list(reversed(self.state["resources"])):
@@ -164,7 +201,7 @@ class LiveContext:
                 continue
             self._cleanup_attempted.add(id(entry))
             try:
-                self._cleanup_one(entry)
+                yield from self._cleanup_one_steps(entry, call_fn)
             except Exception as exc:
                 failures += 1
                 last_error = exc
@@ -177,9 +214,19 @@ class LiveContext:
         with suppress(FileNotFoundError):
             self._cleanup_path().unlink()
 
+    def cleanup_pending(self) -> None:
+        drive_sync_steps(self._cleanup_pending_steps(self.call))
+
+    async def cleanup_pending_async(self) -> None:
+        await drive_async_steps(self._cleanup_pending_steps(self.call_async))
+
     def cleanup_entry(self, entry: dict[str, Any]) -> None:
         self._cleanup_attempted.add(id(entry))
-        self._cleanup_one(entry)
+        drive_sync_steps(self._cleanup_one_steps(entry, self.call))
+
+    async def cleanup_entry_async(self, entry: dict[str, Any]) -> None:
+        self._cleanup_attempted.add(id(entry))
+        await drive_async_steps(self._cleanup_one_steps(entry, self.call_async))
 
     def cleanup_entries(self, *entries: dict[str, Any] | None) -> None:
         error: Exception | None = None
@@ -193,172 +240,6 @@ class LiveContext:
         if error is not None:
             raise error
 
-    def _cleanup_one(self, entry: dict[str, Any]) -> None:
-        from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
-
-        kind = entry["kind"]
-        if kind not in {"chat", "project"}:
-            raise CleanupError("Cleanup journal contains an unknown object type")
-        if not entry.get("attempted"):
-            self._remove_entry(entry)
-            return
-
-        provider = self.session
-        get_remote = getattr(provider, f"get_{kind}", None) or getattr(
-            provider, f"_get_{kind}_data"
-        )
-        get_details = get_remote
-        if kind == "chat" and self.account.provider == "grok":
-            get_remote = getattr(provider, "_get_chat_metadata", get_remote)
-        delete_remote = getattr(provider, f"delete_{kind}", None) or getattr(
-            provider, f"_delete_{kind}_data"
-        )
-        remote_id = entry.get("remote_id")
-        exclude_ids = {str(item) for item in entry.get("exclude_ids", ()) if item}
-        if remote_id and str(remote_id) in exclude_ids:
-            raise CleanupError("The remote object is excluded from cleanup deletion")
-        if not remote_id:
-            values = self._all_records(kind)
-            markers = tuple(entry.get("markers", ()))
-            matches = [
-                value
-                for value in values
-                if str(self._remote_id(value) or "") not in exclude_ids
-                and self._matches_marker(value, kind, markers)
-            ]
-            if len(matches) != 1 or not (remote_id := self._remote_id(matches[0])):
-                raise CleanupError("A possibly-created object could not be uniquely located")
-            if str(remote_id) in exclude_ids:
-                raise CleanupError("The remote object is excluded from cleanup deletion")
-            remote_id = entry["remote_id"] = str(remote_id)
-            self.save()
-
-        def listed_remote() -> Any | None:
-            values = self._all_records(kind)
-            matches = [
-                value for value in values if str(self._remote_id(value) or "") == str(remote_id)
-            ]
-            if len(matches) > 1:
-                raise CleanupError("The temporary object could not be uniquely verified")
-            return matches[0] if matches else None
-
-        try:
-            remote = self.call(
-                f"cleanup.get_{kind}",
-                lambda: get_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
-            )
-        except RemoteNotFound:
-            self._remove_entry(entry)
-            return
-        except RateLimited:
-            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
-            remote = listed_remote()
-        if remote is None:
-            self._remove_entry(entry)
-            return
-        if str(remote_id) in exclude_ids:
-            raise CleanupError("The remote object is excluded from cleanup deletion")
-        markers = tuple(entry["markers"])
-        matches = str(self._remote_id(remote)) == str(remote_id)
-        if (
-            matches
-            and get_remote is not get_details
-            and not self._matches_marker(remote, kind, markers)
-        ):
-            remote = self.call(f"cleanup.get_{kind}_details", lambda: get_details(str(remote_id)))
-            matches = str(self._remote_id(remote)) == str(remote_id)
-        if not matches or not self._matches_marker(remote, kind, markers):
-            raise CleanupError("The remote object does not match this run's unique test marker")
-
-        delete_uncertain = False
-        try:
-            self.call(
-                f"cleanup.delete_{kind}",
-                lambda: delete_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
-            )
-        except RateLimited:
-            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
-            delete_uncertain = True
-        if not delete_uncertain:
-            self._remove_entry(entry)
-            return
-        try:
-            remaining = self.call(
-                f"cleanup.verify_{kind}_deleted",
-                lambda: get_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
-            )
-        except RemoteNotFound:
-            remaining = None
-        except RateLimited:
-            raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
-            remaining = listed_remote()
-        if remaining is not None:
-            raise CleanupError("The provider did not confirm deletion of a temporary object")
-        self._remove_entry(entry)
-
-    def _all_records(self, kind: str) -> list[Any]:
-        provider = self.session
-        attr = "list_chats" if kind == "chat" else "list_projects"
-        if hasattr(provider, attr):
-            list_remote = getattr(provider, attr)
-        else:
-            list_remote = (
-                (lambda cursor=None: provider._list_chats_data(cursor=cursor))
-                if kind == "chat"
-                else (lambda cursor=None: provider._list_projects_data(cursor=cursor))
-            )
-        cursor = None
-        seen: set[str] = set()
-        records = []
-        for _ in range(100):
-            page = self.call(f"cleanup.locate_{kind}", lambda cursor=cursor: list_remote(cursor))
-            records.extend(page.items)
-            next_cursor = page.next_cursor
-            if next_cursor is None:
-                return records
-            if (
-                not isinstance(next_cursor, str)
-                or not next_cursor
-                or next_cursor == cursor
-                or next_cursor in seen
-            ):
-                raise CleanupError("Remote listing returned an invalid or repeated cursor")
-            seen.add(next_cursor)
-            cursor = next_cursor
-        raise CleanupError("Remote listing exceeded the safe recovery page limit")
-
-    async def cleanup_pending_async(self) -> None:
-        failures = 0
-        last_error: Exception | None = None
-        for entry in list(reversed(self.state["resources"])):
-            if id(entry) in self._cleanup_attempted:
-                failures += 1
-                continue
-            self._cleanup_attempted.add(id(entry))
-            try:
-                await self._cleanup_one_async(entry)
-            except Exception as exc:
-                failures += 1
-                last_error = exc
-        if failures:
-            self.save()
-            raise CleanupError(
-                "At least one temporary remote object could not be verified as deleted"
-            ) from last_error
-        self.state["resources"].clear()
-        with suppress(FileNotFoundError):
-            self._cleanup_path().unlink()
-
-    async def cleanup_entry_async(self, entry: dict[str, Any]) -> None:
-        self._cleanup_attempted.add(id(entry))
-        await self._cleanup_one_async(entry)
-
     async def cleanup_entries_async(self, *entries: dict[str, Any] | None) -> None:
         error: Exception | None = None
         for entry in entries:
@@ -371,7 +252,7 @@ class LiveContext:
         if error is not None:
             raise error
 
-    async def _cleanup_one_async(self, entry: dict[str, Any]) -> None:
+    def _cleanup_one_steps(self, entry: dict[str, Any], call_fn) -> Iterator[Any]:
         from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 
         kind = entry["kind"]
@@ -396,7 +277,7 @@ class LiveContext:
         if remote_id and str(remote_id) in exclude_ids:
             raise CleanupError("The remote object is excluded from cleanup deletion")
         if not remote_id:
-            values = await self._all_records_async(kind)
+            values = yield from self._all_records_steps(kind, call_fn)
             markers = tuple(entry.get("markers", ()))
             matches = [
                 value
@@ -411,8 +292,8 @@ class LiveContext:
             remote_id = entry["remote_id"] = str(remote_id)
             self.save()
 
-        async def listed_remote() -> Any | None:
-            values = await self._all_records_async(kind)
+        def listed_remote_steps() -> Iterator[Any]:
+            values = yield from self._all_records_steps(kind, call_fn)
             matches = [
                 value for value in values if str(self._remote_id(value) or "") == str(remote_id)
             ]
@@ -421,7 +302,7 @@ class LiveContext:
             return matches[0] if matches else None
 
         try:
-            remote = await self.call_async(
+            remote = yield call_fn(
                 f"cleanup.get_{kind}",
                 lambda: get_remote(str(remote_id)),
                 expected_errors=(ProviderError,),
@@ -432,7 +313,7 @@ class LiveContext:
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
         except ProviderError:
-            remote = await listed_remote()
+            remote = yield from listed_remote_steps()
         if remote is None:
             self._remove_entry(entry)
             return
@@ -445,7 +326,7 @@ class LiveContext:
             and get_remote is not get_details
             and not self._matches_marker(remote, kind, markers)
         ):
-            remote = await self.call_async(
+            remote = yield call_fn(
                 f"cleanup.get_{kind}_details", lambda: get_details(str(remote_id))
             )
             matches = str(self._remote_id(remote)) == str(remote_id)
@@ -454,7 +335,7 @@ class LiveContext:
 
         delete_uncertain = False
         try:
-            await self.call_async(
+            yield call_fn(
                 f"cleanup.delete_{kind}",
                 lambda: delete_remote(str(remote_id)),
                 expected_errors=(ProviderError,),
@@ -467,7 +348,7 @@ class LiveContext:
             self._remove_entry(entry)
             return
         try:
-            remaining = await self.call_async(
+            remaining = yield call_fn(
                 f"cleanup.verify_{kind}_deleted",
                 lambda: get_remote(str(remote_id)),
                 expected_errors=(ProviderError,),
@@ -477,7 +358,7 @@ class LiveContext:
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
         except ProviderError:
-            remaining = await listed_remote()
+            remaining = yield from listed_remote_steps()
         if remaining is not None:
             raise CleanupError("The provider did not confirm deletion of a temporary object")
         self._remove_entry(entry)
@@ -493,7 +374,7 @@ class LiveContext:
     def _remote_id(value: Any) -> Any:
         return getattr(value, "remote_id", None) or getattr(value, "id", None)
 
-    async def _all_records_async(self, kind: str) -> list[Any]:
+    def _all_records_steps(self, kind: str, call_fn) -> Iterator[Any]:
         provider = self.session
         attr = "list_chats" if kind == "chat" else "list_projects"
         if hasattr(provider, attr):
@@ -508,7 +389,7 @@ class LiveContext:
         seen: set[str] = set()
         records = []
         for _ in range(100):
-            page = await self.call_async(
+            page = yield call_fn(
                 f"cleanup.locate_{kind}", lambda cursor=cursor: list_remote(cursor)
             )
             records.extend(page.items)

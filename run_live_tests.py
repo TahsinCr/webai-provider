@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from tests.live.support.actions import DEFAULT_SINGLE_API_LIMIT
+from tests.live.support.actions import DEFAULT_COMBINED_RUN_LIMIT, DEFAULT_SINGLE_API_LIMIT
 from tests.live.support.config import PROVIDERS, supports_process_credentials_lock
 from tests.live.support.errors import SafetyError
 from tests.live.support.journal import read_cleanup_journal
@@ -179,6 +179,7 @@ def _run_provider(
     runtime_dir: Path,
     recovering: bool,
     output_lock: threading.Lock,
+    gate_limit: int = DEFAULT_SINGLE_API_LIMIT,
 ) -> _PhaseOutcome:
     command = _live_command(recovering)
     gate_file = runtime_dir / f"gate-{provider}.json"
@@ -190,7 +191,7 @@ def _run_provider(
     environment["WEBAI_LIVE_PROVIDER"] = provider
     environment["WEBAI_LIVE_API"] = api
     environment["WEBAI_LIVE_GATE_FILE"] = str(gate_file)
-    environment["WEBAI_LIVE_GATE_LIMIT"] = str(DEFAULT_SINGLE_API_LIMIT)
+    environment["WEBAI_LIVE_GATE_LIMIT"] = str(gate_limit)
     environment["WEBAI_LIVE_REPORT_FILE"] = str(report_file)
     environment["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
@@ -275,13 +276,9 @@ def main() -> int:
         }
 
         def run_provider_apis(provider: str) -> list[_PhaseOutcome]:
-            return [_run_provider(provider, api, **options) for api in apis_by_provider[provider]]
-
-
-        def run_provider_apis(provider: str) -> list[_PhaseOutcome]:
-            return [
-                _run_provider(provider, api, **options) for api in apis_by_provider[provider]
-            ]
+            apis = apis_by_provider[provider]
+            gate_limit = DEFAULT_COMBINED_RUN_LIMIT if len(apis) > 1 else DEFAULT_SINGLE_API_LIMIT
+            return [_run_provider(provider, api, gate_limit=gate_limit, **options) for api in apis]
 
         workers = (
             len(providers) if len(providers) > 1 and supports_process_credentials_lock() else 1

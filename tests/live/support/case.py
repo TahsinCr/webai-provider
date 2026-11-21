@@ -21,7 +21,13 @@ from .config import (
     lock_file_guard,
     save_verified_browser_refresh,
 )
-from .context import LiveContext, _provider_http_status, _safe_error_label
+from .context import (
+    LiveContext,
+    _provider_http_status,
+    _safe_error_label,
+    drive_async_steps,
+    drive_sync_steps,
+)
 from .errors import LiveApiError, SafetyError
 from .journal import RunLock, read_cleanup_journal
 
@@ -521,6 +527,44 @@ class _LiveReportingMixin(unittest.TestCase):
         self._live_skip_kind = "skipped_rate_limited"
         self.skipTest("Provider rate limit reached")
 
+    def _prepare_live_setup(self, api: str, *, wrong_api_message: str) -> None:
+        if os.environ.get("WEBAI_LIVE_TESTS") != "1":
+            self._live_ignore_skip = True
+            self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
+        if os.environ.get("WEBAI_LIVE_API", "async").casefold() != api:
+            self._live_ignore_skip = True
+            self.skipTest(wrong_api_message)
+        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
+        if recovering != self.recovery_only:
+            self._live_ignore_skip = True
+            self.skipTest("Recovery mode runs only cleanup recovery tests")
+        try:
+            _skip_after_session_open_failure(api)
+        except unittest.SkipTest:
+            self._live_skip_kind = "skipped_setup_failed"
+            raise
+
+    def _uses_shared_session_for(self, api: str) -> bool:
+        return (
+            self.use_shared_session
+            and not self.recovery_only
+            and os.environ.get("WEBAI_LIVE_TESTS") == "1"
+            and os.environ.get("WEBAI_LIVE_API", "async").casefold() == api
+            and os.environ.get("WEBAI_LIVE_SHARED_SESSION", "1") == "1"
+            and LiveSession is _ORIGINAL_LIVE_SESSION
+        )
+
+    def _bind_live_session(self, live: LiveSession, context: LiveContext, *, owns: bool) -> None:
+        self.live = live
+        self.context = context
+        self._owns_live_session = owns
+        self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+
+    def _mark_entry_attempted(self, entry: dict[str, Any]) -> None:
+        if not entry["attempted"]:
+            entry["attempted"] = True
+            self.context.save()
+
 
 class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     """Base for one asynchronous live feature scenario."""
@@ -530,15 +574,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
     use_shared_session = True
 
     def _uses_shared_session(self) -> bool:
-        return (
-            hasattr(asyncio, "Runner")
-            and self.use_shared_session
-            and not self.recovery_only
-            and os.environ.get("WEBAI_LIVE_TESTS") == "1"
-            and os.environ.get("WEBAI_LIVE_API", "async").casefold() == "async"
-            and os.environ.get("WEBAI_LIVE_SHARED_SESSION", "1") == "1"
-            and LiveSession is _ORIGINAL_LIVE_SESSION
-        )
+        return hasattr(asyncio, "Runner") and self._uses_shared_session_for("async")
 
     def _setupAsyncioRunner(self) -> None:
         if self._uses_shared_session():
@@ -554,21 +590,7 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         global _SHARED_ASYNC_SESSION
-        if os.environ.get("WEBAI_LIVE_TESTS") != "1":
-            self._live_ignore_skip = True
-            self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
-        if os.environ.get("WEBAI_LIVE_API", "async").casefold() != "async":
-            self._live_ignore_skip = True
-            self.skipTest("This run selected the synchronous API")
-        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
-        if recovering != self.recovery_only:
-            self._live_ignore_skip = True
-            self.skipTest("Recovery mode runs only cleanup recovery tests")
-        try:
-            _skip_after_session_open_failure("async")
-        except unittest.SkipTest:
-            self._live_skip_kind = "skipped_setup_failed"
-            raise
+        self._prepare_live_setup("async", wrong_api_message="This run selected the synchronous API")
         if self._uses_shared_session():
             if _SHARED_ASYNC_SESSION is None:
                 live = LiveSession()
@@ -578,22 +600,36 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
                     _record_session_open_failure("async")
                     raise
                 _SHARED_ASYNC_SESSION = (live, context)
-            self.live, self.context = _SHARED_ASYNC_SESSION
-            self._owns_live_session = False
-            self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+            self._bind_live_session(*_SHARED_ASYNC_SESSION, owns=False)
             return
-        self.live = LiveSession()
-        self._owns_live_session = True
+        live = LiveSession()
         try:
-            self.context = await self.live.open_async()
+            context = await live.open_async()
         except Exception:
             _record_session_open_failure("async")
             raise
-        self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+        self._bind_live_session(live, context, owns=True)
 
     async def asyncTearDown(self) -> None:
         if getattr(self, "_owns_live_session", True) and hasattr(self, "live"):
             await self.live.close_async()
+
+    async def run_steps(self, steps):
+        return await drive_async_steps(steps)
+
+    async def cleanup_entry(self, entry: dict[str, Any]) -> None:
+        await self.context.cleanup_entry_async(entry)
+
+    async def cleanup_entries(self, *entries: dict[str, Any] | None) -> None:
+        await self.context.cleanup_entries_async(*entries)
+
+    async def consume_stream(self, operation: Any, on_event=None) -> int:
+        events = 0
+        async for _event in operation.stream():
+            events += 1
+            if on_event is not None:
+                on_event()
+        return events
 
     async def call_api(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
@@ -611,9 +647,8 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
         from webaiprovider.errors import RateLimited
 
         async def attempt():
-            if not entry["attempted"]:
-                entry["attempted"] = True
-                self.context.save()
+            assert entry is not None
+            self._mark_entry_attempted(entry)
             try:
                 return await action()
             finally:
@@ -642,32 +677,11 @@ class LiveSyncTestCase(_LiveReportingMixin, unittest.TestCase):
     use_shared_session = True
 
     def _uses_shared_session(self) -> bool:
-        return (
-            self.use_shared_session
-            and not self.recovery_only
-            and os.environ.get("WEBAI_LIVE_TESTS") == "1"
-            and os.environ.get("WEBAI_LIVE_API", "async").casefold() == "sync"
-            and os.environ.get("WEBAI_LIVE_SHARED_SESSION", "1") == "1"
-            and LiveSession is _ORIGINAL_LIVE_SESSION
-        )
+        return self._uses_shared_session_for("sync")
 
     def setUp(self) -> None:
         global _SHARED_SYNC_SESSION, _SHARED_CLEANUP_REGISTERED
-        if os.environ.get("WEBAI_LIVE_TESTS") != "1":
-            self._live_ignore_skip = True
-            self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
-        if os.environ.get("WEBAI_LIVE_API", "async").casefold() != "sync":
-            self._live_ignore_skip = True
-            self.skipTest("This run selected the asynchronous API")
-        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
-        if recovering != self.recovery_only:
-            self._live_ignore_skip = True
-            self.skipTest("Recovery mode runs only cleanup recovery tests")
-        try:
-            _skip_after_session_open_failure("sync")
-        except unittest.SkipTest:
-            self._live_skip_kind = "skipped_setup_failed"
-            raise
+        self._prepare_live_setup("sync", wrong_api_message="This run selected the asynchronous API")
         if self._uses_shared_session():
             if not _SHARED_CLEANUP_REGISTERED:
                 atexit.register(_close_shared_sessions)
@@ -680,22 +694,36 @@ class LiveSyncTestCase(_LiveReportingMixin, unittest.TestCase):
                     _record_session_open_failure("sync")
                     raise
                 _SHARED_SYNC_SESSION = (live, context)
-            self.live, self.context = _SHARED_SYNC_SESSION
-            self._owns_live_session = False
-            self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+            self._bind_live_session(*_SHARED_SYNC_SESSION, owns=False)
             return
-        self.live = LiveSession(api="sync")
-        self._owns_live_session = True
+        live = LiveSession(api="sync")
         try:
-            self.context = self.live.open()
+            context = live.open()
         except Exception:
             _record_session_open_failure("sync")
             raise
-        self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+        self._bind_live_session(live, context, owns=True)
 
     def tearDown(self) -> None:
         if getattr(self, "_owns_live_session", True) and hasattr(self, "live"):
             self.live.close()
+
+    def run_steps(self, steps):
+        return drive_sync_steps(steps)
+
+    def cleanup_entry(self, entry: dict[str, Any]) -> None:
+        self.context.cleanup_entry(entry)
+
+    def cleanup_entries(self, *entries: dict[str, Any] | None) -> None:
+        self.context.cleanup_entries(*entries)
+
+    def consume_stream(self, operation: Any, on_event=None) -> int:
+        events = 0
+        for _event in operation.stream():
+            events += 1
+            if on_event is not None:
+                on_event()
+        return events
 
     def call_api(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
         return self.context.call(label, action, expected_errors=expected_errors)
@@ -711,9 +739,8 @@ class LiveSyncTestCase(_LiveReportingMixin, unittest.TestCase):
         from webaiprovider.errors import RateLimited
 
         def attempt():
-            if not entry["attempted"]:
-                entry["attempted"] = True
-                self.context.save()
+            assert entry is not None
+            self._mark_entry_attempted(entry)
             try:
                 return action()
             finally:

@@ -206,6 +206,34 @@ class TestRunnerTests(unittest.TestCase):
                 (("claude", "async"), ("claude", "sync")),
             )
 
+    def test_live_runner_uses_combined_gate_limit_for_multiple_apis_per_provider(self) -> None:
+        from tests.live.support.actions import DEFAULT_COMBINED_RUN_LIMIT, DEFAULT_SINGLE_API_LIMIT
+
+        for api_setting, expected_limit in (
+            ("sync", str(DEFAULT_SINGLE_API_LIMIT)),
+            ("all", str(DEFAULT_COMBINED_RUN_LIMIT)),
+        ):
+            with self.subTest(api_setting=api_setting):
+                popen_cls = _fake_popen_factory([0, 0])
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    patch.dict(
+                        os.environ,
+                        {"WEBAI_LIVE_PROVIDER": "claude", "WEBAI_LIVE_API": api_setting},
+                        clear=True,
+                    ),
+                    patch("tests.live.support.journal.CONFIG_DIR", Path(directory)),
+                    patch("run_live_tests.supports_process_credentials_lock", return_value=True),
+                    patch("run_live_tests.subprocess.run", return_value=CompletedProcess([], 0)),
+                    patch("run_live_tests.subprocess.Popen", side_effect=popen_cls),
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(run_live_tests.main(), 0)
+                limits = {
+                    call["kwargs"]["env"]["WEBAI_LIVE_GATE_LIMIT"] for call in popen_cls.calls
+                }
+                self.assertEqual(limits, {expected_limit})
+
     def test_recovery_matrix_requires_an_explicit_account(self) -> None:
         with patch.dict(
             os.environ,

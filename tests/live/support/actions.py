@@ -117,11 +117,11 @@ class ActionGate:
                 0.0 if self._adaptive_penalty < 0.05 else self._adaptive_penalty * 0.5
             )
 
-    def _reserve_slot(self) -> float:
+    def _reserve_slot(self, *, allow_over_limit: bool = False) -> float:
         now_mono = time.monotonic()
         interval = self._effective_interval()
         if self._state_file is None:
-            if self._local_calls >= self.limit:
+            if not allow_over_limit and self._local_calls >= self.limit:
                 raise SafetyError("The live run reached its fixed API-action limit")
             delay = max(self._next_allowed - now_mono, 0.0)
             self._local_calls += 1
@@ -130,7 +130,7 @@ class ActionGate:
         gate_lock = self._state_file.with_name(f".{self._state_file.name}.lock")
         with lock_file_guard(gate_lock):
             state = self._read_shared_state()
-            if state["calls"] >= self.limit:
+            if not allow_over_limit and state["calls"] >= self.limit:
                 raise SafetyError("The live run reached its fixed API-action limit")
             now_epoch = time.time()
             delay = max(
@@ -158,9 +158,9 @@ class ActionGate:
                 )
                 self._write_shared_state(state)
 
-    def call(self, action: Callable[[], Any]) -> Any:
+    def call(self, action: Callable[[], Any], *, bypass_limit: bool = False) -> Any:
         with self._sync_lock:
-            delay = self._reserve_slot()
+            delay = self._reserve_slot(allow_over_limit=bypass_limit)
         if delay > 0:
             time.sleep(delay)
         try:
@@ -177,10 +177,10 @@ class ActionGate:
             with self._sync_lock:
                 self._complete_slot()
 
-    async def call_async(self, action: Callable[[], Any]) -> Any:
+    async def call_async(self, action: Callable[[], Any], *, bypass_limit: bool = False) -> Any:
         async with self._async_lock():
             with self._sync_lock:
-                delay = self._reserve_slot()
+                delay = self._reserve_slot(allow_over_limit=bypass_limit)
             if delay > 0:
                 deadline = time.monotonic() + delay
                 while (remaining := deadline - time.monotonic()) > 0:
