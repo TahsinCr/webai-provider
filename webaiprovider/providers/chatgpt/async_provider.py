@@ -306,6 +306,19 @@ class AsyncChatGPTProvider(
                 raise
         return self._build_list_chats_page(raw, offset, limit)
 
+    async def _warm_chat(self, chat: Any) -> None:
+        cid = chat.remote_id
+        if (
+            not self._persistent_client
+            or not cid
+            or chat.temporary
+            or cid in self._pending_branches
+        ):
+            return
+        async with self._client_scope() as client:
+            if client._cached_conversation(cid) is None:
+                await maybe_await(client.get_conversation(cid))
+
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         await self._wait_for_prepare()
         async with self._client_scope() as client:

@@ -4,7 +4,15 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Expose ordered thinking and visible response blocks through the local `response.parts` collection.
+- Expose generation end, remote verification, resolved content and terminal stream events, and let `wait_for` resume after a specific event.
+- Add explicit sync and async `chat.prepare()` to warm provider continuation state under the existing chat lock.
+
 ### Changed
+
+- Group provider output blocks from the same turn into one historical response. Use `response.text` for visible text and `response.parts` for individual blocks.
 
 - Resolve synchronous model ID lookups from the loaded catalog on the calling thread.
 

@@ -384,6 +384,15 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             _CLOSING_PROVIDER.reset(token)
             self._close_task = None
 
+    async def _prepare_chat(self, chat: Any) -> None:
+        lock = self._send_lock(chat.remote_id or chat.id)
+        async with self._activity(send_lock_id=id(lock)), lock:
+            self._require_provider()
+            await self._warm_chat(chat)
+
+    async def _warm_chat(self, chat: Any) -> None:
+        """Prepare provider-specific continuation data while the chat is locked."""
+
     async def _execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id

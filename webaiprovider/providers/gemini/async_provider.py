@@ -191,6 +191,19 @@ class AsyncGeminiProvider(
         chats = parse_chat_page(parts, offset=offset, limit=limit + 1)
         return Page(chats[:limit], str(offset + limit) if len(chats) > limit else None)
 
+    async def _warm_chat(self, chat: Any) -> None:
+        if chat.project is not None:
+            await self._resolve_project_context(chat.project.remote_id, None)
+        cid = chat.remote_id
+        if (
+            cid
+            and not chat.temporary
+            and not self._usable_chat_metadata(self._take_chat_metadata(cid), cid)
+        ):
+            request = ProviderRequest("", conversation_id=cid)
+            _, metadata, _ = await self._load_chat_continuation(request, None)
+            self._remember_response(cid, metadata, temporary=False)
+
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         parts = await self.rpc.call(
             "hNvQHb", [conversation_id, 1000, None, 1, [1], [4], None, 1], "/app"

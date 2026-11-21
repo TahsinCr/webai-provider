@@ -212,6 +212,12 @@ class AsyncChat(_BaseChat):
 
         self.responses = AsyncResponsesCollection(self)
 
+    async def prepare(self) -> None:
+        """Warm the reusable context for the next send."""
+        if self.provider is None:
+            raise ProviderError("Cannot prepare a chat without a provider")
+        await self.provider._prepare_chat(self)
+
     async def get(self, item_id: str) -> Response:
         return await self.responses.get(item_id)
 
@@ -387,6 +393,12 @@ class Chat(_BaseChat):
         from ..response.collections import ResponsesCollection
 
         self.responses = ResponsesCollection(self)
+
+    def prepare(self) -> None:
+        """Warm the reusable context for the next send."""
+        if self.provider is None:
+            raise ProviderError("Cannot prepare a chat without a provider")
+        self.provider._prepare_chat(self)
 
     def get(self, item_id: str) -> Response:
         return self.responses.get(item_id)

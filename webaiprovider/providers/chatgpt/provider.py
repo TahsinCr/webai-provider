@@ -252,6 +252,19 @@ class ChatGPTProvider(
                 raise
         return self._build_list_chats_page(raw, offset, limit)
 
+    def _warm_chat(self, chat: Any) -> None:
+        cid = chat.remote_id
+        if (
+            not self._persistent_client
+            or not cid
+            or chat.temporary
+            or cid in self._pending_branches
+        ):
+            return
+        with self._client_scope() as client:
+            if client._cached_conversation(cid) is None:
+                client.get_conversation(cid)
+
     def _get_chat_data(self, conversation_id: str) -> Conversation:
         with self._client_scope() as client:
             return self._conversation(client.get_conversation(conversation_id))

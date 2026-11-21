@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 from dataclasses import replace
 from importlib import import_module
@@ -8,13 +10,15 @@ from unittest.mock import ANY, AsyncMock, Mock
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
 from webaiprovider.collections import Page
-from webaiprovider.errors import UnsupportedOperationError
+from webaiprovider.errors import ProviderError, UnsupportedOperationError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
+    PartClosed,
     ResponseComplete,
+    ResponseVerifying,
     TextDelta,
     TextReplacement,
     ThoughtDelta,
@@ -32,6 +36,7 @@ from webaiprovider.resources.response.operation import (
     ThinkingDelta,
     ThinkingEnd,
 )
+from webaiprovider.resources.response.parts import TextPart, ThinkingPart
 
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
@@ -274,6 +279,78 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(isinstance(event, OutputBegin) for event in events))
         self.assertTrue(any(isinstance(event, OutputReplace) for event in events))
 
+    async def test_ordered_live_parts_and_prepare_wait_for_verification(self) -> None:
+        release = asyncio.Event()
+        warmed = asyncio.Event()
+        chat = await self.provider.chats.create()
+        chat.remote_id = "confirmed-chat"
+
+        async def generate(_request):
+            yield TextDelta("First thought", "analysis", "t1")
+            yield PartClosed("t1", "analysis")
+            yield TextDelta("Second thought", "analysis", "t2")
+            yield PartClosed("t2", "analysis")
+            yield TextDelta("Intro", part_id="a1")
+            yield TextDelta("Draft", part_id="a2")
+            yield TextReplacement("Answer", part_id="a2")
+            yield ResponseComplete()
+            yield ResponseVerifying()
+            await release.wait()
+            yield MessageMetadata(message_id="reply-1")
+
+        async def warm(target):
+            self.assertIs(target, chat)
+            warmed.set()
+
+        self.provider._stream_provider_events = generate
+        self.provider._warm_chat = warm
+        op = chat.responses.create("Question")
+        first = await op.wait_for("thinking.begin", timeout=1)
+        second = await op.wait_for("thinking.begin", after=first, timeout=1)
+        self.assertNotEqual(first.part_id, second.part_id)
+        self.assertIsNotNone(await op.wait_for("verification.begin", timeout=1))
+        prepare = asyncio.create_task(chat.prepare())
+        try:
+            await asyncio.sleep(0)
+            self.assertFalse(warmed.is_set())
+            self.assertIsNone(await op.wait_for("status.terminal", timeout=0.01))
+        finally:
+            release.set()
+        result = await asyncio.wait_for(op.wait(), 1)
+        await asyncio.wait_for(prepare, 1)
+        self.assertTrue(warmed.is_set())
+        self.assertEqual(result.id, "reply-1")
+        self.assertEqual(
+            [(type(part), part.text) for part in result.parts],
+            [
+                (ThinkingPart, "First thought"),
+                (ThinkingPart, "Second thought"),
+                (TextPart, "Intro"),
+                (TextPart, "Answer"),
+            ],
+        )
+        self.assertEqual(result.text, "Intro\nAnswer")
+        events = [event.event async for event in op.stream()]
+        self.assertEqual(events.count("generation.end"), 1)
+        self.assertEqual(events[-3:], ["generation.end", "verification.begin", "status.terminal"])
+
+    async def test_generation_end_does_not_report_failed_verification_as_success(self) -> None:
+        async def generate(_request):
+            yield TextDelta("Answer")
+            yield ResponseComplete()
+            yield ResponseVerifying()
+            raise ProviderError("Revision could not be confirmed")
+
+        self.provider._stream_provider_events = generate
+        chat = await self.provider.chats.create()
+        op = chat.responses.create("Question")
+        generated = await op.wait_for("generation.end", timeout=1)
+        self.assertIsNotNone(generated)
+        terminal = await op.wait_for("status.terminal", after=generated, timeout=1)
+        self.assertEqual(terminal.status, "failed")
+        with self.assertRaisesRegex(ProviderError, "could not be confirmed"):
+            await op.wait()
+
     async def test_chat_messages_refresh_loads_remote_history(self) -> None:
         remote_conv = Conversation(
             "conv-remote-1",
@@ -375,6 +452,40 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderResourceFamilyTests(unittest.TestCase):
+    def test_sync_prepare_runs_on_caller_and_can_follow_repeated_events(self) -> None:
+        provider = Provider(Account.from_cookies("claude", {}))
+        provider._prepare_session = Mock()
+        provider._close_session = Mock()
+        thread_ids = []
+        provider._warm_chat = lambda _chat: thread_ids.append(threading.get_ident())
+
+        def generate(_request):
+            yield TextDelta("Thought", "analysis", "t1")
+            yield TextDelta("Intro", part_id="a1")
+            yield TextDelta("More thinking", "analysis", "t2")
+            yield TextDelta("Answer", part_id="a2")
+            yield ResponseComplete()
+
+        provider._stream_provider_events = generate
+        with provider:
+            chat = provider.chats.create()
+            chat.prepare()
+            op = chat.responses.create("hello")
+            first = op.wait_for("thinking.begin")
+            second = op.wait_for("thinking.begin", after=first)
+            self.assertNotEqual(first.part_id, second.part_id)
+            with self.assertRaisesRegex(ProviderError, "paused send"):
+                chat.prepare()
+            response = op.wait()
+            chat.prepare()
+
+        self.assertEqual(thread_ids, [threading.get_ident()] * 2)
+        self.assertEqual(
+            [type(part) for part in response.parts],
+            [ThinkingPart, TextPart, ThinkingPart, TextPart],
+        )
+        self.assertEqual(response.text, "Intro\nAnswer")
+
     def test_resource_types_survive_history_generation_and_sync_wrapping(self) -> None:
         for provider_id, name in (
             ("chatgpt", "ChatGPT"),

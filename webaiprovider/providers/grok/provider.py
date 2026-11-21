@@ -142,6 +142,17 @@ class GrokProvider(
     def _get_chat_metadata(self, conversation_id: str) -> Conversation:
         return conversation(self._conversation_metadata(conversation_id))
 
+    def _warm_chat(self, chat: Any) -> None:
+        cid = chat.remote_id
+        if cid and self._continuations.get(cid) is None:
+            nodes = self._response_nodes(cid)
+            if isinstance(nodes, dict) and nodes.get("inflightResponses"):
+                return
+            parent = self._resolve_parent_from_history(
+                ProviderRequest("", conversation_id=cid), nodes, [], []
+            )
+            self._remember_continuation(cid, parent)
+
     def _get_chat_data(self, conversation_id: str) -> Conversation:
         return self._build_chat_from_history(
             conversation_id,

@@ -386,18 +386,30 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 self._closing_in_progress = False
                 self._lifecycle_condition.notify_all()
 
-    def _execute_stream(self, operation: Any) -> Generator[StreamEvent | _StreamPause, None, None]:
-        chat = operation.chat
-        conversation_id = chat.remote_id or chat.id
+    def _check_parked_send(self, conversation_id: str) -> None:
         caller = threading.get_ident()
         with self._lifecycle_condition:
             if any(
                 owner == caller and (pending.chat.remote_id or pending.chat.id) == conversation_id
                 for pending, owner in self._parked_sends.items()
             ):
-                raise ProviderError(
-                    "Resume or cancel the paused send before sending in the same conversation"
-                )
+                raise ProviderError("Resume or cancel the paused send before reusing this chat")
+
+    def _prepare_chat(self, chat: Any) -> None:
+        conversation_id = chat.remote_id or chat.id
+        self._check_parked_send(conversation_id)
+        lock = self._send_lock(conversation_id)
+        with self._activity(send_lock_id=id(lock)), lock:
+            self._require_provider()
+            self._warm_chat(chat)
+
+    def _warm_chat(self, chat: Any) -> None:
+        """Prepare provider-specific continuation data while the chat is locked."""
+
+    def _execute_stream(self, operation: Any) -> Generator[StreamEvent | _StreamPause, None, None]:
+        chat = operation.chat
+        conversation_id = chat.remote_id or chat.id
+        self._check_parked_send(conversation_id)
         lock = self._send_lock(conversation_id)
         lock_id = id(lock)
         with self._activity(send_lock_id=lock_id):
@@ -416,8 +428,10 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 events = self._execute_stream_events(operation, lock)
                 yield from events
             finally:
-                lock.release()
-                _close_iterator(events)
+                try:
+                    _close_iterator(events)
+                finally:
+                    lock.release()
 
     def _execute_stream_events(
         self, operation: Any, send_lock: threading.Lock

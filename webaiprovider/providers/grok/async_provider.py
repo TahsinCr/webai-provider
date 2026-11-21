@@ -150,6 +150,17 @@ class AsyncGrokProvider(
     async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
         return conversation(await self._conversation_metadata(conversation_id))
 
+    async def _warm_chat(self, chat: Any) -> None:
+        cid = chat.remote_id
+        if cid and self._continuations.get(cid) is None:
+            nodes = await self._response_nodes(cid)
+            if isinstance(nodes, dict) and nodes.get("inflightResponses"):
+                return
+            parent = self._resolve_parent_from_history(
+                ProviderRequest("", conversation_id=cid), nodes, [], []
+            )
+            self._remember_continuation(cid, parent)
+
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         metadata, history = await asyncio.gather(
             self._conversation_metadata(conversation_id),
