@@ -158,6 +158,25 @@ class ActionGate:
                 )
                 self._write_shared_state(state)
 
+    def call(self, action: Callable[[], Any]) -> Any:
+        with self._sync_lock:
+            delay = self._reserve_slot()
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            result = action()
+        except RateLimited as exc:
+            with self._sync_lock:
+                self._record_outcome(rate_limited=exc)
+            raise
+        else:
+            with self._sync_lock:
+                self._record_outcome()
+            return result
+        finally:
+            with self._sync_lock:
+                self._complete_slot()
+
     async def call_async(self, action: Callable[[], Any]) -> Any:
         async with self._async_lock():
             with self._sync_lock:

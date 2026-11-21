@@ -7,7 +7,7 @@ from contextlib import suppress
 from webaiprovider.base import Capability
 from webaiprovider.errors import RemoteNotFound
 
-from .support.case import LiveAsyncTestCase
+from .support.case import LiveAsyncTestCase, LiveSyncTestCase
 
 _CLAUDE_5_MODEL_RE = re.compile(r"^claude-([a-z]+)-5(?:-(\d+))?(?:-\d{8})?$")
 
@@ -106,6 +106,70 @@ class AsyncModelApiTests(LiveAsyncTestCase):
                 elif chat.remote_id:
                     with suppress(RemoteNotFound):
                         await self.call_api(
+                            "models.delete_temporary",
+                            chat.delete,
+                            expected_errors=(RemoteNotFound,),
+                        )
+
+
+class SyncModelApiTests(LiveSyncTestCase):
+    def test_catalog_and_model_execution(self) -> None:
+        capabilities = self.context.session.capabilities
+        if Capability.MODELS not in capabilities:
+            self.skipTest("Provider does not expose model catalogs")
+
+        catalog = self.context.session.models
+        models = self.call_api("models.refresh", catalog.refresh)
+        self.assertTrue(models, "Authenticated account returned an empty model catalog")
+        model = models[0]
+        self.assertEqual(catalog.get(model.id), model)
+        self.assertEqual(catalog.find(model.id), model)
+        self.assertIn(model, catalog.search(model.id, exact=True))
+        self.assertEqual(catalog.resolve(model).model, model)
+        if efforts := model.efforts.list():
+            self.assertEqual(catalog.resolve(efforts[0]).effort, efforts[0])
+
+        use_temporary = Capability.TEMPORARY in capabilities
+        if Capability.CHAT not in capabilities or (
+            not use_temporary and Capability.DELETE not in capabilities
+        ):
+            self.context.skip("models.send: unavailable_or_cannot_safely_clean_up")
+            return
+
+        models = _select_live_models(self.context.account.provider, models)
+
+        for model in models:
+            marker = f"{self.context.marker}-m-{model.id}"
+            entry = None if use_temporary else self.context.new_remote("chat", marker)
+            try:
+                chat = self.context.session.chats.create(title=marker, temporary=use_temporary)
+                if entry is not None:
+                    self.context.record_chat_id(entry, chat)
+                efforts = model.efforts.list()
+                selected_effort = (
+                    next((item for item in efforts if item.id == "standard"), efforts[0])
+                    if efforts
+                    else None
+                )
+                op = chat.responses.create(
+                    "Reply with only: OK" if entry is None else f"{marker} Reply with only: OK",
+                    model=selected_effort if selected_effort is not None else model,
+                )
+                response = self.call_or_skip_rate_limit(
+                    f"models.send[{model.id}]", op.start, entry=entry, chat=chat
+                )
+                if entry is not None:
+                    self.context.record_chat_id(entry, chat)
+                self.assertTrue(
+                    getattr(response, "text", "").strip(),
+                    f"Model {model.id} returned empty text",
+                )
+            finally:
+                if entry is not None:
+                    self.context.cleanup_entry(entry)
+                elif chat.remote_id:
+                    with suppress(RemoteNotFound):
+                        self.call_api(
                             "models.delete_temporary",
                             chat.delete,
                             expected_errors=(RemoteNotFound,),

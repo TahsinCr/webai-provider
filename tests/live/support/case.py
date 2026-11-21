@@ -31,11 +31,18 @@ _SHARED_ACTION_GATE: tuple[tuple[str, int], ActionGate] | None = None
 _FAILED_SESSION_OPENS: set[tuple[str, str]] = set()
 _SHARED_ASYNC_RUNNER: asyncio.Runner | None = None
 _SHARED_ASYNC_SESSION: tuple[Any, LiveContext] | None = None
+_SHARED_SYNC_SESSION: tuple[Any, LiveContext] | None = None
 _SHARED_CLEANUP_REGISTERED = False
 
 
-def _close_shared_async_session() -> None:
-    global _SHARED_ASYNC_RUNNER, _SHARED_ASYNC_SESSION
+def _close_shared_sessions() -> None:
+    global _SHARED_ASYNC_RUNNER, _SHARED_ASYNC_SESSION, _SHARED_SYNC_SESSION
+    sync_pair, _SHARED_SYNC_SESSION = _SHARED_SYNC_SESSION, None
+    if sync_pair is not None:
+        try:
+            sync_pair[0].close()
+        except Exception:
+            pass
     session_pair, _SHARED_ASYNC_SESSION = _SHARED_ASYNC_SESSION, None
     runner, _SHARED_ASYNC_RUNNER = _SHARED_ASYNC_RUNNER, None
     if session_pair is not None and runner is not None:
@@ -55,7 +62,7 @@ def _get_shared_async_runner(loop_factory: Any = None) -> asyncio.Runner:
     if _SHARED_ASYNC_RUNNER is None:
         _SHARED_ASYNC_RUNNER = asyncio.Runner(debug=False, loop_factory=loop_factory)
         if not _SHARED_CLEANUP_REGISTERED:
-            atexit.register(_close_shared_async_session)
+            atexit.register(_close_shared_sessions)
             _SHARED_CLEANUP_REGISTERED = True
     return _SHARED_ASYNC_RUNNER
 
@@ -150,7 +157,8 @@ async def _run_blocking(action, *args, **kwargs):
 class LiveSession:
     """Own one real provider session and its guarded cleanup lifecycle."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, api: str = "async") -> None:
+        self.api = api
         self.lock: RunLock | None = None
         self.context: LiveContext | None = None
         self.session: Any = None
@@ -198,6 +206,7 @@ class LiveSession:
     def _create_provider_session(self, account: LiveAccount) -> Any:
         from webaiprovider.accounts.account import Account
         from webaiprovider.async_provider import AsyncProvider
+        from webaiprovider.provider import Provider
 
         account_object = Account(
             id=account.alias,
@@ -205,7 +214,111 @@ class LiveSession:
             credentials=account.credentials,
             name="Live API test",
         )
-        return AsyncProvider(account_object)
+        cls = Provider if self.api == "sync" else AsyncProvider
+        return cls(account_object)
+
+    def open(self) -> LiveContext:
+        try:
+            return self._open_once()
+        except LiveApiError as error:
+            if not self._retryable_open_error(error):
+                raise
+            print("Retrying session.open once after a transient failure", flush=True)
+            return self._open_once()
+
+    def _open_once(self) -> LiveContext:
+        from webaiprovider.errors import AuthenticationError
+
+        try:
+            context = self._prepare()
+        except BaseException:
+            self._close(suppress=True)
+            self._release_lock()
+            raise
+        try:
+            try:
+                context.call(
+                    "session.open",
+                    self.session.open,
+                    expected_errors=(AuthenticationError,),
+                )
+            except AuthenticationError as error:
+                reason = _safe_error_label(error)
+                account, state = context.account, context.state
+                if account.alias != "default-browser":
+                    raise SafetyError(
+                        f"{account.provider} rejected the configured account credentials ({reason})"
+                    ) from None
+                self._close()
+                refreshed = load_or_import_account(
+                    account.provider,
+                    account.alias,
+                    browser=os.environ.get("WEBAI_LIVE_BROWSER"),
+                    refresh=True,
+                )
+                old_cookies = account.credentials.get("cookies", account.credentials)
+                new_cookies = refreshed.credentials.get("cookies", refreshed.credentials)
+                if old_cookies == new_cookies:
+                    raise SafetyError(
+                        f"{account.provider} rejected the browser credentials ({reason}) and the refresh returned the same cookies"
+                    ) from None
+                context = self._new_context(refreshed, state, journal_path=context._journal_path)
+                try:
+                    context.call(
+                        "session.open.after_cookie_refresh",
+                        self.session.open,
+                        expected_errors=(AuthenticationError,),
+                    )
+                except AuthenticationError as error:
+                    raise SafetyError(
+                        f"{account.provider} browser cookies remain invalid after one refresh "
+                        f"({_safe_error_label(error)})"
+                    ) from None
+                save_verified_browser_refresh(account, refreshed)
+        except BaseException:
+            self._close(suppress=True)
+            self._release_lock()
+            raise
+        return context
+
+    def _close(self, *, suppress: bool = False) -> None:
+        context, self.context = self.context, None
+        self.session = None
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                if not suppress:
+                    raise
+
+    def close(self) -> None:
+        error: Exception | None = None
+        try:
+            if self.context is not None:
+                resources = self.context.state["resources"]
+                attempted = getattr(self.context, "_cleanup_attempted", None)
+                should_cleanup = (
+                    any(id(entry) not in attempted for entry in resources)
+                    if isinstance(attempted, (set, frozenset))
+                    else bool(resources)
+                )
+                if should_cleanup:
+                    try:
+                        self.context.cleanup_pending()
+                    except Exception as exc:
+                        error = exc
+                try:
+                    self.context.print_report()
+                except Exception as exc:
+                    error = error or exc
+                try:
+                    self.context.close()
+                except Exception as exc:
+                    error = error or exc
+        finally:
+            self._release_lock()
+        if error is not None:
+            raise error
 
     @staticmethod
     def _retryable_open_error(error: LiveApiError) -> bool:
@@ -517,5 +630,105 @@ class LiveAsyncTestCase(_LiveReportingMixin, unittest.IsolatedAsyncioTestCase):
 
 class LiveAsyncRecoveryTestCase(LiveAsyncTestCase):
     """Recovery-only live test base for the asynchronous API."""
+
+    recovery_only = True
+
+
+class LiveSyncTestCase(_LiveReportingMixin, unittest.TestCase):
+    """Base for one synchronous live feature scenario running on the caller thread."""
+
+    _live_api = "sync"
+    recovery_only = False
+    use_shared_session = True
+
+    def _uses_shared_session(self) -> bool:
+        return (
+            self.use_shared_session
+            and not self.recovery_only
+            and os.environ.get("WEBAI_LIVE_TESTS") == "1"
+            and os.environ.get("WEBAI_LIVE_API", "async").casefold() == "sync"
+            and os.environ.get("WEBAI_LIVE_SHARED_SESSION", "1") == "1"
+            and LiveSession is _ORIGINAL_LIVE_SESSION
+        )
+
+    def setUp(self) -> None:
+        global _SHARED_SYNC_SESSION, _SHARED_CLEANUP_REGISTERED
+        if os.environ.get("WEBAI_LIVE_TESTS") != "1":
+            self._live_ignore_skip = True
+            self.skipTest("Set WEBAI_LIVE_TESTS=1 to opt in to real provider requests")
+        if os.environ.get("WEBAI_LIVE_API", "async").casefold() != "sync":
+            self._live_ignore_skip = True
+            self.skipTest("This run selected the asynchronous API")
+        recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
+        if recovering != self.recovery_only:
+            self._live_ignore_skip = True
+            self.skipTest("Recovery mode runs only cleanup recovery tests")
+        try:
+            _skip_after_session_open_failure("sync")
+        except unittest.SkipTest:
+            self._live_skip_kind = "skipped_setup_failed"
+            raise
+        if self._uses_shared_session():
+            if not _SHARED_CLEANUP_REGISTERED:
+                atexit.register(_close_shared_sessions)
+                _SHARED_CLEANUP_REGISTERED = True
+            if _SHARED_SYNC_SESSION is None:
+                live = LiveSession(api="sync")
+                try:
+                    context = live.open()
+                except Exception:
+                    _record_session_open_failure("sync")
+                    raise
+                _SHARED_SYNC_SESSION = (live, context)
+            self.live, self.context = _SHARED_SYNC_SESSION
+            self._owns_live_session = False
+            self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+            return
+        self.live = LiveSession(api="sync")
+        self._owns_live_session = True
+        try:
+            self.context = self.live.open()
+        except Exception:
+            _record_session_open_failure("sync")
+            raise
+        self._live_feature_skips_start = len(getattr(self.context, "skipped", ()))
+
+    def tearDown(self) -> None:
+        if getattr(self, "_owns_live_session", True) and hasattr(self, "live"):
+            self.live.close()
+
+    def call_api(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
+        return self.context.call(label, action, expected_errors=expected_errors)
+
+    def call_or_skip_rate_limit(
+        self,
+        label: str,
+        action,
+        *,
+        entry: dict[str, Any] | None = None,
+        chat: Any = None,
+    ):
+        from webaiprovider.errors import RateLimited
+
+        def attempt():
+            if not entry["attempted"]:
+                entry["attempted"] = True
+                self.context.save()
+            try:
+                return action()
+            finally:
+                if chat is not None:
+                    self.context.record_chat_id(entry, chat)
+
+        try:
+            return self.call_api(
+                label, attempt if entry is not None else action, expected_errors=(RateLimited,)
+            )
+        except RateLimited as exc:
+            self._skip_on_rate_limit(label, exc, entry, chat)
+
+
+class LiveSyncRecoveryTestCase(LiveSyncTestCase):
+    """Recovery-only live test base for the synchronous API."""
 
     recovery_only = True

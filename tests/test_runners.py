@@ -189,6 +189,23 @@ class TestRunnerTests(unittest.TestCase):
         ):
             self.assertEqual(run_live_tests._matrix(), (("grok", "async"),))
 
+    def test_live_matrix_supports_sync_and_all_apis_with_async_default(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"WEBAI_LIVE_PROVIDER": "claude", "WEBAI_LIVE_API": "sync"},
+            clear=True,
+        ):
+            self.assertEqual(run_live_tests._matrix(), (("claude", "sync"),))
+        with patch.dict(
+            os.environ,
+            {"WEBAI_LIVE_PROVIDER": "claude", "WEBAI_LIVE_API": "all"},
+            clear=True,
+        ):
+            self.assertEqual(
+                run_live_tests._matrix(),
+                (("claude", "async"), ("claude", "sync")),
+            )
+
     def test_recovery_matrix_requires_an_explicit_account(self) -> None:
         with patch.dict(
             os.environ,

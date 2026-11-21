@@ -64,6 +64,23 @@ def _provider_cleanup_pending(provider: str) -> bool:
     return state is not None
 
 
+def _selected_apis() -> tuple[str, ...] | None:
+    raw = os.environ.get("WEBAI_LIVE_API", "").casefold().strip()
+    if not raw:
+        return ("async",)
+    if raw == "all":
+        return ("async", "sync")
+    apis: list[str] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if token not in {"async", "sync"}:
+            print("WEBAI_LIVE_API must be async, sync, or all.", file=sys.stderr)
+            return None
+        if token not in apis:
+            apis.append(token)
+    return tuple(apis)
+
+
 def _matrix() -> tuple[tuple[str, str], ...] | None:
     provider = os.environ.get("WEBAI_LIVE_PROVIDER", "").casefold()
     recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
@@ -77,9 +94,12 @@ def _matrix() -> tuple[tuple[str, str], ...] | None:
             file=sys.stderr,
         )
         return None
+    apis = _selected_apis()
+    if apis is None:
+        return None
 
     providers = (provider,) if provider else tuple(sorted(PROVIDERS))
-    return tuple((current_provider, "async") for current_provider in providers)
+    return tuple((current_provider, api) for current_provider in providers for api in apis)
 
 
 def _live_command(recovering: bool) -> list[str]:
@@ -153,13 +173,13 @@ def _read_phase_report(
 
 def _run_provider(
     provider: str,
+    api: str = "async",
     *,
     project_root: Path,
     runtime_dir: Path,
     recovering: bool,
     output_lock: threading.Lock,
 ) -> _PhaseOutcome:
-    api = "async"
     command = _live_command(recovering)
     gate_file = runtime_dir / f"gate-{provider}.json"
     with output_lock:
@@ -220,7 +240,13 @@ def main() -> int:
         return 2
 
     recovering = os.environ.get("WEBAI_LIVE_RECOVER") == "1"
-    providers = [provider for provider, _ in matrix]
+    providers: list[str] = []
+    apis_by_provider: dict[str, list[str]] = {}
+    for provider, api in matrix:
+        if provider not in apis_by_provider:
+            providers.append(provider)
+            apis_by_provider[provider] = []
+        apis_by_provider[provider].append(api)
     blocked = (
         []
         if recovering
@@ -247,13 +273,23 @@ def main() -> int:
             "recovering": recovering,
             "output_lock": output_lock,
         }
+
+        def run_provider_apis(provider: str) -> list[_PhaseOutcome]:
+            return [_run_provider(provider, api, **options) for api in apis_by_provider[provider]]
+
+
+        def run_provider_apis(provider: str) -> list[_PhaseOutcome]:
+            return [
+                _run_provider(provider, api, **options) for api in apis_by_provider[provider]
+            ]
+
         workers = (
             len(providers) if len(providers) > 1 and supports_process_credentials_lock() else 1
         )
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_run_provider, provider, **options) for provider in providers]
+            futures = [pool.submit(run_provider_apis, provider) for provider in providers]
             try:
-                outcomes = [future.result() for future in futures]
+                outcomes = [item for future in futures for item in future.result()]
             except KeyboardInterrupt:
                 for future in futures:
                     future.cancel()

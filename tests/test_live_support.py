@@ -638,7 +638,7 @@ class LiveSessionSetupCacheTests(unittest.TestCase):
                 self.assertTrue(result.wasSuccessful(), result.errors)
                 self.assertEqual(len(loops), 2)
             finally:
-                support._close_shared_async_session()
+                support._close_shared_sessions()
 
             shared = hasattr(asyncio, "Runner")
             self.assertEqual(loops[0] is loops[1], shared)
