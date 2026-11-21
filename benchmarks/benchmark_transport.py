@@ -19,11 +19,6 @@ _BODY_CHUNKS = 512
 _STREAM_CHUNKS = 4_000
 
 
-def _body(count: int):
-    for _ in range(count):
-        yield bytes(_CHUNK_BYTES)
-
-
 async def _async_body(count: int, size: int):
     for _ in range(count):
         yield bytes(size)

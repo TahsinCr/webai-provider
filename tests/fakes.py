@@ -189,13 +189,6 @@ class FakeHTTPResponse:
     def __exit__(self, *args):
         self.close()
 
-    @asynccontextmanager
-    async def _as_acm(self):
-        try:
-            yield self
-        finally:
-            await self.aclose()
-
 
 class FakeHTTPClient:
     """Minimal blocking HTTP client backed by a ``handler(request) -> response``."""

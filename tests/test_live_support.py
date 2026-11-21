@@ -1659,7 +1659,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     delete_chat=AsyncMock(side_effect=fake_delete_chat),
                 )
 
-                def bind_chat(cid, title, *, messages_data, rename_hook=None):
+                def bind_chat(cid, title, *, rename_hook=None):
                     chat_obj = AsyncChatGPTChat(id=cid, title=title, provider=session)
                     resp_obj = Response(
                         "BR" if cid == "preview-1" else "ROOT",
@@ -1733,7 +1733,7 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                     get_chat=AsyncMock(side_effect=fake_get_chat),
                     delete_chat=AsyncMock(side_effect=fake_delete_chat),
                 )
-                root_chat = bind_chat("c_root", "Root", messages_data=root_msgs_data)
+                root_chat = bind_chat("c_root", "Root")
                 root_chat.rename = AsyncMock(
                     side_effect=lambda title: setattr(root_chat, "title", title)
                 )

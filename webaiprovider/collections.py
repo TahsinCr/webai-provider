@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from .provider import Provider
 
 T = TypeVar("T", covariant=True)
-U = TypeVar("U", covariant=True)
 _ItemT = TypeVar("_ItemT")
 Predicate = Callable[[T], bool]
 
