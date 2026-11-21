@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from importlib import import_module
 from unittest.mock import ANY, AsyncMock, patch
@@ -1100,6 +1101,68 @@ class TestSyncApi(unittest.TestCase):
         self.assertEqual(operation.wait_for("output.delta", timeout=1).delta, "first")
         self.assertEqual(steps, [])
         self.assertEqual(operation.wait().text, "first second")
+
+    def test_nested_blocking_operation_uses_its_own_stage_deadline(self):
+        from webaiprovider import Chat, MessageOperation
+        from webaiprovider.core.timing import _stream_deadline
+
+        def child_events(_operation):
+            self.assertIsNone(_stream_deadline.get())
+            yield OutputDelta("nested")
+
+        def events(_operation):
+            deadline = _stream_deadline.get()
+            self.assertIsNotNone(deadline)
+            child = MessageOperation(Chat(), Message("nested"), executor=child_events)
+            result = child.wait().text
+            self.assertEqual(_stream_deadline.get(), deadline)
+            yield OutputDelta(result)
+
+        operation = MessageOperation(Chat(), Message("parent"), executor=events)
+        self.assertEqual(operation.wait_for("output.delta", timeout=1).delta, "nested")
+        operation.cancel()
+
+    def test_wait_for_rejects_nan_before_claiming_the_send(self):
+        from webaiprovider import Chat, Message, MessageOperation
+
+        operation = MessageOperation(Chat(), Message("prompt"))
+        with self.assertRaisesRegex(ValueError, "NaN"):
+            operation.wait_for("output.delta", timeout=float("nan"))
+
+    def test_wait_for_can_resume_after_timing_out_on_the_conversation_lock(self):
+        from webaiprovider import Chat, MessageOperation
+
+        provider = Provider(Account.from_cookies("grok", {}))
+        provider._prepare_session = lambda: None
+        provider._close_session = lambda: None
+        provider.open()
+        self.addCleanup(provider.close)
+        chat = Chat(provider=provider)
+        entered, release = threading.Event(), threading.Event()
+        submitted = []
+
+        def events(operation, _lock):
+            submitted.append(operation.message.content)
+            if operation.message.content == "first":
+                entered.set()
+                release.wait(2)
+            yield OutputDelta(operation.message.content)
+
+        provider._execute_stream_events = events
+        first = MessageOperation(chat, Message("first"), executor=provider._execute_stream)
+        second = MessageOperation(chat, Message("second"), executor=provider._execute_stream)
+        self.addCleanup(second.cancel)
+        with ThreadPoolExecutor(1) as worker:
+            active = worker.submit(first.start)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertIsNone(second.wait_for("output.delta", timeout=0.02))
+                self.assertEqual(submitted, ["first"])
+            finally:
+                release.set()
+            self.assertEqual(active.result(timeout=2).text, "first")
+        self.assertEqual(second.wait().text, "second")
+        self.assertEqual(submitted, ["first", "second"])
 
     def test_cancel_at_eof_and_closed_iterator_share_a_cancelled_terminal(self):
         from webaiprovider import (

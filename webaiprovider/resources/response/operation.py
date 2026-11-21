@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
+from math import inf, isnan
 from typing import TYPE_CHECKING, Any
 
 from eventflow import StateMachine
@@ -695,6 +696,7 @@ class MessageOperation(_BaseMessageOperation):
                 raise ProviderError("No executor is configured for this operation")
             self._transition_to(OperationState.PREPARING)
             self._context = copy_context()
+            self._context.run(_stream_deadline.set, None)
             self._iterator = self._drive()
         self._driver_thread = caller
         provider = self.chat.provider
@@ -797,8 +799,10 @@ class MessageOperation(_BaseMessageOperation):
             raise
 
     def wait_for(self, stage_name: str, *, timeout: float | None = None) -> StreamEvent | None:
-        """Wait for a stage, checking the deadline between blocking reads when driving."""
-        deadline = None if timeout is None else time.monotonic() + timeout
+        """Wait for a stage until the deadline or message completion."""
+        if timeout is not None and isnan(timeout):
+            raise ValueError("Stage timeout must not be NaN")
+        deadline = None if timeout is None or timeout == inf else time.monotonic() + timeout
         index = 0
         while True:
             with self._condition:
@@ -811,7 +815,9 @@ class MessageOperation(_BaseMessageOperation):
                 if self._completed or (remaining is not None and remaining <= 0):
                     return None
                 if not self._claim_driver():
-                    self._condition.wait(timeout=remaining)
+                    self._condition.wait(
+                        timeout=None if remaining is None else min(remaining, threading.TIMEOUT_MAX)
+                    )
                     continue
             try:
                 while deadline is None or time.monotonic() < deadline:

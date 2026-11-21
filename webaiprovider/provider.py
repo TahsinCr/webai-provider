@@ -5,6 +5,7 @@ import contextvars
 import logging
 import threading
 from collections.abc import Callable, Generator, Iterator
+from time import monotonic
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
@@ -21,7 +22,7 @@ from .base import (
 from .collections import _publish_collection_change_sync
 from .core.hooks import OperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
-from .core.timing import _STREAM_PAUSED, _StreamPause
+from .core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
 from .errors import FeatureUnavailable, ProviderError
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
@@ -388,12 +389,23 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 )
         lock = self._send_lock(conversation_id)
         lock_id = id(lock)
-        events = self._execute_stream_events(operation, lock)
         with self._activity(send_lock_id=lock_id):
+            while (deadline := _stream_deadline.get()) is not None:
+                remaining = deadline - monotonic()
+                if remaining > 0 and lock.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+                    if monotonic() < deadline:
+                        break
+                    lock.release()
+                yield _STREAM_PAUSED
+            else:
+                lock.acquire()
+
+            events = None
             try:
-                with lock:
-                    yield from events
+                events = self._execute_stream_events(operation, lock)
+                yield from events
             finally:
+                lock.release()
                 _close_sync_iterator(events)
 
     def _execute_stream_events(
