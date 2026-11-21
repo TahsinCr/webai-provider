@@ -4,6 +4,7 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from io import StringIO
 from itertools import chain
+from typing import Any
 
 from ...errors import ProviderError
 from ...resources.chat.types import Conversation
@@ -23,7 +24,77 @@ from ...resources.message.types import (
     MessageData,
 )
 from ...resources.project.types import ProjectData
+from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
 from ...resources.response.source import sources_from
+
+_GROK_ASSET_ORIGIN = "https://assets.grok.com"
+_GROK_FILE_KEYS = (
+    "generatedImageUrls",
+    "fileAttachments",
+    "imageAttachments",
+    "fileAttachmentsMetadata",
+)
+
+register_file_target_rule(
+    FileTargetRule(
+        name="grok",
+        parse_target=lambda _target, parsed: (
+            parsed.scheme == "https" and parsed.hostname == "assets.grok.com"
+        ),
+        markdown_link_re=re.compile(
+            r"\[([^\]\r\n]{1,200})\]\((https://assets\.grok\.com/[^\s)]+)\)"
+        ),
+        markdown_hint="assets.grok.com",
+    )
+)
+
+
+def _grok_asset_url(raw_url: Any) -> str | None:
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return None
+    target = raw_url.strip()
+    if target.startswith(("http://", "https://")):
+        return target
+    if target.startswith("/"):
+        return f"{_GROK_ASSET_ORIGIN}{target}"
+    return f"{_GROK_ASSET_ORIGIN}/{target}"
+
+
+def _assistant_files(*roots: Any, text: str = "") -> tuple[dict[str, Any], ...]:
+    collected: list[dict[str, Any]] = []
+    for root in roots:
+        if not isinstance(root, dict):
+            continue
+        for raw_url in root.get("generatedImageUrls") or ():
+            url = _grok_asset_url(raw_url)
+            if not url:
+                continue
+            name = url.rsplit("/", 1)[-1].split("?", 1)[0] or "generated-image.jpg"
+            collected.append({"url": url, "name": name, "media_type": "image/jpeg"})
+        for key in ("fileAttachments", "imageAttachments", "fileAttachmentsMetadata"):
+            for item in root.get(key) or ():
+                if not isinstance(item, dict):
+                    continue
+                url = _grok_asset_url(
+                    item.get("url") or item.get("fileUri") or item.get("parsedFileUri")
+                )
+                if not url:
+                    continue
+                entry: dict[str, Any] = {
+                    "url": url,
+                    "name": item.get("name")
+                    or item.get("fileName")
+                    or url.rsplit("/", 1)[-1].split("?", 1)[0]
+                    or "File",
+                }
+                media_type = item.get("mimeType") or item.get("fileMimeType")
+                if media_type:
+                    entry["media_type"] = media_type
+                size = item.get("size", item.get("fileSize"))
+                if size is not None:
+                    entry["size_bytes"] = size
+                collected.append(entry)
+    return files_from({"files": collected}, *([text] if text else ()))
 
 
 def _text(value):
@@ -213,17 +284,21 @@ def _messages(rows, temporary=False):
         answer = clean_text(row.get("message"))
         results = row.get("webSearchResults")
         sources = sources_from({"sources": results}) if results else ()
+        files = _assistant_files(row, text=answer)
+        metadata: dict[str, Any] = {
+            "model": row.get("model"),
+            "sources": sources,
+            "native_response_id": response_id,
+        }
+        if files:
+            metadata["files"] = files
         messages.append(
             MessageData(
                 response_id,
                 "assistant",
                 (Content("text", answer),),
                 "final",
-                {
-                    "model": row.get("model"),
-                    "sources": sources,
-                    "native_response_id": response_id,
-                },
+                metadata,
                 () if temporary else ((MessageAction.RETRY.value,) if answer else ()),
             )
         )
@@ -346,6 +421,7 @@ async def response_events(
     sources = ()
     raw_search_results: list[dict] = []
     seen_search_keys: set[str] = set()
+    raw_file_roots: list[dict] = []
     response_model = model
     complete = False
     completion_notified = False
@@ -392,6 +468,8 @@ async def response_events(
             response_id = native.get("responseId") or response_id
             response_model = native.get("model") or response_model
             _append_web_search_results(native, raw_search_results, seen_search_keys)
+            if any(native.get(key) for key in _GROK_FILE_KEYS):
+                raw_file_roots.append(native)
             if isinstance(native.get("message"), str):
                 raw_native_text = native["message"]
             if native.get("thinkingTrace") is not None:
@@ -429,13 +507,15 @@ async def response_events(
         remember(conversation_id, response_id)
     if not bound and not existing_conversation_id:
         yield ConversationBound(conversation_id)
-    if response_id and streamed_text.tell():
+    files = _assistant_files(*raw_file_roots, text=streamed_text.getvalue())
+    if response_id and (streamed_text.tell() or files or sources):
         yield MessageMetadata(
             message_id=response_id,
             user_message_id=user_response_id,
             model=response_model,
             effort=None,
             sources=sources,
+            files=files,
         )
     if not completion_notified:
         yield ResponseComplete()

@@ -45,7 +45,13 @@ def _build_sources(raw_sources: Iterable[Any], source_type: type[Source]) -> tup
             sources.append(raw)
         elif isinstance(raw, dict):
             url = str(raw.get("url") or raw.get("uri") or "")
-            sid = str(raw.get("id") or raw.get("file_id") or url or f"source-{index}")
+            sid = str(
+                raw.get("id")
+                or raw.get("source_id")
+                or raw.get("file_id")
+                or url
+                or f"source-{index}"
+            )
             sources.append(
                 source_type(
                     id=sid,
@@ -72,8 +78,10 @@ def _build_artifacts(
                 artifacts.append(entry)
         elif isinstance(entry, dict):
             url = entry.get("remote_url") or entry.get("download_url") or entry.get("url")
-            name = str(entry.get("name") or entry.get("filename") or "file")
-            aid = str(entry.get("id") or url or f"artifact-{index}")
+            name = str(
+                entry.get("name") or entry.get("filename") or entry.get("file_name") or "file"
+            )
+            aid = str(entry.get("id") or entry.get("file_id") or url or f"artifact-{index}")
             key = f"{aid}:{url or name}"
             if key in seen:
                 continue
@@ -91,6 +99,7 @@ def _build_artifacts(
                     ),
                     size=size if isinstance(size, int) and not isinstance(size, bool) else None,
                     download_url=str(url) if url else None,
+                    content=entry.get("content"),
                     metadata=dict(entry),
                 )
             )

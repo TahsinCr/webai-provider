@@ -1545,3 +1545,107 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provider._load_catalog.await_count, 3)
         finally:
             await provider.close()
+
+    async def test_assistant_artifacts_extract_generated_images_and_asset_links(self):
+        provider = AsyncGrokProvider(provider_account("grok", Path("unused"), "test"))
+        transport = GrokClientFixture()
+        stream_chunks = [
+            {
+                "result": {
+                    "conversation": {"conversationId": "c1"},
+                    "response": {
+                        "token": "See [chart.png](https://assets.grok.com/users/u1/chart.png)",
+                    },
+                }
+            },
+            {
+                "result": {
+                    "response": {
+                        "modelResponse": {
+                            "responseId": "a1",
+                            "model": "grok-3",
+                            "generatedImageUrls": ["users/u1/gen.jpg"],
+                            "fileAttachmentsMetadata": [
+                                {
+                                    "fileUri": "/users/u1/notes.txt",
+                                    "fileName": "notes.txt",
+                                    "fileMimeType": "text/plain",
+                                    "fileSize": 12,
+                                }
+                            ],
+                            "partial": False,
+                        }
+                    }
+                }
+            },
+        ]
+
+        async def fake_events(_path, _body):
+            for chunk in stream_chunks:
+                yield chunk
+
+        provider.client.authenticate = AsyncMock(return_value={})
+        provider.client.request = transport.request
+        provider.client.events = fake_events
+        try:
+            await provider.open()
+            chat = await provider.chats.create(title="Artifacts")
+            response = await chat.responses.create("Generate").start()
+        finally:
+            await provider.close()
+
+        self.assertEqual(
+            [(a.id, a.name, a.mime_type, a.download_url) for a in response.artifacts],
+            [
+                (
+                    "https://assets.grok.com/users/u1/gen.jpg",
+                    "gen.jpg",
+                    "image/jpeg",
+                    "https://assets.grok.com/users/u1/gen.jpg",
+                ),
+                (
+                    "https://assets.grok.com/users/u1/notes.txt",
+                    "notes.txt",
+                    "text/plain",
+                    "https://assets.grok.com/users/u1/notes.txt",
+                ),
+                (
+                    "https://assets.grok.com/users/u1/chart.png",
+                    "chart.png",
+                    "application/octet-stream",
+                    "https://assets.grok.com/users/u1/chart.png",
+                ),
+            ],
+        )
+
+        hist = conversation(
+            {"id": "c1"},
+            {
+                "responses": [
+                    {"responseId": "u1", "sender": "human", "message": "Generate"},
+                    {
+                        "responseId": "a1",
+                        "sender": "assistant",
+                        "parentResponseId": "u1",
+                        "message": "See [chart.png](https://assets.grok.com/users/u1/chart.png)",
+                        "generatedImageUrls": ["users/u1/gen.jpg"],
+                        "fileAttachmentsMetadata": [
+                            {
+                                "fileUri": "/users/u1/notes.txt",
+                                "fileName": "notes.txt",
+                                "fileMimeType": "text/plain",
+                                "fileSize": 12,
+                            }
+                        ],
+                    },
+                ]
+            },
+        )
+        self.assertEqual(
+            [item["url"] for item in hist.messages[1].metadata["files"]],
+            [
+                "https://assets.grok.com/users/u1/gen.jpg",
+                "https://assets.grok.com/users/u1/notes.txt",
+                "https://assets.grok.com/users/u1/chart.png",
+            ],
+        )

@@ -55,6 +55,20 @@ def _has_edited_turn(prompt: str, history: list[Response]) -> bool:
     )
 
 
+def _artifact_prompt(provider: str, marker: str) -> str:
+    if provider == "claude":
+        return (
+            f"{marker} Create a downloadable file named hello.txt containing the word hello. "
+            "Reply in one short sentence."
+        )
+    if provider == "chatgpt":
+        return (
+            f"{marker} Use Python to create a downloadable file at /mnt/data/hello.txt "
+            "containing the word hello and link it. Reply in one short sentence."
+        )
+    return f"{marker} Generate a simple minimal icon image of a blue circle."
+
+
 class AsyncMessageApiTests(LiveAsyncTestCase):
     async def test_incognito_temporary_chat(self) -> None:
         capabilities = self.context.session.capabilities
@@ -151,18 +165,17 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
             self.assertTrue(getattr(followup_response, "text", ""))
 
             web_op = chat.responses.create(
-                f"{marker} Search the web for the latest Python release version and cite the official link.",
+                f"{marker} Search the web for the official Python 3.13 release date and include at least one source link. Reply in one short sentence.",
                 model=Models.LOW,
             )
             web_response = await self.call_or_skip_rate_limit(
                 "responses.create.web_followup", web_op.start, entry=entry, chat=chat
             )
             self.assertTrue(getattr(web_response, "text", ""))
-            if not web_response.sources:
-                self.context.skip("responses.sources: no sources returned")
+            self.assertTrue(web_response.sources, "Web search prompt returned no sources")
             for source in web_response.sources:
-                if source.url:
-                    self.assertTrue(source.url.startswith(("http://", "https://")))
+                self.assertTrue(source.id)
+                self.assertTrue(source.url.startswith(("http://", "https://")))
 
             responses = await self.call_api(
                 "responses.list_temporary_chat", lambda: chat.responses.list(limit=50)
@@ -248,6 +261,25 @@ class AsyncMessageApiTests(LiveAsyncTestCase):
                         chat=chat,
                     )
                     self.assertTrue(getattr(edited_first, "text", ""))
+
+            artifact_op = chat.responses.create(
+                _artifact_prompt(self.context.account.provider, marker),
+                model=Models.LOW,
+            )
+            artifact_response = await self.call_or_skip_rate_limit(
+                "responses.create.artifact_followup",
+                artifact_op.start,
+                entry=entry,
+                chat=chat,
+            )
+            self.assertTrue(
+                artifact_response.artifacts,
+                "Artifact generation prompt returned no artifacts",
+            )
+            for artifact in artifact_response.artifacts:
+                self.assertTrue(artifact.id)
+                self.assertTrue(artifact.name)
+                self.assertTrue(artifact.download_url)
 
             if Capability.CHAT_BRANCH in capabilities and Capability.RENAME in capabilities:
                 responses = await self.call_api(

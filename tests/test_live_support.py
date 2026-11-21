@@ -26,6 +26,7 @@ from tests.live.support.config import (
 from tests.live.support.context import LiveContext
 from tests.live.support.errors import CleanupError, SafetyError
 from tests.live.support.journal import write_private_json
+from webaiprovider import Artifact, Source
 from webaiprovider.collections import Page
 from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.resources.chat.types import Conversation
@@ -1547,8 +1548,16 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                                 id=f"m-{chat_id}",
                                 text=text,
                                 content=text,
-                                sources=(),
-                                artifacts=(),
+                                sources=(Source("s1", "https://example.com", "Example"),),
+                                artifacts=(
+                                    Artifact(
+                                        "a1",
+                                        "file",
+                                        "hello.txt",
+                                        "text/plain",
+                                        download_url="https://example.com/hello.txt",
+                                    ),
+                                ),
                                 message=MessageData(
                                     f"m-{chat_id}",
                                     "assistant",
@@ -1854,7 +1863,16 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         "assistant",
                         (Content("text", text),),
                     ),
-                    sources=(),
+                    sources=(Source("s1", "https://example.com", "Example"),),
+                    artifacts=(
+                        Artifact(
+                            "a1",
+                            "file",
+                            "hello.txt",
+                            "text/plain",
+                            download_url="https://example.com/hello.txt",
+                        ),
+                    ),
                 )
 
                 class _FakeOp:

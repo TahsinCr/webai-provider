@@ -37,6 +37,7 @@ from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
+from .resources.response.collections import _build_artifacts, _build_sources
 from .resources.response.operation import (
     ArtifactDiscovered,
     OutputBegin,
@@ -530,38 +531,10 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                         operation.message.remote_id = event.user_message_id
                     if event.message_id:
                         operation._assistant_message_id = event.message_id
-                    for record in event.sources:
-                        yield SourceDiscovered(
-                            self._source_type(
-                                id=str(record.get("id") or record.get("source_id") or ""),
-                                url=str(record.get("url") or ""),
-                                title=str(record.get("title") or ""),
-                                snippet=str(record.get("snippet") or ""),
-                                kind=str(record.get("kind") or "web"),
-                                metadata=record,
-                            )
-                        )
-                    for record in event.files:
-                        size = record.get("size")
-                        yield ArtifactDiscovered(
-                            self._artifact_type(
-                                id=str(record.get("id") or record.get("file_id") or ""),
-                                kind=str(record.get("kind") or "file"),
-                                name=str(
-                                    record.get("name")
-                                    or record.get("filename")
-                                    or record.get("file_name")
-                                    or ""
-                                ),
-                                mime_type=str(
-                                    record.get("mime_type") or "application/octet-stream"
-                                ),
-                                size=size if isinstance(size, int) else None,
-                                download_url=record.get("download_url") or record.get("url"),
-                                content=record.get("content"),
-                                metadata=record,
-                            )
-                        )
+                    for source in _build_sources(event.sources, self._source_type):
+                        yield SourceDiscovered(source)
+                    for artifact in _build_artifacts(None, event.files, self._artifact_type):
+                        yield ArtifactDiscovered(artifact)
 
             if thinking_started:
                 yield ThinkingEnd(text=thinking_text)
