@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from urllib.parse import unquote, urlsplit
 
 from ..core.json import json_loads
+from ..core.timing import _STREAM_PAUSED
 from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from .retry import parse_retry_after
 
@@ -136,13 +137,26 @@ class _AsyncStreamResponse:
 
 
 class _StreamResponse:
-    def __init__(self, response, limit=None):
-        self.status_code: int = response.status_code
-        self.headers: Mapping[str, str] = response.headers
+    def __init__(self, response, limit=None, *, check_head=None):
+        self._check_head = check_head
+        if check_head is None:
+            self._set_head(response)
         self._response = response
         self._limit = limit
         self._total_bytes = 0
         self._reading = False
+
+    def _set_head(self, response) -> None:
+        self.status_code: int = response.status_code
+        self.headers: Mapping[str, str] = response.headers
+
+    def _wait_for_head(self):
+        check = self._check_head
+        if check is not None:
+            yield from self._response.wait_for_head()
+            self._set_head(self._response)
+            check(self)
+            self._check_head = None
 
     def iter_bytes(self) -> Iterator[bytes]:
         if self._reading:
@@ -151,6 +165,9 @@ class _StreamResponse:
         try:
             iterator_fn = getattr(self._response, "iter_content", None) or self._response.iter_bytes
             for chunk in iterator_fn():
+                if chunk is _STREAM_PAUSED:
+                    yield chunk
+                    continue
                 self._total_bytes += len(chunk)
                 if self._limit is not None and self._total_bytes > self._limit:
                     raise ProviderError("Transport stream exceeds the size limit")

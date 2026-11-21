@@ -16,12 +16,13 @@ from curl_cffi.requests import Session as CurlSession
 from curl_cffi.requests.exceptions import RequestException as CurlRequestException
 
 from ...core.file_stat import same_file_version
-from ...core.timing import SendTiming, current_send_timing
+from ...core.timing import _STREAM_PAUSED, SendTiming, current_send_timing
 from ...errors import RemoteNotFound
 from ...resources.message.protocol import ProviderRequest
 from ...resources.message.types import MessageAction
 from ...transport import HTTPTransport, Transport, TransportConfig
 from ...transport.frames import SSEFrameDecoder
+from ...transport.http import _message_stream, _wait_for_stream_head
 from .auth import BrowserSession
 from .base import BaseChatGPTClient, BaseChatGPTProjectEditor, _ChatGPTSSEProcessor
 from .catalogs import parse_model_catalog
@@ -118,14 +119,19 @@ class ChatGPTClient(BaseChatGPTClient):
                     transport.close()
 
     @contextmanager
-    def _tracked_stream(self, method: str, path: str, **options):
+    def _tracked_stream(self, method: str, path: str, *, _message=False, **options):
         if (
             options.get("inherit_headers", True)
             and "headers" not in options
             and getattr(self, "headers", None) is not None
         ):
             options["headers"] = self._transport_headers(method, path)
-        with self.transport.stream(method, path, **options) as stream:
+        opening = (
+            _message_stream(self.transport, method, path, **options)
+            if _message
+            else self.transport.stream(method, path, **options)
+        )
+        with opening as stream:
             stream_key = id(stream)
             self._active_streams[stream_key] = stream
             try:
@@ -460,17 +466,23 @@ class ChatGPTClient(BaseChatGPTClient):
             with self._tracked_stream(
                 "POST",
                 "/backend-api/f/conversation",
+                _message=True,
                 check_status=False,
                 headers=headers,
                 json=body,
                 timeout=(30.0, 300.0),
             ) as response:
+                for pause in _wait_for_stream_head(response):
+                    yield "paused", pause
                 processor.response_opened = time.perf_counter_ns() if timing is not None else None
                 if processor.response_opened is not None and sse_started is not None:
                     timing.record("sse_connect_ms", processor.response_opened - sse_started)
                 self._check_stream_response(response)
                 decoder = SSEFrameDecoder(max_event_bytes=16 * 1024 * 1024)
                 for frame in decoder.decode(response.iter_bytes()):
+                    if frame is _STREAM_PAUSED:
+                        yield "paused", frame
+                        continue
                     done, emitted = processor.feed_frame(frame.data, accepts_bound=True)
                     for item in emitted:
                         yield ("raw", item)

@@ -14,7 +14,7 @@ from typing import Any
 
 from ...core.file_stat import same_file_version
 from ...core.json import json_loads
-from ...core.timing import current_send_timing
+from ...core.timing import _STREAM_PAUSED, _StreamPause, current_send_timing
 from ...resources.message.attachment import GEMINI_ATTACHMENTS
 from ...resources.message.protocol import (
     ConversationBound,
@@ -29,6 +29,7 @@ from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
 from ...transport.frames import JSPBFrameDecoder
+from ...transport.http import _message_stream, _wait_for_stream_head
 from .base import BASE, HEADERS
 from .errors import (
     GeminiCompatibilityError,
@@ -422,7 +423,7 @@ class _GeminiResponseProcessor:
 
 def generate_sync(
     client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
-) -> Iterator[dict]:
+) -> Iterator[dict | _StreamPause]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
 
@@ -434,7 +435,8 @@ def generate_sync(
     sse_connect_started = time.perf_counter_ns() if timing is not None else None
     processor = _GeminiFrameProcessor(request, metadata, timing)
     try:
-        with client.transport.stream(
+        with _message_stream(
+            client.transport,
             "POST",
             "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
             params=client.params(),
@@ -443,10 +445,14 @@ def generate_sync(
             allow_redirects=False,
             timeout=request_timeout,
         ) as response:
+            yield from _wait_for_stream_head(response)
             processor.response_opened = time.perf_counter_ns() if timing is not None else None
             if sse_connect_started is not None and processor.response_opened is not None:
                 timing.record("sse_connect_ms", processor.response_opened - sse_connect_started)
             for chunk in response.iter_bytes():
+                if chunk is _STREAM_PAUSED:
+                    yield chunk
+                    continue
                 for packet in frames.feed(chunk):
                     for frame in packet if isinstance(packet, list) else (packet,):
                         yield from processor.feed_frame(frame)
@@ -477,5 +483,8 @@ def iter_response_events(
         files=action_files,
         request_timeout=request_timeout,
     ):
-        yield from reducer.feed_chunk(chunk)
+        if chunk is _STREAM_PAUSED:
+            yield chunk
+        else:
+            yield from reducer.feed_chunk(chunk)
     yield from reducer.finish()

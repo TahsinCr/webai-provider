@@ -783,6 +783,83 @@ class BlockingTransportTests(unittest.TestCase):
                 server.shutdown()
                 worker.join(timeout=2)
 
+    def test_native_stage_deadlines_resume_same_post_before_and_during_a_frame(self):
+        from time import monotonic
+
+        from curl_cffi.requests import Session
+
+        from webaiprovider import Chat, Message, MessageOperation, OutputDelta
+        from webaiprovider.core.timing import _STREAM_PAUSED
+        from webaiprovider.transport.frames import SSEFrameDecoder
+        from webaiprovider.transport.http import _message_stream, _wait_for_stream_head
+
+        request_in, send_first, first_sent, send_rest = (threading.Event() for _ in range(4))
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                requests.append(self.path)
+                request_in.set()
+                if not send_first.wait(2):
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b"data: Hel")
+                self.wfile.flush()
+                first_sent.set()
+                if send_rest.wait(2):
+                    self.wfile.write(b"lo\n\n")
+
+            def log_message(self, *_args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                with (
+                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch.object(
+                        Session, "stream", side_effect=AssertionError("Stream worker used")
+                    ),
+                    Session(trust_env=False) as session,
+                    HTTPTransport(
+                        f"http://127.0.0.1:{server.server_port}", client_getter=lambda: session
+                    ) as transport,
+                ):
+
+                    def events(_operation):
+                        with _message_stream(transport, "POST", "/stream") as response:
+                            yield from _wait_for_stream_head(response)
+                            for frame in SSEFrameDecoder().decode(response.iter_bytes()):
+                                yield frame if frame is _STREAM_PAUSED else OutputDelta(frame.data)
+
+                    operation = MessageOperation(Chat(), Message("fixture"), executor=events)
+                    try:
+                        started = monotonic()
+                        self.assertIsNone(operation.wait_for("output.delta", timeout=0.10))
+                        self.assertLess(monotonic() - started, 1)
+                        self.assertTrue(request_in.wait(1))
+
+                        send_first.set()
+                        self.assertTrue(first_sent.wait(1))
+                        started = monotonic()
+                        self.assertIsNone(operation.wait_for("output.delta", timeout=0.10))
+                        self.assertLess(monotonic() - started, 1)
+                        self.assertEqual(operation._events, [])
+
+                        send_rest.set()
+                        self.assertEqual(operation.wait().text, "Hello")
+                        self.assertEqual(requests, ["/stream"])
+                    finally:
+                        operation.cancel()
+            finally:
+                send_first.set()
+                send_rest.set()
+                server.shutdown()
+                worker.join(timeout=2)
+
     def test_default_curl_stream_yields_on_caller_before_transfer_finishes(self):
         from curl_cffi.requests import Session
 

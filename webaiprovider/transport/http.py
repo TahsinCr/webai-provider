@@ -17,6 +17,7 @@ from .base import (
 )
 from .network import (
     _IDEMPOTENT_METHODS,
+    _is_curl_sync_session,
     _is_curl_timeout,
     _OriginDNS,
     _prepare_curl_session_sync,
@@ -192,7 +193,9 @@ class HTTPTransport(Transport):
         raise ProviderError("Provider request could not be completed")
 
     @contextmanager
-    def stream(self, method, path, *, check_status=True, **options):
+    def stream(self, method, path, *, check_status=True, _message=False, **options):
+        if _message:
+            options["_message"] = True
         with (
             self._activity(),
             self._stream(method, path, check_status=check_status, **options) as stream,
@@ -200,20 +203,11 @@ class HTTPTransport(Transport):
             yield stream
 
     @contextmanager
-    def _stream(self, method, path, *, check_status, **options):
+    def _stream(self, method, path, *, check_status, _message=False, **options):
         url = self.url(path)
         options = self._options(options, method, path)
         can_retry = method.upper() in _IDEMPOTENT_METHODS
-        if self.factory is None and self._client_getter is None:
-            from .curl_stream import open_blocking_curl_stream
-
-            if options.pop("content_callback", None) is not None:
-                raise ValueError("Consume data with the returned stream iterator")
-            open_stream = open_blocking_curl_stream
-        else:
-
-            def open_stream(client, method, url, options):
-                return client.stream(method, url, allow_redirects=False, **options)
+        native = self.factory is None and self._client_getter is None
 
         with ExitStack() as stack:
             response = None
@@ -223,8 +217,20 @@ class HTTPTransport(Transport):
                     _prepare_curl_session_sync(
                         client, self._dns.host, self._dns.port, options, dns_state=self._dns
                     )
-                    response = stack.enter_context(open_stream(client, method, url, options))
-                    self._check_response(response, check_status)
+                    defer_head = _message and _is_curl_sync_session(client)
+                    if native or defer_head:
+                        from .curl_stream import open_blocking_curl_stream
+
+                        if options.pop("content_callback", None) is not None:
+                            raise ValueError("Consume data with the returned stream iterator")
+                        stream = open_blocking_curl_stream(
+                            client, method, url, options, defer_head=defer_head
+                        )
+                    else:
+                        stream = client.stream(method, url, allow_redirects=False, **options)
+                    response = stack.enter_context(stream)
+                    if not defer_head:
+                        self._check_response(response, check_status)
                     break
                 except BaseException as exc:
                     stack.close()
@@ -238,7 +244,13 @@ class HTTPTransport(Transport):
                         self._reset_owned_client(client)
                         continue
                     raise
-            yield _StreamResponse(response, self.config.max_stream_bytes)
+            yield _StreamResponse(
+                response,
+                self.config.max_stream_bytes,
+                check_head=(lambda head: self._check_response(head, check_status))
+                if defer_head
+                else None,
+            )
 
     def close(self):
         with self._idle:
@@ -263,3 +275,15 @@ class HTTPTransport(Transport):
 
     def __exit__(self, *args):
         self.close()
+
+
+def _message_stream(transport, method, path, **options):
+    if isinstance(transport, HTTPTransport):
+        return transport.stream(method, path, _message=True, **options)
+    return transport.stream(method, path, **options)
+
+
+def _wait_for_stream_head(response):
+    wait = getattr(response, "_wait_for_head", None)
+    if wait is not None:
+        yield from wait()

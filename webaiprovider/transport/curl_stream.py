@@ -2,12 +2,15 @@
 
 from contextlib import closing, contextmanager
 from math import ceil
+from time import monotonic
 
 from curl_cffi import CurlError, CurlOpt
 from curl_cffi._wrapper import ffi, lib
 from curl_cffi.curl import CURL_WRITEFUNC_PAUSE
 from curl_cffi.requests.exceptions import code2error
 from curl_cffi.requests.utils import set_curl_options
+
+from ..core.timing import _STREAM_PAUSED, _stream_deadline
 
 
 def _check_multi(code: int) -> None:
@@ -16,7 +19,7 @@ def _check_multi(code: int) -> None:
 
 
 class _CurlStream:
-    def __init__(self, curl, multi):
+    def __init__(self, curl, multi, *, pausable=False):
         self._curl = curl
         self._multi = multi
         self._running = ffi.new("int *")
@@ -26,6 +29,8 @@ class _CurlStream:
         self._done = False
         self._error = 0
         self.response = None
+        self._pausable = pausable
+        self._parse_head = None
 
     @property
     def status_code(self):
@@ -42,14 +47,16 @@ class _CurlStream:
         self._chunk = chunk
         return len(chunk)
 
-    def advance(self) -> None:
+    def advance(self, deadline: float | None = None) -> bool:
         while self._chunk is None and not self._done and not self._closed:
+            if deadline is not None and monotonic() >= deadline:
+                return False
             if self._paused:
                 self._paused = False
                 self._curl.pause(0)
                 self._raise_callback_error()
                 if self._chunk is not None:
-                    return
+                    return True
             _check_multi(lib.curl_multi_perform(self._multi, self._running))
             self._raise_callback_error()
             if not self._running[0]:
@@ -58,7 +65,21 @@ class _CurlStream:
                 if message != ffi.NULL:
                     self._error = message.data.result
             elif self._chunk is None:
-                _check_multi(lib.curl_multi_poll(self._multi, ffi.NULL, 0, 1000, ffi.NULL))
+                poll_ms = 1000
+                if deadline is not None:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        return False
+                    poll_ms = ceil(min(remaining, 1) * 1000)
+                _check_multi(lib.curl_multi_poll(self._multi, ffi.NULL, 0, poll_ms, ffi.NULL))
+        return True
+
+    def wait_for_head(self):
+        while not self.advance(_stream_deadline.get()):
+            yield _STREAM_PAUSED
+        parse_head, self._parse_head = self._parse_head, None
+        assert parse_head is not None
+        parse_head()
 
     def _raise_callback_error(self) -> None:
         error = self._curl._get_callback_exception()
@@ -72,7 +93,9 @@ class _CurlStream:
 
     def iter_bytes(self):
         while not self._closed:
-            self.advance()
+            if not self.advance(_stream_deadline.get() if self._pausable else None):
+                yield _STREAM_PAUSED
+                continue
             if self._chunk is None:
                 self.check_error()
                 return
@@ -82,10 +105,11 @@ class _CurlStream:
     def close(self) -> None:
         self._closed = True
         self._chunk = None
+        self._parse_head = None
 
 
 @contextmanager
-def open_blocking_curl_stream(session, method, url, options):
+def open_blocking_curl_stream(session, method, url, options, *, defer_head=False):
     """Use the same curl_cffi request options and response parser as blocking send."""
     session._check_session_closed()
     options = dict(options)
@@ -97,7 +121,7 @@ def open_blocking_curl_stream(session, method, url, options):
         raise CurlError("Could not initialize a curl stream")
     try:
         with closing(session.curl.duphandle()) as curl:
-            stream = _CurlStream(curl, multi)
+            stream = _CurlStream(curl, multi, pausable=defer_head)
             request, buffer, headers, *_ = set_curl_options(
                 curl,
                 method=method,
@@ -127,13 +151,20 @@ def open_blocking_curl_stream(session, method, url, options):
                 curl.setopt(CurlOpt.LOW_SPEED_TIME, ceil(idle))
             curl._ensure_cacert()
             _check_multi(lib.curl_multi_add_handle(multi, curl._curl))
-            try:
-                stream.advance()
+
+            def parse_head():
                 head = session._parse_response(curl, buffer, headers, encoding, discard_cookies)
                 head.request = request
                 stream.response = head
                 if not head.status_code:
                     stream.check_error()
+
+            try:
+                if defer_head:
+                    stream._parse_head = parse_head
+                else:
+                    stream.advance()
+                    parse_head()
                 yield stream
             finally:
                 stream.close()

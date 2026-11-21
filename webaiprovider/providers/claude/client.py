@@ -10,13 +10,14 @@ from collections.abc import Iterator
 
 from ...accounts import read_session
 from ...core.file_stat import same_file_version
-from ...core.timing import current_send_timing
+from ...core.timing import _STREAM_PAUSED, current_send_timing
 from ...errors import ProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import MessageAction
 from ...resources.project.types import source_file
 from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder
+from ...transport.http import _message_stream, _wait_for_stream_head
 from .base import (
     ORIGIN,
     BaseClaudeClient,
@@ -196,7 +197,8 @@ class ClaudeClient(BaseClaudeClient):
         processor = _ClaudeSSEProcessor(timing=timing, response_opened=None, action=v.get("action"))
         suffix = "/retry_completion" if v.get("action") == MessageAction.RETRY else "/completion"
         try:
-            with self.http.stream(
+            with _message_stream(
+                self.http,
                 "POST",
                 path + suffix,
                 json=body,
@@ -204,12 +206,16 @@ class ClaudeClient(BaseClaudeClient):
                 allow_redirects=False,
                 timeout=600,
             ) as response:
+                yield from _wait_for_stream_head(response)
                 processor.response_opened = time.perf_counter_ns() if timing is not None else None
                 if sse_started is not None and processor.response_opened is not None:
                     timing.record("sse_connect_ms", processor.response_opened - sse_started)
                 decoder = SSEFrameDecoder(max_event_bytes=1_048_576, utf8_errors="strict")
                 for frame in decoder.decode(response.iter_bytes()):
-                    yield from processor.feed_raw(frame.data)
+                    if frame is _STREAM_PAUSED:
+                        yield frame
+                    else:
+                        yield from processor.feed_raw(frame.data)
         except BaseException:
             if not processor.completed:
                 self._continuations.remove(cid)
@@ -312,7 +318,9 @@ def iter_stream_response(
     for event in client.events(
         "send", **BaseClaudeClient._send_event_kwargs(request, tuple(uploaded))
     ):
-        if event["type"] == "done":
+        if event is _STREAM_PAUSED:
+            yield event
+        elif event["type"] == "done":
             completed = True
         else:
             translated = _translate_claude_event(event, request)

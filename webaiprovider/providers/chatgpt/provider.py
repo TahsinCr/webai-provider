@@ -366,7 +366,9 @@ class ChatGPTProvider(
                     request.prompt,
                     **self._build_send_kwargs(request, attachments),
                 ):
-                    if kind == "raw":
+                    if kind == "paused":
+                        yield value
+                    elif kind == "raw":
                         bound_emitted, translated = self._translate_raw_event(value, bound_emitted)
                         if translated is not None:
                             yield translated

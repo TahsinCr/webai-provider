@@ -7,6 +7,7 @@ from itertools import chain
 from mimetypes import guess_type
 from typing import Any
 
+from ...core.timing import _STREAM_PAUSED
 from ...errors import ProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
@@ -550,7 +551,10 @@ def iter_response_events(
         remember=remember,
     )
     for chunk in chunks:
-        yield from processor.feed(chunk)
+        if chunk is _STREAM_PAUSED:
+            yield chunk
+        else:
+            yield from processor.feed(chunk)
     yield from processor.finish()
 
 

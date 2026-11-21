@@ -7,8 +7,20 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from enum import Enum
+from typing import Final
 
 _current: ContextVar[SendTiming | None] = ContextVar("webaiprovider_send_timing", default=None)
+
+
+class _StreamPause(Enum):
+    DEADLINE = "deadline"
+
+
+_STREAM_PAUSED: Final = _StreamPause.DEADLINE
+_stream_deadline: ContextVar[float | None] = ContextVar(
+    "webaiprovider_stream_deadline", default=None
+)
 
 
 class SendTiming:

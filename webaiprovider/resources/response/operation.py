@@ -17,6 +17,7 @@ from ...collections import _publish_collection_change, _publish_collection_chang
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
 from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
+from ...core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
 from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
 from ..message.message import AsyncMessage, Message
@@ -517,11 +518,11 @@ class MessageOperation(_BaseMessageOperation):
         chat: Chat,
         message: Message,
         *,
-        executor: Callable[[MessageOperation], Iterator[StreamEvent]] | None = None,
+        executor: Callable[[MessageOperation], Iterator[StreamEvent | _StreamPause]] | None = None,
     ) -> None:
         self._init_operation_state(chat, message, executor)
         self._error: BaseException | None = None
-        self._iterator: Iterator[StreamEvent] | None = None
+        self._iterator: Iterator[StreamEvent | _StreamPause] | None = None
         self._context: Context | None = None
         self._driver_thread: int | None = None
         self._started = False
@@ -566,9 +567,9 @@ class MessageOperation(_BaseMessageOperation):
             self._condition.notify_all()
         self.hooks.emit(status)
 
-    def _drive(self) -> Iterator[StreamEvent]:
+    def _drive(self) -> Iterator[StreamEvent | _StreamPause]:
         accumulator = _StreamAccumulator(time.perf_counter())
-        stream: Iterator[StreamEvent] | None = None
+        stream: Iterator[StreamEvent | _StreamPause] | None = None
         session, hooks_chain = self._provider_and_hooks()
         emitter = session if session is not None and hasattr(session, "_emit") else None
         context = self._build_send_context(session)
@@ -590,6 +591,9 @@ class MessageOperation(_BaseMessageOperation):
             for event in stream:
                 if self._cancelled:
                     raise OperationCancelledError("Operation cancelled")
+                if event is _STREAM_PAUSED:
+                    yield event
+                    continue
                 self._transition_to(OperationState.STREAMING)
                 accumulator.record(event)
                 self._publish(event)
@@ -730,10 +734,20 @@ class MessageOperation(_BaseMessageOperation):
         assert self._context is not None
         self._context.run(_close_sync_iterator, self._iterator)
 
-    def _next_event(self) -> StreamEvent:
+    def _next_event(self, deadline=None) -> StreamEvent | _StreamPause:
         assert self._context is not None and self._iterator is not None
         self._started = True
-        return self._context.run(next, self._iterator)
+        if deadline is None:
+            return self._context.run(next, self._iterator)
+        return self._context.run(self._next_before_deadline, deadline)
+
+    def _next_before_deadline(self, deadline: float) -> StreamEvent | _StreamPause:
+        assert self._iterator is not None
+        token = _stream_deadline.set(deadline)
+        try:
+            return next(self._iterator)
+        finally:
+            _stream_deadline.reset(token)
 
     def _result(self) -> Response:
         if self._error is not None:
@@ -774,8 +788,9 @@ class MessageOperation(_BaseMessageOperation):
                         continue
                     finally:
                         self._release_driver()
-                    index += 1
-                    yield event
+                    if event is not _STREAM_PAUSED:
+                        index += 1
+                        yield event
         except GeneratorExit:
             if drove:
                 self.cancel()
@@ -801,11 +816,13 @@ class MessageOperation(_BaseMessageOperation):
             try:
                 while deadline is None or time.monotonic() < deadline:
                     try:
-                        event = self._next_event()
+                        event = self._next_event(deadline)
                     except StopIteration:
                         if deadline is not None and time.monotonic() >= deadline:
                             return None
                         break
+                    if event is _STREAM_PAUSED:
+                        return None
                     index += 1
                     if deadline is not None and time.monotonic() >= deadline:
                         return None

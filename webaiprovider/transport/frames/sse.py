@@ -2,8 +2,9 @@
 
 import re
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
-from typing import NamedTuple
+from typing import NamedTuple, overload
 
+from ...core.timing import _STREAM_PAUSED, _StreamPause
 from ...errors import FrameDecodeError
 
 _LINE_END = re.compile(rb"\r\n|\r|\n")
@@ -119,9 +120,20 @@ class SSEFrameDecoder:
                 yield from self.feed_line(raw)
             yield from self.feed_line(b"")
 
-    def decode(self, chunks: Iterable[bytes]) -> Iterator[SSEFrame]:
+    @overload
+    def decode(self, chunks: Iterable[bytes]) -> Iterator[SSEFrame]: ...
+
+    @overload
+    def decode(
+        self, chunks: Iterable[bytes | _StreamPause]
+    ) -> Iterator[SSEFrame | _StreamPause]: ...
+
+    def decode(self, chunks: Iterable[bytes | _StreamPause]) -> Iterator[SSEFrame | _StreamPause]:
         for chunk in chunks:
-            yield from self.feed(chunk)
+            if chunk is _STREAM_PAUSED:
+                yield chunk
+            else:
+                yield from self.feed(chunk)
         yield from self.feed(b"", final=True)
 
     async def decode_async(self, chunks: AsyncIterable[bytes]) -> AsyncIterator[SSEFrame]:
@@ -169,16 +181,19 @@ class _BoundedLineDecoder:
 
 
 def iter_bounded_lines(
-    chunks: Iterable[bytes],
+    chunks: Iterable[bytes | _StreamPause],
     *,
     max_line_bytes: int = 1_048_576,
     max_stream_bytes: int = 64 * 1024 * 1024,
     error_label: str = "Stream",
-) -> Iterator[str]:
+) -> Iterator[str | _StreamPause]:
     """Decode UTF-8 lines from byte chunks within strict line and total byte caps."""
     decoder = _BoundedLineDecoder(max_line_bytes, max_stream_bytes, error_label)
     for chunk in chunks:
-        yield from decoder.feed(chunk)
+        if chunk is _STREAM_PAUSED:
+            yield chunk
+        else:
+            yield from decoder.feed(chunk)
     if decoder.buffer:
         yield decoder.decode(bytes(decoder.buffer))
 

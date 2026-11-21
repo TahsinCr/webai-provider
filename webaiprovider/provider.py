@@ -21,6 +21,7 @@ from .base import (
 from .collections import _publish_collection_change_sync
 from .core.hooks import OperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
+from .core.timing import _STREAM_PAUSED, _StreamPause
 from .errors import FeatureUnavailable, ProviderError
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
@@ -373,7 +374,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 self._closing_in_progress = False
                 self._lifecycle_condition.notify_all()
 
-    def _execute_stream(self, operation: Any) -> Generator[StreamEvent, None, None]:
+    def _execute_stream(self, operation: Any) -> Generator[StreamEvent | _StreamPause, None, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
         caller = threading.get_ident()
@@ -397,7 +398,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def _execute_stream_events(
         self, operation: Any, send_lock: threading.Lock
-    ) -> Generator[StreamEvent, None, None]:
+    ) -> Generator[StreamEvent | _StreamPause, None, None]:
         prep_context = self._new_context(
             "chat.send.prepare",
             operation_id=getattr(operation, "operation_id", None),
@@ -413,7 +414,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         stream = self._stream_provider_events(prepared.request)
         try:
             for event in stream:
-                if isinstance(event, ConversationBound):
+                if event is _STREAM_PAUSED:
+                    yield event
+                elif isinstance(event, ConversationBound):
                     had_remote_id = bool(operation.chat.remote_id)
                     operation.chat.remote_id = event.conversation_id
                     self._bind_send_lock(event.conversation_id, send_lock)

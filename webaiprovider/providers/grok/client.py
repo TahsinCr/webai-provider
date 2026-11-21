@@ -8,10 +8,12 @@ import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from ...core.timing import _STREAM_PAUSED, _StreamPause
 from ...errors import AccountPaused, ProviderError
 from ...resources.project.types import ProjectData
 from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder, iter_bounded_lines
+from ...transport.http import _message_stream, _wait_for_stream_head
 from .base import (
     _MAX_LINE_BYTES,
     _MAX_STREAM_BYTES,
@@ -74,10 +76,11 @@ class GrokClient(BaseGrokClient):
         )
         return self._chat_upload_result(result, filename, resolved_mime, payload_size)
 
-    def events(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def events(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any] | _StreamPause]:
         self._ensure_authenticated()
         try:
-            with self.http.stream(
+            with _message_stream(
+                self.http,
                 "POST",
                 path,
                 json=body,
@@ -85,6 +88,7 @@ class GrokClient(BaseGrokClient):
                 allow_redirects=False,
                 timeout=600,
             ) as response:
+                yield from _wait_for_stream_head(response)
                 decoder = SSEFrameDecoder(max_event_bytes=_MAX_LINE_BYTES, utf8_errors="strict")
                 for line in iter_bounded_lines(
                     response.iter_bytes(),
@@ -92,6 +96,9 @@ class GrokClient(BaseGrokClient):
                     max_stream_bytes=_MAX_STREAM_BYTES,
                     error_label="Grok stream",
                 ):
+                    if line is _STREAM_PAUSED:
+                        yield line
+                        continue
                     if line.startswith(("data:", "event:", "id:", "retry:", ":")) or not line:
                         for frame in decoder.feed_line(line):
                             if frame.data != "[DONE]":

@@ -101,6 +101,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Honor blocking message stage deadlines during native curl polling and resume the same request after a stage timeout.
 - Return from blocking stage waits as soon as the requested event is available. Publish one cancellation outcome when a send is cancelled or its driving iterator is closed.
 - Keep a stable snapshot for warm synchronous model reads during catalog invalidation. Refresh blocking Gemini credentials when due on the next request.
 
