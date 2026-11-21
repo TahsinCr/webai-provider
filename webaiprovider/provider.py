@@ -17,6 +17,7 @@ from .base import (
     Capability,
     ProviderType,
     _construct_provider,
+    _OPENING_PROVIDERS,
     _StreamEventTranslator,
 )
 from .collections import _publish_collection_change_sync
@@ -91,9 +92,6 @@ class _TrackedTransport(Transport):
     def config(self) -> TransportConfig:
         return self._transport.config
 
-    def resolve(self, path: str) -> str:
-        return self._transport.resolve(path)
-
     def send(self, method: str, path: str, **options: Any) -> TransportResponse:
         with self._provider._activity():
             return self._transport.send(method, path, **options)
@@ -148,8 +146,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             terminal=_LIFECYCLE_TERMINAL_STATES,
         )
         self._opened = False
-        self._lifecycle_lock = threading.RLock()
-        self._lifecycle_condition = threading.Condition(self._lifecycle_lock)
+        self._lifecycle_condition = threading.Condition()
         self._closing_in_progress = False
         self._close_error: BaseException | None = None
         self._active_operations = 0
@@ -224,6 +221,10 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def _begin_activity(self, *, nested: bool = False) -> None:
         with self._lifecycle_condition:
+            if self.lifecycle_state == LifecycleState.OPENING:
+                self._wait_for_opening()
+            if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
+                raise ProviderError("Provider cleanup failed; call close() again")
             if self.closed or (self.closing and not nested):
                 raise ProviderError("Provider is closing or is closed")
             self._active_operations += 1
@@ -278,43 +279,50 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             catalog = self._load_catalog(force=refresh)
             return _model_refs_from_catalog(self.type.value, catalog)
 
-    def _open_session(self, *, reuse_open: bool = False) -> bool:
-        pending: list[tuple[str, object | None]] = []
-        opened_here = False
-        try:
-            with self._lifecycle_lock:
-                if reuse_open and self._opened:
-                    return False
-                opened_here = self._open_unlocked(pending)
-        finally:
-            for name, payload in pending:
-                self._emit_safe(name, payload=payload)
-        return opened_here
+    def _wait_for_opening(self) -> None:
+        if self.lifecycle_state == LifecycleState.OPENING:
+            if id(self) in _OPENING_PROVIDERS.get():
+                raise ProviderError("Cannot perform this operation from a provider opening callback")
+            self._lifecycle_condition.wait_for(
+                lambda: self.lifecycle_state != LifecycleState.OPENING
+            )
 
-    def _open_unlocked(self, pending: list[tuple[str, object | None]]) -> bool:
-        if self.lifecycle.state == LifecycleState.CLOSE_FAILED:
-            raise ProviderError("Provider cleanup failed; call close() again before reopening")
-        if self.closed or (self.closing and not self._has_active_operation()):
-            raise ProviderError("A closed provider cannot be reopened")
-        if self._opened:
-            return False
-        if self.lifecycle.can_transition(LifecycleState.OPENING):
+    def _open_session(self, *, reuse_open: bool = False) -> bool:
+        with self._lifecycle_condition:
+            self._wait_for_opening()
+            if reuse_open and self._opened:
+                return False
+            if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
+                raise ProviderError("Provider cleanup failed; call close() again before reopening")
+            if self.closed or self.closing:
+                raise ProviderError("A closed provider cannot be reopened")
+            if self._opened:
+                return False
             self.lifecycle.transition(LifecycleState.OPENING)
-        pending.append(("provider.opening", None))
+
+        token = _OPENING_PROVIDERS.set((*_OPENING_PROVIDERS.get(), id(self)))
         try:
+            self._emit_safe("provider.opening")
             self._prepare_session()
         except BaseException as error:
-            if self.lifecycle.can_transition(LifecycleState.OPEN_FAILED):
-                self.lifecycle.transition(LifecycleState.OPEN_FAILED)
-            pending.append(("provider.open_failed", {"error_type": type(error).__name__}))
-            with contextlib.suppress(Exception):
-                self._close_session_resources()
+            try:
+                with contextlib.suppress(Exception):
+                    self._close_session_resources()
+            finally:
+                with self._lifecycle_condition:
+                    self.lifecycle.transition(LifecycleState.OPEN_FAILED)
+                    self._lifecycle_condition.notify_all()
+            self._emit_safe("provider.open_failed", payload={"error_type": type(error).__name__})
             raise
-        self._opened = True
-        if self.lifecycle.can_transition(LifecycleState.OPEN):
-            self.lifecycle.transition(LifecycleState.OPEN)
-        pending.append(("provider.opened", None))
-        return True
+        else:
+            with self._lifecycle_condition:
+                self._opened = True
+                self.lifecycle.transition(LifecycleState.OPEN)
+                self._lifecycle_condition.notify_all()
+            self._emit_safe("provider.opened")
+            return True
+        finally:
+            _OPENING_PROVIDERS.reset(token)
 
     def open(self: _ProviderT) -> _ProviderT:
         self._open_session()
@@ -334,6 +342,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         if self._has_active_operation():
             raise ProviderError("Cannot close a provider from one of its active operations")
         with self._lifecycle_condition:
+            self._wait_for_opening()
             if self.closed:
                 return
             if self._closing_in_progress:

@@ -491,7 +491,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(opens, 1)
                 self.assertTrue(closed.is_set())
 
-    async def test_provider_specific_facades_expose_the_same_injected_transport(self):
+    async def test_provider_specific_facades_track_requests_on_the_injected_transport(self):
         for provider_type, origin, cls in (
             ("chatgpt", "https://chatgpt.com", AsyncChatGPTProvider),
             ("claude", "https://claude.ai", AsyncClaudeProvider),
@@ -502,10 +502,16 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 transport, client = self.transport(origin)
                 provider = cls(Account.from_cookies(provider_type, {}), transport=transport)
                 provider._prepare_session = AsyncMock()
-                provider._close_session = AsyncMock()
-                async with provider:
-                    self.assertIs(provider.transport, transport)
-                    await provider.transport.request("GET", "/fixture")
+                provider._close_session = AsyncMock(side_effect=[RuntimeError("cleanup"), None])
+                await provider.open()
+                self.addAsyncCleanup(provider.close)
+                view = provider.transport
+                self.assertEqual(view.origin, transport.origin)
+                await view.request("GET", "/fixture")
+                with self.assertRaisesRegex(RuntimeError, "cleanup"):
+                    await provider.close()
+                with self.assertRaisesRegex(ProviderError, "cleanup failed"):
+                    await view.request("GET", "/fixture")
                 client.request.assert_awaited_once()
 
     async def test_provider_transport_injection_rejects_a_foreign_origin(self):

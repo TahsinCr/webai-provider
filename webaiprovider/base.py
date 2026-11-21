@@ -32,6 +32,8 @@ _ACTIVE_OPERATIONS: ContextVar[tuple[_ActiveOperation, ...]] = ContextVar(
     "webai_active_operations", default=()
 )
 
+_OPENING_PROVIDERS: ContextVar[tuple[int, ...]] = ContextVar("webai_opening_providers", default=())
+
 
 class ProviderType(str, Enum):
     CHATGPT = "chatgpt"

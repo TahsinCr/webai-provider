@@ -7,10 +7,11 @@ import threading
 import time
 import unittest
 from collections.abc import AsyncIterator
+from copy import copy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from eventflow import EventBus, EventEnvelope, EventFilter
 
@@ -23,6 +24,7 @@ from webaiprovider import (
     AsyncProvider,
     Attachment,
     Capability,
+    Chat,
     LifecycleState,
     OperationHooks,
     OutputBegin,
@@ -1197,6 +1199,8 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
 
     def test_sync_close_can_retry_cleanup_on_caller_thread(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
+        provider._transport = Mock()
+        transport = provider.transport
         threads: list[int] = []
 
         def cleanup() -> None:
@@ -1211,11 +1215,30 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSE_FAILED)
             with self.assertRaises(ProviderError):
                 provider.open()
+            with self.assertRaisesRegex(ProviderError, "cleanup failed"):
+                transport.request("GET", "/fixture")
+            provider._transport.request.assert_not_called()
         finally:
             provider.close()
 
         self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
         self.assertEqual(threads, [threading.get_ident(), threading.get_ident()])
+
+    def test_sync_local_delete_accepts_copied_messages_and_responses(self) -> None:
+        chat = Chat()
+        for target in ("message", "response", "id"):
+            with self.subTest(target=target):
+                chat.responses.create("draft")
+                response = chat.responses.list()[0]
+                value = (
+                    response.id
+                    if target == "id"
+                    else copy(response.message if target == "message" else response)
+                )
+                chat.responses.delete(value)
+                self.assertEqual(chat.responses.list(), [])
+                self.assertEqual(chat.responses._known_responses, {})
+                self.assertEqual(chat.responses._known_messages, {})
 
     def test_sync_caller_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
         sync_provider = _ScriptedSyncProvider(_account())
@@ -1227,6 +1250,14 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
 
         self.assertIsInstance(sync_provider.events, EventBus)
         self.assertIsInstance(sync_provider.hooks, OperationHooks)
+
+        opening: list[tuple[LifecycleState, int]] = []
+
+        def on_opening(event: EventEnvelope[str]) -> None:
+            if event.event == "provider.opening":
+                opening.append((sync_provider.lifecycle_state, sync_provider.prepare_calls))
+
+        sync_provider.events.subscribe(on_opening)
 
         def on_opened(_event: EventEnvelope[str]) -> None:
             callback_threads.append(threading.get_ident())
@@ -1244,6 +1275,7 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         sync_provider.open()
         try:
             self.assertTrue(callback_done.wait(timeout=3.0))
+            self.assertEqual(opening, [(LifecycleState.OPENING, 0)])
             self.assertEqual(reentered_ids, [["c-0", "c-1", "c-2"]])
             self.assertEqual(len(sync_provider.loop_threads), 1)
             self.assertEqual(callback_threads, [threading.get_ident()])
@@ -1308,46 +1340,36 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         finally:
             provider.close()
 
-    def test_close_cannot_skip_a_concurrent_first_open(self) -> None:
+    def test_close_waits_for_a_concurrent_first_open(self) -> None:
         provider = _ScriptedSyncProvider(_account())
-        condition = provider._lifecycle_condition
-        closing_at_lock = threading.Event()
-        resume_close = threading.Event()
-        closer_thread = None
+        preparing, closing, release = threading.Event(), threading.Event(), threading.Event()
+        prepare = provider._prepare_session
 
-        class Gate:
-            def __enter__(self):
-                if threading.current_thread() is closer_thread and not closing_at_lock.is_set():
-                    closing_at_lock.set()
-                    if not resume_close.wait(2):
-                        raise TimeoutError("Close was still waiting for the test")
-                return condition.__enter__()
+        def delayed_prepare() -> None:
+            preparing.set()
+            if not release.wait(2):
+                raise TimeoutError("Test did not release preparation")
+            prepare()
 
-            def __exit__(self, *args):
-                return condition.__exit__(*args)
-
-            def __getattr__(self, name):
-                return getattr(condition, name)
-
-        def close():
-            nonlocal closer_thread
-            closer_thread = threading.current_thread()
+        def close() -> None:
+            closing.set()
             provider.close()
 
-        provider._lifecycle_condition = Gate()  # type: ignore[assignment]
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                closing = pool.submit(close)
-                try:
-                    self.assertTrue(closing_at_lock.wait(2))
-                    provider.open()
-                finally:
-                    resume_close.set()
-                closing.result(timeout=2)
-            self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
-            self.assertFalse(hasattr(provider, "_loop"))
-        finally:
-            provider.close()
+        provider._prepare_session = delayed_prepare
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            opening = pool.submit(provider.open)
+            try:
+                self.assertTrue(preparing.wait(2))
+                cleanup = pool.submit(close)
+                self.assertTrue(closing.wait(2))
+                self.assertEqual(provider.lifecycle_state, LifecycleState.OPENING)
+                self.assertFalse(cleanup.done())
+            finally:
+                release.set()
+            opening.result(timeout=2)
+            cleanup.result(timeout=2)
+        self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
+        self.assertEqual(provider.close_calls, 1)
 
     def test_sync_parallel_chats_do_not_block_each_other_while_same_chat_serializes(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
@@ -1474,8 +1496,12 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         results: dict[str, object] = {}
 
         async def on_opening(_event: EventEnvelope[str]) -> None:
-            await provider.open()
-            results["opening_open"] = True
+            results["opening"] = (provider.lifecycle_state, provider.prepare_calls)
+            for operation in (provider.open, provider.close):
+                try:
+                    await operation()
+                except ProviderError as exc:
+                    results[operation.__name__] = str(exc)
 
         async def on_opened(_event: EventEnvelope[str]) -> None:
             results["opened_chats"] = len(await provider.chats.list())
@@ -1506,10 +1532,34 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         )
 
         await provider.open()
-        self.assertEqual(results.get("opening_open"), True)
+        self.assertEqual(results.get("opening"), (LifecycleState.OPENING, 0))
+        self.assertIn("opening callback", str(results.get("open")))
+        self.assertIn("opening callback", str(results.get("close")))
         self.assertEqual(results.get("opened_chats"), 2)
         await provider.close()
         self.assertIn("closing_error", results)
+
+    async def test_close_waits_for_cancelled_open_to_clean_up(self) -> None:
+        provider = _ScriptedAsyncProvider(_account())
+        preparing = asyncio.Event()
+
+        async def prepare() -> None:
+            preparing.set()
+            await asyncio.Future()
+
+        provider._prepare_session = prepare
+        opening = asyncio.create_task(provider.open())
+        await asyncio.wait_for(preparing.wait(), 1)
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(0)
+        self.assertEqual(provider.lifecycle_state, LifecycleState.OPENING)
+        self.assertFalse(closing.done())
+        opening.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(opening, 1)
+        await asyncio.wait_for(closing, 1)
+        self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
+        self.assertEqual(provider.close_calls, 2)
 
     async def test_p1_04_close_failed_preserves_scope_and_allows_retry(self) -> None:
         provider = _ScriptedAsyncProvider(_account())
@@ -1644,10 +1694,14 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
 
             from webaiprovider.resources.message.message import AsyncMessage
 
-            local_msg = AsyncMessage(role="user", content="unsent draft", chat=chat)
-            chat.responses._track_local_message(local_msg)
-            await chat.responses.delete(local_msg)
-            self.assertNotIn(local_msg.id, chat.responses._known_messages)
+            for target in ("message", "response"):
+                with self.subTest(target=target):
+                    local_msg = AsyncMessage(role="user", content="unsent draft", chat=chat)
+                    draft = chat.responses._track_local_message(local_msg)
+                    await chat.responses.delete(copy(local_msg if target == "message" else draft))
+                    self.assertNotIn(draft, chat.responses._turns)
+                    self.assertNotIn(draft.id, chat.responses._known_responses)
+                    self.assertNotIn(local_msg.id, chat.responses._known_messages)
 
             provider.conversations["c-hist"] = Conversation(
                 id="c-hist",

@@ -16,6 +16,7 @@ from .base import (
     Capability,
     ProviderType,
     _construct_provider,
+    _OPENING_PROVIDERS,
     _StreamEventTranslator,
 )
 from .collections import _publish_collection_change
@@ -39,7 +40,7 @@ from .resources.response.artifact import Artifact
 from .resources.response.operation import StreamEvent, _close_async_iterator
 from .resources.response.response import Response
 from .resources.response.source import Source
-from .transport import AsyncTransport
+from .transport import AsyncStreamResponse, AsyncTransport, TransportConfig, TransportResponse
 
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
@@ -74,6 +75,41 @@ _CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "webai_closing_provider", default=None
 )
 _log = logging.getLogger(__name__)
+
+
+class _AsyncTrackedTransport(AsyncTransport):
+    """Lifecycle-tracked view of an async provider's active transport."""
+
+    def __init__(self, provider: AsyncProvider[Any, Any], transport: AsyncTransport) -> None:
+        self._provider = provider
+        self._transport = transport
+
+    @property
+    def origin(self) -> str:
+        return self._transport.origin
+
+    @property
+    def config(self) -> TransportConfig:
+        return self._transport.config
+
+    async def send(self, method: str, path: str, **options: Any) -> TransportResponse:
+        async with self._provider._activity():
+            return await self._transport.send(method, path, **options)
+
+    async def request(self, method: str, path: str, **options: Any) -> Any:
+        async with self._provider._activity():
+            return await self._transport.request(method, path, **options)
+
+    @contextlib.asynccontextmanager
+    async def stream(self, method: str, path: str, **options: Any) -> AsyncIterator[AsyncStreamResponse]:
+        async with self._provider._activity(), self._transport.stream(method, path, **options) as resp:
+            yield resp
+
+    def record_rate_limit(self, delay: float | None) -> None:
+        self._transport.record_rate_limit(delay)
+
+    async def close(self) -> None:
+        await self._provider.close()
 
 
 class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
@@ -111,7 +147,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             terminal=_LIFECYCLE_TERMINAL_STATES,
         )
         self._opened = False
-        self._lifecycle_lock = asyncio.Lock()
         self._lifecycle_condition = asyncio.Condition()
         self._close_task: asyncio.Task[None] | None = None
         self._active_operations = 0
@@ -139,7 +174,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             active = self._transport
         if active is None:
             raise ProviderError("This provider has no configured transport")
-        return active
+        return _AsyncTrackedTransport(self, active)
 
     def _lock(self, kind: str, remote_id: str) -> asyncio.Lock:
         key = (kind, remote_id)
@@ -171,11 +206,14 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 await self._end_activity()
 
     async def _begin_activity(self, *, nested: bool = False) -> None:
-        async with self._lifecycle_lock:
+        async with self._lifecycle_condition:
+            if self.lifecycle_state == LifecycleState.OPENING:
+                await self._wait_for_opening()
+            if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
+                raise ProviderError("Provider cleanup failed; call close() again")
             if self.closed or (self.closing and not nested):
                 raise ProviderError("Provider is closing or is closed")
-            async with self._lifecycle_condition:
-                self._active_operations += 1
+            self._active_operations += 1
 
     async def _end_activity(self) -> None:
         async with self._lifecycle_condition:
@@ -228,43 +266,50 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             catalog = await self._load_catalog(force=refresh)
             return _model_refs_from_catalog(self.type.value, catalog)
 
-    async def _open_session(self, *, reuse_open: bool = False) -> bool:
-        pending: list[tuple[str, object | None]] = []
-        opened_here = False
-        try:
-            async with self._lifecycle_lock:
-                if reuse_open and self._opened:
-                    return False
-                opened_here = await self._open_unlocked(pending)
-        finally:
-            for name, payload in pending:
-                await self._emit_safe(name, payload=payload)
-        return opened_here
+    async def _wait_for_opening(self) -> None:
+        if self.lifecycle_state == LifecycleState.OPENING:
+            if id(self) in _OPENING_PROVIDERS.get():
+                raise ProviderError("Cannot perform this operation from a provider opening callback")
+            await self._lifecycle_condition.wait_for(
+                lambda: self.lifecycle_state != LifecycleState.OPENING
+            )
 
-    async def _open_unlocked(self, pending: list[tuple[str, object | None]]) -> bool:
-        if self.lifecycle.state == LifecycleState.CLOSE_FAILED:
-            raise ProviderError("Provider cleanup failed; call close() again before reopening")
-        if self.closed or (self.closing and not self._has_active_operation()):
-            raise ProviderError("A closed provider cannot be reopened")
-        if self._opened:
-            return False
-        if self.lifecycle.can_transition(LifecycleState.OPENING):
+    async def _open_session(self, *, reuse_open: bool = False) -> bool:
+        async with self._lifecycle_condition:
+            await self._wait_for_opening()
+            if reuse_open and self._opened:
+                return False
+            if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
+                raise ProviderError("Provider cleanup failed; call close() again before reopening")
+            if self.closed or self.closing:
+                raise ProviderError("A closed provider cannot be reopened")
+            if self._opened:
+                return False
             self.lifecycle.transition(LifecycleState.OPENING)
-        pending.append(("provider.opening", None))
+
+        token = _OPENING_PROVIDERS.set((*_OPENING_PROVIDERS.get(), id(self)))
         try:
+            await self._emit_safe("provider.opening")
             await self._prepare_session()
         except BaseException as error:
-            if self.lifecycle.can_transition(LifecycleState.OPEN_FAILED):
-                self.lifecycle.transition(LifecycleState.OPEN_FAILED)
-            pending.append(("provider.open_failed", {"error_type": type(error).__name__}))
-            with contextlib.suppress(Exception):
-                await self._close_session_resources()
+            try:
+                with contextlib.suppress(Exception):
+                    await self._close_session_resources()
+            finally:
+                async with self._lifecycle_condition:
+                    self.lifecycle.transition(LifecycleState.OPEN_FAILED)
+                    self._lifecycle_condition.notify_all()
+            await self._emit_safe("provider.open_failed", payload={"error_type": type(error).__name__})
             raise
-        self._opened = True
-        if self.lifecycle.can_transition(LifecycleState.OPEN):
-            self.lifecycle.transition(LifecycleState.OPEN)
-        pending.append(("provider.opened", None))
-        return True
+        else:
+            async with self._lifecycle_condition:
+                self._opened = True
+                self.lifecycle.transition(LifecycleState.OPEN)
+                self._lifecycle_condition.notify_all()
+            await self._emit_safe("provider.opened")
+            return True
+        finally:
+            _OPENING_PROVIDERS.reset(token)
 
     async def open(self: _ProviderT) -> _ProviderT:
         await self._open_session()
@@ -286,7 +331,8 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             raise ProviderError("close() cannot be awaited from a provider closing event callback")
         if self._has_active_operation():
             raise ProviderError("Cannot close a provider from one of its active operations")
-        async with self._lifecycle_lock:
+        async with self._lifecycle_condition:
+            await self._wait_for_opening()
             if self.closed:
                 return
             if self._close_task is None:
@@ -328,8 +374,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         finally:
             _CLOSING_PROVIDER.reset(token)
             self._close_task = None
-            async with self._lifecycle_condition:
-                self._lifecycle_condition.notify_all()
 
     async def _execute_stream(self, operation: Any) -> AsyncGenerator[StreamEvent, None]:
         chat = operation.chat

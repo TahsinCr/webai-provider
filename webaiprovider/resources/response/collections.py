@@ -601,50 +601,30 @@ class _BaseResponsesCollection:
         return msg
 
     def _delete_local(self, target: Response | AsyncMessage | Message | str) -> None:
-        if isinstance(target, (AsyncMessage, Message)):
-            if target.remote_id:
-                raise UnsupportedOperationError(
-                    "Deleting persisted remote responses is not supported"
-                )
-            removed_ids = {target.id}
-            self._turns = [item for item in self._turns if item.message is not target]
-        elif isinstance(target, Response):
-            if target.remote_id or (target.message is not None and target.message.remote_id):
-                raise UnsupportedOperationError(
-                    "Deleting persisted remote responses is not supported"
-                )
-            removed_ids = {target.id}
-            if target.message is not None:
-                removed_ids.add(target.message.id)
-            self._turns = [item for item in self._turns if item is not target]
-        else:
-            target_id = str(target)
-            existing_resp = self._known_responses.get(target_id) or next(
-                (item for item in self._turns if self._item_matches_exact_id(item, target_id)),
-                None,
-            )
-            existing_msg = self._known_messages.get(target_id)
-            if (existing_resp is not None and existing_resp.remote_id) or (
-                existing_msg is not None and existing_msg.remote_id
-            ):
-                raise UnsupportedOperationError(
-                    "Deleting persisted remote responses is not supported"
-                )
-            removed_ids = {target_id}
-            if existing_resp is not None:
-                removed_ids.add(existing_resp.id)
-                if existing_resp.message is not None:
-                    removed_ids.add(existing_resp.message.id)
-            if existing_msg is not None and existing_msg.response is not None:
-                removed_ids.add(existing_msg.response.id)
-            self._turns = [
-                item
-                for item in self._turns
-                if not self._item_matches_exact_id(item, target_id) and item.id not in removed_ids
-            ]
-        for key in removed_ids:
-            self._known_responses.pop(key, None)
-            self._known_messages.pop(key, None)
+        target_id = target if isinstance(target, str) else target.id
+        index = next(
+            (i for i, item in enumerate(self._turns) if self._item_matches_exact_id(item, target_id)),
+            None,
+        )
+        response = self._turns[index] if index is not None else self._known_responses.get(target_id)
+        message = response.message if response is not None else self._known_messages.get(target_id)
+        if response is None and message is not None:
+            response = message.response
+        target_message = target.message if isinstance(target, Response) else None
+        if (
+            (not isinstance(target, str) and target.remote_id)
+            or (target_message is not None and target_message.remote_id)
+            or (response is not None and response.remote_id)
+            or (message is not None and message.remote_id)
+        ):
+            raise UnsupportedOperationError("Deleting persisted remote responses is not supported")
+
+        if index is not None:
+            self._turns.pop(index)
+        if response is not None:
+            self._known_responses.pop(response.id, None)
+        if message is not None:
+            self._known_messages.pop(message.id, None)
 
 
 class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[Response]):
