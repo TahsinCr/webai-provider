@@ -65,7 +65,6 @@ class GeminiSession:
         )
         self.upload_transport = AsyncHTTPTransport(
             "https://content-push.googleapis.com",
-            client_getter=lambda: self.http,
             config=TransportConfig(timeout=(10.0, 35.0)),
         )
         self.refresh_task = None
@@ -467,5 +466,8 @@ class GeminiSession:
                     self.verified = False
                     await http.close()
         finally:
-            if self._provided_transport is not None:
-                await self._provided_transport.close()
+            try:
+                await self.upload_transport.close()
+            finally:
+                if self._provided_transport is not None:
+                    await self._provided_transport.close()

@@ -119,6 +119,8 @@ async def upload_file_references(session, items):
                     "Push-ID": session.push_id,
                 },
                 multipart=mime,
+                impersonate="chrome",
+                discard_cookies=True,
                 allow_redirects=False,
             )
             if local_path is not None and before is not None:

@@ -472,6 +472,23 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 )
             http.post.assert_not_awaited()
 
+    async def test_upload_transport_owns_a_separate_cookie_free_client(self):
+        session = GeminiSession(Path("unused"))
+        session.http = SimpleNamespace(cookies={"OSID": "synthetic"}, close=AsyncMock())
+        auth_client = session.http
+        upload_client = SimpleNamespace(close=AsyncMock())
+        with patch("curl_cffi.requests.AsyncSession", return_value=upload_client) as factory:
+            first = await session.upload_transport._acquire_client()
+            second = await session.upload_transport._acquire_client()
+        factory.assert_called_once_with(timeout=(10.0, 35.0), trust_env=False)
+        self.assertIs(first, upload_client)
+        self.assertIs(second, upload_client)
+        await session.upload_transport._release_client(first)
+        await session.upload_transport._release_client(second)
+        await session.close()
+        upload_client.close.assert_awaited_once()
+        auth_client.close.assert_awaited_once()
+
     async def test_rpc_is_account_owned_and_never_retries_writes(self):
         from webaiprovider.providers.gemini.rpc import GeminiRPC
 

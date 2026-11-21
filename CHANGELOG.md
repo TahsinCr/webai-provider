@@ -101,6 +101,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Isolate Gemini's file uploads from account cookies while keeping their connection pool available for subsequent uploads.
 - Persist refreshed live-test browser cookies only after the provider accepts the new session.
 
 - Report a Gemini sign-in redirect as an account authentication failure without following it or exposing redirect parameters.
