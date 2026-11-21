@@ -87,6 +87,8 @@ class AsyncChatGPTClient(BaseChatGPTClient):
         timing = current_send_timing()
         started = time.perf_counter_ns() if timing is not None else None
         if transport is None:
+            from ...transport.network import create_curl_share
+
             self.transport: AsyncTransport = AsyncHTTPTransport(
                 CHATGPT_ORIGIN,
                 client_factory=lambda timeout=(10.0, 30.0): AsyncSession(
@@ -94,6 +96,7 @@ class AsyncChatGPTClient(BaseChatGPTClient):
                     trust_env=False,
                     timeout=timeout,
                     discard_cookies=True,
+                    curl_share=create_curl_share(),
                 ),
                 config=TransportConfig(timeout=(10.0, 30.0)),
                 headers=self._transport_headers,

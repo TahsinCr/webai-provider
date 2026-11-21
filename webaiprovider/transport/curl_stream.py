@@ -1,5 +1,7 @@
 """Pull a bounded curl response without a Python transfer worker."""
 
+import threading
+import weakref
 from contextlib import closing, contextmanager
 from math import ceil
 from time import monotonic
@@ -11,6 +13,55 @@ from curl_cffi.requests.exceptions import code2error
 from curl_cffi.requests.utils import set_curl_options
 
 from ..core.timing import _STREAM_PAUSED, _stream_deadline
+from .network import record_curl_timing
+
+
+def _cleanup_multi_handles(handles: list) -> None:
+    while handles:
+        lib.curl_multi_cleanup(handles.pop())
+
+
+class _MultiPool:
+    """Bounded exclusive-checkout pool of libcurl multi handles."""
+
+    def __init__(self, max_idle: int = 4) -> None:
+        self._max_idle = max_idle
+        self._lock = threading.Lock()
+        self._idle: list = []
+        self._closed = False
+        self._finalizer = weakref.finalize(self, _cleanup_multi_handles, self._idle)
+
+    def acquire(self):
+        with self._lock:
+            if not self._closed and self._idle:
+                return self._idle.pop()
+        multi = lib.curl_multi_init()
+        if multi == ffi.NULL:
+            raise CurlError("Could not initialize a curl stream")
+        return multi
+
+    def release(self, multi, *, healthy: bool = True) -> None:
+        if multi == ffi.NULL:
+            return
+        if healthy:
+            with self._lock:
+                if not self._closed and len(self._idle) < self._max_idle:
+                    self._idle.append(multi)
+                    return
+        lib.curl_multi_cleanup(multi)
+
+    def clear(self) -> None:
+        with self._lock:
+            handles = list(self._idle)
+            self._idle.clear()
+        _cleanup_multi_handles(handles)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            handles = list(self._idle)
+            self._idle.clear()
+        _cleanup_multi_handles(handles)
 
 
 def _check_multi(code: int) -> None:
@@ -109,16 +160,19 @@ class _CurlStream:
 
 
 @contextmanager
-def open_blocking_curl_stream(session, method, url, options, *, defer_head=False):
+def open_blocking_curl_stream(
+    session, method, url, options, *, defer_head=False, multi_pool=None, timing=None
+):
     """Use the same curl_cffi request options and response parser as blocking send."""
     session._check_session_closed()
     options = dict(options)
     encoding = options.pop("default_encoding", "utf-8")
     discard_cookies = options.pop("discard_cookies", False)
     timeout = options.pop("timeout")
-    multi = lib.curl_multi_init()
+    multi = multi_pool.acquire() if multi_pool is not None else lib.curl_multi_init()
     if multi == ffi.NULL:
         raise CurlError("Could not initialize a curl stream")
+    healthy = False
     try:
         with closing(session.curl.duphandle()) as curl:
             stream = _CurlStream(curl, multi, pausable=defer_head)
@@ -158,6 +212,7 @@ def open_blocking_curl_stream(session, method, url, options, *, defer_head=False
                 stream.response = head
                 if not head.status_code:
                     stream.check_error()
+                record_curl_timing(timing, curl.getinfo)
 
             try:
                 if defer_head:
@@ -166,8 +221,12 @@ def open_blocking_curl_stream(session, method, url, options, *, defer_head=False
                     stream.advance()
                     parse_head()
                 yield stream
+                healthy = not stream._error
             finally:
                 stream.close()
                 lib.curl_multi_remove_handle(multi, curl._curl)
     finally:
-        lib.curl_multi_cleanup(multi)
+        if multi_pool is not None:
+            multi_pool.release(multi, healthy=healthy)
+        else:
+            lib.curl_multi_cleanup(multi)

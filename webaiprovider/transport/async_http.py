@@ -12,24 +12,17 @@ from ..errors import ProviderError
 from . import network
 from .base import AsyncTransport, _AsyncStreamResponse, _BufferedResponse
 from .network import (
+    _CURL_STREAM_PHASES,
     _IDEMPOTENT_METHODS,
-    _apply_curl_resolve,
+    _configure_curl_ipresolve,
     _extract_and_validate_ips,
-    _format_resolve_entry,
-    _has_proxy_configured,
     _is_curl_async_session,
     _is_curl_timeout,
-    _is_ip_literal,
     _OriginDNS,
-    _validate_ip_literal,
-)
-
-_CURL_STREAM_PHASES = (
-    ("NAMELOOKUP_TIME_T", "transport_dns_ms"),
-    ("CONNECT_TIME_T", "transport_to_tcp_connected_ms"),
-    ("APPCONNECT_TIME_T", "transport_to_tls_connected_ms"),
-    ("PRETRANSFER_TIME_T", "transport_ready_ms"),
-    ("STARTTRANSFER_TIME_T", "transport_first_byte_ms"),
+    _pin_curl_ips,
+    _should_pin_curl_host,
+    create_curl_share,
+    record_curl_timing,
 )
 
 
@@ -83,26 +76,12 @@ async def _async_prepare_curl_session(
 ) -> None:
     if not _is_curl_async_session(client):
         return
-    from curl_cffi import CurlOpt
-
     ipv6 = await _check_ipv6_connectivity()
-    if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
-        client.curl_options[CurlOpt.IPRESOLVE] = 1
-    if not hostname:
-        return
-    if dns_state.is_ip if dns_state is not None else _is_ip_literal(hostname):
-        _validate_ip_literal(hostname)
-        return
-    if _has_proxy_configured(client, options or {}, hostname=hostname):
+    _configure_curl_ipresolve(client, ipv6=ipv6)
+    if not _should_pin_curl_host(client, hostname, options, dns_state=dns_state):
         return
     ips = await _async_resolve_host_ips(hostname, port, use_ipv6=ipv6, timeout=timeout)
-    prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
-    entry = (
-        dns_state.resolve_entry(ips)
-        if dns_state is not None
-        else _format_resolve_entry(prefix, ips)
-    )
-    _apply_curl_resolve(client, prefix, entry)
+    _pin_curl_ips(client, hostname, port, ips, dns_state=dns_state)
 
 
 @asynccontextmanager
@@ -110,28 +89,13 @@ async def _open_curl_stream(client, method: str, url: str, options: dict, *, tim
     if timing is not None:
         from curl_cffi import CurlInfo
 
-        phases = tuple((CurlInfo[name], metric) for name, metric in _CURL_STREAM_PHASES)
-        infos = tuple(info for info, _ in phases) + (CurlInfo.NUM_CONNECTS,)
+        infos = tuple(CurlInfo[name] for name, _ in _CURL_STREAM_PHASES) + (CurlInfo.NUM_CONNECTS,)
         if not all(info in client.curl_infos for info in infos):
             client.curl_infos = list(dict.fromkeys((*client.curl_infos, *infos)))
     response = await client.request(method, url, stream=True, allow_redirects=False, **options)
     try:
         if timing is not None:
-            for info, metric in phases:
-                elapsed = response.infos.get(info)
-                if isinstance(elapsed, int):
-                    timing.record(metric, elapsed * 1000)
-            ready = response.infos.get(CurlInfo.PRETRANSFER_TIME_T)
-            first_byte = response.infos.get(CurlInfo.STARTTRANSFER_TIME_T)
-            if isinstance(ready, int) and isinstance(first_byte, int) and first_byte >= ready:
-                timing.record("transport_response_wait_ms", (first_byte - ready) * 1000)
-            connections = response.infos.get(CurlInfo.NUM_CONNECTS)
-            if isinstance(connections, int):
-                timing.increment(
-                    "transport_connection_reused"
-                    if connections == 0
-                    else "transport_connection_opened"
-                )
+            record_curl_timing(timing, response.infos.get)
         yield response
     finally:
         task = getattr(response, "astream_task", None)
@@ -197,7 +161,11 @@ class AsyncHTTPTransport(AsyncTransport):
         if factory is None:
             from curl_cffi.requests import AsyncSession
 
-            self.client = AsyncSession(timeout=timeout, trust_env=False)
+            self.client = AsyncSession(
+                timeout=timeout,
+                trust_env=False,
+                curl_share=create_curl_share(),
+            )
         else:
             self.client = factory(timeout=timeout)
         return self.client
@@ -306,10 +274,13 @@ class AsyncHTTPTransport(AsyncTransport):
                         self._check_size(response)
                         return response
                     except BaseException as exc:
-                        if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                        if not getattr(
+                            getattr(exc, "response", None), "status_code", 0
+                        ) and _is_curl_timeout(exc):
                             self._dns.invalidate(client)
-                            await self._reset_owned_client(client)
-                            continue
+                            if attempt == 0 and can_retry:
+                                await self._reset_owned_client(client)
+                                continue
                         raise
                     finally:
                         await self._release_client(client)
@@ -325,10 +296,13 @@ class AsyncHTTPTransport(AsyncTransport):
                         await stack.aclose()
                     finally:
                         await self._release_client(client)
-                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                    if not getattr(
+                        getattr(exc, "response", None), "status_code", 0
+                    ) and _is_curl_timeout(exc):
                         self._dns.invalidate(client)
-                        await self._reset_owned_client(client)
-                        continue
+                        if attempt == 0 and can_retry:
+                            await self._reset_owned_client(client)
+                            continue
                     raise
                 try:
                     return await self._buffer_response_async(response)
@@ -385,10 +359,13 @@ class AsyncHTTPTransport(AsyncTransport):
                         await stack.aclose()
                     finally:
                         await self._release_client(client)
-                    if attempt == 0 and can_retry and _is_curl_timeout(exc):
+                    if not getattr(
+                        getattr(exc, "response", None), "status_code", 0
+                    ) and _is_curl_timeout(exc):
                         self._dns.invalidate(client)
-                        await self._reset_owned_client(client)
-                        continue
+                        if attempt == 0 and can_retry:
+                            await self._reset_owned_client(client)
+                            continue
                     raise
             try:
                 chunks = (

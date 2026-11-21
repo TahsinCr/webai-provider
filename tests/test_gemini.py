@@ -501,7 +501,14 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         with patch("curl_cffi.requests.AsyncSession", return_value=upload_client) as factory:
             first = await session.upload_transport._acquire_client()
             second = await session.upload_transport._acquire_client()
-        factory.assert_called_once_with(timeout=(10.0, 35.0), trust_env=False)
+        from curl_cffi.curl import CurlShare
+
+        factory.assert_called_once()
+        self.assertEqual(factory.call_args.args, ())
+        self.assertEqual(factory.call_args.kwargs.get("timeout"), (10.0, 35.0))
+        self.assertIs(factory.call_args.kwargs.get("trust_env"), False)
+        self.assertNotIn("cookies", factory.call_args.kwargs)
+        self.assertIsInstance(factory.call_args.kwargs.get("curl_share"), CurlShare)
         self.assertIs(first, upload_client)
         self.assertIs(second, upload_client)
         await session.upload_transport._release_client(first)

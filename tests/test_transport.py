@@ -7,6 +7,8 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,8 +21,9 @@ from webaiprovider import (
     Provider,
     ProviderType,
 )
+from webaiprovider.accounts import save_session
 from webaiprovider.core.timing import SendTiming
-from webaiprovider.errors import ProviderError, RateLimited
+from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession
 from webaiprovider.providers.chatgpt.async_client import AsyncChatGPTClient as ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
@@ -32,11 +35,38 @@ from webaiprovider.resources.message.protocol import (
     TextDelta,
 )
 from webaiprovider.transport import (
+    AsyncHttpSession,
     AsyncHTTPTransport,
+    AsyncHttpSession,
     HTTPTransport,
     TransportConfig,
+    parse_retry_after,
 )
 from webaiprovider.transport.async_http import _check_ipv6_connectivity, _open_curl_stream
+
+
+@contextmanager
+def _keep_alive_server(body: bytes):
+    class KeepAliveHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), KeepAliveHandler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}"
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
 
 
 class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
@@ -1295,3 +1325,157 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             transport_network._DNS_CACHE.clear()
+
+    def test_blocking_factory_and_getter_curl_sessions_use_caller_buffered_send(self):
+        from curl_cffi.requests import Session
+
+        from webaiprovider.transport.network import create_curl_share
+
+        with (
+            _keep_alive_server(b"ok") as origin,
+            patch("webaiprovider.transport.http._prepare_curl_session"),
+            patch.object(Session, "stream", side_effect=AssertionError("Stream worker used")),
+        ):
+            with HTTPTransport(
+                origin,
+                client_factory=lambda timeout=(10.0, 30.0): Session(
+                    timeout=timeout, trust_env=False, curl_share=create_curl_share()
+                ),
+            ) as factory_transport:
+                self.assertEqual(factory_transport.send("GET", "/a").content, b"ok")
+                self.assertEqual(factory_transport.send("GET", "/b").content, b"ok")
+
+            shared_session = Session(
+                timeout=(10.0, 30.0), trust_env=False, curl_share=create_curl_share()
+            )
+            try:
+                with HTTPTransport(
+                    origin, client_getter=lambda: shared_session
+                ) as getter_transport:
+                    self.assertEqual(getter_transport.send("GET", "/c").content, b"ok")
+                    self.assertEqual(getter_transport.send("GET", "/d").content, b"ok")
+            finally:
+                shared_session.close()
+
+    def test_blocking_curl_stream_reuses_connection_and_records_timing(self):
+        from webaiprovider.core.timing import SendTiming, use_send_timing
+
+        with (
+            _keep_alive_server(b"stream-body") as origin,
+            patch("webaiprovider.transport.http._prepare_curl_session"),
+            HTTPTransport(origin) as transport,
+        ):
+            first_timing = SendTiming("fixture")
+            with (
+                use_send_timing(first_timing),
+                transport.stream("GET", "/first") as response,
+            ):
+                self.assertEqual(b"".join(response.iter_bytes()), b"stream-body")
+
+            second_timing = SendTiming("fixture")
+            with (
+                use_send_timing(second_timing),
+                transport.stream("GET", "/second") as response,
+            ):
+                self.assertEqual(b"".join(response.iter_bytes()), b"stream-body")
+
+            durations, counts = second_timing.snapshot()
+            self.assertIn("transport_first_byte_ms", durations)
+            self.assertIn("transport_response_wait_ms", durations)
+            self.assertEqual(counts, {"transport_connection_reused": 1})
+            self.assertIsNotNone(transport._multi_pool)
+        self.assertIsNone(transport._multi_pool)
+
+    async def test_post_connect_timeout_invalidates_dns_without_retrying(self):
+        from curl_cffi.requests import AsyncSession, Session
+        from curl_cffi.requests.exceptions import Timeout as CurlTimeout
+
+        sync_session = Session(trust_env=False)
+        try:
+            sync_transport = HTTPTransport(
+                "https://gemini.google.com", client_getter=lambda: sync_session
+            )
+            with (
+                patch("webaiprovider.transport.http._prepare_curl_session"),
+                patch.object(sync_session, "request", side_effect=CurlTimeout("timed out")) as req,
+                patch.object(sync_transport._dns, "invalidate") as invalidate,
+            ):
+                with self.assertRaises(CurlTimeout):
+                    sync_transport.send("POST", "/batch")
+            self.assertEqual(req.call_count, 1)
+            invalidate.assert_called_once_with(sync_session)
+            sync_transport.close()
+        finally:
+            sync_session.close()
+
+        async_session = AsyncSession(trust_env=False)
+        try:
+            async_transport = AsyncHTTPTransport(
+                "https://gemini.google.com", client_getter=lambda: async_session
+            )
+            with (
+                patch.object(async_transport, "_prepare_curl", AsyncMock()),
+                patch.object(
+                    async_session, "request", AsyncMock(side_effect=CurlTimeout("timed out"))
+                ) as req,
+                patch.object(async_transport._dns, "invalidate") as invalidate,
+            ):
+                with self.assertRaises(CurlTimeout):
+                    await async_transport.send("POST", "/batch")
+            self.assertEqual(req.await_count, 1)
+            invalidate.assert_called_once_with(async_session)
+            await async_transport.close()
+        finally:
+            await async_session.close()
+
+
+class TransportTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_retry_after(self):
+        self.assertIsNone(parse_retry_after(None))
+        self.assertIsNone(parse_retry_after(""))
+        self.assertIsNone(parse_retry_after("   "))
+        self.assertIsNone(parse_retry_after("not-a-number-or-date"))
+        self.assertEqual(parse_retry_after(45), 45.0)
+        self.assertEqual(parse_retry_after("120"), 120.0)
+        self.assertEqual(parse_retry_after("15.5"), 15.5)
+
+        base_time = 1700000000.0
+        dt = datetime.fromtimestamp(base_time + 40, tz=timezone.utc)
+        header_val = format_datetime(dt, usegmt=True)
+        self.assertEqual(parse_retry_after(header_val, now=base_time), 40.0)
+
+        dt_past = datetime.fromtimestamp(base_time - 10, tz=timezone.utc)
+        past_val = format_datetime(dt_past, usegmt=True)
+        self.assertEqual(parse_retry_after(past_val, now=base_time), 0.0)
+
+    async def test_http_session_origin_restriction_and_status_checks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p = Path(folder) / "claude.json"
+            save_session(p, {"sessionKey": "sk-test"})
+            session = AsyncHttpSession("https://claude.ai", p, "sessionKey")
+            self.assertEqual(session.url("/api/user"), "https://claude.ai/api/user")
+
+            for invalid in (
+                "https://other.com/api",
+                "//other.com/api",
+                "/../outside",
+                "relative/path",
+            ):
+                with self.assertRaises(ValueError):
+                    session.url(invalid)
+
+            with self.assertRaises(AccountPaused):
+                session.check(FakeHTTPResponse(401))
+
+            with self.assertRaises(AccountPaused):
+                session.check(FakeHTTPResponse(302))
+
+            with self.assertRaises(ProviderError):
+                session.check(FakeHTTPResponse(403))
+
+            with self.assertRaises(RemoteNotFound):
+                session.check(FakeHTTPResponse(404))
+
+            with self.assertRaises(RateLimited) as ctx:
+                session.check(FakeHTTPResponse(429, headers={"retry-after": "15"}))
+            self.assertEqual(ctx.exception.retry_after, 15.0)

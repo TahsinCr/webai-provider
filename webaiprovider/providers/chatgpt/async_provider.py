@@ -130,6 +130,8 @@ class AsyncChatGPTProvider(
         if self._owned_transport is None:
             from curl_cffi.requests import AsyncSession
 
+            from ...transport.network import create_curl_share
+
             self._owned_transport = AsyncHTTPTransport(
                 "https://chatgpt.com",
                 client_factory=lambda timeout=(10.0, 30.0): AsyncSession(
@@ -137,6 +139,7 @@ class AsyncChatGPTProvider(
                     trust_env=False,
                     timeout=timeout,
                     discard_cookies=True,
+                    curl_share=create_curl_share(),
                 ),
                 config=TransportConfig(timeout=(10.0, 30.0)),
                 headers=self._transport_headers,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import secrets
 import time
@@ -117,9 +118,28 @@ class LiveContext:
         self._cleanup_attempted: set[int] = set()
 
     @staticmethod
-    def _finish_call(label: str, started: float, value: Any) -> Any:
+    def _timing_suffix(timing: Any) -> str:
+        if timing is None:
+            return ""
+        durations, counts = timing.snapshot()
+        parts: list[str] = []
+        for key, name in (
+            ("transport_to_tls_connected_ms", "tls"),
+            ("transport_first_byte_ms", "ttfb"),
+            ("sse_first_event_ms", "first_evt"),
+        ):
+            if key in durations:
+                parts.append(f"{name}={round(durations[key])}ms")
+        if "transport_connection_reused" in counts:
+            parts.append(f"reused={counts['transport_connection_reused']}")
+        if "transport_connection_opened" in counts:
+            parts.append(f"opened={counts['transport_connection_opened']}")
+        return f"  [{' '.join(parts)}]" if parts else ""
+
+    @classmethod
+    def _finish_call(cls, label: str, started: float, value: Any, *, timing: Any = None) -> Any:
         elapsed = round((time.monotonic() - started) * 1000)
-        print(f"ACTION OK  {label}  {elapsed} ms", flush=True)
+        print(f"ACTION OK  {label}  {elapsed} ms{cls._timing_suffix(timing)}", flush=True)
         return value
 
     @staticmethod
@@ -133,27 +153,44 @@ class LiveContext:
             f"({round((time.monotonic() - started) * 1000)} ms)"
         ) from None
 
+    def _make_timing(self):
+        if os.environ.get("WEBAI_LIVE_TIMING") != "1":
+            return None
+        from webaiprovider.core.timing import SendTiming
+
+        return SendTiming(self.account.provider)
+
     def call(self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()):
+        from webaiprovider.core.timing import use_send_timing
+
         started = time.monotonic()
+        timing = self._make_timing()
         try:
-            value = self.gate.call(action, bypass_limit=label.startswith("cleanup."))
+            with use_send_timing(timing):
+                value = self.gate.call(action, bypass_limit=label.startswith("cleanup."))
         except SafetyError:
             raise
         except Exception as exc:
             self._raise_call_error(label, exc, expected_errors, started)
-        return self._finish_call(label, started, value)
+        return self._finish_call(label, started, value, timing=timing)
 
     async def call_async(
         self, label: str, action, *, expected_errors: tuple[type[Exception], ...] = ()
     ):
+        from webaiprovider.core.timing import use_send_timing
+
         started = time.monotonic()
+        timing = self._make_timing()
         try:
-            value = await self.gate.call_async(action, bypass_limit=label.startswith("cleanup."))
+            with use_send_timing(timing):
+                value = await self.gate.call_async(
+                    action, bypass_limit=label.startswith("cleanup.")
+                )
         except SafetyError:
             raise
         except Exception as exc:
             self._raise_call_error(label, exc, expected_errors, started)
-        return self._finish_call(label, started, value)
+        return self._finish_call(label, started, value, timing=timing)
 
     def skip(self, label: str) -> None:
         self.skipped.append(label)

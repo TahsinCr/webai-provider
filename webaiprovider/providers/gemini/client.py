@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 from ...accounts import read_session, save_session
@@ -65,13 +66,14 @@ class GeminiClient(BaseGeminiClient):
                 cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
             )
         else:
-            from ...transport.network import curl_cookie_jar
+            from ...transport.network import create_curl_share, curl_cookie_jar
 
             self.http = Session(
                 cookies=curl_cookie_jar(cookies),
                 impersonate="chrome",
                 timeout=(10.0, 35.0),
                 trust_env=False,
+                curl_share=create_curl_share(),
             )
         try:
             response = self.request("GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False)
@@ -186,21 +188,22 @@ class GeminiClient(BaseGeminiClient):
             self._mark_persisted(record, now)
 
     def close(self) -> None:
-        try:
+        with ExitStack() as stack:
+            if self._provided_transport is not None:
+                stack.callback(self._provided_transport.close)
+            stack.callback(self.upload_transport.close)
             http = self.http
+            if http is not None:
+                stack.callback(http.close)
+            stack.callback(self.auth_transport.close)
+            if self._provided_transport is None:
+                stack.callback(self.transport.close)
             if http is not None:
                 try:
                     self.persist()
                 finally:
                     self.http = None
                     self.verified = False
-                    http.close()
-        finally:
-            try:
-                self.upload_transport.close()
-            finally:
-                if self._provided_transport is not None:
-                    self._provided_transport.close()
 
 
 class GeminiProjectEditor(BaseGeminiProjectEditor):

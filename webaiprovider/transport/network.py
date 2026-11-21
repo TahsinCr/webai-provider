@@ -34,7 +34,44 @@ _IDEMPOTENT_METHODS = frozenset(("GET", "HEAD"))
 _DNS_CACHE: BoundedCache[tuple[str, int, bool], tuple[str, ...]] = BoundedCache(
     max_entries=64, max_bytes=32768, ttl=300.0
 )
+_CURL_STREAM_PHASES = (
+    ("NAMELOOKUP_TIME_T", "transport_dns_ms"),
+    ("CONNECT_TIME_T", "transport_to_tcp_connected_ms"),
+    ("APPCONNECT_TIME_T", "transport_to_tls_connected_ms"),
+    ("PRETRANSFER_TIME_T", "transport_ready_ms"),
+    ("STARTTRANSFER_TIME_T", "transport_first_byte_ms"),
+)
 _IPV6_CACHE_TTL = 180.0
+
+
+def create_curl_share():
+    """Create a thread-safe CurlShare for DNS and TLS session resumption."""
+    from curl_cffi.curl import CurlShare
+
+    return CurlShare(connect=False, dns=True, ssl_session=True)
+
+
+def record_curl_timing(timing, lookup) -> None:
+    """Record libcurl connection and first-byte timings into a SendTiming instance."""
+    if timing is None:
+        return
+    from curl_cffi import CurlInfo
+
+    for name, metric in _CURL_STREAM_PHASES:
+        elapsed = lookup(CurlInfo[name])
+        if isinstance(elapsed, int):
+            timing.record(metric, elapsed * 1000)
+    ready = lookup(CurlInfo.PRETRANSFER_TIME_T)
+    first_byte = lookup(CurlInfo.STARTTRANSFER_TIME_T)
+    if isinstance(ready, int) and isinstance(first_byte, int) and first_byte >= ready:
+        timing.record("transport_response_wait_ms", (first_byte - ready) * 1000)
+    connections = lookup(CurlInfo.NUM_CONNECTS)
+    if isinstance(connections, int):
+        timing.increment(
+            "transport_connection_reused" if connections == 0 else "transport_connection_opened"
+        )
+
+
 _ipv6_connectivity_cache: tuple[float, bool] | None = None
 
 
@@ -250,6 +287,41 @@ class _OriginDNS:
         _invalidate_host_dns(self.host, self.port, client)
 
 
+def _configure_curl_ipresolve(client, *, ipv6: bool) -> None:
+    from curl_cffi import CurlOpt
+
+    if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
+        client.curl_options[CurlOpt.IPRESOLVE] = 1
+
+
+def _should_pin_curl_host(
+    client, hostname: str, options: dict | None, *, dns_state: _OriginDNS | None = None
+) -> bool:
+    if not hostname:
+        return False
+    if dns_state.is_ip if dns_state is not None else _is_ip_literal(hostname):
+        _validate_ip_literal(hostname)
+        return False
+    return not _has_proxy_configured(client, options or {}, hostname=hostname)
+
+
+def _pin_curl_ips(
+    client,
+    hostname: str,
+    port: int,
+    ips: tuple[str, ...],
+    *,
+    dns_state: _OriginDNS | None = None,
+) -> None:
+    prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
+    entry = (
+        dns_state.resolve_entry(ips)
+        if dns_state is not None
+        else _format_resolve_entry(prefix, ips)
+    )
+    _apply_curl_resolve(client, prefix, entry)
+
+
 def _prepare_curl_session(
     client,
     hostname: str,
@@ -260,23 +332,9 @@ def _prepare_curl_session(
 ) -> None:
     if not _is_curl_sync_session(client):
         return
-    from curl_cffi import CurlOpt
-
     ipv6 = _has_ipv6_connectivity()
-    if not ipv6 and client.curl_options.get(CurlOpt.IPRESOLVE) != 1:
-        client.curl_options[CurlOpt.IPRESOLVE] = 1
-    if not hostname:
-        return
-    if _is_ip_literal(hostname):
-        _validate_ip_literal(hostname)
-        return
-    if _has_proxy_configured(client, options or {}, hostname=hostname):
+    _configure_curl_ipresolve(client, ipv6=ipv6)
+    if not _should_pin_curl_host(client, hostname, options, dns_state=dns_state):
         return
     ips = _resolve_host_ips(hostname, port, use_ipv6=ipv6)
-    prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
-    entry = (
-        dns_state.resolve_entry(ips)
-        if dns_state is not None
-        else _format_resolve_entry(prefix, ips)
-    )
-    _apply_curl_resolve(client, prefix, entry)
+    _pin_curl_ips(client, hostname, port, ips, dns_state=dns_state)

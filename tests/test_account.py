@@ -1,13 +1,13 @@
+"""Account, credential store, and browser cookie import tests."""
+
+import gc
 import os
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
-from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.fakes import FakeHTTPResponse
 from webaiprovider import Provider
 from webaiprovider.accounts import (
     Account,
@@ -16,10 +16,10 @@ from webaiprovider.accounts import (
     SessionState,
     SessionStatus,
     read_session,
-    save_session,
     session_exists,
 )
 from webaiprovider.accounts.cookie_policy import ALLOWED_PROVIDER_ORIGINS
+from webaiprovider.accounts.credentials import _SESSION_WRITE_LOCKS, _session_write_lock
 from webaiprovider.accounts.filters import (
     ProviderCookieFilter,
     filter_provider_cookies,
@@ -29,16 +29,7 @@ from webaiprovider.accounts.importer import (
     import_browser_session,
 )
 from webaiprovider.base import Capability
-from webaiprovider.errors import (
-    AccountPaused,
-    ProviderError,
-    RateLimited,
-    RemoteNotFound,
-)
-from webaiprovider.transport import (
-    AsyncHttpSession,
-    parse_retry_after,
-)
+from webaiprovider.errors import AccountPaused, ProviderError
 
 
 class AccountsTests(unittest.TestCase):
@@ -96,7 +87,7 @@ class AccountsTests(unittest.TestCase):
             with self.assertRaises(AccountPaused):
                 store.load()
 
-            p.write_bytes(b"a" * (1_048_577))
+            p.write_bytes(b"a" * 1_048_577)
             with self.assertRaises(AccountPaused):
                 store.load()
 
@@ -150,6 +141,17 @@ class AccountsTests(unittest.TestCase):
                     with self.assertRaisesRegex(ProviderError, "closing or is closed"):
                         provider.session_status()
         self.assertEqual(threads, [caller] * 4)
+
+    def test_session_write_lock_entries_reclaimed_by_gc(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "ephemeral.json"
+            lock = _session_write_lock(target)
+            with lock:
+                self.assertGreater(len(_SESSION_WRITE_LOCKS), 0)
+            del lock
+            gc.collect()
+            self.assertNotIn(str(target.resolve()), _SESSION_WRITE_LOCKS)
+            self.assertEqual(len(_SESSION_WRITE_LOCKS), 0)
 
 
 class AuthTests(unittest.TestCase):
@@ -271,71 +273,3 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(imported, mock_cookies)
                 self.assertTrue(store.exists())
                 self.assertEqual(store.load(), mock_cookies)
-
-
-class TransportTests(unittest.IsolatedAsyncioTestCase):
-    def test_parse_retry_after(self):
-        self.assertIsNone(parse_retry_after(None))
-        self.assertIsNone(parse_retry_after(""))
-        self.assertIsNone(parse_retry_after("   "))
-        self.assertIsNone(parse_retry_after("not-a-number-or-date"))
-        self.assertEqual(parse_retry_after(45), 45.0)
-        self.assertEqual(parse_retry_after("120"), 120.0)
-        self.assertEqual(parse_retry_after("15.5"), 15.5)
-
-        base_time = 1700000000.0
-        dt = datetime.fromtimestamp(base_time + 40, tz=timezone.utc)
-        header_val = format_datetime(dt, usegmt=True)
-        self.assertEqual(parse_retry_after(header_val, now=base_time), 40.0)
-
-        dt_past = datetime.fromtimestamp(base_time - 10, tz=timezone.utc)
-        past_val = format_datetime(dt_past, usegmt=True)
-        self.assertEqual(parse_retry_after(past_val, now=base_time), 0.0)
-
-    async def test_http_session_origin_restriction_and_status_checks(self):
-        with tempfile.TemporaryDirectory() as folder:
-            p = Path(folder) / "claude.json"
-            save_session(p, {"sessionKey": "sk-test"})
-            session = AsyncHttpSession("https://claude.ai", p, "sessionKey")
-            self.assertEqual(session.url("/api/user"), "https://claude.ai/api/user")
-
-            for invalid in (
-                "https://other.com/api",
-                "//other.com/api",
-                "/../outside",
-                "relative/path",
-            ):
-                with self.assertRaises(ValueError):
-                    session.url(invalid)
-
-            with self.assertRaises(AccountPaused):
-                session.check(FakeHTTPResponse(401))
-
-            with self.assertRaises(AccountPaused):
-                session.check(FakeHTTPResponse(302))
-
-            with self.assertRaises(ProviderError):
-                session.check(FakeHTTPResponse(403))
-
-            with self.assertRaises(RemoteNotFound):
-                session.check(FakeHTTPResponse(404))
-
-            with self.assertRaises(RateLimited) as ctx:
-                session.check(FakeHTTPResponse(429, headers={"retry-after": "15"}))
-            self.assertEqual(ctx.exception.retry_after, 15.0)
-
-    def test_session_write_lock_entries_reclaimed_by_gc(self):
-        import gc
-        import tempfile
-
-        from webaiprovider.accounts.credentials import _SESSION_WRITE_LOCKS, _session_write_lock
-
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "ephemeral.json"
-            lock = _session_write_lock(target)
-            with lock:
-                self.assertGreater(len(_SESSION_WRITE_LOCKS), 0)
-            del lock
-            gc.collect()
-            self.assertNotIn(str(target.resolve()), _SESSION_WRITE_LOCKS)
-            self.assertEqual(len(_SESSION_WRITE_LOCKS), 0)
