@@ -106,7 +106,7 @@ def parse_notebook_detail(parts: list[Any], remote: str, account_id: str) -> Pro
     return project_from_native(rows[0], account_id)
 
 
-class Notebooks:
+class GeminiNotebooks:
     """Blocking Gemini notebook reader."""
 
     def __init__(self, account_id: str):

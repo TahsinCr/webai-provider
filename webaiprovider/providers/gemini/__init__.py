@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from .errors import GeminiCompatibilityError as GeminiCompatibilityError
     from .errors import GeminiError as GeminiError
     from .errors import GeminiStreamError as GeminiStreamError
-    from .notebooks import Notebooks as Notebooks
+    from .notebooks import GeminiNotebooks as GeminiNotebooks
     from .provider import GeminiProvider as GeminiProvider
     from .resources import AsyncGeminiChat as AsyncGeminiChat
     from .resources import AsyncGeminiMessage as AsyncGeminiMessage
@@ -44,7 +44,7 @@ _EXPORTS = {
     "AsyncGeminiChat": "resources",
     "GeminiProvider": "provider",
     "AsyncGeminiProvider": "async_provider",
-    "Notebooks": "notebooks",
+    "GeminiNotebooks": "notebooks",
 }
 __all__ = list(_EXPORTS)
 

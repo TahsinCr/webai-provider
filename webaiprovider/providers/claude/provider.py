@@ -15,7 +15,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import ProjectsCollection
-from ...resources.project.mutations import SyncProjectMutationsMixin
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import Transport
 from .base import BaseClaudeProvider, remote_id
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 class ClaudeProvider(
-    SyncProjectMutationsMixin,
+    ProjectMutationsMixin,
     Provider[ChatsCollection[ClaudeChat], ProjectsCollection[ClaudeProject]],
     BaseClaudeProvider,
 ):

@@ -77,6 +77,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
+- Expose the blocking Gemini notebook reader as `GeminiNotebooks` from the Gemini package.
 - Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
 - Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
 - Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport, and SSE/JSPB framing. Install it with the optional `benchmark` extra.

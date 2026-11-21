@@ -588,6 +588,22 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider._create_project_data.await_args.kwargs["memory_share"], False)
         await provider.close()
 
+    def test_sync_chat_and_gemini_notebook_exports(self):
+        from webaiprovider import ClaudeChat, GeminiChat, GrokChat
+        from webaiprovider.providers.gemini import GeminiNotebooks
+
+        for provider_type, chat_type in (
+            ("claude", ClaudeChat),
+            ("gemini", GeminiChat),
+            ("grok", GrokChat),
+        ):
+            with self.subTest(provider=provider_type):
+                provider = Provider(Account.from_cookies(provider_type, {}))
+                self.assertIsInstance(provider.chats.create(), chat_type)
+        self.assertIsInstance(
+            Provider(Account.from_cookies("gemini", {})).notebooks, GeminiNotebooks
+        )
+
     def test_sync_provider_has_no_loop_bridge_and_runs_on_caller_thread(self) -> None:
         provider = Provider(Account.from_cookies("chatgpt", {"cookie": "test"}))
         self.assertFalse(hasattr(provider, "_loop"))
@@ -1386,10 +1402,10 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from types import SimpleNamespace
 
         from webaiprovider.resources.message.attachment import Attachment
-        from webaiprovider.resources.project.mutations import ProjectMutationsMixin
+        from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConfirmingProvider(ProjectMutationsMixin, AsyncProvider):
+        class ConfirmingProvider(AsyncProjectMutationsMixin, AsyncProvider):
             def __init__(self, account: Account) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()
@@ -1451,10 +1467,10 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from dataclasses import replace
         from types import SimpleNamespace
 
-        from webaiprovider.resources.project.mutations import ProjectMutationsMixin
+        from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConcurrentProvider(ProjectMutationsMixin, AsyncProvider):
+        class ConcurrentProvider(AsyncProjectMutationsMixin, AsyncProvider):
             def __init__(self, account: Account) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()

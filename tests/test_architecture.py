@@ -50,7 +50,7 @@ from webaiprovider.resources.message.protocol import (
 )
 from webaiprovider.resources.message.types import Content, MessageData
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
-from webaiprovider.resources.project.mutations import ProjectMutationsMixin
+from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
 from webaiprovider.resources.project.types import ProjectData
 
 
@@ -1012,7 +1012,7 @@ class TestProjectAttachmentsView(unittest.IsolatedAsyncioTestCase):
         unrelated = replace(project, resources=(Attachment("r-1", "unrelated.txt"),))
         wanted = Attachment("r-2", "report.pdf")
         confirmed = replace(unrelated, resources=(*unrelated.resources, wanted))
-        provider = ProjectMutationsMixin()
+        provider = AsyncProjectMutationsMixin()
         provider.editor = SimpleNamespace(add_source=AsyncMock(return_value=unrelated))
         provider._invalidate_project_cache = lambda _project_id: None
         provider._get_project_data = AsyncMock(return_value=confirmed)

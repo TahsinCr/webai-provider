@@ -17,7 +17,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
-from ...resources.project.mutations import ProjectMutationsMixin
+from ...resources.project.mutations import AsyncProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
 from .async_client import AsyncGrokClient, AsyncGrokProjectEditor
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 
 class AsyncGrokProvider(
-    ProjectMutationsMixin,
+    AsyncProjectMutationsMixin,
     AsyncProvider[AsyncChatsCollection[AsyncGrokChat], AsyncProjectsCollection[AsyncGrokProject]],
     BaseGrokProvider,
 ):

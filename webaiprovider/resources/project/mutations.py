@@ -108,7 +108,7 @@ def _finalize_remove_resource(
     return None, confirmed
 
 
-class ProjectMutationsMixin:
+class AsyncProjectMutationsMixin:
     """Shared project mutations backed by a provider editor and concurrency gate."""
 
     if TYPE_CHECKING:
@@ -207,7 +207,7 @@ class ProjectMutationsMixin:
         return await self._project_after_write(project_id, confirmed)
 
 
-class SyncProjectMutationsMixin:
+class ProjectMutationsMixin:
     """Shared blocking project mutations backed by a synchronous provider editor."""
 
     if TYPE_CHECKING:

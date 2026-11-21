@@ -23,7 +23,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import target_message
 from ...resources.model.model import ModelCatalog
-from ...resources.project.mutations import SyncProjectMutationsMixin
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData, ProjectOptions
 from ...transport import HTTPTransport, Transport, TransportConfig
 from ...transport.downloader import DownloadSource
@@ -65,7 +65,7 @@ def confirm_deleted_sync(read: Any, missing: Any = lambda value: False) -> None:
 
 
 class ChatGPTProvider(
-    SyncProjectMutationsMixin,
+    ProjectMutationsMixin,
     Provider[ChatsCollection[ChatGPTChat], ChatGPTProjectsCollection],
     BaseChatGPTProvider,
 ):

@@ -20,7 +20,7 @@ from ...resources.message.types import target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.collections import ProjectsCollection
-from ...resources.project.mutations import SyncProjectMutationsMixin
+from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import Transport
 from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
@@ -28,7 +28,7 @@ from .client import GeminiClient, GeminiProjectEditor
 from .errors import GeminiStreamError
 from .generation import _gemini_upload_spec, iter_response_events
 from .history import parse_chat_page
-from .notebooks import Notebooks, notebook_id
+from .notebooks import GeminiNotebooks, notebook_id
 from .resources import (
     GeminiArtifact,
     GeminiAttachment,
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 
 class GeminiProvider(
-    SyncProjectMutationsMixin,
+    ProjectMutationsMixin,
     Provider[ChatsCollection[GeminiChat], ProjectsCollection[GeminiProject]],
     BaseGeminiProvider,
 ):
@@ -68,7 +68,7 @@ class GeminiProvider(
         *,
         type: ProviderType | str | None = None,
         client_factory: Any = None,
-        notebooks: Notebooks | None = None,
+        notebooks: GeminiNotebooks | None = None,
         transport: Transport | None = None,
     ) -> None:
         if transport is not None and transport.origin != ORIGIN:
@@ -98,7 +98,7 @@ class GeminiProvider(
             clock=lambda: time.monotonic(),
         )
         self.rpc: GeminiRPC = GeminiRPC(self._connect)
-        self.notebooks: Notebooks = notebooks or Notebooks(account.id)
+        self.notebooks: GeminiNotebooks = notebooks or GeminiNotebooks(account.id)
         self.notebooks.reader = self.rpc.read
         self.editor: GeminiProjectEditor = GeminiProjectEditor(self.rpc, self.notebooks)
 

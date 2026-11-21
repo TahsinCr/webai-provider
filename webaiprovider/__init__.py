@@ -43,13 +43,13 @@ from .providers.chatgpt.provider import (
 from .providers.chatgpt.resources import AsyncChatGPTChat
 from .providers.claude.catalogs import ClaudeModels
 from .providers.claude.provider import ClaudeProvider
-from .providers.claude.resources import AsyncClaudeChat
+from .providers.claude.resources import AsyncClaudeChat, ClaudeChat
 from .providers.gemini.catalogs import GeminiModels
 from .providers.gemini.provider import GeminiProvider
-from .providers.gemini.resources import AsyncGeminiChat
+from .providers.gemini.resources import AsyncGeminiChat, GeminiChat
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import GrokProvider
-from .providers.grok.resources import AsyncGrokChat
+from .providers.grok.resources import AsyncGrokChat, GrokChat
 from .resources.chat.chat import (
     AsyncBranchableChat,
     AsyncChat,
@@ -225,8 +225,11 @@ __all__ = [
     "AsyncMovableChat",
     "ChatGPTChat",
     "AsyncChatGPTChat",
+    "ClaudeChat",
     "AsyncClaudeChat",
+    "GeminiChat",
     "AsyncGeminiChat",
+    "GrokChat",
     "AsyncGrokChat",
     "Message",
     "AsyncMessage",

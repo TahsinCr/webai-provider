@@ -21,7 +21,7 @@ from ...resources.message.types import target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
-from ...resources.project.mutations import ProjectMutationsMixin
+from ...resources.project.mutations import AsyncProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
 from .async_client import (
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 
 
 class AsyncGeminiProvider(
-    ProjectMutationsMixin,
+    AsyncProjectMutationsMixin,
     AsyncProvider[
         AsyncChatsCollection[AsyncGeminiChat], AsyncProjectsCollection[AsyncGeminiProject]
     ],

@@ -25,7 +25,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import target_message
 from ...resources.model.model import ModelCatalog
-from ...resources.project.mutations import ProjectMutationsMixin
+from ...resources.project.mutations import AsyncProjectMutationsMixin
 from ...resources.project.types import ProjectData, ProjectOptions
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.downloader import DownloadSource
@@ -71,7 +71,7 @@ async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None
 
 
 class AsyncChatGPTProvider(
-    ProjectMutationsMixin,
+    AsyncProjectMutationsMixin,
     AsyncProvider[AsyncChatsCollection[AsyncChatGPTChat], AsyncChatGPTProjectsCollection],
     BaseChatGPTProvider,
 ):
