@@ -569,7 +569,9 @@ class ClaudeClient:
                                 raw_file_roots.append({"files": presented})
                             presented_chunks[block_index] = ([], 0)
                         blocks[block_index] = block_type
-                        if block_type == "web_search_tool_result":
+                        if block_type == "web_search_tool_result" or (
+                            block_type == "tool_result" and block.get("name") == "web_search"
+                        ):
                             results = block.get("content")
                             if isinstance(results, list) and results:
                                 raw_source_roots.append({"sources": results})
@@ -599,7 +601,7 @@ class ClaudeClient:
                                 presented_chunks[index] = (chunks_list, new_len)
                             else:
                                 presented_chunks.pop(index)
-                        if delta_type == "citations_delta":
+                        if delta_type in ("citations_delta", "citation_start_delta"):
                             citation = delta.get("citation")
                             if citation is not None:
                                 if (

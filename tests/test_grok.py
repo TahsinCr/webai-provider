@@ -136,6 +136,36 @@ class GrokClientFixture:
         return None
 
 
+def _grok_stream_session(chunks=(), *, status_code=200, check=None):
+    class Response:
+        headers: ClassVar[dict[str, str]] = {}
+
+        def __init__(self):
+            self.status_code = status_code
+
+        async def aiter_content(self):
+            for chunk in chunks:
+                yield chunk
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    return bind_stream(
+        SimpleNamespace(
+            authenticated=True,
+            connect=Mock(return_value=SimpleNamespace(stream=Mock(return_value=Stream()))),
+            url=Mock(side_effect=lambda path: "https://grok.com" + path),
+            check=check or (lambda _response: None),
+            persist=AsyncMock(),
+        ),
+        "https://grok.com",
+    )
+
+
 class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_stream_lines_are_bounded_and_preserve_split_sse(self):
         class Response:
@@ -161,25 +191,10 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.read, 2)
 
     async def test_grok_stream_marks_expired_session_unauthenticated(self):
-        class Stream:
-            async def __aenter__(self):
-                return SimpleNamespace(status_code=401)
-
-            async def __aexit__(self, *_args):
-                return False
-
-        client = SimpleNamespace(stream=Mock(return_value=Stream()))
-        session = SimpleNamespace(
-            authenticated=True,
-            connect=Mock(return_value=client),
-            url=Mock(return_value="https://grok.com/rest/app-chat/conversations/chat/responses"),
-            check=Mock(side_effect=AccountPaused("expired")),
-            persist=AsyncMock(),
+        session = _grok_stream_session(
+            status_code=401, check=Mock(side_effect=AccountPaused("expired"))
         )
-        with patch(
-            "webaiprovider.providers.grok.client.AsyncHttpSession",
-            return_value=bind_stream(session, "https://grok.com"),
-        ):
+        with patch("webaiprovider.providers.grok.client.AsyncHttpSession", return_value=session):
             transport = GrokClient(Path("unused"))
 
         with self.assertRaises(AccountPaused):
@@ -1148,17 +1163,6 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(select_cookies(cookies, "grok"), {"sso-rw": "session"})
 
     async def test_grok_stream_ignores_sse_comments_and_merges_multiline_data(self):
-        class Response:
-            status_code = 200
-            headers: ClassVar[dict[str, str]] = {}
-
-            def __init__(self, chunks):
-                self.chunks = iter(chunks)
-
-            async def aiter_content(self):
-                for chunk in self.chunks:
-                    yield chunk
-
         chunks = [
             b": ping\r\n\r\n",
             b"event: message\r\n",
@@ -1167,24 +1171,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             b": keepalive\r\n\r\n",
             b'{"result": {"token": "bye"}}\r\n',
         ]
-
-        class StreamContext:
-            async def __aenter__(self):
-                return Response(chunks)
-
-            async def __aexit__(self, *args):
-                return False
-
         transport = GrokClient(Path("unused"))
         transport._ensure_authenticated = AsyncMock()
-        client = SimpleNamespace(stream=lambda *args, **kwargs: StreamContext())
-        transport.session = SimpleNamespace(
-            connect=lambda: client,
-            url=lambda path: "https://grok.com" + path,
-            check=lambda response: None,
-            persist=AsyncMock(),
-        )
-        transport.http = bind_stream(transport.session, "https://grok.com")
+        transport.http = _grok_stream_session(chunks)
         events = [event async for event in transport.events("/responses", {})]
         self.assertEqual(len(events), 2)
         self.assertEqual(events[0], {"result": {"token": "hi"}})

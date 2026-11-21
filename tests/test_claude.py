@@ -33,6 +33,45 @@ CHAT = "12345678-abcd-1234-abcd-123456789abc"
 PROJECT = "87654321-abcd-1234-abcd-123456789abc"
 
 
+def _claude_sse_client(stream_fn, *, request=None, authenticated=False):
+    class Response:
+        status_code = 200
+        headers: ClassVar[dict[str, str]] = {}
+
+        def __init__(self, kwargs):
+            self._kwargs = kwargs
+
+        async def aiter_content(self):
+            for item in stream_fn(self._kwargs):
+                yield (
+                    item if isinstance(item, bytes) else f"data: {json.dumps(item)}\n\n".encode()
+                )
+
+    class Stream:
+        def __init__(self, kwargs):
+            self._kwargs = kwargs
+
+        async def __aenter__(self):
+            return Response(self._kwargs)
+
+        async def __aexit__(self, *_):
+            return False
+
+    session = SimpleNamespace(
+        authenticated=authenticated,
+        path="/",
+        request=request or AsyncMock(return_value={}),
+        connect=lambda: SimpleNamespace(stream=lambda _m, _u, **kw: Stream(kw)),
+        url=lambda path: path,
+        check=lambda _response: None,
+        close=AsyncMock(),
+    )
+    client = ClaudeClient(Path("unused"), session=bind_stream(session))
+    client.organization = PROJECT
+    client.catalog = claude_model_catalog("claude-test")
+    return client
+
+
 class ClaudeRecordsTests(unittest.TestCase):
     def test_stream_block_index_can_differ_from_persisted_message(self):
         from tests.live.test_messages import _find_streamed_turn
@@ -171,6 +210,32 @@ class ClaudeRecordsTests(unittest.TestCase):
                 {"title": "Cited source", "url": "https://example.com/cited"},
             ),
         )
+
+    def test_conversation_extracts_tool_result_web_search_sources(self):
+        hit = {"title": "Search result", "url": "https://example.com/search"}
+        result = conversation(
+            {
+                "uuid": CHAT,
+                "name": "Research",
+                "chat_messages": [
+                    {
+                        "uuid": "assistant",
+                        "sender": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "name": "bash",
+                                "content": [{"url": "https://example.com/ignored"}],
+                            },
+                            {"type": "tool_result", "name": "web_search", "content": [hit]},
+                            {"type": "text", "text": "Answer"},
+                        ],
+                    }
+                ],
+            }
+        )
+        answer = next(m for m in result.messages if m.content[0].text == "Answer")
+        self.assertEqual(answer.metadata["sources"], (hit,))
 
     def test_unknown_content_blocks_survive_for_other_extensions(self):
         block = {"type": "future_tool", "payload": {"source": "document"}}
@@ -346,99 +411,74 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             ]
 
     async def test_transport_attaches_web_search_results_and_citations(self):
-        frames = [
-            {
-                "type": "message_start",
-                "message": {
-                    "uuid": "answer",
-                    "parent_uuid": "user",
-                    "model": "claude-test",
-                },
-            },
-            {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {
-                    "type": "web_search_tool_result",
-                    "content": [
-                        {
-                            "type": "web_search_result",
-                            "title": "Search result",
-                            "url": "https://example.com/search",
-                        }
-                    ],
-                },
-            },
-            {
-                "type": "content_block_start",
-                "index": 1,
-                "content_block": {
-                    "type": "text",
-                    "text": "Answer",
-                    "citations": [
-                        {
-                            "type": "web_search_result_location",
-                            "title": "Cited source",
-                            "url": "https://example.com/cited",
-                        }
-                    ],
-                },
-            },
-            {"type": "message_stop"},
-        ]
-
-        class Response:
-            status_code = 200
-            headers: ClassVar[dict[str, str]] = {}
-
-            async def aiter_content(self):
-                for frame in frames:
-                    yield ("data: " + json.dumps(frame) + "\n").encode()
-                    yield ("" + "\n").encode()
-
-        class Stream:
-            async def __aenter__(self):
-                return Response()
-
-            async def __aexit__(self, *_):
-                return False
-
-        class Client:
-            def stream(self, *_args, **_kwargs):
-                return Stream()
-
-        session = SimpleNamespace(
-            path="/",
-            request=AsyncMock(return_value={}),
-            connect=lambda: Client(),
-            url=lambda path: path,
-            check=lambda _response: None,
-        )
-        transport = ClaudeClient(Path("unused"), session=bind_stream(session))
-        transport.organization = PROJECT
-        transport.catalog = claude_model_catalog("claude-test")
-        result = [
-            event
-            async for event in transport.events(
-                "send",
-                prompt="Question",
-                model="claude-test",
-                conversation_id=CHAT,
-                temporary=False,
-                action=None,
-                project_id=None,
-                effort=None,
-            )
-        ]
-        metadata = next(event for event in result if event["type"] == "metadata")
-
-        self.assertEqual(
-            metadata["sources"],
+        hit = {"title": "Search result", "url": "https://example.com/search"}
+        cited = {"title": "Cited source", "url": "https://example.com/cited"}
+        head = {"type": "message_start", "message": {"uuid": "answer", "model": "claude-test"}}
+        variants = (
             (
-                {"title": "Search result", "url": "https://example.com/search"},
-                {"title": "Cited source", "url": "https://example.com/cited"},
+                "legacy",
+                [
+                    head,
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "web_search_tool_result", "content": [hit]},
+                    },
+                    {
+                        "type": "content_block_start",
+                        "index": 1,
+                        "content_block": {"type": "text", "text": "Answer", "citations": [cited]},
+                    },
+                    {"type": "message_stop"},
+                ],
+            ),
+            (
+                "tool_result",
+                [
+                    head,
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_result",
+                            "name": "web_search",
+                            "content": [hit],
+                        },
+                    },
+                    {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+                    {
+                        "type": "content_block_delta",
+                        "index": 1,
+                        "delta": {"type": "citation_start_delta", "citation": cited},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 1,
+                        "delta": {"type": "text_delta", "text": "Answer"},
+                    },
+                    {"type": "message_stop"},
+                ],
             ),
         )
+
+        for schema, frames in variants:
+            with self.subTest(schema=schema):
+                transport = _claude_sse_client(lambda _kw, f=frames: f)
+                result = [
+                    event
+                    async for event in transport.events(
+                        "send",
+                        prompt="Question",
+                        model="claude-test",
+                        conversation_id=CHAT,
+                        temporary=False,
+                        action=None,
+                        project_id=None,
+                        effort=None,
+                    )
+                ]
+                metadata = next(event for event in result if event["type"] == "metadata")
+                self.assertEqual(metadata["sources"], (hit, cited))
 
     async def test_stream_preserves_thinking_channels_and_remote_identity(self):
         async def events(*args, **kwargs):
@@ -537,46 +577,20 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         }
         recorded_bodies = []
 
-        class Response:
-            status_code = 200
-            headers: ClassVar[dict[str, str]] = {}
+        def stream_frames(kw):
+            recorded_bodies.append(kw.get("json"))
+            return (
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "ALPHA-42"},
+                },
+                {"type": "message_stop"},
+            )
 
-            async def aiter_content(self):
-                for frame in (
-                    {
-                        "type": "content_block_delta",
-                        "delta": {"type": "text_delta", "text": "ALPHA-42"},
-                    },
-                    {"type": "message_stop"},
-                ):
-                    yield ("data: " + json.dumps(frame) + "\n\n").encode()
-
-        class Stream:
-            def __init__(self, payload):
-                recorded_bodies.append(payload)
-
-            async def __aenter__(self):
-                return Response()
-
-            async def __aexit__(self, *_):
-                return False
-
-        class Client:
-            def stream(self, _method, _url, **kwargs):
-                return Stream(kwargs.get("json"))
-
-        session = SimpleNamespace(
-            path="/",
+        client = _claude_sse_client(
+            stream_frames,
             request=AsyncMock(side_effect=[doc_response, {"uuid": CHAT}]),
-            connect=lambda: Client(),
-            url=lambda path: path,
-            check=lambda _response: None,
         )
-        from webaiprovider.providers.claude.client import ClaudeClient
-
-        client = ClaudeClient(Path("unused"), session=bind_stream(session))
-        client.organization = PROJECT
-        client.catalog = claude_model_catalog("claude-test")
 
         with patch("curl_cffi.CurlMime"):
             uploaded = await client.upload_file(
@@ -885,43 +899,11 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             get_paths.append(path)
             return next(history_payloads)
 
-        class Response:
-            status_code = 200
-            headers: ClassVar[dict[str, str]] = {}
+        def next_stream(kwargs):
+            post_bodies.append(kwargs.get("json"))
+            return next(stream_batches)
 
-            def __init__(self, frames):
-                self._frames = frames
-
-            async def aiter_content(self):
-                for frame in self._frames:
-                    yield ("data: " + json.dumps(frame) + "\n\n").encode()
-
-        class Stream:
-            def __init__(self, payload):
-                post_bodies.append(payload)
-                self._frames = next(stream_batches)
-
-            async def __aenter__(self):
-                return Response(self._frames)
-
-            async def __aexit__(self, *_):
-                return False
-
-        class Client:
-            def stream(self, _method, _url, **kwargs):
-                return Stream(kwargs.get("json"))
-
-        session = SimpleNamespace(
-            path="/",
-            request=fake_http_request,
-            connect=lambda: Client(),
-            url=lambda path: path,
-            check=lambda _response: None,
-            close=AsyncMock(),
-        )
-        client = ClaudeClient(Path("unused"), session=bind_stream(session))
-        client.organization = PROJECT
-        client.catalog = claude_model_catalog("claude-test")
+        client = _claude_sse_client(next_stream, request=fake_http_request)
 
         events1 = [
             e
@@ -1065,29 +1047,14 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_events_yields_bound_before_move_chat_and_completion(self):
         order = []
-
-        class Response:
-            status_code = 200
-            headers: ClassVar[dict[str, str]] = {}
-
-            async def aiter_content(self):
-                order.append("completion_stream")
-                yield b'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ok"}}\n\n'
-                yield b'data: {"type": "message_stop"}\n\n'
-
-        class Stream:
-            async def __aenter__(self):
-                return Response()
-
-            async def __aexit__(self, *_):
-                return False
-
-        class Client:
-            def stream(self, _method, _url, **_kwargs):
-                order.append("completion_post")
-                return Stream()
-
         created_ids = []
+
+        def completion_stream(_kw):
+            order.extend(["completion_post", "completion_stream"])
+            return (
+                b'data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ok"}}\n\n',
+                b'data: {"type": "message_stop"}\n\n',
+            )
 
         async def fake_request(method, path=None, **kwargs):
             order.append((method, path))
@@ -1101,16 +1068,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             cid = created_ids[-1] if created_ids else CHAT
             return {"uuid": cid, "project_uuid": PROJECT, "is_temporary": False}
 
-        session = SimpleNamespace(
-            path="/",
-            request=AsyncMock(side_effect=fake_request),
-            connect=lambda: Client(),
-            url=lambda path: path,
-            check=lambda _response: None,
-        )
-        client = ClaudeClient(Path("unused"), session=bind_stream(session))
-        client.organization = PROJECT
-        client.catalog = claude_model_catalog("claude-test")
+        client = _claude_sse_client(completion_stream, request=AsyncMock(side_effect=fake_request))
 
         seen = []
         async for event in client.events(
@@ -1134,7 +1092,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(move_idx, post_idx)
         self.assertEqual(seen[0], {"type": "bound", "id": created_ids[0]})
         self.assertEqual(
-            session.request.await_args_list[0].kwargs["json"],
+            client.session.request.await_args_list[0].kwargs["json"],
             {"uuid": created_ids[0], "name": "Disposable chat"},
         )
 
@@ -1146,45 +1104,18 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RateLimited):
                 await anext(events)
         self.assertEqual(
-            session.request.await_args.kwargs["json"],
+            client.session.request.await_args.kwargs["json"],
             {"uuid": created_ids[-1], "name": "Another draft"},
         )
 
     async def test_malformed_sse_json_raises_claude_compatibility_error(self):
-
         from webaiprovider.providers.claude.errors import ClaudeCompatibilityError
 
-        class BadResponse:
-            status_code = 200
-            headers = {}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_args):
-                return False
-
-            async def aiter_content(self):
-                yield b"data: {not-valid-json}\n\n"
-
-        class Client:
-            def stream(self, _method, _url, **_kw):
-                return BadResponse()
-
-            async def close(self):
-                return None
-
-        session = SimpleNamespace(
-            authenticated=True,
-            path=Path("unused"),
+        client = _claude_sse_client(
+            lambda _kw: (b"data: {not-valid-json}\n\n",),
             request=AsyncMock(return_value={"current_leaf_message_uuid": "parent"}),
-            connect=lambda: Client(),
-            url=lambda path: path,
-            check=lambda _response: None,
+            authenticated=True,
         )
-        client = ClaudeClient(Path("unused"), session=bind_stream(session))
-        client.organization = PROJECT
-        client.catalog = claude_model_catalog("claude-test")
 
         with self.assertRaises(ClaudeCompatibilityError):
             async for _ in client.events(

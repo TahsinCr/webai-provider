@@ -158,6 +158,7 @@ def conversation(value, *, _action_uuid=None):
                     result
                     for block in content
                     if block.get("type") == "web_search_tool_result"
+                    or (block.get("type") == "tool_result" and block.get("name") == "web_search")
                     for result in (
                         block.get("content")[:128] if isinstance(block.get("content"), list) else ()
                     )
