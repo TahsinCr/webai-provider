@@ -13,7 +13,7 @@ from ...resources.message.types import (
     target_message,
 )
 from ...resources.project.types import ProjectData
-from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
+from ...resources.response.artifact import FileTargetRule, files_from
 from ...resources.response.source import sources_from
 from .errors import ClaudeCompatibilityError
 
@@ -21,20 +21,15 @@ _CLAUDE_SANDBOX_RE = re.compile(
     r"\[([^\]\n]{1,200})\]\(((?:sandbox:|computer:)?/mnt/user-data/[^\s)]+)\)"
 )
 
-register_file_target_rule(
-    FileTargetRule(
-        name="claude",
-        parse_target=lambda _target, parsed: (
-            parsed.scheme in ("", "sandbox", "computer")
-            and parsed.path.startswith("/mnt/user-data/")
-            and not parsed.netloc
-        ),
-        matches_identity=lambda identity, target: (
-            not target and identity.startswith("/mnt/user-data/")
-        ),
-        markdown_link_re=_CLAUDE_SANDBOX_RE,
-        markdown_hint="/mnt/user-data/",
-    )
+CLAUDE_FILE_RULE = FileTargetRule(
+    parse_target=lambda _target, parsed: (
+        parsed.scheme in ("", "sandbox", "computer")
+        and parsed.path.startswith("/mnt/user-data/")
+        and not parsed.netloc
+    ),
+    matches_identity=lambda identity, target: not target and identity.startswith("/mnt/user-data/"),
+    markdown_link_re=_CLAUDE_SANDBOX_RE,
+    markdown_hint="/mnt/user-data/",
 )
 
 
@@ -44,11 +39,14 @@ def presented_files(block):
         inputs = block.get("input")
         paths = inputs.get("filepaths") or () if isinstance(inputs, dict) else ()
         return (
-            files_from({"files": [{"path": path} for path in paths[:128] if isinstance(path, str)]})
+            files_from(
+                {"files": [{"path": path} for path in paths[:128] if isinstance(path, str)]},
+                rule=CLAUDE_FILE_RULE,
+            )
             if isinstance(paths, (list, tuple))
             else ()
         )
-    return files_from(block)
+    return files_from(block, rule=CLAUDE_FILE_RULE)
 
 
 def _attachment_count(turns):
@@ -175,6 +173,7 @@ def conversation(value, *, _action_uuid=None):
                 {"files": pending_files},
                 item,
                 *({"files": presented_files(block)} for block in content),
+                rule=CLAUDE_FILE_RULE,
             )
             if pending_files:
                 pending_id = str(item["uuid"])

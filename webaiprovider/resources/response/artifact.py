@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import SplitResult, unquote, urlsplit
@@ -9,6 +9,7 @@ from urllib.parse import SplitResult, unquote, urlsplit
 from ...collections import Collection
 from .source import _clean_text, _has_control_chars
 
+MAX_FILE_REFERENCES = 128
 _MEDIA_TYPE_RE = re.compile(r"[\w!#$&^.+-]+/[\w!#$&^.+-]+")
 _FILE_TARGET_KEYS = (
     "download_url",
@@ -33,24 +34,15 @@ _FILE_NESTED_KEYS = ("metadata", "native", "native_message", "content", "parts",
 
 @dataclass(frozen=True, slots=True)
 class FileTargetRule:
-    """Provider-registered file reference validator and markdown link extractor."""
+    """Provider-specific file reference validator and Markdown link extractor."""
 
-    name: str
-    parse_target: Callable[[str, SplitResult], bool]
+    parse_target: Callable[[str, SplitResult], bool] | None = None
     matches_identity: Callable[[str, str | None], bool] | None = None
     markdown_link_re: re.Pattern[str] | None = None
     markdown_hint: str | None = None
 
 
-_FILE_TARGET_RULES: dict[str, FileTargetRule] = {}
-
-
-def register_file_target_rule(rule: FileTargetRule) -> None:
-    """Register or replace a provider-specific file target normalization rule."""
-    _FILE_TARGET_RULES[rule.name] = rule
-
-
-def _parse_file_target(target: str, rules: Iterable[FileTargetRule]) -> SplitResult | None:
+def _parse_file_target(target: str, rule: FileTargetRule | None) -> SplitResult | None:
     if len(target) > 8192 or _has_control_chars(target):
         return None
     try:
@@ -61,9 +53,8 @@ def _parse_file_target(target: str, rules: Iterable[FileTargetRule]) -> SplitRes
         if not parsed.hostname or parsed.username or parsed.password:
             return None
         return parsed
-    for rule in rules:
-        if rule.parse_target(target, parsed):
-            return parsed
+    if rule and rule.parse_target and rule.parse_target(target, parsed):
+        return parsed
     return None
 
 
@@ -71,7 +62,7 @@ def _extract_file(
     value: Any,
     seen: set[str],
     owner: str | None,
-    rules: tuple[FileTargetRule, ...],
+    rule: FileTargetRule | None,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -87,14 +78,16 @@ def _extract_file(
         None,
     )
     identity = merged.get("id")
-    if isinstance(identity, str) and any(
-        rule.matches_identity is not None and rule.matches_identity(identity, target)
-        for rule in rules
+    if (
+        isinstance(identity, str)
+        and rule
+        and rule.matches_identity
+        and rule.matches_identity(identity, target)
     ):
         target = identity
     if not target or target in seen:
         return None
-    parsed = _parse_file_target(target, rules)
+    parsed = _parse_file_target(target, rule)
     if parsed is None:
         return None
     seen.add(target)
@@ -121,37 +114,39 @@ def _extract_file(
 
 def files_from(
     *roots: Any,
-    rules: Iterable[FileTargetRule] | None = None,
+    rule: FileTargetRule | None = None,
+    seen: set[str] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Extract validated file/artifact references from provider payloads."""
-    active_rules = tuple(rules) if rules is not None else tuple(_FILE_TARGET_RULES.values())
+    """Extract new file references, sharing the deduplication budget when requested."""
     files: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    known = set() if seen is None else seen
     remaining = 2048
 
     def add(value: Any, owner: str | None = None) -> None:
-        if len(files) >= 128:
+        if len(known) >= MAX_FILE_REFERENCES:
             return
-        entry = _extract_file(value, seen, owner, active_rules)
+        entry = _extract_file(value, known, owner, rule)
         if entry is not None:
             files.append(entry)
 
     def visit(value: Any, depth: int = 0, resource: bool = False, owner: str | None = None) -> None:
         nonlocal remaining
-        if depth > 7 or remaining <= 0 or len(files) >= 128:
+        if depth > 7 or remaining <= 0 or len(known) >= MAX_FILE_REFERENCES:
             return
         remaining -= 1
         if isinstance(value, (list, tuple)):
-            for item in value[:128]:
+            for item in value[:MAX_FILE_REFERENCES]:
                 visit(item, depth + 1, resource, owner)
         elif isinstance(value, str):
-            for rule in active_rules:
-                if rule.markdown_link_re is None or (
-                    rule.markdown_hint is not None and rule.markdown_hint not in value
-                ):
-                    continue
+            if (
+                rule
+                and rule.markdown_link_re
+                and (rule.markdown_hint is None or rule.markdown_hint in value)
+            ):
                 for match in rule.markdown_link_re.finditer(value):
                     add({"name": match[1], "url": match[2]}, owner)
+                    if len(known) >= MAX_FILE_REFERENCES:
+                        break
         elif isinstance(value, dict):
             if resource or any(
                 value.get(key) for key in ("file_path", "download_url", "asset_pointer")
@@ -166,7 +161,7 @@ def files_from(
                 remaining -= 1
             for keys, is_resource in ((_FILE_RESOURCE_KEYS, True), (_FILE_NESTED_KEYS, False)):
                 for key in keys:
-                    if remaining <= 0 or len(files) >= 128:
+                    if remaining <= 0 or len(known) >= MAX_FILE_REFERENCES:
                         return
                     child = value.get(key)
                     if child is None:

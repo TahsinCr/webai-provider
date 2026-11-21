@@ -1564,7 +1564,8 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                         "modelResponse": {
                             "responseId": "a1",
                             "model": "grok-3",
-                            "generatedImageUrls": ["users/u1/gen.jpg"],
+                            "generatedImageUrls": ["users/u1/gen.png", "users/u1/preview.webp"],
+                            "fileAttachments": True,
                             "fileAttachmentsMetadata": [
                                 {
                                     "fileUri": "/users/u1/notes.txt",
@@ -1581,8 +1582,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         async def fake_events(_path, _body):
-            for chunk in stream_chunks:
-                yield chunk
+            yield stream_chunks[0]
+            yield stream_chunks[1]
+            yield stream_chunks[1]
 
         provider.client.authenticate = AsyncMock(return_value={})
         provider.client.request = transport.request
@@ -1598,10 +1600,16 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             [(a.id, a.name, a.mime_type, a.download_url) for a in response.artifacts],
             [
                 (
-                    "https://assets.grok.com/users/u1/gen.jpg",
-                    "gen.jpg",
-                    "image/jpeg",
-                    "https://assets.grok.com/users/u1/gen.jpg",
+                    "https://assets.grok.com/users/u1/gen.png",
+                    "gen.png",
+                    "image/png",
+                    "https://assets.grok.com/users/u1/gen.png",
+                ),
+                (
+                    "https://assets.grok.com/users/u1/preview.webp",
+                    "preview.webp",
+                    "image/webp",
+                    "https://assets.grok.com/users/u1/preview.webp",
                 ),
                 (
                     "https://assets.grok.com/users/u1/notes.txt",
@@ -1628,7 +1636,8 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
                         "sender": "assistant",
                         "parentResponseId": "u1",
                         "message": "See [chart.png](https://assets.grok.com/users/u1/chart.png)",
-                        "generatedImageUrls": ["users/u1/gen.jpg"],
+                        "generatedImageUrls": ["users/u1/gen.png", "users/u1/preview.webp"],
+                        "fileAttachments": True,
                         "fileAttachmentsMetadata": [
                             {
                                 "fileUri": "/users/u1/notes.txt",
@@ -1644,7 +1653,8 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["url"] for item in hist.messages[1].metadata["files"]],
             [
-                "https://assets.grok.com/users/u1/gen.jpg",
+                "https://assets.grok.com/users/u1/gen.png",
+                "https://assets.grok.com/users/u1/preview.webp",
                 "https://assets.grok.com/users/u1/notes.txt",
                 "https://assets.grok.com/users/u1/chart.png",
             ],

@@ -10,9 +10,12 @@ from unittest.mock import AsyncMock, Mock
 from tests.fakes import FakeAsyncHTTPClient, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.providers.chatgpt.client import ChatGPTClient
+from webaiprovider.providers.chatgpt.formats import message_files
 from webaiprovider.providers.claude.client import ClaudeClient
+from webaiprovider.providers.claude.records import presented_files
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import parse_chat_history
+from webaiprovider.providers.gemini.media import GEMINI_FILE_RULE
 from webaiprovider.resources.message.protocol import ProviderRequest
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import Model
@@ -25,10 +28,12 @@ class ChatGPTActionsTests(unittest.IsolatedAsyncioTestCase):
     def test_download_metadata_supports_native_resources_and_ignores_web_page_links(self):
         cases = (
             (
+                message_files,
                 {"content": {"parts": ["[Report](sandbox:/mnt/data/report.pdf)"]}},
                 "sandbox:/mnt/data/report.pdf",
             ),
             (
+                lambda value: files_from(value, rule=GEMINI_FILE_RULE),
                 {
                     "content": [
                         {
@@ -43,6 +48,7 @@ class ChatGPTActionsTests(unittest.IsolatedAsyncioTestCase):
                 "http://googleusercontent.com/image_generation_content/0",
             ),
             (
+                presented_files,
                 {
                     "files": [
                         {
@@ -55,10 +61,14 @@ class ChatGPTActionsTests(unittest.IsolatedAsyncioTestCase):
                 "/mnt/user-data/outputs/report.docx",
             ),
         )
-        for value, target in cases:
+        for parse, value, target in cases:
             with self.subTest(target=target):
-                files = files_from(value)
-                self.assertEqual(files[0]["url"], target)
+                self.assertEqual(parse(value)[0]["url"], target)
+        other_provider_links = {
+            "text": "[Grok](https://assets.grok.com/example.png) "
+            "[Claude](sandbox:/mnt/user-data/outputs/report.pdf)"
+        }
+        self.assertEqual(message_files(other_provider_links), ())
         self.assertEqual(files_from({"text": "[Search result](https://example.com/page)"}), ())
         self.assertEqual(
             files_from(

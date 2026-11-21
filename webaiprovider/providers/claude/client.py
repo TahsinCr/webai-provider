@@ -29,13 +29,13 @@ from ...resources.message.protocol import (
     TextReplacement,
 )
 from ...resources.message.types import MessageAction
-from ...resources.response.artifact import files_from
+from ...resources.response.artifact import MAX_FILE_REFERENCES, files_from
 from ...resources.response.source import sources_from
 from ...transport import AsyncHttpSession
 from ...transport.frames import SSEFrameDecoder
 from .catalogs import parse_model_catalog
 from .errors import ClaudeCompatibilityError, ClaudeRequestNotSent, ClaudeStreamError
-from .records import action_target, presented_files
+from .records import CLAUDE_FILE_RULE, action_target, presented_files
 
 _WEB_SEARCH_TOOL = {"type": "web_search_v0", "name": "web_search"}
 _ALLOWED_UPLOAD_SUFFIXES = frozenset(CLAUDE_ATTACHMENTS.allowed_extensions)
@@ -462,11 +462,16 @@ class ClaudeClient:
         if not raw_roots:
             return ()
         if len(raw_roots) <= 64:
-            return files_from(*raw_roots)
-        files = ()
+            return files_from(*raw_roots, rule=CLAUDE_FILE_RULE)
+        files = []
+        seen: set[str] = set()
         for index in range(0, len(raw_roots), 64):
-            files = files_from({"files": list(files)}, *raw_roots[index : index + 64])
-        return files
+            files.extend(
+                files_from(*raw_roots[index : index + 64], rule=CLAUDE_FILE_RULE, seen=seen)
+            )
+            if len(seen) >= MAX_FILE_REFERENCES:
+                break
+        return tuple(files)
 
     async def events(self, mode, **v):
         if mode != "send":

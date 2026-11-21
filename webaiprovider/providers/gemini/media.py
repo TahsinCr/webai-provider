@@ -3,7 +3,7 @@
 import re
 from urllib.parse import urlsplit
 
-from ...resources.response.artifact import FileTargetRule, register_file_target_rule
+from ...resources.response.artifact import FileTargetRule
 
 PLACEHOLDER = re.compile(r"https?://googleusercontent\.com/image_generation_content/[^\s)\]<>]+")
 _GEMINI_IDENTITY_PREFIXES = (
@@ -12,17 +12,14 @@ _GEMINI_IDENTITY_PREFIXES = (
     "https://googleusercontent.com/image_generation_content/",
 )
 
-register_file_target_rule(
-    FileTargetRule(
-        name="gemini",
-        parse_target=lambda target, parsed: (
-            parsed.scheme == "gemini-media"
-            and bool(parsed.path)
-            and not parsed.netloc
-            and len(target) <= 512
-        ),
-        matches_identity=lambda identity, _target: identity.startswith(_GEMINI_IDENTITY_PREFIXES),
-    )
+GEMINI_FILE_RULE = FileTargetRule(
+    parse_target=lambda target, parsed: (
+        parsed.scheme == "gemini-media"
+        and bool(parsed.path)
+        and not parsed.netloc
+        and len(target) <= 512
+    ),
+    matches_identity=lambda identity, _target: identity.startswith(_GEMINI_IDENTITY_PREFIXES),
 )
 
 

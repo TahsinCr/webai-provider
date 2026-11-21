@@ -10,33 +10,28 @@ from ...resources.message.protocol import (
     ProviderRequest,
     TextReplacement,
 )
-from ...resources.response.artifact import FileTargetRule, files_from, register_file_target_rule
+from ...resources.response.artifact import FileTargetRule, files_from
 from ...resources.response.source import sources_from
 
 _FILE_SERVICE_RE = re.compile(r"file[-_][A-Za-z0-9_-]+")
 _CHATGPT_SANDBOX_RE = re.compile(r"\[([^\]\n]{1,200})\]\(((?:sandbox:)?/mnt/data/[^\s)]+)\)")
 
-register_file_target_rule(
-    FileTargetRule(
-        name="chatgpt",
-        parse_target=lambda _target, parsed: (
-            (
-                parsed.scheme == "file-service"
-                and _FILE_SERVICE_RE.fullmatch(parsed.netloc) is not None
-                and not parsed.path
-            )
-            or (
-                parsed.scheme in ("", "sandbox")
-                and parsed.path.startswith("/mnt/data/")
-                and not parsed.netloc
-            )
-        ),
-        matches_identity=lambda identity, target: (
-            not target and identity.startswith("sandbox:/mnt/")
-        ),
-        markdown_link_re=_CHATGPT_SANDBOX_RE,
-        markdown_hint="/mnt/data/",
-    )
+CHATGPT_FILE_RULE = FileTargetRule(
+    parse_target=lambda _target, parsed: (
+        (
+            parsed.scheme == "file-service"
+            and _FILE_SERVICE_RE.fullmatch(parsed.netloc) is not None
+            and not parsed.path
+        )
+        or (
+            parsed.scheme in ("", "sandbox")
+            and parsed.path.startswith("/mnt/data/")
+            and not parsed.netloc
+        )
+    ),
+    matches_identity=lambda identity, target: not target and identity.startswith("sandbox:/mnt/"),
+    markdown_link_re=_CHATGPT_SANDBOX_RE,
+    markdown_hint="/mnt/data/",
 )
 
 
@@ -54,7 +49,7 @@ def message_files(*messages):
                 attachments.append(
                     dict(item, url="file-service://" + identifier, message_id=message.get("id"))
                 )
-    return files_from({"files": attachments}, *messages)
+    return files_from({"files": attachments}, *messages, rule=CHATGPT_FILE_RULE)
 
 
 def message_parts(content: Any) -> list[Any]:

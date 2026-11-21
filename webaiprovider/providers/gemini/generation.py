@@ -35,7 +35,7 @@ from .errors import (
     GeminiStreamError,
 )
 from .history import candidate_metadata, published_activity, published_thoughts
-from .media import candidate_files, resolve_image_links
+from .media import GEMINI_FILE_RULE, candidate_files, resolve_image_links
 from .rpc import rpc_value
 from .session import BASE, HEADERS
 
@@ -437,6 +437,6 @@ async def response_events(
             model=request.model,
             effort=request.effort,
             sources=sources_from({"sources": raw_sources}) if raw_sources else (),
-            files=files_from({"files": raw_files}) if raw_files else (),
+            files=files_from({"files": raw_files}, rule=GEMINI_FILE_RULE) if raw_files else (),
         )
     remember(cid, metadata, temporary=request.temporary)
