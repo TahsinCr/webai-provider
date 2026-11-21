@@ -11,6 +11,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Move response operation classes and streaming events to `webaiprovider.resources.response.operation`. Top-level imports remain available.
 
 - Use `New Chat` as the default title for new conversations.
+- Keep provider fallback chat titles and shared action labels in English.
 
 - Construct chat response collections directly across providers.
 

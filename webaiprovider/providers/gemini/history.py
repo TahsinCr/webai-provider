@@ -125,7 +125,7 @@ def parse_chat_page(pages, *, offset=0, limit=None):
     return tuple(
         Conversation(
             cid,
-            history_value(row, 1) or "Gemini sohbeti",
+            history_value(row, 1) or "Gemini Chat",
             project=(
                 ProjectData(pid, "")
                 if isinstance(pid := history_value(row, 7), str) and pid.startswith("notebooks/")
@@ -251,7 +251,7 @@ def parse_chat_history(data, cid):
         messages.extend(_turn_messages(turn, _turn_id(turn)))
     return Conversation(
         cid,
-        "Gemini sohbeti",
+        "Gemini Chat",
         tuple(messages),
         metadata={"history_partial": len(turns) >= 1000, "title_unavailable": True},
     )

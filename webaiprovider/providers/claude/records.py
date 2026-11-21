@@ -246,7 +246,7 @@ def conversation(value, *, _action_uuid=None):
     flush_files()
     return Conversation(
         value["uuid"],
-        value.get("name") or "Claude sohbeti",
+        value.get("name") or "Claude Chat",
         tuple(messages),
         _project_data(value),
         {"native": {k: v for k, v in value.items() if k != "chat_messages"}},

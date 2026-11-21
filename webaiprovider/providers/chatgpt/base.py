@@ -495,7 +495,7 @@ class BaseChatGPTClient:
         conversation = {
             "id": resolved_id,
             "conversation_id": resolved_id,
-            "title": "Geçici sohbet",
+            "title": "Temporary Chat",
             "default_model_slug": model,
             "current_node": streamed_messages[-1].get("id") if streamed_messages else None,
             "messages": list((previous or {}).get("messages", []))
@@ -1269,10 +1269,10 @@ class BaseChatGPTProjectEditor:
     def _create_options() -> ProjectOptions:
         return ProjectOptions(
             fields=("name",),
-            visibility=(ProjectOption("private", "Özel"),),
+            visibility=(ProjectOption("private", "Private"),),
             memory=(
-                ProjectOption("default", "Varsayılan"),
-                ProjectOption("project_only", "Yalnızca proje"),
+                ProjectOption("default", "Default"),
+                ProjectOption("project_only", "Project only"),
             ),
         )
 
@@ -1297,10 +1297,10 @@ class BaseChatGPTProjectEditor:
             sources=(
                 {
                     "id": "file",
-                    "title": "Dosya",
+                    "title": "File",
                     "accept": ",".join(accepted) if accepted else "*/*",
                 },
-                {"id": "text", "title": "Metin"},
+                {"id": "text", "title": "Text"},
             ),
             remove_sources=True,
         )

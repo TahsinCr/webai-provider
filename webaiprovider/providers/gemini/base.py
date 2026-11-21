@@ -392,7 +392,7 @@ class BaseGeminiProjectEditor:
         return ProjectOptions(
             fields=("name", "instructions") if project_id else ("name",),
             sources=(
-                ({"id": "text", "title": "Metin"}, {"id": "file", "title": "Dosya"})
+                ({"id": "text", "title": "Text"}, {"id": "file", "title": "File"})
                 if project_id
                 else ()
             ),
