@@ -136,36 +136,42 @@ int sentinel_solve_pow_segments(
     if (params->max_attempts == 0) {
         return SENTINEL_OK;
     }
-    if (params->nonce_start > UINT64_MAX - params->max_attempts) {
+    if (params->nonce_start > UINT64_MAX - (params->max_attempts - 1U)) {
         return SENTINEL_ERR_OVERFLOW;
     }
 
     size_t max_u64_digits = 24U;
-    if (params->middle_len > SIZE_MAX - max_u64_digits - params->suffix_len) {
+    if (params->suffix_len > SIZE_MAX - max_u64_digits) {
         return SENTINEL_ERR_OVERFLOW;
     }
-    size_t after_cap = params->middle_len + max_u64_digits + params->suffix_len;
-    if (params->tail_prefix_len > SIZE_MAX - max_u64_digits - after_cap) {
+    size_t after_cap = max_u64_digits + params->suffix_len;
+    if (params->middle_len > SIZE_MAX - after_cap) {
         return SENTINEL_ERR_OVERFLOW;
     }
-    size_t scratch_cap = params->tail_prefix_len + max_u64_digits + after_cap;
+    after_cap += params->middle_len;
+    if (after_cap > SIZE_MAX - max_u64_digits) {
+        return SENTINEL_ERR_OVERFLOW;
+    }
+    size_t scratch_tail_cap = max_u64_digits + after_cap;
+    if (params->tail_prefix_len > SIZE_MAX - scratch_tail_cap) {
+        return SENTINEL_ERR_OVERFLOW;
+    }
+    size_t scratch_cap = params->tail_prefix_len + scratch_tail_cap;
 
     uint8_t stack_after[STACK_SCRATCH_CAP];
     uint8_t stack_scratch[STACK_SCRATCH_CAP];
-    uint8_t *after_buf = stack_after;
-    uint8_t *scratch = stack_scratch;
-    int heap_alloc = 0;
-
-    if (after_cap > STACK_SCRATCH_CAP || scratch_cap > STACK_SCRATCH_CAP) {
-        after_buf = (uint8_t *)malloc(after_cap);
-        scratch = (uint8_t *)malloc(scratch_cap);
-        if (after_buf == NULL || scratch == NULL) {
-            free(after_buf == stack_after ? NULL : after_buf);
-            free(scratch == stack_scratch ? NULL : scratch);
-            return SENTINEL_ERR_NOMEM;
-        }
-        heap_alloc = 1;
+    uint8_t *after_heap = NULL;
+    uint8_t *scratch_heap = NULL;
+    if (after_cap > STACK_SCRATCH_CAP && (after_heap = (uint8_t *)malloc(after_cap)) == NULL) {
+        return SENTINEL_ERR_NOMEM;
     }
+    if (scratch_cap > STACK_SCRATCH_CAP &&
+        (scratch_heap = (uint8_t *)malloc(scratch_cap)) == NULL) {
+        free(after_heap);
+        return SENTINEL_ERR_NOMEM;
+    }
+    uint8_t *after_buf = after_heap != NULL ? after_heap : stack_after;
+    uint8_t *scratch = scratch_heap != NULL ? scratch_heap : stack_scratch;
 
     if (params->tail_prefix_len > 0) {
         memcpy(scratch, params->tail_prefix, params->tail_prefix_len);
@@ -244,10 +250,8 @@ int sentinel_solve_pow_segments(
         }
     }
 
-    if (heap_alloc) {
-        free(after_buf);
-        free(scratch);
-    }
+    free(after_heap);
+    free(scratch_heap);
     return status;
 }
 
@@ -310,7 +314,7 @@ int sentinel_solve_pow(
 
     SentinelPowSegments seg = {
         .prefix_hash = prefix_hash,
-        .tail_prefix = req->prefix + aligned,
+        .tail_prefix = req->prefix != NULL ? req->prefix + aligned : NULL,
         .tail_prefix_len = req->prefix_len - aligned,
         .middle = req->middle,
         .middle_len = req->middle_len,

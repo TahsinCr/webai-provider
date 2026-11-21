@@ -69,7 +69,7 @@ static void test_xor_helpers(void) {
     assert(sentinel_xor_utf32(overflow_cp, 1, overflow_key, 1, out, NULL) == SENTINEL_ERR_RANGE);
 }
 
-static void test_pow_solver_and_benchmark(void) {
+static void test_pow_solver(void) {
     const char *prefix = "[1920,\"1080\",4000,";
     const char *middle = ",\"Mozilla/5.0\",\"\",";
     const char *suffix = ",\"en-US\",1]";
@@ -91,10 +91,8 @@ static void test_pow_solver_and_benchmark(void) {
         .initial_elapsed_ns = 0,
     };
 
-    int64_t t0 = sentinel_monotonic_ns();
     SentinelPowFullResult res;
     int rc = sentinel_solve_pow(&req, &res);
-    int64_t t1 = sentinel_monotonic_ns();
     assert(rc == SENTINEL_OK);
     assert(res.found == 1);
     assert(res.token != NULL);
@@ -120,13 +118,11 @@ static void test_pow_solver_and_benchmark(void) {
     uint32_t mixed = sentinel_fnv1a_finalize_u32(check_hash);
     assert((mixed >> shift) <= target_int);
 
-    double wall_ms = (double)(t1 - t0) / 1e6;
     printf(
-        "PASS sentinel PoW (diff=%s, nonce=%llu, elapsed_ms=%llu, wall=%.3f ms)\n",
+        "PASS sentinel PoW (diff=%s, nonce=%llu, elapsed_ms=%llu)\n",
         diff,
         (unsigned long long)res.nonce,
-        (unsigned long long)res.elapsed_ms,
-        wall_ms
+        (unsigned long long)res.elapsed_ms
     );
 
     sentinel_pow_full_result_reset(&res);
@@ -138,7 +134,7 @@ int main(void) {
     test_fnv1a_and_utf16();
     test_base64_roundtrip();
     test_xor_helpers();
-    test_pow_solver_and_benchmark();
+    test_pow_solver();
     puts("All libsentinel C99 tests passed.");
     return 0;
 }

@@ -75,6 +75,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
 - Run offline and live API tests separately. The live runner exercises the shared async provider implementation once per account. Blocking API coverage runs offline. The live runner paces account requests and reports cleanup and rate-limit skips separately from failures.
 
+### Fixed
+
+- Guard Sentinel proof-of-work buffer sizing and final nonce boundaries, avoid null-pointer arithmetic for empty prefixes, and initialize Windows performance-counter frequency safely across concurrent calls. Reuse stack storage for the nonce suffix when only the larger scratch buffer needs heap allocation.
+
 ### Added
 
 - Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
