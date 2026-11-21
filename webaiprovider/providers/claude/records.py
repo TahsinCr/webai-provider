@@ -179,12 +179,23 @@ def conversation(value, *, _action_uuid=None):
                 )
             elif pending_sources:
                 pending_sources = sources_from({"sources": pending_sources})
-            pending_files = files_from(
-                {"files": pending_files},
-                item,
-                *({"files": presented_files(block)} for block in content),
-                rule=CLAUDE_FILE_RULE,
+            hint = CLAUDE_FILE_RULE.markdown_hint
+            # A bare legacy text row has no file fields; only a sandbox path can add one.
+            plain_text_turn = (
+                len(item) == 3
+                and "uuid" in item
+                and "sender" in item
+                and isinstance(item.get("text"), str)
+                and hint is not None
+                and hint not in item["text"]
             )
+            if pending_files or not plain_text_turn:
+                pending_files = files_from(
+                    {"files": pending_files},
+                    item,
+                    *({"files": presented_files(block)} for block in content),
+                    rule=CLAUDE_FILE_RULE,
+                )
             if pending_files:
                 pending_id = str(item["uuid"])
         native_message = {k: v for k, v in item.items() if k != "content"}
