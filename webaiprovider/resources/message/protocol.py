@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .types import MessageAction
+
+if TYPE_CHECKING:
+    from ..response.parts import ResponsePart
 
 __all__ = [
     "ProviderRequest",
@@ -13,6 +17,8 @@ __all__ = [
     "ThoughtDelta",
     "TextReplacement",
     "ResponseComplete",
+    "PartClosed",
+    "ResponseVerifying",
     "ConversationBound",
     "MessageMetadata",
 ]
@@ -36,17 +42,31 @@ class ProviderRequest:
 class TextDelta:
     text: str
     channel: str | None = None
+    part_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ThoughtDelta:
     text: str
+    part_id: str | None = None
 
 
 @dataclass(frozen=True)
 class TextReplacement:
     text: str
     channel: str | None = None
+    part_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PartClosed:
+    part_id: str
+    channel: str | None = None
+
+
+@dataclass(frozen=True)
+class ResponseVerifying:
+    pass
 
 
 @dataclass(frozen=True)
@@ -67,6 +87,7 @@ class MessageMetadata:
     effort: str | None = None
     sources: tuple[dict, ...] = ()
     files: tuple[dict, ...] = ()
+    parts: tuple[ResponsePart, ...] = ()
 
 
 ProviderStreamEvent = (
@@ -74,6 +95,8 @@ ProviderStreamEvent = (
     | ThoughtDelta
     | TextReplacement
     | ResponseComplete
+    | PartClosed
+    | ResponseVerifying
     | ConversationBound
     | MessageMetadata
 )

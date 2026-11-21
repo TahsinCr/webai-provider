@@ -742,7 +742,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result[1]["sources"], ({"title": "Example", "url": "https://example.com"},)
         )
-        self.assertTrue(result[1]["response_complete"])
         self.assertEqual(session.http.request.await_args.kwargs["params"], {})
         self.assertTrue(result[0]["context_only"])
         self.assertEqual(result[0]["cid"], "c_new")
@@ -1010,7 +1009,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 "thoughts": "",
                 "files": [],
                 "sources": (),
-                "response_complete": True,
             }
 
         with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
@@ -1156,7 +1154,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 "thoughts": "",
                 "files": [],
                 "sources": (),
-                "response_complete": True,
             }
 
         async def retry(message_id):
@@ -1675,7 +1672,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "thoughts": "",
                 "files": [img1, img2],
                 "sources": [src1],
-                "response_complete": True,
             },
         ]
 
@@ -1875,7 +1871,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "text": "Hel",
                 "files": [],
                 "sources": [],
-                "response_complete": False,
             }
             yield {
                 "cid": "c_stream",
@@ -1884,7 +1879,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 "text": "Hello",
                 "files": [],
                 "sources": [],
-                "response_complete": False,
             }
             yield {
                 "cid": "c_stream",
@@ -1900,7 +1894,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
                 "sources": [],
-                "response_complete": True,
             }
 
         provider._prepare_send_context = fake_prepare
@@ -1909,13 +1902,13 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 event async for event in provider._stream_provider_events(ProviderRequest("hi"))
             ]
 
-        self.assertIn(TextDelta("Step 1", "analysis"), events)
-        self.assertIn(TextDelta(" and 2", "analysis"), events)
-        self.assertIn(TextDelta("Hel", "final"), events)
-        self.assertIn(TextDelta("lo", "final"), events)
+        self.assertIn(TextDelta("Step 1", "analysis", "analysis"), events)
+        self.assertIn(TextDelta(" and 2", "analysis", "analysis"), events)
+        self.assertIn(TextDelta("Hel", "final", "final"), events)
+        self.assertIn(TextDelta("lo", "final", "final"), events)
         self.assertIn(
             TextReplacement(
-                "Revised Hello ![img](https://lh3.googleusercontent.com/resolved)", "final"
+                "Revised Hello ![img](https://lh3.googleusercontent.com/resolved)", "final", "final"
             ),
             events,
         )

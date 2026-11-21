@@ -23,6 +23,7 @@ from ...resources.message.attachment import CLAUDE_ATTACHMENTS, Attachment
 from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
+    PartClosed,
     ProviderRequest,
     ResponseComplete,
     TextDelta,
@@ -123,6 +124,9 @@ class _ClaudeSSEProcessor:
             self.timing.record("sse_first_assistant_text_ms", now - self.response_opened)
         self.timing.record("button_to_first_assistant_text_ms", now - self.timing.started_ns)
 
+    def _part_id(self, index: int) -> str:
+        return f"{self.response_id}:{index}" if self.response_id else str(index)
+
     def feed_raw(self, raw: str):
         if raw == "[DONE]":
             return
@@ -173,12 +177,17 @@ class _ClaudeSSEProcessor:
                 self.final_index = block_index
                 if block["text"].strip():
                     self._record_first_assistant_text()
-                yield {"type": "delta", "text": block["text"]}
+                yield {
+                    "type": "delta",
+                    "text": block["text"],
+                    "part_id": self._part_id(block_index),
+                }
             elif block_type == "thinking" and block.get("thinking"):
                 yield {
                     "type": "delta",
                     "channel": "analysis",
                     "text": block["thinking"],
+                    "part_id": self._part_id(block_index),
                 }
         if kind == "content_block_delta":
             index = event.get("index", 0)
@@ -210,6 +219,7 @@ class _ClaudeSSEProcessor:
                     "type": "delta",
                     "channel": "analysis",
                     "text": delta.get("thinking", ""),
+                    "part_id": self._part_id(index),
                 }
             elif delta_type == "text_delta" and channel == "text":
                 text = delta.get("text", "")
@@ -217,8 +227,16 @@ class _ClaudeSSEProcessor:
                     self.final_index = index
                 if text.strip():
                     self._record_first_assistant_text()
-                yield {"type": "delta", "text": text}
+                yield {"type": "delta", "text": text, "part_id": self._part_id(index)}
         if kind == "content_block_stop":
+            index = event.get("index", 0)
+            block_type = self.blocks.pop(index, None)
+            if block_type in ("thinking", "text"):
+                yield {
+                    "type": "part_closed",
+                    "part_id": self._part_id(index),
+                    "channel": "analysis" if block_type == "thinking" else "final",
+                }
             entry = self.presented_chunks.pop(event.get("index", 0), None)
             if entry is not None:
                 presented = BaseClaudeClient._presented_file_entries(entry[0])
@@ -273,7 +291,9 @@ def _translate_claude_event(event: dict[str, Any], request: ProviderRequest):
         return ConversationBound(event["id"])
     if kind in ("replace", "delta"):
         event_type = TextDelta if kind == "delta" else TextReplacement
-        return event_type(event["text"], event.get("channel", "final"))
+        return event_type(event["text"], event.get("channel", "final"), event.get("part_id"))
+    if kind == "part_closed":
+        return PartClosed(event["part_id"], event["channel"])
     if kind == "response_complete":
         return ResponseComplete()
     if kind == "metadata":
@@ -604,6 +624,10 @@ class BaseClaudeClient:
             self._continuations.remove(cid)
             parent, v = self._apply_history_action(history, v)
         return parent, v, is_temp
+
+    def _remember_prepared_chat(self, cid: str, history: dict[str, Any], options: dict) -> None:
+        parent, _, temporary = self._finalize_history_continuation(cid, history, options)
+        self._continuations.put(cid, (parent, temporary))
 
     @staticmethod
     def _collect_pending_uploads(

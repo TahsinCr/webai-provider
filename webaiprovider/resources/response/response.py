@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...errors import UnsupportedOperationError
 from .artifact import Artifact, ArtifactsCollection
+from .parts import ResponsePart, ResponseParts, TextPart
 from .source import Source, SourcesCollection
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class Response:
         self,
         content: str = "",
         *,
+        parts: Sequence[ResponsePart] | None = None,
         message: AsyncMessage | Message | None = None,
         id: str | None = None,
         remote_id: str | None = None,
@@ -43,7 +45,11 @@ class Response:
     ) -> None:
         self.id = id or remote_id or str(uuid.uuid4())
         self.remote_id = remote_id
-        self.content = content
+        if parts is not None and content:
+            raise ValueError("Pass either response text or response parts")
+        self._set_parts(
+            parts if parts is not None else (TextPart(self.id, content),) if content else ()
+        )
         self.message = message
         self.model = (
             model if model is not None else (message.model if message is not None else None)
@@ -63,8 +69,16 @@ class Response:
         )
 
     @property
+    def parts(self) -> ResponseParts:
+        return self._parts
+
+    def _set_parts(self, parts: Sequence[ResponsePart] | ResponseParts) -> None:
+        self._parts = parts if isinstance(parts, ResponseParts) else ResponseParts(parts)
+        self._text = "\n".join(part.text for part in self._parts if isinstance(part, TextPart))
+
+    @property
     def text(self) -> str:
-        return self.content
+        return self._text
 
     def retry(
         self,

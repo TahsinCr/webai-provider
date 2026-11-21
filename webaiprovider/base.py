@@ -222,18 +222,36 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
 
 class _StreamEventTranslator:
-    """Shared pure provider-stream-to-public-StreamEvent state machine (zero asyncio)."""
+    """Normalize provider blocks and generation milestones for both execution modes."""
 
     def __init__(self, provider: Any, operation: Any) -> None:
         self._provider = provider
         self._operation = operation
-        self.output_started = False
-        self.thinking_started = False
-        self.thinking_text = ""
+        self._open: dict[str, tuple[bool, list[str]]] = {}
+        self._implicit: tuple[bool, str] | None = None
+        self._next_id = 0
+        self._generated = False
+        self._verifying = False
+
+    def _close(self, part_id: str) -> list[StreamEvent]:
+        from .resources.response.operation import OutputEnd, ThinkingEnd
+
+        block = self._open.pop(part_id, None)
+        if block is None:
+            return []
+        thinking, chunks = block
+        return [
+            ThinkingEnd("".join(chunks), part_id=part_id)
+            if thinking
+            else OutputEnd(part_id=part_id)
+        ]
 
     def feed(self, event: Any) -> list[StreamEvent]:
         from .resources.message.protocol import (
             MessageMetadata,
+            PartClosed,
+            ResponseComplete,
+            ResponseVerifying,
             TextDelta,
             TextReplacement,
             ThoughtDelta,
@@ -244,56 +262,74 @@ class _StreamEventTranslator:
             OutputBegin,
             OutputDelta,
             OutputReplace,
+            ResponsePartsResolved,
             SourceDiscovered,
             ThinkingBegin,
             ThinkingDelta,
-            ThinkingEnd,
             ThinkingReplace,
+            VerificationBegin,
         )
 
+        if isinstance(event, ResponseComplete):
+            return self.finish()
+        if isinstance(event, ResponseVerifying):
+            if self._verifying:
+                return []
+            self._verifying = True
+            return [*self.finish(), VerificationBegin()]
+        if isinstance(event, PartClosed):
+            return self._close(self._native_id(event.part_id, event.channel == "analysis"))
+
         emitted: list[StreamEvent] = []
-        if isinstance(event, ThoughtDelta) or (
-            isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
-        ):
-            delta = event.text
-            replaced = False
-            if isinstance(event, TextReplacement):
-                replaced = not event.text.startswith(self.thinking_text)
-                delta = event.text[len(self.thinking_text) :] if not replaced else ""
-                self.thinking_text = event.text
-            else:
-                self.thinking_text += delta
-            if not self.thinking_started:
-                self.thinking_started = True
-                emitted.append(ThinkingBegin())
-            if isinstance(event, TextReplacement) and replaced:
-                emitted.append(ThinkingReplace(text=self.thinking_text))
-            elif delta:
-                emitted.append(ThinkingDelta(delta=delta))
-            return emitted
-
-        if isinstance(event, TextReplacement):
-            if not event.text and not self.output_started:
+        if isinstance(event, (TextDelta, TextReplacement, ThoughtDelta)):
+            if self._generated:
+                raise ProviderError("Provider sent content after generation ended")
+            thinking = isinstance(event, ThoughtDelta) or event.channel == "analysis"
+            replacement = isinstance(event, TextReplacement)
+            if (
+                not event.text
+                and event.part_id is None
+                and (self._implicit is None or self._implicit[0] != thinking)
+            ):
                 return emitted
-            if self.thinking_started:
-                emitted.append(ThinkingEnd(text=self.thinking_text))
-                self.thinking_text = ""
-                self.thinking_started = False
-            if not self.output_started:
-                self.output_started = True
-                emitted.append(OutputBegin())
-            emitted.append(OutputReplace(text=event.text))
-            return emitted
-
-        if isinstance(event, TextDelta) and event.text:
-            if self.thinking_started:
-                emitted.append(ThinkingEnd(text=self.thinking_text))
-                self.thinking_text = ""
-                self.thinking_started = False
-            if not self.output_started:
-                self.output_started = True
-                emitted.append(OutputBegin())
-            emitted.append(OutputDelta(delta=event.text))
+            if event.part_id is not None:
+                part_id = self._native_id(event.part_id, thinking)
+                if self._implicit is not None:
+                    emitted.extend(self._close(self._implicit[1]))
+                    self._implicit = None
+            else:
+                if self._implicit is None or self._implicit[0] != thinking:
+                    if self._implicit is not None:
+                        emitted.extend(self._close(self._implicit[1]))
+                    self._next_id += 1
+                    self._implicit = thinking, f"local:{self._next_id}"
+                part_id = self._implicit[1]
+            if part_id not in self._open:
+                if not event.text:
+                    return emitted
+                self._open[part_id] = thinking, []
+                begin = ThinkingBegin if thinking else OutputBegin
+                emitted.append(begin(part_id=part_id))
+            if thinking:
+                chunks = self._open[part_id][1]
+                if replacement:
+                    # Keep append-only snapshots as deltas for stream consumers.
+                    previous = "".join(chunks)
+                    if event.text.startswith(previous):
+                        delta = event.text[len(previous) :]
+                        if delta:
+                            chunks.append(delta)
+                            emitted.append(ThinkingDelta(delta, part_id=part_id))
+                    else:
+                        chunks[:] = [event.text]
+                        emitted.append(ThinkingReplace(event.text, part_id=part_id))
+                elif event.text:
+                    chunks.append(event.text)
+                    emitted.append(ThinkingDelta(event.text, part_id=part_id))
+            elif replacement:
+                emitted.append(OutputReplace(event.text, part_id=part_id))
+            elif event.text:
+                emitted.append(OutputDelta(event.text, part_id=part_id))
             return emitted
 
         if isinstance(event, MessageMetadata):
@@ -302,20 +338,26 @@ class _StreamEventTranslator:
                 self._operation.message.remote_id = event.user_message_id
             if event.message_id:
                 self._operation._assistant_message_id = event.message_id
+            if event.parts:
+                emitted.append(ResponsePartsResolved(event.parts))
             for source in _build_sources(event.sources, self._provider._source_type):
                 emitted.append(SourceDiscovered(source))
             for artifact in _build_artifacts(None, event.files, self._provider._artifact_type):
                 emitted.append(ArtifactDiscovered(artifact))
         return emitted
 
-    def finish(self) -> list[StreamEvent]:
-        from .resources.response.operation import OutputEnd, ThinkingEnd
+    @staticmethod
+    def _native_id(part_id: str, thinking: bool) -> str:
+        return f"{'thinking' if thinking else 'text'}:{part_id}"
 
-        emitted: list[StreamEvent] = []
-        if self.thinking_started:
-            emitted.append(ThinkingEnd(text=self.thinking_text))
-        if self.output_started:
-            emitted.append(OutputEnd())
+    def finish(self) -> list[StreamEvent]:
+        from .resources.response.operation import GenerationEnd
+
+        if self._generated:
+            return []
+        self._generated = True
+        emitted = [event for part_id in tuple(self._open) for event in self._close(part_id)]
+        emitted.append(GenerationEnd())
         return emitted
 
 

@@ -55,7 +55,10 @@ class StreamCompletionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         release_hook.set()
         events = await asyncio.wait_for(consumer, 1)
-        self.assertEqual([event.delta for event in events], ["answer"])
+        self.assertEqual(
+            [event.delta for event in events if isinstance(event, OutputDelta)], ["answer"]
+        )
+        self.assertEqual(events[-1].event, "status.terminal")
 
     async def test_nonpositive_stream_batch_limit_is_rejected(self):
         operation = AsyncMessageOperation(AsyncChat(), AsyncMessage("question"))
@@ -553,7 +556,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         response = await task
         self.assertIs(response, loaded)
-        self.assertEqual(loaded.content, "answer")
+        self.assertEqual(loaded.text, "answer")
         self.assertEqual(len(chat.responses._turns), 1)
 
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):

@@ -8,9 +8,9 @@ from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderRequest,
-    TextReplacement,
 )
 from ...resources.response.artifact import FileTargetRule, files_from
+from ...resources.response.parts import ResponsePart, TextPart, ThinkingPart
 from ...resources.response.source import sources_from
 
 _FILE_SERVICE_RE = re.compile(r"file[-_][A-Za-z0-9_-]+")
@@ -96,45 +96,37 @@ def emit_post_send_events(
 ) -> None:
     response_messages = completed.get("messages", [])
     previous_ids = set(previous or ())
-    summaries = []
-    for item in response_messages:
-        if item.get("id") in previous_ids or item.get("recipient") not in (None, "all"):
-            continue
-        if (item.get("metadata") or {}).get("is_visually_hidden_from_conversation"):
-            continue
-        if (item.get("author") or {}).get("role") != "assistant":
+    turn_start = len(response_messages)
+    while turn_start:
+        item = response_messages[turn_start - 1]
+        if (item.get("author") or {}).get("role") == "user":
+            break
+        turn_start -= 1
+    user = response_messages[turn_start - 1] if turn_start else {}
+    final = None
+    parts: list[ResponsePart] = []
+    for item in response_messages[turn_start:]:
+        if (
+            not item.get("id")
+            or item["id"] in previous_ids
+            or item.get("recipient") not in (None, "all")
+            or (item.get("metadata") or {}).get("is_visually_hidden_from_conversation")
+            or (item.get("author") or {}).get("role") != "assistant"
+        ):
             continue
         content = item.get("content") or {}
-        if item.get("channel") == "analysis" or content.get("content_type") in (
+        thinking = item.get("channel") == "analysis" or content.get("content_type") in (
             "thoughts",
             "reasoning_recap",
             "reasoning_summary",
-        ):
-            text = text_from_parts(message_parts(content))
-            if text:
-                summaries.append(text)
-    if summaries:
-        publish(("event", TextReplacement("\n\n".join(summaries), "analysis")))
-
-    final = None
-    last_user_index = None
-    for index in range(len(response_messages) - 1, -1, -1):
-        item = response_messages[index]
-        role = (item.get("author") or {}).get("role")
-        if (
-            final is None
-            and role == "assistant"
-            and item.get("channel") != "analysis"
-            and item.get("recipient") in (None, "all")
-        ):
+        )
+        if not thinking:
             final = item
-        if last_user_index is None and role == "user":
-            last_user_index = index
-        if final is not None and last_user_index is not None:
-            break
+        text = text_from_parts(message_parts(content))
+        if text:
+            part_type = ThinkingPart if thinking else TextPart
+            parts.append(part_type(f"{'thinking' if thinking else 'text'}:{item['id']}", text))
     if final:
-        turn_start = (last_user_index + 1) if last_user_index is not None else 0
-        user = response_messages[last_user_index] if last_user_index is not None else {}
         metadata = final.get("metadata") or {}
         publish(
             (
@@ -146,8 +138,11 @@ def emit_post_send_events(
                     metadata.get("reasoning_effort") or request.effort,
                     sources_from(final),
                     files=message_files(*response_messages[turn_start:]),
+                    parts=tuple(parts),
                 ),
             )
         )
+    elif parts:
+        publish(("event", MessageMetadata(parts=tuple(parts))))
     if emit_bound:
         publish(("event", ConversationBound(remote_id)))

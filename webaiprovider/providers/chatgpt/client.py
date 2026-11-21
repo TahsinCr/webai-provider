@@ -523,6 +523,7 @@ class ChatGPTClient(BaseChatGPTClient):
                 streamed_messages=streamed_messages,
             )
             if conversation is None:
+                yield "raw", {"type": "response_verifying"}
                 started = time.perf_counter_ns() if timing is not None else None
                 try:
                     conversation = self.get_conversation(resolved_id)

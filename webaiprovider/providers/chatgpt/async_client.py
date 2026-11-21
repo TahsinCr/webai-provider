@@ -483,6 +483,8 @@ class AsyncChatGPTClient(BaseChatGPTClient):
                 streamed_messages=streamed_messages,
             )
             if conversation is None:
+                if on_event is not None:
+                    await maybe_await(on_event({"type": "response_verifying"}))
                 started = time.perf_counter_ns() if timing is not None else None
                 try:
                     conversation = await self.get_conversation(resolved_id)

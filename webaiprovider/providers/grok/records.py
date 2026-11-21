@@ -381,7 +381,7 @@ def _flush_grok_filters(text_filter, streamed_text, analysis_filter, streamed_an
         remainder = cleaner.feed(final=True)
         if remainder:
             output.write(remainder)
-            yield TextDelta(remainder, channel) if channel else TextDelta(remainder)
+            yield TextDelta(remainder, channel, channel or "final")
 
 
 def _reconcile_grok_native(raw_native_text, raw_native_analysis, streamed_text, streamed_analysis):
@@ -395,7 +395,7 @@ def _reconcile_grok_native(raw_native_text, raw_native_analysis, streamed_text, 
             output.seek(0)
             output.truncate()
             output.write(native)
-            yield TextReplacement(native, channel) if channel else TextReplacement(native)
+            yield TextReplacement(native, channel, channel or "final")
 
 
 class _GrokStreamProcessor:
@@ -424,7 +424,6 @@ class _GrokStreamProcessor:
         self.seen_file_urls: set[str] = set()
         self.response_model = model
         self.complete = False
-        self.completion_notified = False
         self.bound = False
         self.text_filter = GrokTextFilter()
         self.analysis_filter = GrokTextFilter()
@@ -493,19 +492,13 @@ class _GrokStreamProcessor:
             visible = cleaner.feed(token)
             if visible:
                 (self.streamed_analysis if analysis else self.streamed_text).write(visible)
-                yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
+                yield TextDelta(
+                    visible, "analysis" if analysis else None, "analysis" if analysis else "final"
+                )
         if response.get("responseId") and not self.response_id:
             self.response_id = response["responseId"]
         if response.get("done") is True or response.get("finished") is True:
             self.complete = True
-        if (
-            self.complete
-            and not self.completion_notified
-            and (self.existing_conversation_id or self.conversation_id)
-        ):
-            yield from self._finalize_turn()
-            yield ResponseComplete()
-            self.completion_notified = True
 
     def finish(self):
         yield from self._finalize_turn()
@@ -532,8 +525,7 @@ class _GrokStreamProcessor:
                 sources=self.sources,
                 files=tuple(self.file_records),
             )
-        if not self.completion_notified:
-            yield ResponseComplete()
+        yield ResponseComplete()
 
 
 def response_events(

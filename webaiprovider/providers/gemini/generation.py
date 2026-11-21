@@ -303,7 +303,6 @@ class _GeminiFrameProcessor:
                 "thoughts": self.last_thoughts,
                 "files": candidate_files(candidate),
                 "sources": candidate_metadata(candidate, activity)["sources"],
-                "response_complete": response_complete,
             }
         if isinstance(context, str):
             self.metadata = [None] * 9 + [context]
@@ -396,12 +395,10 @@ class _GeminiResponseProcessor:
             if not content_text or content_text == rendered:
                 continue
             if content_text.startswith(rendered):
-                yield TextDelta(content_text[len(rendered) :], channel)
+                yield TextDelta(content_text[len(rendered) :], channel, channel)
             else:
-                yield TextReplacement(content_text, channel)
+                yield TextReplacement(content_text, channel, channel)
             self.rendered_by_channel[channel] = content_text
-        if chunk.get("response_complete"):
-            yield ResponseComplete()
         rid = self.metadata[1] if len(self.metadata) > 1 else None
         if rid:
             self.final_rid = rid
@@ -409,6 +406,7 @@ class _GeminiResponseProcessor:
     def finish(self):
         if not self.visible or not self.cid:
             raise GeminiStreamError("Gemini response did not complete; the request was not retried")
+        yield ResponseComplete()
         if self.final_rid:
             yield MessageMetadata(
                 message_id=self.final_rid + ":model",

@@ -29,7 +29,6 @@ from webaiprovider import (
     OperationHooks,
     OutputBegin,
     OutputDelta,
-    OutputEnd,
     Provider,
     ProviderError,
     RemoteNotFound,
@@ -857,11 +856,12 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
                 ),
             )
             _, history = await provider.chats.get_with_responses(cid)
-            self.assertEqual([r.text for r in history], ["Looking it up", "Revised answer", ""])
-            self.assertIs(history[0].message, history[1].message)
-            self.assertEqual(history[1].message.content, "Revised prompt")
-            self.assertIs(history[1].message.response, history[1])
-            self.assertEqual(history[2].message.content, "Next question")
+            self.assertEqual([r.text for r in history], ["Looking it up\nRevised answer", ""])
+            self.assertEqual([part.id for part in history[0].parts], ["text:intro", "text:answer"])
+            self.assertEqual(history[0].id, "answer")
+            self.assertEqual(history[0].message.content, "Revised prompt")
+            self.assertIs(history[0].message.response, history[0])
+            self.assertEqual(history[1].message.content, "Next question")
 
             for limit in range(4):
                 with self.subTest(limit=limit):
@@ -1875,7 +1875,10 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
                 "".join(e.delta for e in streamed if isinstance(e, OutputDelta)),
                 "Echo: Second prompt",
             )
-            self.assertIsInstance(streamed[-1], OutputEnd)
+            self.assertEqual(
+                [event.event for event in streamed[-3:]],
+                ["output.end", "generation.end", "status.terminal"],
+            )
 
             branched = await asked.branch()
             self.assertIsInstance(branched, branchable_async_cls)
@@ -1909,7 +1912,10 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
                 "".join(e.delta for e in streamed if isinstance(e, OutputDelta)),
                 "Echo: Sync stream",
             )
-            self.assertIsInstance(streamed[-1], OutputEnd)
+            self.assertEqual(
+                [event.event for event in streamed[-3:]],
+                ["output.end", "generation.end", "status.terminal"],
+            )
 
             branched = asked.branch()
             self.assertIsInstance(branched, branchable_sync_cls)

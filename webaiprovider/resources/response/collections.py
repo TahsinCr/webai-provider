@@ -35,6 +35,7 @@ from .operation import (
     _async_close_iterator,
     _close_iterator,
 )
+from .parts import ResponsePart, TextPart, ThinkingPart
 from .response import Response
 from .source import Source
 
@@ -129,28 +130,27 @@ def _build_artifacts(
 
 
 def _recent_messages(messages: tuple[MessageData, ...], limit: int) -> tuple[MessageData, ...]:
-    """Select the last responses and the user record that starts their first turn."""
-    first_response = None
-    answered = False
+    """Keep entire turns when restricting the remote history tail."""
     for index in range(len(messages) - 1, -1, -1):
-        item = messages[index]
-        if item.channel == "analysis":
-            continue
+        if messages[index].role == "user":
+            limit -= 1
+            if limit == 0:
+                return messages[index:]
+    return messages
+
+
+def _history_turns(messages: Iterable[MessageData]) -> Iterator[tuple[MessageData, ...]]:
+    assistant: list[MessageData] = []
+    for item in messages:
         if item.role == "assistant":
-            if first_response is None:
-                limit -= 1
-                if limit == 0:
-                    first_response = index
-            answered = True
+            assistant.append(item)
         elif item.role == "user":
-            if first_response is not None:
-                return (item, *messages[first_response:])
-            if not answered:
-                limit -= 1
-                if limit == 0:
-                    return messages[index:]
-            answered = False
-    return messages if first_response is None else messages[first_response:]
+            if assistant:
+                yield tuple(assistant)
+                assistant.clear()
+            yield (item,)
+    if assistant:
+        yield tuple(assistant)
 
 
 @dataclass
@@ -278,7 +278,7 @@ class _BaseResponsesCollection:
             None,
         )
         if existing is not None:
-            existing.content = response.content
+            existing._set_parts(response.parts)
             existing.model = response.model
             existing.remote_id = response.remote_id
             existing.sources = response.sources
@@ -346,13 +346,13 @@ class _BaseResponsesCollection:
         pending_user: Any = None
         answered = False
 
-        def build_unanswered(user_msg: Any) -> Response:
+        def build_unanswered(user_msg: Any, parts: tuple[ResponsePart, ...] = ()) -> Response:
             resp_id = f"unanswered:{user_msg.id}"
             seen_resp_ids.add(resp_id)
             resp = existing_responses.get(resp_id)
             if resp is None or resp.remote_id is not None:
                 resp = provider._response_type(
-                    "",
+                    parts=parts,
                     message=user_msg,
                     id=resp_id,
                     model=user_msg.model,
@@ -360,6 +360,7 @@ class _BaseResponsesCollection:
                     chat=self.chat,
                 )
             else:
+                resp._set_parts(parts)
                 resp.message = user_msg
                 resp.chat = self.chat
             user_msg.response = resp
@@ -368,17 +369,12 @@ class _BaseResponsesCollection:
         messages = conversation.messages
         if limit is not None and len(messages) > limit and not self._turns:
             messages = _recent_messages(messages, limit)
-        for item in messages:
-            if item.channel == "analysis" or item.role not in ("user", "assistant"):
-                continue
-            parts = item.content
-            if len(parts) == 1 and parts[0].kind == "text":
-                content = parts[0].text or ""
-            else:
-                content = "\n".join(
-                    part.text for part in parts if part.kind == "text" and part.text
-                )
+        for items in _history_turns(messages):
+            item = items[0]
             if item.role == "user":
+                content = "\n".join(
+                    part.text for part in item.content if part.kind == "text" and part.text
+                )
                 if pending_user is not None and not answered:
                     responses.append(build_unanswered(pending_user))
                 seen_user_ids.add(item.id)
@@ -392,17 +388,38 @@ class _BaseResponsesCollection:
                 answered = False
                 continue
 
+            target = None
+            target_rank = -1
+            response_parts: list[ResponsePart] = []
+            sources: list[Source] = []
+            artifacts: list[Artifact] = []
+            for row in items:
+                thinking = row.channel == "analysis"
+                parts = row.content
+                text = "\n".join(part.text for part in parts if part.kind == "text" and part.text)
+                if text:
+                    part_type = ThinkingPart if thinking else TextPart
+                    response_parts.append(
+                        part_type(f"{'thinking' if thinking else 'text'}:{row.id}", text)
+                    )
+                if not thinking:
+                    # File-only records cannot displace an actionable text reply.
+                    rank = 2 if text and row.actions else int(bool(text))
+                    if rank >= target_rank:
+                        target, target_rank = row, rank
+                raw_sources = row.metadata.get("sources")
+                if raw_sources:
+                    sources.extend(_build_sources(raw_sources, provider._source_type))
+                raw_files = row.metadata.get("files") or ()
+                if raw_files or len(parts) > 1 or (parts and parts[0].resource is not None):
+                    artifacts.extend(_build_artifacts(row, raw_files, provider._artifact_type))
+            if target is None:
+                if pending_user is not None and not answered:
+                    responses.append(build_unanswered(pending_user, tuple(response_parts)))
+                    answered = True
+                continue
+            item = target
             seen_resp_ids.add(item.id)
-            raw_sources = item.metadata.get("sources")
-            sources = _build_sources(raw_sources, provider._source_type) if raw_sources else ()
-            raw_files = item.metadata.get("files") or ()
-            artifacts = (
-                _build_artifacts(item, raw_files, provider._artifact_type)
-                if raw_files
-                or (len(parts) == 1 and parts[0].resource is not None)
-                or len(parts) > 1
-                else ()
-            )
             resp_meta = {
                 **item.metadata,
                 "actions": item.actions,
@@ -412,7 +429,7 @@ class _BaseResponsesCollection:
             resp = existing_responses.get(item.id)
             if resp is None:
                 resp = provider._response_type(
-                    content,
+                    parts=response_parts,
                     message=pending_user,
                     id=item.id,
                     remote_id=item.id,
@@ -423,7 +440,7 @@ class _BaseResponsesCollection:
                     chat=self.chat,
                 )
             else:
-                resp.content = content
+                resp._set_parts(response_parts)
                 resp.remote_id = item.id
                 resp.message = pending_user
                 resp.sources = type(resp.sources)(sources)

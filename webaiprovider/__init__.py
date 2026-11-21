@@ -88,11 +88,13 @@ from .resources.response.collections import AsyncResponsesCollection, ResponsesC
 from .resources.response.operation import (
     ArtifactDiscovered,
     AsyncMessageOperation,
+    GenerationEnd,
     MessageOperation,
     OutputBegin,
     OutputDelta,
     OutputEnd,
     OutputReplace,
+    ResponsePartsResolved,
     SourceDiscovered,
     StreamEvent,
     TerminalStatus,
@@ -100,7 +102,9 @@ from .resources.response.operation import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingReplace,
+    VerificationBegin,
 )
+from .resources.response.parts import ResponsePart, ResponseParts, TextPart, ThinkingPart
 from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
 
@@ -189,6 +193,13 @@ __all__ = [
     "EffortSet",
     "ModelRef",
     "ModelSelection",
+    "GenerationEnd",
+    "ResponsePart",
+    "ResponseParts",
+    "TextPart",
+    "ThinkingPart",
+    "VerificationBegin",
+    "ResponsePartsResolved",
     "OutputBegin",
     "OutputDelta",
     "OutputEnd",

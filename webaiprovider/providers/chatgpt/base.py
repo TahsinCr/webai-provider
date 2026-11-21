@@ -31,6 +31,7 @@ from ...resources.message.protocol import (
     ProviderRequest,
     ProviderStreamEvent,
     ResponseComplete,
+    ResponseVerifying,
     TextDelta,
     TextReplacement,
 )
@@ -181,13 +182,6 @@ class _ChatGPTSSEProcessor:
                 }
             )
             self.rendered_by_channel[identity] = text
-        if (
-            channel != "analysis"
-            and message.get("status") == "finished_successfully"
-            and not self.completion_notified
-        ):
-            emitted.append({"type": "response_complete"})
-            self.completion_notified = True
         return False, emitted
 
     def finish(self) -> tuple[str, list[dict[str, Any]]]:
@@ -1780,11 +1774,17 @@ class BaseChatGPTProvider(BaseProvider):
                 return cid, ConversationBound(cid)
             return bound_emitted, None
         if kind == "delta":
-            return bound_emitted, TextDelta(value.get("text", ""), value.get("channel"))
+            return bound_emitted, TextDelta(
+                value.get("text", ""), value.get("channel"), value.get("message_id")
+            )
         if kind == "replace":
-            return bound_emitted, TextReplacement(value.get("text", ""), value.get("channel"))
+            return bound_emitted, TextReplacement(
+                value.get("text", ""), value.get("channel"), value.get("message_id")
+            )
         if kind == "response_complete":
             return bound_emitted, ResponseComplete()
+        if kind == "response_verifying":
+            return bound_emitted, ResponseVerifying()
         return bound_emitted, None
 
     @staticmethod

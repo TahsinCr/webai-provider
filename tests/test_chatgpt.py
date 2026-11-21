@@ -55,10 +55,10 @@ from webaiprovider.providers.chatgpt.sentinel import (
 from webaiprovider.resources.message.attachment import policy_for
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
+    MessageMetadata,
     ProviderRequest,
     ResponseComplete,
     TextDelta,
-    TextReplacement,
 )
 from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import EffortOption, Model, ModelCatalog
@@ -540,7 +540,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(buffers[0]())
         self.assertFalse(hasattr(self.client, "_last_stream_messages"))
 
-    async def test_chatgpt_reports_generated_text_before_sse_done(self):
+    async def test_chatgpt_ends_generation_only_after_all_visible_messages(self):
         event = {
             "conversation_id": "chat",
             "message": {
@@ -550,7 +550,15 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "content": {"parts": ["Answer"]},
             },
         }
-        payload = "data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n"
+        second = {
+            **event,
+            "message": {
+                **event["message"],
+                "id": "assistant-2",
+                "content": {"parts": ["Second answer block"]},
+            },
+        }
+        payload = f"data: {json.dumps(event)}\n\ndata: {json.dumps(second)}\n\ndata: [DONE]\n\n"
         self._http_handler = lambda _: FakeHTTPResponse(
             200, headers={"content-type": "text/event-stream"}, text=payload
         )
@@ -560,7 +568,12 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.client.send_prompt_direct(None, "hello", [], on_event=received.append)
 
-        self.assertEqual([item["type"] for item in received], ["delta", "response_complete"])
+        self.assertEqual(
+            [item["type"] for item in received], ["delta", "delta", "response_complete"]
+        )
+        self.assertEqual(
+            [item["message_id"] for item in received[:-1]], ["assistant", "assistant-2"]
+        )
 
     async def test_model_catalog_reuses_valid_cache_and_refreshes_expired_cache(self):
         cached = parse_model_catalog(CATALOG)
@@ -1026,7 +1039,11 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         events = [
             event async for event in self.provider._stream_provider_events(ProviderRequest("hello"))
         ]
-        self.assertIn(TextReplacement("Published summary", "analysis"), events)
+        parts = next(event.parts for event in events if isinstance(event, MessageMetadata))
+        self.assertEqual(
+            [(part.id, part.text) for part in parts],
+            [("thinking:" + self.client.raw["messages"][0]["id"], "Published summary")],
+        )
 
     async def test_completion_does_not_publish_hidden_or_tool_directed_analysis(self):
         self.client.closed.set()
@@ -1050,10 +1067,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             event async for event in self.provider._stream_provider_events(ProviderRequest("hello"))
         ]
         self.assertFalse(
-            any(
-                isinstance(event, TextReplacement) and event.channel == "analysis"
-                for event in events
-            )
+            any(isinstance(event, MessageMetadata) and event.parts for event in events)
         )
 
     async def test_stream_produces_common_events_and_releases_transport(self):

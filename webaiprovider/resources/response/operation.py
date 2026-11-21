@@ -23,6 +23,7 @@ from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
 from ..message.message import AsyncMessage, Message
 from .artifact import Artifact
+from .parts import ResponsePart, TextPart, ThinkingPart
 from .response import Response, TimingMetrics
 from .source import Source
 
@@ -61,48 +62,72 @@ class StreamEvent:
 
 @dataclass(frozen=True, slots=True)
 class ThinkingBegin(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     event: str = field(init=False, default="thinking.begin")
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingDelta(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     delta: str = ""
     event: str = field(init=False, default="thinking.delta")
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingReplace(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
     event: str = field(init=False, default="thinking.replace")
 
 
 @dataclass(frozen=True, slots=True)
 class ThinkingEnd(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
     event: str = field(init=False, default="thinking.end")
 
 
 @dataclass(frozen=True, slots=True)
 class OutputBegin(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     event: str = field(init=False, default="output.begin")
 
 
 @dataclass(frozen=True, slots=True)
 class OutputDelta(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     delta: str = ""
     event: str = field(init=False, default="output.delta")
 
 
 @dataclass(frozen=True, slots=True)
 class OutputReplace(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
     event: str = field(init=False, default="output.replace")
 
 
 @dataclass(frozen=True, slots=True)
 class OutputEnd(StreamEvent):
+    part_id: str | None = field(default=None, kw_only=True)
     text: str = ""
     event: str = field(init=False, default="output.end")
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationEnd(StreamEvent):
+    event: str = field(init=False, default="generation.end")
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationBegin(StreamEvent):
+    event: str = field(init=False, default="verification.begin")
+
+
+@dataclass(frozen=True, slots=True)
+class ResponsePartsResolved(StreamEvent):
+    parts: tuple[ResponsePart, ...] = ()
+    event: str = field(init=False, default="response.parts.resolved")
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,21 +155,29 @@ class _StreamAccumulator:
     def __init__(self, started_at: float) -> None:
         self.started_at = started_at
         self.first_token_at: float | None = None
-        self.text: list[str] = []
+        self.parts: dict[tuple[bool, str | None], list[str]] = {}
+        self.resolved_parts: tuple[ResponsePart, ...] = ()
         self.sources: list[Source] = []
         self.artifacts: list[Artifact] = []
 
     def record(self, event: StreamEvent) -> None:
-        if isinstance(event, OutputDelta):
-            if self.first_token_at is None:
+        if isinstance(event, (ThinkingBegin, OutputBegin)):
+            self.parts.setdefault((isinstance(event, ThinkingBegin), event.part_id), [])
+        elif isinstance(event, (ThinkingDelta, ThinkingReplace, OutputDelta, OutputReplace)):
+            thinking = isinstance(event, (ThinkingDelta, ThinkingReplace))
+            if not thinking and self.first_token_at is None:
                 self.first_token_at = time.perf_counter()
-            self.text.append(event.delta)
-        elif isinstance(event, OutputReplace):
-            if self.first_token_at is None:
-                self.first_token_at = time.perf_counter()
-            self.text = [event.text]
-        elif isinstance(event, OutputEnd) and not self.text and event.text:
-            self.text.append(event.text)
+            chunks = self.parts.setdefault((thinking, event.part_id), [])
+            if isinstance(event, (ThinkingReplace, OutputReplace)):
+                chunks[:] = [event.text]
+            else:
+                chunks.append(event.delta)
+        elif isinstance(event, (ThinkingEnd, OutputEnd)) and event.text:
+            chunks = self.parts.setdefault((isinstance(event, ThinkingEnd), event.part_id), [])
+            if not chunks:
+                chunks.append(event.text)
+        elif isinstance(event, ResponsePartsResolved):
+            self.resolved_parts = event.parts
         elif isinstance(event, SourceDiscovered):
             self.sources.append(event.source)
         elif isinstance(event, ArtifactDiscovered):
@@ -163,8 +196,19 @@ class _StreamAccumulator:
             ),
             duration_ms=(completed_at - self.started_at) * 1000.0,
         )
+        parts: list[ResponsePart] = []
+        if not any(isinstance(part, TextPart) for part in self.resolved_parts):
+            recovered = {part.id for part in self.resolved_parts}
+            parts.extend(self.resolved_parts)
+            for index, ((thinking, part_id), chunks) in enumerate(self.parts.items(), 1):
+                text = "".join(chunks)
+                if text and part_id not in recovered:
+                    part_type = ThinkingPart if thinking else TextPart
+                    parts.append(part_type(part_id or f"local:{index}", text))
+        else:
+            parts.extend(self.resolved_parts)
         response = getattr(session, "_response_type", Response)(
-            "".join(self.text),
+            parts=parts,
             message=operation.message,
             id=operation._assistant_message_id,
             remote_id=operation._assistant_message_id,
@@ -187,6 +231,14 @@ class _BaseMessageOperation:
     chat: Any
     message: Any
     hooks: Any
+
+    def _event_offset(self, after: StreamEvent | None) -> int:
+        if after is None:
+            return 0
+        for index, event in enumerate(self._events, 1):
+            if event is after:
+                return index
+        raise ValueError("The event does not belong to this operation")
 
     def _init_operation_state(self, chat: Any, message: Any, executor: Any) -> None:
         self.chat = chat
@@ -328,12 +380,13 @@ class AsyncMessageOperation(_BaseMessageOperation):
         await self._publish(status)
 
     async def wait_for(
-        self, stage_name: str, *, timeout: float | None = None
+        self, stage_name: str, *, timeout: float | None = None, after: StreamEvent | None = None
     ) -> StreamEvent | None:
+        offset = self._event_offset(after)
         self._ensure_started()
 
         async def wait_for_event() -> StreamEvent | None:
-            index = 0
+            index = offset
             async with self._condition:
                 while True:
                     while index < len(self._events):
@@ -366,11 +419,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
                 done = index >= len(self._events)
                 if not done:
                     end = min(len(self._events), index + limit)
-                    chunk = [
-                        event
-                        for event in self._events[index:end]
-                        if not isinstance(event, TerminalStatus)
-                    ]
+                    chunk = self._events[index:end]
                     index = end
             if done:
                 await task
@@ -776,9 +825,7 @@ class MessageOperation(_BaseMessageOperation):
                     done = self._completed
                     drives = not chunk and self._claim_driver()
                 if chunk:
-                    for event in chunk:
-                        if not isinstance(event, TerminalStatus):
-                            yield event
+                    yield from chunk
                 elif done:
                     self._result()
                     return
@@ -798,12 +845,15 @@ class MessageOperation(_BaseMessageOperation):
                 self.cancel()
             raise
 
-    def wait_for(self, stage_name: str, *, timeout: float | None = None) -> StreamEvent | None:
+    def wait_for(
+        self, stage_name: str, *, timeout: float | None = None, after: StreamEvent | None = None
+    ) -> StreamEvent | None:
         """Wait for a stage until the deadline or message completion."""
         if timeout is not None and isnan(timeout):
             raise ValueError("Stage timeout must not be NaN")
         deadline = None if timeout is None or timeout == inf else time.monotonic() + timeout
-        index = 0
+        with self._condition:
+            index = self._event_offset(after)
         while True:
             with self._condition:
                 while index < len(self._events):

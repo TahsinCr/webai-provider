@@ -160,14 +160,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         async for ev in op.stream():
             events.append(ev)
 
-        self.assertEqual(len(events), 7)
+        self.assertEqual(len(events), 8)
         self.assertEqual(thoughts, ["Reasoning step 1"])
         self.assertEqual(deltas, ["Hello ", "World!"])
 
         res = await op
         self.assertIsInstance(res, Response)
         self.assertEqual(res.text, "Hello World!")
-        self.assertEqual(res.content, "Hello World!")
+        self.assertEqual(res.text, "Hello World!")
         self.assertEqual(res.message.content, "Hello AI")
         self.assertEqual(res.message.role, "user")
 
@@ -260,10 +260,12 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await operation.wait_for("status.terminal")).status, "completed")
         self.assertEqual(response.text, "done")
         self.assertEqual(
-            [item.event for item in events], ["output.begin", "output.delta", "output.end"]
+            [item.event for item in events],
+            ["output.begin", "output.delta", "output.end", "status.terminal"],
         )
         self.assertEqual(
-            [item.event for item in replayed], ["output.begin", "output.delta", "output.end"]
+            [item.event for item in replayed],
+            ["output.begin", "output.delta", "output.end", "status.terminal"],
         )
         self.assertEqual(send_count, 1)
 
@@ -1268,7 +1270,7 @@ class TestSyncApi(unittest.TestCase):
         self.assertEqual(response.text, "done")
         self.assertEqual(
             [event.event for event in events],
-            ["output.begin", "output.delta", "output.end"],
+            ["output.begin", "output.delta", "output.end", "generation.end", "status.terminal"],
         )
         self.assertFalse(provider.memory_share)
         self.assertTrue(provider.thread_ids)
@@ -1619,7 +1621,10 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         received_deltas = [event.delta for event in events if isinstance(event, OutputDelta)]
         self.assertEqual(received_deltas, [f"t{i}" for i in range(12)])
-        self.assertIsInstance(events[-1], OutputEnd)
+        self.assertEqual(
+            [event.event for event in events[-3:]],
+            ["output.end", "generation.end", "status.terminal"],
+        )
         self.assertEqual(provider.stream_threads, [caller])
 
         class FailingBufferedProvider(BufferedStreamProvider):
