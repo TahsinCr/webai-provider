@@ -237,8 +237,11 @@ class _GeminiFrameProcessor:
                 self.timing.record(
                     "button_to_first_sse_event_ms", event_at - self.timing.started_ns
                 )
-        if rpc_value(frame, 5, 2, 0, 1, 0):
-            raise GeminiGenerationRejected("Gemini rejected the generation request")
+        rejection_code = rpc_value(frame, 5, 2, 0, 1, 0)
+        if rejection_code:
+            raise GeminiGenerationRejected(
+                f"Gemini rejected the generation request (code={rejection_code})"
+            )
         payload = rpc_value(frame, 2)
         if not isinstance(payload, str):
             return
