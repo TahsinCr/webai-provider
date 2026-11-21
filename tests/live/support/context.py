@@ -124,16 +124,31 @@ class LiveContext:
         durations, counts = timing.snapshot()
         parts: list[str] = []
         for key, name in (
+            ("pre_send_get_conversation_ms", "history_before"),
+            ("provider_auth_refresh_ms", "auth_refresh"),
+            ("model_catalog_ms", "catalog"),
+            ("local_validation_prepare_ms", "local_prepare"),
+            ("sentinel_prepare_http_ms", "server_prepare"),
+            ("local_validation_enforcement_ms", "local_enforcement"),
+            ("sse_connect_ms", "stream_open"),
             ("transport_to_tls_connected_ms", "tls"),
             ("transport_first_byte_ms", "ttfb"),
             ("sse_first_event_ms", "first_evt"),
+            ("button_to_first_assistant_text_ms", "action_to_text"),
+            ("sse_first_assistant_text_ms", "stream_to_text"),
+            ("button_to_last_sse_event_ms", "action_to_last_evt"),
+            ("post_send_get_conversation_ms", "history_after"),
         ):
             if key in durations:
                 parts.append(f"{name}={round(durations[key])}ms")
-        if "transport_connection_reused" in counts:
-            parts.append(f"reused={counts['transport_connection_reused']}")
-        if "transport_connection_opened" in counts:
-            parts.append(f"opened={counts['transport_connection_opened']}")
+        for key, name in (
+            ("transport_connection_reused", "reused"),
+            ("transport_connection_opened", "opened"),
+            ("pre_send_conversation_cache_hit", "history_hit"),
+            ("pre_send_conversation_cache_miss", "history_miss"),
+        ):
+            if key in counts:
+                parts.append(f"{name}={counts[key]}")
         return f"  [{' '.join(parts)}]" if parts else ""
 
     @classmethod
