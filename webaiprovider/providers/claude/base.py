@@ -14,7 +14,7 @@ from ...accounts import delete_session, session_exists
 from ...accounts.status import SessionState, SessionStatus
 from ...base import BaseProvider, Capability, ProviderType
 from ...collections import Page
-from ...core.cache import BoundedCache
+from ...core.cache import ContinuationCache
 from ...core.json import json_loads
 from ...core.timing import SendTiming
 from ...errors import AccountPaused, FeatureUnavailable, ProviderError
@@ -471,9 +471,7 @@ class BaseClaudeClient:
         self._validate_transport_origin(transport)
         self.path, self.organization, self.catalog = self.session.path, None, None
         self.authenticated = False
-        self._continuations: BoundedCache[str, tuple[str | None, bool]] = BoundedCache(
-            max_entries=128, max_bytes=32768, ttl=300.0
-        )
+        self._continuations = ContinuationCache[tuple[str | None, bool]](ttl=300.0)
         self._discovered_at = 0.0
 
     def _is_catalog_fresh(self, force: bool) -> bool:

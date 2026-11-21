@@ -262,7 +262,7 @@ class ChatGPTProvider(
         ):
             return
         with self._client_scope() as client:
-            if client._cached_conversation(cid) is None:
+            if client._cached_continuation(cid) is None:
                 client.get_conversation(cid)
 
     def _get_chat_data(self, conversation_id: str) -> Conversation:
@@ -419,10 +419,14 @@ class ChatGPTProvider(
         with self._client_scope() as client:
             return client.upload_file(path_obj.name, mime, path_obj, cancel_event=cancel_event)
 
-    @classmethod
-    def _download_conversation_snapshot(cls, client: Any, conversation_id: str, matches: Any):
-        cached = cls._cached_download_snapshot(client, conversation_id, matches)
-        return cached if cached is not None else client.get_conversation(conversation_id)
+    @staticmethod
+    def _download_conversation_snapshot(client: Any, conversation_id: str, matches: Any):
+        cached = getattr(client, "temporary_conversations", {}).get(conversation_id)
+        return (
+            cached
+            if isinstance(cached, dict) and matches(cached)
+            else client.get_conversation(conversation_id)
+        )
 
     def _resolve_download(
         self,

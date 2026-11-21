@@ -12,6 +12,8 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Standardize bounded continuation caches across providers. ChatGPT keeps only the active node, model and project for normal follow-up sends. Persisted attachment downloads read conversation data for ownership verification on demand.
+
 - Use the lightweight Claude conversation read when preparing a chat, and reuse the cached continuation on the next normal send.
 
 - Group provider output blocks from the same turn into one historical response. Use `response.text` for visible text and `response.parts` for individual blocks.

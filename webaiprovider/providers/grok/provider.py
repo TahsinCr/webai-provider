@@ -9,7 +9,7 @@ from ...accounts import delete_session
 from ...accounts.status import SessionState, SessionStatus
 from ...base import ProviderType
 from ...collections import Page
-from ...core.cache import BoundedCache
+from ...core.cache import ContinuationCache
 from ...provider import Provider
 from ...resources.chat.collections import ChatsCollection
 from ...resources.chat.types import Conversation
@@ -21,7 +21,6 @@ from ...resources.project.types import ProjectData
 from ...transport import Transport
 from .base import (
     _CATALOG_TTL,
-    _CONTINUATION_LIMIT,
     _CONTINUATION_TTL,
     BaseGrokProvider,
     _validate_grok_request,
@@ -80,7 +79,7 @@ class GrokProvider(
         self._gate = threading.Lock()
         self._catalog: ModelCatalog | None = None
         self._catalog_at = 0.0
-        self._continuations = BoundedCache(max_entries=_CONTINUATION_LIMIT, ttl=_CONTINUATION_TTL)
+        self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
 
     def _prepare_session(self) -> None:
         self.client.authenticate()

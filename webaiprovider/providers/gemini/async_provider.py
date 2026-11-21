@@ -11,7 +11,7 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
-from ...core.cache import BoundedCache
+from ...core.cache import BoundedCache, ContinuationCache
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.collections import AsyncChatsCollection
@@ -94,11 +94,7 @@ class AsyncGeminiProvider(
         self._gate = asyncio.Lock()
         self._connect_gate = asyncio.Lock()
         self._temporary: dict[str, list[Any]] = {}
-        self._chat_metadata = BoundedCache(
-            max_entries=128,
-            ttl=_CHAT_METADATA_TTL_SECONDS,
-            clock=lambda: time.monotonic(),
-        )
+        self._chat_metadata = ContinuationCache[list[Any]](ttl=_CHAT_METADATA_TTL_SECONDS)
         self._project_contexts: BoundedCache[str, list[Any]] = BoundedCache(
             max_entries=32,
             max_bytes=32768,

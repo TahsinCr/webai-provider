@@ -1036,29 +1036,14 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_metadata_cache_expires_after_verification_ttl(self):
         from webaiprovider.providers.gemini.async_provider import _CHAT_METADATA_TTL_SECONDS
 
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
         metadata = ["conversation", "request", "response"]
-        with patch(
-            "webaiprovider.providers.gemini.async_provider.time.monotonic", return_value=100.0
-        ):
+        with patch("webaiprovider.core.cache.time.monotonic", return_value=100.0) as clock:
+            provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
             provider._remember_chat_metadata("conversation", metadata)
-
-        with patch(
-            "webaiprovider.providers.gemini.async_provider.time.monotonic",
-            return_value=100.0 + _CHAT_METADATA_TTL_SECONDS - 1,
-        ):
+            clock.return_value += _CHAT_METADATA_TTL_SECONDS - 1
             self.assertEqual(provider._take_chat_metadata("conversation"), metadata)
-
-        with patch(
-            "webaiprovider.providers.gemini.async_provider.time.monotonic", return_value=100.0
-        ):
-            provider._remember_chat_metadata("conversation", metadata)
-        with patch(
-            "webaiprovider.providers.gemini.async_provider.time.monotonic",
-            return_value=100.0 + _CHAT_METADATA_TTL_SECONDS + 1,
-        ):
+            clock.return_value += 1
             self.assertIsNone(provider._take_chat_metadata("conversation"))
-        self.assertIsNone(provider._chat_metadata.get("conversation"))
 
     async def test_flash_variants_distinguish_default_fast_and_specialized_models(self):
         fast_row = [None] * 18

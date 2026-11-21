@@ -638,7 +638,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
         req.assert_awaited_once()
         self.assertEqual(result["project_id"], "g-p-new")
-        cached = self.client._cached_conversation("conv-move")
+        cached = self.client._cached_continuation("conv-move")
         self.assertIsNotNone(cached)
         self.assertEqual(cached["gizmo_id"], "g-p-new")
 
@@ -1671,20 +1671,19 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             finally:
                 await provider.close()
 
-    async def test_resolve_download_reuses_cached_snapshot_and_falls_back_on_miss(self):
-        cached_file_chat = {
-            "id": "chat-1",
-            "messages": [
-                {
-                    "id": "m-1",
-                    "content": {"parts": []},
-                    "metadata": {
-                        "attachments": [{"id": "file-cached", "name": "a.txt"}],
-                    },
-                }
-            ],
+    async def test_download_keeps_temporary_lookup_and_fetches_persisted_history(self):
+        self.client.temporary_conversations = {
+            "temporary": {
+                "id": "temporary",
+                "messages": [
+                    {
+                        "id": "m-1",
+                        "content": {"parts": []},
+                        "metadata": {"attachments": [{"id": "file-cached", "name": "a.txt"}]},
+                    }
+                ],
+            }
         }
-        self.client._cached_conversation = lambda cid: cached_file_chat if cid == "chat-1" else None
         self.client.get_conversation = AsyncMock(
             return_value={
                 "id": "chat-1",
@@ -1699,16 +1698,15 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 Mock(json=lambda: {"download_url": "https://cdn.example/r"}),
             ]
         )
-        source_cached = await self.provider._resolve_download(
-            "file-service://file-cached", "chat-1"
-        )
-        self.assertEqual(source_cached.filename, "a.txt")
+
+        # The provider owns the ephemeral state shared with its short-lived test client.
+        self.provider._temporary_conversations.update(self.client.temporary_conversations)
+        source = await self.provider._resolve_download("file-service://file-cached", "temporary")
+        self.assertEqual(source.filename, "a.txt")
         self.client.get_conversation.assert_not_awaited()
 
-        source_miss = await self.provider._resolve_download(
-            "sandbox:/mnt/data/report.csv", "chat-1"
-        )
-        self.assertEqual(source_miss.url, "https://cdn.example/r")
+        source = await self.provider._resolve_download("sandbox:/mnt/data/report.csv", "chat-1")
+        self.assertEqual(source.url, "https://cdn.example/r")
         self.client.get_conversation.assert_awaited_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
@@ -2074,15 +2072,16 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conversation["current_node"], "a-1")
         self.assertEqual(
             [item["id"] for item in conversation["messages"]],
-            ["old-user", "old-assistant", self.requests[0]["messages"][0]["id"], "r-1", "a-1"],
+            [self.requests[0]["messages"][0]["id"], "r-1", "a-1"],
         )
 
-    async def test_recent_verified_continuation_reuses_provider_snapshot(self):
+    async def test_recent_verified_continuation_reuses_metadata_without_another_get(self):
         previous = {
             "id": "remote",
             "conversation_id": "remote",
             "title": "Existing chat",
             "current_node": "old-assistant",
+            "gizmo_id": "g-p-work",
             "messages": [
                 {"id": "old-user", "author": {"role": "user"}},
                 {"id": "old-assistant", "author": {"role": "assistant"}},
@@ -2095,11 +2094,21 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
             self.client, "request", new_callable=AsyncMock, return_value=response
         ) as get_request:
             await self.client.send_prompt("remote", "First", model="account-thinking")
-            await self.client.send_prompt("remote", "Second", model="account-thinking")
+            await self.client.send_prompt("remote", "Second")
 
         self.assertEqual(get_request.await_count, 1)
         self.assertEqual(self.requests[1]["parent_message_id"], "a-1")
-        self.assertGreater(self.client._continuation_cache.stats().bytes, 0)
+        self.assertEqual(self.requests[1]["model"], "account-thinking")
+        self.assertEqual(self.requests[1]["gizmo_id"], "g-p-work")
+        self.assertEqual(
+            self.client._cached_continuation("remote"),
+            {
+                "id": "remote",
+                "current_node": "a-2",
+                "default_model_slug": "account-thinking",
+                "gizmo_id": "g-p-work",
+            },
+        )
         self.assertEqual(self.client._continuation_cache.stats().entries, 1)
 
     def test_continuation_cache_ttl_is_measured_from_verification(self):
@@ -2108,12 +2117,15 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
             "current_node": "node",
             "messages": [{"id": "user", "content": {"parts": ["text"]}}],
         }
-        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=100.0):
+        from webaiprovider.core.cache import ContinuationCache
+
+        with patch("webaiprovider.core.cache.time.monotonic", return_value=100.0) as clock:
+            self.client._continuation_cache = ContinuationCache(ttl=60.0)
             self.client._remember_conversation(conversation)
-        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=159.0):
-            self.assertIs(self.client._cached_conversation("remote"), conversation)
-        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=160.0):
-            self.assertIsNone(self.client._cached_conversation("remote"))
+            clock.return_value = 159.0
+            self.assertEqual(self.client._cached_continuation("remote")["current_node"], "node")
+            clock.return_value = 160.0
+            self.assertIsNone(self.client._cached_continuation("remote"))
 
     async def test_cached_send_failure_does_not_resubmit_after_streamed_content(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
@@ -2134,7 +2146,7 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
         self.client.send_prompt_direct.assert_awaited_once()
         self.client.get_conversation.assert_not_awaited()
         self.assertEqual(events, [{"type": "delta", "text": "partial"}])
-        self.assertIsNone(self.client._cached_conversation("remote"))
+        self.assertIsNone(self.client._cached_continuation("remote"))
 
     async def test_delete_invalidates_verified_continuation(self):
         self.client._remember_conversation({"id": "remote", "current_node": "node", "messages": []})
@@ -2142,7 +2154,7 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.client, "request", new_callable=AsyncMock, return_value=response):
             await self.client.delete_conversation("remote")
 
-        self.assertIsNone(self.client._cached_conversation("remote"))
+        self.assertIsNone(self.client._cached_continuation("remote"))
 
     async def test_actions_bypass_reusable_snapshot(self):
         previous = {
@@ -2170,7 +2182,7 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch.object(
                         self.client,
-                        "_cached_conversation",
+                        "_cached_continuation",
                         side_effect=AssertionError("message actions must read the provider"),
                     ),
                     patch.object(
@@ -2206,7 +2218,7 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.client.send_prompt("remote", "Continue", model="account-thinking")
 
-        self.assertIsNone(self.client._cached_conversation("remote"))
+        self.assertIsNone(self.client._cached_continuation("remote"))
 
     async def test_missing_temporary_context_never_falls_back_to_saved_chat(self):
         self.client.get_conversation = AsyncMock(side_effect=AssertionError("no fallback GET"))

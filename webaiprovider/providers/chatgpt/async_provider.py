@@ -316,7 +316,7 @@ class AsyncChatGPTProvider(
         ):
             return
         async with self._client_scope() as client:
-            if client._cached_conversation(cid) is None:
+            if client._cached_continuation(cid) is None:
                 await maybe_await(client.get_conversation(cid))
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
@@ -565,12 +565,12 @@ class AsyncChatGPTProvider(
             if callable(close):
                 await maybe_await(close())
 
-    @classmethod
-    async def _download_conversation_snapshot(cls, client: Any, conversation_id: str, matches: Any):
-        cached = cls._cached_download_snapshot(client, conversation_id, matches)
+    @staticmethod
+    async def _download_conversation_snapshot(client: Any, conversation_id: str, matches: Any):
+        cached = getattr(client, "temporary_conversations", {}).get(conversation_id)
         return (
             cached
-            if cached is not None
+            if isinstance(cached, dict) and matches(cached)
             else await maybe_await(client.get_conversation(conversation_id))
         )
 

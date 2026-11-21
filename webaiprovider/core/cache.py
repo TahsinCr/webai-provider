@@ -54,3 +54,12 @@ class BoundedCache(VersionedCache[K, V]):
 
     def put(self, key: K, value: V, *, version: int = 0, ttl: float | None = None) -> bool:
         return super().put(key, value, version=version, ttl=ttl)
+
+
+class ContinuationCache(BoundedCache[str, V]):
+    """Bounded cache for provider continuation metadata, scoped to one session."""
+
+    __slots__ = ()
+
+    def __init__(self, *, ttl: float) -> None:
+        super().__init__(max_entries=128, max_bytes=128 * 1024, ttl=ttl, clock=time.monotonic)

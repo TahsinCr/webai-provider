@@ -20,7 +20,7 @@ from ...accounts import session_exists
 from ...accounts.status import SessionState, SessionStatus
 from ...base import BaseProvider, Capability, ProviderType
 from ...collections import Page
-from ...core.cache import BoundedCache
+from ...core.cache import ContinuationCache
 from ...core.json import json_dumps, json_loads
 from ...core.timing import SendTiming
 from ...errors import ProviderError, RateLimited, RemoteNotFound
@@ -49,9 +49,6 @@ from .formats import message_files, message_parts, text_from_parts
 from .sentinel import SentinelRuntime
 
 _CONTINUATION_CACHE_TTL_SECONDS = 60.0
-_CONTINUATION_CACHE_MAX_ITEMS = 8
-_CONTINUATION_CACHE_MAX_MESSAGES = 2_000
-_CONTINUATION_CACHE_MAX_TEXT_CHARS = 1_000_000
 
 
 @lru_cache(maxsize=8)
@@ -215,13 +212,8 @@ class BaseChatGPTClient:
         self.pending_branches: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._owned_temporary_conversations = self.temporary_conversations
         self._owned_pending_branches = self.pending_branches
-        self._continuation_cache: BoundedCache[str, tuple[float, dict[str, Any], int]] = (
-            BoundedCache(
-                max_entries=_CONTINUATION_CACHE_MAX_ITEMS,
-                max_bytes=_CONTINUATION_CACHE_MAX_TEXT_CHARS,
-                ttl=_CONTINUATION_CACHE_TTL_SECONDS,
-                getsizeof=lambda key, value: len(key) + value[2],
-            )
+        self._continuation_cache = ContinuationCache[dict[str, str | None]](
+            ttl=_CONTINUATION_CACHE_TTL_SECONDS
         )
         self._sentinel_runtime: SentinelRuntime | None = None
         self._sentinel_runtime_key: str | None = None
@@ -256,25 +248,6 @@ class BaseChatGPTClient:
             else:
                 self.pending_branches = OrderedDict()
 
-    @staticmethod
-    def _conversation_text_size(conversation: dict[str, Any]) -> int:
-        messages = conversation.get("messages")
-        if not isinstance(messages, list):
-            return 0
-        total = 0
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            parts = content.get("parts") if isinstance(content, dict) else None
-            if isinstance(parts, list):
-                for part in parts:
-                    if isinstance(part, str):
-                        total += len(part)
-                        if total > _CONTINUATION_CACHE_MAX_TEXT_CHARS:
-                            return total
-        return total
-
     def _is_closed(self) -> bool:
         return getattr(self, "_closed", False) is True
 
@@ -288,33 +261,29 @@ class BaseChatGPTClient:
 
     def _remember_conversation(self, conversation: dict[str, Any]) -> None:
         conversation_id = conversation.get("conversation_id") or conversation.get("id")
-        messages = conversation.get("messages")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            return
+        current_node = conversation.get("current_node")
         if (
-            not isinstance(conversation_id, str)
-            or not conversation_id
-            or "current_node" not in conversation
-            or not isinstance(conversation.get("current_node"), (str, type(None)))
-            or not isinstance(messages, list)
-            or len(messages) > _CONTINUATION_CACHE_MAX_MESSAGES
+            "current_node" not in conversation
+            or not isinstance(current_node, (str, type(None)))
+            or not isinstance(conversation.get("messages"), list)
         ):
-            if isinstance(conversation_id, str) and conversation_id:
-                self._forget_conversation(conversation_id)
-            return
-        text_size = self._conversation_text_size(conversation)
-        if text_size > _CONTINUATION_CACHE_MAX_TEXT_CHARS:
             self._forget_conversation(conversation_id)
             return
-        self._continuation_cache.put(conversation_id, (time.monotonic(), conversation, text_size))
+        model = conversation.get("default_model_slug")
+        self._continuation_cache.put(
+            conversation_id,
+            {
+                "id": conversation_id,
+                "current_node": current_node,
+                "default_model_slug": model if isinstance(model, str) else None,
+                "gizmo_id": extract_project_id(conversation),
+            },
+        )
 
-    def _cached_conversation(self, conversation_id: str) -> dict[str, Any] | None:
-        cached = self._continuation_cache.get(conversation_id)
-        if cached is None:
-            return None
-        checked_at, conversation, _text_size = cached
-        if time.monotonic() - checked_at >= _CONTINUATION_CACHE_TTL_SECONDS:
-            self._forget_conversation(conversation_id)
-            return None
-        return conversation
+    def _cached_continuation(self, conversation_id: str) -> dict[str, str | None] | None:
+        return self._continuation_cache.get(conversation_id)
 
     def _forget_conversation(self, conversation_id: str) -> None:
         pending = getattr(self, "pending_branches", None)
@@ -453,12 +422,9 @@ class BaseChatGPTClient:
                 raise ChatGPTError(
                     "Server did not confirm project membership; refresh this conversation"
                 )
-        cached = self._cached_conversation(conversation_id)
-        if isinstance(cached, dict):
-            updated_snapshot = dict(cached)
-            updated_snapshot["gizmo_id"] = project_id
-            updated_snapshot["project_id"] = project_id
-            self._remember_conversation(updated_snapshot)
+        cached = self._cached_continuation(conversation_id)
+        if cached is not None:
+            self._continuation_cache.put(conversation_id, dict(cached, gizmo_id=project_id))
         result = dict(payload) if isinstance(payload, dict) else {}
         result.setdefault("conversation_id", conversation_id)
         result["project_id"] = project_id
@@ -543,7 +509,6 @@ class BaseChatGPTClient:
         submitted_message: dict[str, Any] | None,
         streamed_messages: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        previous_messages = (previous or {}).get("messages")
         last_message = streamed_messages[-1] if streamed_messages else None
         first_message = streamed_messages[0] if streamed_messages else None
         streamed_parent = (
@@ -556,7 +521,14 @@ class BaseChatGPTClient:
             not is_pending_branch
             and (conversation_id is None or resolved_id == conversation_id)
             and action is None
-            and (conversation_id is None or isinstance(previous_messages, list))
+            and (
+                conversation_id is None
+                or (
+                    previous is not None
+                    and (previous.get("conversation_id") or previous.get("id")) == conversation_id
+                    and "current_node" in previous
+                )
+            )
             and isinstance(submitted_message, dict)
             and submitted_message.get("id") == submitted_message_id
             and (streamed_parent is None or streamed_parent == submitted_message_id)
@@ -565,18 +537,15 @@ class BaseChatGPTClient:
         )
         if not can_build:
             return None
-        conversation = dict(previous or {})
-        conversation.update(
-            {
-                "id": resolved_id,
-                "conversation_id": resolved_id,
-                "title": (previous or {}).get("title") or prompt[:60],
-                "default_model_slug": model,
-                "current_node": current_node,
-                "messages": list(previous_messages or ()) + [submitted_message] + streamed_messages,
-            }
-        )
-        return conversation
+        return {
+            "id": resolved_id,
+            "conversation_id": resolved_id,
+            "title": (previous or {}).get("title") or prompt[:60],
+            "default_model_slug": model,
+            "current_node": current_node,
+            "messages": [submitted_message, *streamed_messages],
+            "gizmo_id": extract_project_id(previous) if previous else None,
+        }
 
     def _finalize_sent_conversation(
         self,
@@ -1031,7 +1000,7 @@ class BaseChatGPTClient:
             return True, pending_entry, isinstance(pending_entry.get("pending_branch"), dict)
         may_reuse = action is None
         started = time.perf_counter_ns() if timing is not None and may_reuse else None
-        cached = self._cached_conversation(conversation_id) if may_reuse else None
+        cached = self._cached_continuation(conversation_id) if may_reuse else None
         if started is not None:
             timing.record("pre_send_conversation_cache_lookup_ms", time.perf_counter_ns() - started)
         if cached is not None:
@@ -1786,22 +1755,6 @@ class BaseChatGPTProvider(BaseProvider):
         if kind == "response_verifying":
             return bound_emitted, ResponseVerifying()
         return bound_emitted, None
-
-    @staticmethod
-    def _cached_download_snapshot(
-        client: Any, conversation_id: str, matches: Any
-    ) -> dict[str, Any] | None:
-        cached_fn = getattr(client, "_cached_conversation", None)
-        if callable(cached_fn):
-            cached = cached_fn(conversation_id)
-            if isinstance(cached, dict) and matches(cached):
-                return cached
-        temporary = getattr(client, "temporary_conversations", None)
-        if isinstance(temporary, dict):
-            temp_snapshot = temporary.get(conversation_id)
-            if isinstance(temp_snapshot, dict) and matches(temp_snapshot):
-                return temp_snapshot
-        return None
 
     @staticmethod
     def _has_file_service_url(chat_payload: dict[str, Any], url: str) -> bool:

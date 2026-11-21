@@ -10,7 +10,7 @@ from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import ProviderType
 from ...collections import Page
-from ...core.cache import BoundedCache
+from ...core.cache import ContinuationCache
 from ...core.concurrency import gather_bounded
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
@@ -23,7 +23,6 @@ from ...transport import AsyncTransport
 from .async_client import AsyncGrokClient, AsyncGrokProjectEditor
 from .base import (
     _CATALOG_TTL,
-    _CONTINUATION_LIMIT,
     _CONTINUATION_TTL,
     BaseGrokProvider,
     _validate_grok_request,
@@ -81,7 +80,7 @@ class AsyncGrokProvider(
         self._gate = asyncio.Lock()
         self._catalog: ModelCatalog | None = None
         self._catalog_at = 0.0
-        self._continuations = BoundedCache(max_entries=_CONTINUATION_LIMIT, ttl=_CONTINUATION_TTL)
+        self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
 
     async def _prepare_session(self) -> None:
         _, catalog = await asyncio.gather(
