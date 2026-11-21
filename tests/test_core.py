@@ -14,14 +14,14 @@ from webaiprovider.core.concurrency import gather_bounded
 from webaiprovider.core.hooks import OperationHooks
 from webaiprovider.core.types import OperationContext
 from webaiprovider.providers.grok.client import GrokClient, GrokProjectEditor
-from webaiprovider.providers.grok.records import iter_response_events
+from webaiprovider.providers.grok.records import response_events
 from webaiprovider.resources.message.protocol import (
     ConversationBound,
     ProviderRequest,
     ResponseComplete,
     TextDelta,
 )
-from webaiprovider.resources.operations import execute_with_hooks_sync
+from webaiprovider.resources.operations import execute_with_hooks
 from webaiprovider.transport.frames import iter_bounded_lines
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -210,7 +210,7 @@ class NativeSyncFoundationTests(unittest.TestCase):
             name="demo.op", operation_id="op1", provider_id="p1", account_id="a1"
         )
 
-        result = execute_with_hooks_sync(
+        result = execute_with_hooks(
             operation_name="demo.op",
             context=ctx,
             hooks_chain=(hooks,),
@@ -264,7 +264,7 @@ class NativeSyncFoundationTests(unittest.TestCase):
             self.assertEqual(editor.update("ws-1", name="Renamed")["name"], "Renamed")
             remembered: list[tuple[str, str]] = []
             events = list(
-                iter_response_events(
+                response_events(
                     ProviderRequest(prompt="hello"),
                     prepare=lambda _req: (
                         client.events("/rest/app-chat/conversations/new", {}),

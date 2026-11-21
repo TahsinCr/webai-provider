@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session, session_exists
-from ...accounts.credentials import read_session_async
+from ...accounts.credentials import async_read_session
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
@@ -29,7 +29,7 @@ from .async_client import (
     AsyncGeminiNotebooks,
     AsyncGeminiProjectEditor,
     AsyncGeminiRPC,
-    response_events,
+    async_response_events,
 )
 from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
 from .errors import GeminiCompatibilityError, GeminiStreamError
@@ -276,7 +276,7 @@ class AsyncGeminiProvider(
             await iterator.aclose()
 
     def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderStreamEvent, None]:
-        return response_events(
+        return async_response_events(
             request,
             prepare=self._prepare_send_context,
             request_timeout=(15, self.stream_idle_timeout + 10),
@@ -384,6 +384,6 @@ class AsyncGeminiProvider(
             cookie_values = (
                 client.http.cookies.get_dict()
                 if client is not None and client.http is not None
-                else await read_session_async(self.cookie_file)
+                else await async_read_session(self.cookie_file)
             )
         return self._finalize_download_source(target, url, cookie_values)

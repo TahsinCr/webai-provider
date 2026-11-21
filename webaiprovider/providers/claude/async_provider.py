@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
-from ...accounts.credentials import read_session_async
+from ...accounts.credentials import async_read_session
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
 from ...base import ProviderType
@@ -181,5 +181,5 @@ class AsyncClaudeProvider(
             await self.client.base() + "/conversations/" + remote_id(conversation_id) + "/wiggle"
         )
         listing = await self.client.http.request("GET", endpoint + "/list-files?prefix=")
-        saved = await read_session_async(self.credential_file)
+        saved = await async_read_session(self.credential_file)
         return self._build_download_source(endpoint, path, listing, saved)

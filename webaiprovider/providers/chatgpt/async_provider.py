@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlsplit
 
 from ...accounts import delete_session, session_exists
-from ...accounts.credentials import read_session_async
+from ...accounts.credentials import async_read_session
 from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
@@ -32,7 +32,7 @@ from ...transport.downloader import DownloadSource
 from .async_client import (
     AsyncChatGPTClient,
     AsyncChatGPTProjectEditor,
-    prepare_chatgpt_attachments,
+    async_prepare_chatgpt_attachments,
 )
 from .auth import BrowserSession
 from .base import BaseChatGPTClient, BaseChatGPTProvider
@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from ...accounts.account import Account
 
 
-async def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
+async def async_confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
     """Poll a remote resource until removal is confirmed or raise ProviderError."""
     for delay in (0, 0.2, 0.5, 1):
         if delay:
@@ -205,7 +205,7 @@ class AsyncChatGPTProvider(
                     await self.session_state.load_async()
                 except ChatGPTAuthenticationError:
                     auth_ready = False
-                    stored = await read_session_async(self.session_state.session_file)
+                    stored = await async_read_session(self.session_state.session_file)
                     cookies = stored.get("cookies", stored)
                     if not isinstance(cookies, dict):
                         raise
@@ -346,7 +346,7 @@ class AsyncChatGPTProvider(
             async with self._client_scope() as client:
                 return await maybe_await(client.get_conversation(conversation_id))
 
-        await confirm_deleted(readback, lambda value: value.get("is_visible") is False)
+        await async_confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
     async def _move_chat_data(
         self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
@@ -416,7 +416,7 @@ class AsyncChatGPTProvider(
                     raise
         if self._check_delete_project_response(response):
             return
-        await confirm_deleted(lambda: self._get_project_data(project_id))
+        await async_confirm_deleted(lambda: self._get_project_data(project_id))
 
     async def _stream_provider_events(
         self, request: ProviderRequest
@@ -446,7 +446,7 @@ class AsyncChatGPTProvider(
                         )
                     client.temporary_conversations = self._temporary_conversations
                     client.pending_branches = self._pending_branches
-                    attachments = await prepare_chatgpt_attachments(client, request)
+                    attachments = await async_prepare_chatgpt_attachments(client, request)
                     remote_id, completed, previous = await maybe_await(
                         client.send_prompt(
                             request.conversation_id,

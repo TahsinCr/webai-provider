@@ -13,7 +13,7 @@ from ..errors import OperationCancelledError
 _log = logging.getLogger(__name__)
 
 
-def execute_with_hooks_sync(
+def execute_with_hooks(
     *,
     operation_name: str,
     context: OperationContext,
@@ -51,7 +51,7 @@ def execute_with_hooks_sync(
         OperationHooks.run_lifecycle(hooks_chain, "on_finally", operation_name, context)
 
 
-async def execute_with_hooks(
+async def async_execute_with_hooks(
     *,
     operation_name: str,
     context: OperationContext,

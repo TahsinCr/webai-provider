@@ -46,7 +46,7 @@ def _connect_timeout(timeout) -> float:
     return float(timeout)
 
 
-async def _resolve_host_ips(
+async def _async_resolve_host_ips(
     hostname: str, port: int, *, use_ipv6: bool, timeout: float
 ) -> tuple[str, ...]:
     key = (hostname.casefold(), port, use_ipv6)
@@ -72,7 +72,7 @@ async def _resolve_host_ips(
     return validated
 
 
-async def _prepare_curl_session_async(
+async def _async_prepare_curl_session(
     client,
     hostname: str,
     port: int,
@@ -95,7 +95,7 @@ async def _prepare_curl_session_async(
         return
     if _has_proxy_configured(client, options or {}, hostname=hostname):
         return
-    ips = await _resolve_host_ips(hostname, port, use_ipv6=ipv6, timeout=timeout)
+    ips = await _async_resolve_host_ips(hostname, port, use_ipv6=ipv6, timeout=timeout)
     prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
     entry = (
         dns_state.resolve_entry(ips)
@@ -233,7 +233,7 @@ class AsyncHTTPTransport(AsyncTransport):
             await self._after_response()
 
     async def _prepare_curl(self, options, *, client):
-        await _prepare_curl_session_async(
+        await _async_prepare_curl_session(
             client,
             self._dns.host,
             self._dns.port,

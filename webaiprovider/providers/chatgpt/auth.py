@@ -14,10 +14,10 @@ from urllib.parse import urlsplit
 
 from ...accounts.credentials import (
     CredentialStore,
+    async_read_session,
+    async_save_session,
     read_session,
-    read_session_async,
     save_session,
-    save_session_async,
 )
 from ...errors import AccountPaused
 from .constants import DEFAULT_CDP_URL, FORBIDDEN_REPLAY_HEADERS
@@ -59,7 +59,7 @@ class BrowserSession:
 
     async def save_async(self, url: str, headers: dict[str, str]) -> None:
         path = self._prepare_save_target()
-        await save_session_async(
+        await async_save_session(
             path, {"version": 1, "url": url, "headers": headers}, ensure_ascii=True, newline=True
         )
         self._finalize_save_target(path)
@@ -122,7 +122,7 @@ class BrowserSession:
         from ...transport.network import (
             _invalidate_host_dns,
             _is_curl_timeout,
-            _prepare_curl_session_sync,
+            _prepare_curl_session,
             curl_cookie_jar,
         )
 
@@ -133,7 +133,7 @@ class BrowserSession:
             timeout=30,
             trust_env=False,
         ) as client:
-            _prepare_curl_session_sync(client, "chatgpt.com", 443)
+            _prepare_curl_session(client, "chatgpt.com", 443)
             try:
                 response = client.get(
                     "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
@@ -151,7 +151,7 @@ class BrowserSession:
         """Bootstrap a profile's web session natively on the active event loop."""
         from curl_cffi.requests import AsyncSession
 
-        from ...transport.async_http import _prepare_curl_session_async
+        from ...transport.async_http import _async_prepare_curl_session
         from ...transport.network import (
             _invalidate_host_dns,
             _is_curl_timeout,
@@ -165,7 +165,7 @@ class BrowserSession:
             timeout=(10.0, 30.0),
             trust_env=False,
         ) as client:
-            await _prepare_curl_session_async(client, "chatgpt.com", 443, timeout=10.0)
+            await _async_prepare_curl_session(client, "chatgpt.com", 443, timeout=10.0)
             try:
                 response = await client.get(
                     "https://chatgpt.com/api/auth/session", headers=headers, allow_redirects=False
@@ -227,7 +227,7 @@ class BrowserSession:
     async def load_async(self) -> tuple[str, dict[str, str]]:
         path = self.session_file
         try:
-            value = await read_session_async(path)
+            value = await async_read_session(path)
         except (FileNotFoundError, AccountPaused) as error:
             raise ChatGPTAuthenticationError(
                 "No saved ChatGPT session; authenticate the account"

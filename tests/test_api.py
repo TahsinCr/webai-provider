@@ -355,7 +355,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await session.chats.find("ID", endswith=True)).remote_id, chat.remote_id)
 
         with patch(
-            "webaiprovider.resources.chat.chat.download_source",
+            "webaiprovider.resources.chat.chat.async_download_source",
             AsyncMock(return_value=b"file-bytes"),
         ):
             dl = await chat.download("https://example.com/test.png")
@@ -697,7 +697,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await provider.close()
 
     async def test_prepare_operation_preserves_attachment_mime_type(self) -> None:
-        from webaiprovider.resources.message.request import run_pipeline_unwrapped
+        from webaiprovider.resources.message.request import async_run_pipeline
 
         provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
         provider._prepare_session = AsyncMock()
@@ -717,7 +717,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 attachments=tuple(op.message.attachments),
                 parameters={"chat": chat, "message": op.message},
             )
-            request = (await run_pipeline_unwrapped(provider._send_pipeline, ctx)).request
+            request = (await async_run_pipeline(provider._send_pipeline, ctx)).request
             self.assertEqual(request.attachments[0]["mime_type"], "text/plain")
             self.assertNotIn("mime", request.attachments[0])
             self.assertEqual(request.attachments[0]["bytes"], b"hello")

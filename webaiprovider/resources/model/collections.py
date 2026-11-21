@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 from ...collections import (
     AsyncCollection,
     RemoteCollection,
+    _async_report_read,
     _report_read,
-    _report_read_sync,
 )
 from ...errors import RemoteNotFound
 from .model import EffortRef, ModelRef, ModelSelection
@@ -79,17 +79,17 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
                     return await self._reload()
         return self._items
 
-    @_report_read
+    @_async_report_read
     async def refresh(self) -> list[ModelRef]:
         """Replace the session catalog after a successful provider load."""
         async with self._lock:
             return list(await self._reload())
 
-    @_report_read
+    @_async_report_read
     async def get(self, model_id: str, /) -> ModelRef:
         return _model_by_id(await self._load_items(), model_id)
 
-    @_report_read
+    @_async_report_read
     async def find(
         self,
         query: str,
@@ -165,7 +165,7 @@ class ModelsCollection(RemoteCollection[ModelRef]):
         items = self._load_items()
         yield items if limit is None else items[:limit]
 
-    @_report_read_sync
+    @_report_read
     def list(
         self,
         predicate: Callable[[ModelRef], bool] | None = None,
@@ -177,17 +177,17 @@ class ModelsCollection(RemoteCollection[ModelRef]):
             raise TypeError(f"Unexpected model list option: {next(iter(options))}")
         return self._collect_items(predicate, limit=limit)
 
-    @_report_read_sync
+    @_report_read
     def refresh(self) -> list[ModelRef]:
         """Replace the session catalog after a successful provider load."""
         with self._lock:
             return list(self._reload())
 
-    @_report_read_sync
+    @_report_read
     def get(self, model_id: str, /) -> ModelRef:
         return _model_by_id(self._load_items(), model_id)
 
-    @_report_read_sync
+    @_report_read
     def find(
         self,
         query: str,

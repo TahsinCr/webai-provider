@@ -536,7 +536,7 @@ class _GrokStreamProcessor:
             yield ResponseComplete()
 
 
-def iter_response_events(
+def response_events(
     request: ProviderRequest,
     *,
     prepare: Callable[[ProviderRequest], tuple[Any, str | None]],
@@ -558,7 +558,7 @@ def iter_response_events(
     yield from processor.finish()
 
 
-async def response_events(
+async def async_response_events(
     request: ProviderRequest,
     *,
     prepare: Callable[[ProviderRequest], Awaitable[tuple[AsyncIterator[dict], str | None]]],

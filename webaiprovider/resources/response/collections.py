@@ -13,8 +13,8 @@ from ...collections import (
     AsyncRemoteCollection,
     BaseCollection,
     RemoteCollection,
+    _async_report_read,
     _report_read,
-    _report_read_sync,
     validate_limit,
     validate_predicate,
 )
@@ -32,8 +32,8 @@ from .artifact import Artifact
 from .operation import (
     AsyncMessageOperation,
     MessageOperation,
-    _close_async_iterator,
-    _close_sync_iterator,
+    _async_close_iterator,
+    _close_iterator,
 )
 from .response import Response
 from .source import Source
@@ -603,7 +603,11 @@ class _BaseResponsesCollection:
     def _delete_local(self, target: Response | AsyncMessage | Message | str) -> None:
         target_id = target if isinstance(target, str) else target.id
         index = next(
-            (i for i, item in enumerate(self._turns) if self._item_matches_exact_id(item, target_id)),
+            (
+                i
+                for i, item in enumerate(self._turns)
+                if self._item_matches_exact_id(item, target_id)
+            ),
             None,
         )
         response = self._turns[index] if index is not None else self._known_responses.get(target_id)
@@ -675,7 +679,7 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
             result.reported = True
         return result.items
 
-    @_report_read
+    @_async_report_read
     async def list(
         self,
         predicate: Callable[[Response], bool] | None = None,
@@ -717,7 +721,7 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
             async for event in stream:
                 yield event
         finally:
-            await _close_async_iterator(stream)
+            await _async_close_iterator(stream)
 
     def update(
         self,
@@ -793,7 +797,7 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         self._mark_remote_read(started_ns)
         return items
 
-    @_report_read_sync
+    @_report_read
     def list(
         self,
         predicate: Callable[[Response], bool] | None = None,
@@ -834,7 +838,7 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         try:
             yield from stream
         finally:
-            _close_sync_iterator(stream)
+            _close_iterator(stream)
 
     def update(
         self,

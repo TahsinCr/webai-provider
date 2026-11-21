@@ -169,7 +169,7 @@ def read_session(path: Any) -> dict:
     return FileCredentialStore(path).load()
 
 
-async def read_session_async(path: Any) -> dict:
+async def async_read_session(path: Any) -> dict:
     if isinstance(path, MemoryCredentialStore):
         return path.load()
     return await asyncio.to_thread(read_session, path)
@@ -184,7 +184,7 @@ def save_session(
     FileCredentialStore(path).save(value, ensure_ascii=ensure_ascii, newline=newline)
 
 
-async def save_session_async(
+async def async_save_session(
     path: Any, value: dict, *, ensure_ascii: bool = False, newline: bool = False
 ) -> None:
     kwargs = {"ensure_ascii": ensure_ascii, "newline": newline} if ensure_ascii or newline else {}

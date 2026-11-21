@@ -33,11 +33,11 @@ from .sentinel import SentinelRuntime
 __all__ = [
     "AsyncChatGPTClient",
     "AsyncChatGPTProjectEditor",
-    "prepare_chatgpt_attachments",
+    "async_prepare_chatgpt_attachments",
 ]
 
 
-async def prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
+async def async_prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
     items = request.attachments
     attachments: list[Any] = [None] * len(items)
     pending_uploads: list[tuple[int, dict[str, Any]]] = []

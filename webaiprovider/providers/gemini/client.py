@@ -21,7 +21,7 @@ from .base import (
     BaseGeminiClient,
     BaseGeminiProjectEditor,
 )
-from .generation import upload_file_references_sync
+from .generation import upload_file_references
 from .rpc import RPCPayload
 
 __all__ = [
@@ -236,7 +236,7 @@ class GeminiProjectEditor(BaseGeminiProjectEditor):
             name, mime_type = values["name"], "text/plain"
             uploaded, text = None, [values["text"], 1]
         elif kind == "file":
-            ((reference, name, mime_type),) = upload_file_references_sync(
+            ((reference, name, mime_type),) = upload_file_references(
                 self.rpc.connect(), [values["path"]]
             )
             if not reference.startswith("/"):

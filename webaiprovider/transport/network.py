@@ -131,7 +131,7 @@ def _extract_and_validate_ips(hostname: str, records) -> tuple[str, ...]:
     return _validate_resolved_ips(hostname, addresses)
 
 
-def _resolve_host_ips_sync(hostname: str, port: int, *, use_ipv6: bool) -> tuple[str, ...]:
+def _resolve_host_ips(hostname: str, port: int, *, use_ipv6: bool) -> tuple[str, ...]:
     key = (hostname.casefold(), port, use_ipv6)
     cached = _DNS_CACHE.get(key)
     if cached is not None:
@@ -250,7 +250,7 @@ class _OriginDNS:
         _invalidate_host_dns(self.host, self.port, client)
 
 
-def _prepare_curl_session_sync(
+def _prepare_curl_session(
     client,
     hostname: str,
     port: int,
@@ -272,7 +272,7 @@ def _prepare_curl_session_sync(
         return
     if _has_proxy_configured(client, options or {}, hostname=hostname):
         return
-    ips = _resolve_host_ips_sync(hostname, port, use_ipv6=ipv6)
+    ips = _resolve_host_ips(hostname, port, use_ipv6=ipv6)
     prefix = dns_state.prefix if dns_state is not None else f"{hostname}:{port}:"
     entry = (
         dns_state.resolve_entry(ips)

@@ -5,10 +5,10 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from ...collections import _publish_collection_change, _publish_collection_change_sync
+from ...collections import _async_publish_collection_change, _publish_collection_change
 from ...errors import ProviderError, UnsupportedOperationError
-from ...transport.downloader import DownloadSource, download_source, download_source_sync
-from ..operations import execute_with_hooks, execute_with_hooks_sync
+from ...transport.downloader import DownloadSource, async_download_source, download_source
+from ..operations import async_execute_with_hooks, execute_with_hooks
 from ..project.types import ProjectData
 from ..response.artifact import Artifact
 from .types import Conversation
@@ -253,7 +253,7 @@ class AsyncChat(_BaseChat):
             url,
             conversation_id=self.remote_id,
         )
-        return await download_source(source)
+        return await async_download_source(source)
 
     async def rename(self, title: str) -> AsyncChat:
         if self.provider is not None:
@@ -284,7 +284,7 @@ class AsyncBranchableChat(AsyncChat):
         async def on_success(ctx) -> None:
             created_chat: AsyncChat = ctx.result
             if created_chat.remote_id and not created_chat.metadata.get("pending_branch"):
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "chats", "create", created_chat, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -294,7 +294,7 @@ class AsyncBranchableChat(AsyncChat):
                 payload={"source_chat_id": self.remote_id, "title": created_chat.title},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="chat.branch",
             context=context,
             hooks_chain=(provider.hooks, provider.chats.hooks),
@@ -344,7 +344,7 @@ class AsyncMovableChat(AsyncChat):
 
         async def on_success(ctx) -> None:
             if self.remote_id and not self.temporary:
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "chats", "update", self, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -354,7 +354,7 @@ class AsyncMovableChat(AsyncChat):
                 payload={"project_id": ctx.parameters["project_id"]},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="chat.move",
             context=context,
             hooks_chain=(provider.hooks, provider.chats.hooks),
@@ -428,7 +428,7 @@ class Chat(_BaseChat):
             url,
             conversation_id=self.remote_id,
         )
-        return download_source_sync(source)
+        return download_source(source)
 
     def rename(self, title: str) -> Chat:
         if self.provider is not None:
@@ -457,7 +457,7 @@ class BranchableChat(Chat):
         def on_success(ctx) -> None:
             created_chat: Chat = ctx.result
             if created_chat.remote_id and not created_chat.metadata.get("pending_branch"):
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "chats", "create", created_chat, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -467,7 +467,7 @@ class BranchableChat(Chat):
                 payload={"source_chat_id": self.remote_id, "title": created_chat.title},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="chat.branch",
             context=context,
             hooks_chain=(provider.hooks, provider.chats.hooks),
@@ -517,7 +517,7 @@ class MovableChat(Chat):
 
         def on_success(ctx) -> None:
             if self.remote_id and not self.temporary:
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "chats", "update", self, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -527,7 +527,7 @@ class MovableChat(Chat):
                 payload={"project_id": ctx.parameters["project_id"]},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="chat.move",
             context=context,
             hooks_chain=(provider.hooks, provider.chats.hooks),

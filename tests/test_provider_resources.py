@@ -19,7 +19,7 @@ from webaiprovider.resources.message.protocol import (
     TextReplacement,
     ThoughtDelta,
 )
-from webaiprovider.resources.message.request import run_pipeline_unwrapped
+from webaiprovider.resources.message.request import async_run_pipeline
 from webaiprovider.resources.message.types import Content
 from webaiprovider.resources.message.types import MessageData as NativeMessage
 from webaiprovider.resources.project.types import ProjectData as NativeProject
@@ -370,7 +370,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             attachments=tuple(op.message.attachments),
             parameters={"chat": temp_chat, "message": op.message},
         )
-        prepared = await run_pipeline_unwrapped(provider._send_pipeline, ctx)
+        prepared = await async_run_pipeline(provider._send_pipeline, ctx)
         self.assertTrue(prepared.request.temporary)
 
 

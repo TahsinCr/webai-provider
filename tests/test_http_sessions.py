@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fakes import FakeCookiesJar, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
-from webaiprovider.accounts.credentials import read_session, save_session, save_session_async
+from webaiprovider.accounts.credentials import async_save_session, read_session, save_session
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.claude.async_client import (
     AsyncClaudeClient as ClaudeClient,
@@ -55,7 +55,7 @@ class BlockingSessionTests(unittest.TestCase):
 
             with (
                 patch.object(Session, "request", autospec=True, side_effect=request) as send,
-                patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                patch("webaiprovider.transport.http._prepare_curl_session"),
                 HttpSession("https://claude.ai", path, "sessionKey") as session,
             ):
                 with self.assertRaises(ValueError):
@@ -133,7 +133,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 raise TimeoutError("write not released")
 
         with patch("webaiprovider.accounts.credentials.save_session", side_effect=write):
-            task = asyncio.create_task(save_session_async(self.path, {}))
+            task = asyncio.create_task(async_save_session(self.path, {}))
             self.assertTrue(await asyncio.to_thread(started.wait, 2))
             task.cancel()
             await asyncio.sleep(0.01)
@@ -681,7 +681,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 close=AsyncMock(),
             )
             save_calls = []
-            original_save = session_module.save_session_async
+            original_save = session_module.async_save_session
 
             async def counting_save(target_path, cookies):
                 save_calls.append(dict(cookies))
@@ -694,7 +694,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 client_factory=lambda **_: fake_client,
             )
             try:
-                with patch.object(session_module, "save_session_async", side_effect=counting_save):
+                with patch.object(session_module, "async_save_session", side_effect=counting_save):
                     await http_session.send("GET", "/first")
                     self.assertEqual(len(save_calls), 0)
                     self.assertTrue(http_session._dirty)
@@ -792,7 +792,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     close=AsyncMock(),
                 )
                 save_calls = []
-                original_save = session_module.save_session_async
+                original_save = session_module.async_save_session
 
                 async def counting_save(
                     target_path,
@@ -811,7 +811,7 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 )
                 try:
                     with patch.object(
-                        session_module, "save_session_async", side_effect=counting_save
+                        session_module, "async_save_session", side_effect=counting_save
                     ):
                         await http_session.send("GET", "/probe")
                         self.assertEqual(len(save_calls), 1)
@@ -845,8 +845,8 @@ class DebouncedPersistenceTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(
                     session_module,
-                    "read_session_async",
-                    wraps=session_module.read_session_async,
+                    "async_read_session",
+                    wraps=session_module.async_read_session,
                 ) as read_async,
                 patch.object(http_session, "persist", wraps=http_session.persist) as persist_spy,
             ):

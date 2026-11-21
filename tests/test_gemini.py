@@ -27,10 +27,10 @@ from webaiprovider.providers.gemini.async_client import (
     AsyncGeminiRPC as GeminiRPC,
 )
 from webaiprovider.providers.gemini.async_client import (
-    generate_async as generate,
+    async_generate as generate,
 )
 from webaiprovider.providers.gemini.async_client import (
-    upload_files_async as upload_files,
+    async_upload_files as upload_files,
 )
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
 from webaiprovider.providers.gemini.client import GeminiClient
@@ -92,7 +92,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=factory)
         with (
             patch(
-                "webaiprovider.providers.gemini.async_client.read_session_async", return_value=saved
+                "webaiprovider.providers.gemini.async_client.async_read_session", return_value=saved
             ),
             self.assertRaises(AccountPaused),
         ):
@@ -182,7 +182,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             }
 
         request = ProviderRequest("question")
-        with patch("webaiprovider.providers.gemini.async_client.generate_async", generate):
+        with patch("webaiprovider.providers.gemini.async_client.async_generate", generate):
             _ = [event async for event in provider._stream(request)]
 
         self.assertEqual(events, ["activity", "generation"])
@@ -1006,7 +1006,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
             _ = [
                 e
                 async for e in provider._stream_provider_events(
@@ -1153,7 +1153,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             }
 
         async def retry(message_id):
-            with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
+            with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
                 return [
                     event
                     async for event in provider._stream_provider_events(
@@ -1306,7 +1306,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
             patch(
-                "webaiprovider.providers.gemini.async_client.read_session_async",
+                "webaiprovider.providers.gemini.async_client.async_read_session",
                 return_value={"__Secure-1PSID": "fixture"},
             ),
             self.assertRaisesRegex(GeminiSignInRequired, "Sign in again") as failure,
@@ -1337,10 +1337,10 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
             patch(
-                "webaiprovider.providers.gemini.async_client.read_session_async",
+                "webaiprovider.providers.gemini.async_client.async_read_session",
                 return_value={"__Secure-1PSID": "cookie-1"},
             ),
-            patch("webaiprovider.providers.gemini.async_client.save_session_async", AsyncMock()),
+            patch("webaiprovider.providers.gemini.async_client.async_save_session", AsyncMock()),
         ):
             await session.open()
             try:
@@ -1374,7 +1374,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             save_calls = []
-            original_save = gemini_session_mod.save_session_async
+            original_save = gemini_session_mod.async_save_session
 
             async def counting_save(target_path, record):
                 save_calls.append(dict(record))
@@ -1387,7 +1387,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             session.sid = "sid-1"
             try:
                 with patch.object(
-                    gemini_session_mod, "save_session_async", side_effect=counting_save
+                    gemini_session_mod, "async_save_session", side_effect=counting_save
                 ):
                     await session.persist(force=True)
                     self.assertEqual(len(save_calls), 1)
@@ -1547,7 +1547,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
         upload = AsyncMock(return_value=[("/uploaded", old.name, "application/pdf")])
         with patch(
-            "webaiprovider.providers.gemini.async_client.upload_file_references_async", upload
+            "webaiprovider.providers.gemini.async_client.async_upload_file_references", upload
         ):
             added = await editor.add_source(
                 project_id, kind="file", path="paper.pdf", existing_resources=(old,)
@@ -1681,7 +1681,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             with (
-                patch.object(gemini_async_mod, "generate_async", side_effect=fake_generate),
+                patch.object(gemini_async_mod, "async_generate", side_effect=fake_generate),
                 patch.object(
                     gemini_generation_mod,
                     "sources_from",
@@ -1743,7 +1743,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
             save_calls = []
-            original_save = gemini_session_mod.save_session_async
+            original_save = gemini_session_mod.async_save_session
 
             async def counting_save(target_path, record):
                 save_calls.append(dict(record))
@@ -1756,7 +1756,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             session.sid = "sid-1"
             try:
                 with patch.object(
-                    gemini_session_mod, "save_session_async", side_effect=counting_save
+                    gemini_session_mod, "async_save_session", side_effect=counting_save
                 ):
                     await session.persist(force=True)
                     cookie_state["__Secure-1PSIDCC"] = "cc2"
@@ -1897,7 +1897,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             }
 
         provider._prepare_send_context = fake_prepare
-        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
             events = [
                 event async for event in provider._stream_provider_events(ProviderRequest("hi"))
             ]

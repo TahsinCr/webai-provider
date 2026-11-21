@@ -2,7 +2,7 @@
 
 import asyncio
 
-from ..accounts.credentials import read_session_async, save_session_async
+from ..accounts.credentials import async_read_session, async_save_session
 from ..accounts.filters import ProviderCookieFilter
 from .async_http import AsyncHTTPTransport
 from .cookie import _SessionCookies
@@ -33,7 +33,7 @@ class AsyncHttpSession(_SessionCookies, AsyncHTTPTransport):
             return self.client
         async with self._connect_lock:
             if self.client is None:
-                values = await read_session_async(self.path)
+                values = await async_read_session(self.path)
                 self.client = self._create_client(self._load_initial_cookies(values))
         return self.client
 
@@ -65,7 +65,7 @@ class AsyncHttpSession(_SessionCookies, AsyncHTTPTransport):
                 return
             cookies, now = update
             try:
-                await save_session_async(self.path, cookies)
+                await async_save_session(self.path, cookies)
             except OSError:
                 self._warn_persist()
             else:

@@ -412,7 +412,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.async_generate", fake_generate):
             events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")

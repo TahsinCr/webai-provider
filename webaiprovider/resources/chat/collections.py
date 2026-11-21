@@ -9,17 +9,17 @@ from ...collections import (
     AsyncRemoteCollection,
     Page,
     RemoteCollection,
+    _async_publish_collection_change,
+    _async_report_read,
     _publish_collection_change,
-    _publish_collection_change_sync,
     _report_read,
-    _report_read_sync,
     validate_limit,
 )
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.concurrency import gather_bounded
 from ...core.hooks import OperationHooks
 from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
-from ..operations import execute_with_hooks, execute_with_hooks_sync
+from ..operations import async_execute_with_hooks, execute_with_hooks
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat, _project_from_data, _resolve_project_arg
 from .types import DEFAULT_CHAT_TITLE, Conversation
@@ -318,7 +318,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
             return None
         return self._from_data(conv)
 
-    @_report_read
+    @_async_report_read
     async def get(
         self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
     ) -> _AsyncChatT:
@@ -330,7 +330,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
             return direct
         return await self._find_id(item_id, include_projects=include_projects)
 
-    @_report_read
+    @_async_report_read
     async def get_with_responses(
         self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
     ) -> tuple[_AsyncChatT, list[Response]]:
@@ -363,7 +363,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
                 payload={"title": chat.title},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="chat.create",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -403,7 +403,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
 
         async def on_success(ctx) -> None:
             if ctx.metadata.get("remote_rename"):
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "chats", "update", target, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -413,7 +413,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
                 payload={"title": target.title},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="chat.update",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -444,7 +444,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
 
         async def on_success(ctx) -> None:
             if target.remote_id:
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "chats", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -453,7 +453,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
                 resource_id=rid,
             )
 
-        await execute_with_hooks(
+        await async_execute_with_hooks(
             operation_name="chat.delete",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -547,7 +547,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
             return None
         return self._from_data(conv)
 
-    @_report_read_sync
+    @_report_read
     def get(
         self, item_id: str, /, *, include_projects: bool = False, metadata_only: bool = False
     ) -> _ChatT:
@@ -558,7 +558,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
             return direct
         return self._find_id(item_id, include_projects=include_projects)
 
-    @_report_read_sync
+    @_report_read
     def get_with_responses(
         self, item_id: str, /, *, limit: int | None = 50, include_projects: bool = False
     ) -> tuple[_ChatT, list[Response]]:
@@ -590,7 +590,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
                 payload={"title": chat.title},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="chat.create",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -633,7 +633,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
 
         def on_success(ctx) -> None:
             if ctx.metadata.get("remote_rename"):
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "chats", "update", target, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -643,7 +643,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
                 payload={"title": target.title},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="chat.update",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -674,7 +674,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
 
         def on_success(ctx) -> None:
             if target.remote_id:
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "chats", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -683,7 +683,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
                 resource_id=rid,
             )
 
-        execute_with_hooks_sync(
+        execute_with_hooks(
             operation_name="chat.delete",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),

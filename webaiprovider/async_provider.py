@@ -12,14 +12,14 @@ from eventflow import AsyncEventBus, ErrorPolicy, EventEnvelope, StateMachine
 
 from .accounts.status import SessionStatus
 from .base import (
+    _OPENING_PROVIDERS,
     BaseProvider,
     Capability,
     ProviderType,
     _construct_provider,
-    _OPENING_PROVIDERS,
     _StreamEventTranslator,
 )
-from .collections import _publish_collection_change
+from .collections import _async_publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
 from .errors import FeatureUnavailable, ProviderError
@@ -29,7 +29,7 @@ from .resources.chat.types import Conversation
 from .resources.message.attachment import Attachment
 from .resources.message.message import AsyncMessage
 from .resources.message.protocol import ConversationBound
-from .resources.message.request import build_message_request_pipeline, run_pipeline_unwrapped
+from .resources.message.request import async_build_message_request_pipeline, async_run_pipeline
 from .resources.model.collections import AsyncModelsCollection
 from .resources.model.model import EffortRef, ModelRef, ModelSelection
 from .resources.model.types import Models, _model_refs_from_catalog
@@ -37,7 +37,7 @@ from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
-from .resources.response.operation import StreamEvent, _close_async_iterator
+from .resources.response.operation import StreamEvent, _async_close_iterator
 from .resources.response.response import Response
 from .resources.response.source import Source
 from .transport import AsyncStreamResponse, AsyncTransport, TransportConfig, TransportResponse
@@ -101,8 +101,13 @@ class _AsyncTrackedTransport(AsyncTransport):
             return await self._transport.request(method, path, **options)
 
     @contextlib.asynccontextmanager
-    async def stream(self, method: str, path: str, **options: Any) -> AsyncIterator[AsyncStreamResponse]:
-        async with self._provider._activity(), self._transport.stream(method, path, **options) as resp:
+    async def stream(
+        self, method: str, path: str, **options: Any
+    ) -> AsyncIterator[AsyncStreamResponse]:
+        async with (
+            self._provider._activity(),
+            self._transport.stream(method, path, **options) as resp,
+        ):
             yield resp
 
     def record_rate_limit(self, delay: float | None) -> None:
@@ -154,7 +159,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         self._chats = self._make_chats()
         self._projects = self._make_projects()
         self.models = AsyncModelsCollection(self._load_models, provider=self)
-        self._send_pipeline = build_message_request_pipeline(
+        self._send_pipeline = async_build_message_request_pipeline(
             provider_id=self.id,
             account_id=self.account_id,
             model_resolver=self.models.resolve,
@@ -269,7 +274,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def _wait_for_opening(self) -> None:
         if self.lifecycle_state == LifecycleState.OPENING:
             if id(self) in _OPENING_PROVIDERS.get():
-                raise ProviderError("Cannot perform this operation from a provider opening callback")
+                raise ProviderError(
+                    "Cannot perform this operation from a provider opening callback"
+                )
             await self._lifecycle_condition.wait_for(
                 lambda: self.lifecycle_state != LifecycleState.OPENING
             )
@@ -299,7 +306,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 async with self._lifecycle_condition:
                     self.lifecycle.transition(LifecycleState.OPEN_FAILED)
                     self._lifecycle_condition.notify_all()
-            await self._emit_safe("provider.open_failed", payload={"error_type": type(error).__name__})
+            await self._emit_safe(
+                "provider.open_failed", payload={"error_type": type(error).__name__}
+            )
             raise
         else:
             async with self._lifecycle_condition:
@@ -387,7 +396,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                     async for event in events:
                         yield event
             finally:
-                await _close_async_iterator(events)
+                await _async_close_iterator(events)
 
     async def _execute_stream_events(
         self, operation: Any, send_lock: asyncio.Lock
@@ -402,7 +411,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             attachments=tuple(operation.message.attachments),
             parameters={"chat": operation.chat, "message": operation.message},
         )
-        prepared = await run_pipeline_unwrapped(self._send_pipeline, prep_context)
+        prepared = await async_run_pipeline(self._send_pipeline, prep_context)
         translator = _StreamEventTranslator(self, operation)
         stream = self._stream_provider_events(prepared.request)
         try:
@@ -421,7 +430,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                         and not operation.chat.temporary
                         and (not had_remote_id or was_pending_branch)
                     ):
-                        await _publish_collection_change(
+                        await _async_publish_collection_change(
                             self,
                             "chats",
                             "create",
@@ -445,7 +454,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         except Exception as exc:
             raise ProviderError("Provider request failed") from exc
         finally:
-            await _close_async_iterator(stream)
+            await _async_close_iterator(stream)
 
     async def _prepare_session(self) -> None:
         return None
@@ -553,7 +562,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 name=project.name,
                 instructions=project.instructions or "",
             )
-        await _publish_collection_change(self, "projects", "update", updated)
+        await _async_publish_collection_change(self, "projects", "update", updated)
         return updated
 
     async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Any:

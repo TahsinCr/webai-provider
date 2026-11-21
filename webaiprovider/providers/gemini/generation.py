@@ -88,14 +88,13 @@ def _prepare_upload_specs(items):
     return prepared
 
 
-def upload_files_sync(client, items):
+def upload_files(client, items):
     return [
-        [[reference], filename]
-        for reference, filename, _ in upload_file_references_sync(client, items)
+        [[reference], filename] for reference, filename, _ in upload_file_references(client, items)
     ]
 
 
-def upload_file_references_sync(client, items):
+def upload_file_references(client, items):
     from curl_cffi import CurlMime
 
     specs = _prepare_upload_specs(items)
@@ -421,14 +420,14 @@ class _GeminiResponseProcessor:
         self.remember(self.cid, self.metadata, temporary=self.request.temporary)
 
 
-def generate_sync(
+def generate(
     client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
 ) -> Iterator[dict | _StreamPause]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
 
     if files is None:
-        files = upload_files_sync(client, request.attachments)
+        files = upload_files(client, request.attachments)
     headers, data = generation_request(client, request, metadata, files, notebook)
     frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
     timing = current_send_timing()
@@ -470,12 +469,12 @@ def generate_sync(
     client.persist(force=False)
 
 
-def iter_response_events(
+def response_events(
     request: ProviderRequest, *, prepare, request_timeout, media, remember
 ) -> Iterator[ProviderStreamEvent]:
     client, request, metadata, context, action_files = prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
-    for chunk in generate_sync(
+    for chunk in generate(
         client,
         request,
         metadata,

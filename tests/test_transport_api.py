@@ -768,7 +768,7 @@ class BlockingTransportTests(unittest.TestCase):
 
             try:
                 with (
-                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch("webaiprovider.transport.http._prepare_curl_session"),
                     patch.object(Session, "request", request_on_caller),
                     patch.object(
                         Session, "stream", side_effect=AssertionError("Stream worker used")
@@ -825,7 +825,7 @@ class BlockingTransportTests(unittest.TestCase):
             worker.start()
             try:
                 with (
-                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch("webaiprovider.transport.http._prepare_curl_session"),
                     patch.object(
                         Session, "stream", side_effect=AssertionError("Stream worker used")
                     ),
@@ -913,7 +913,7 @@ class BlockingTransportTests(unittest.TestCase):
             worker.start()
             try:
                 with (
-                    patch("webaiprovider.transport.http._prepare_curl_session_sync"),
+                    patch("webaiprovider.transport.http._prepare_curl_session"),
                     patch.object(_CurlStream, "receive", receive),
                     patch.object(
                         Session, "stream", side_effect=AssertionError("Stream worker used")
@@ -1283,7 +1283,7 @@ class TransportOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 443)),
             ]
             with patch.object(transport_network.socket, "getaddrinfo", return_value=records):
-                ips = transport_network._resolve_host_ips_sync("dual.example", 443, use_ipv6=True)
+                ips = transport_network._resolve_host_ips("dual.example", 443, use_ipv6=True)
             self.assertEqual(
                 ips,
                 (

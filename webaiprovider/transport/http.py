@@ -20,7 +20,7 @@ from .network import (
     _is_curl_sync_session,
     _is_curl_timeout,
     _OriginDNS,
-    _prepare_curl_session_sync,
+    _prepare_curl_session,
 )
 
 
@@ -123,7 +123,7 @@ class HTTPTransport(Transport):
                     return CURL_WRITEFUNC_ERROR
                 return buffer.write(chunk)
 
-            _prepare_curl_session_sync(
+            _prepare_curl_session(
                 client, self._dns.host, self._dns.port, options, dns_state=self._dns
             )
             try:
@@ -170,7 +170,7 @@ class HTTPTransport(Transport):
             stream = getattr(client, "stream", None)
             with ExitStack() as stack:
                 try:
-                    _prepare_curl_session_sync(
+                    _prepare_curl_session(
                         client, self._dns.host, self._dns.port, options, dns_state=self._dns
                     )
                     if not callable(stream):
@@ -214,7 +214,7 @@ class HTTPTransport(Transport):
             for attempt in (0, 1):
                 client = self._connect()
                 try:
-                    _prepare_curl_session_sync(
+                    _prepare_curl_session(
                         client, self._dns.host, self._dns.port, options, dns_state=self._dns
                     )
                     defer_head = _message and _is_curl_sync_session(client)

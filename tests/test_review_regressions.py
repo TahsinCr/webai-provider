@@ -557,7 +557,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chat.responses._turns), 1)
 
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
-        from webaiprovider.resources.response.operation import _close_async_iterator
+        from webaiprovider.resources.response.operation import _async_close_iterator
 
         primary = ProviderError("stream failed")
         cleanup = RuntimeError("cleanup failed")
@@ -566,11 +566,11 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
             raise primary
         except ProviderError:
             with self.assertRaises(ProviderError) as caught:
-                await _close_async_iterator(stream)
+                await _async_close_iterator(stream)
         self.assertIs(caught.exception, primary)
         self.assertIs(caught.exception.__cause__, cleanup)
         with self.assertRaises(RuntimeError):
-            await _close_async_iterator(stream)
+            await _async_close_iterator(stream)
 
     def test_generic_tuple_size_does_not_trust_third_member(self):
         from webaiprovider.core.cache import _default_size_calculator

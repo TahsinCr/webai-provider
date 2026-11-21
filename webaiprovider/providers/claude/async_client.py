@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 
 from eventflow import SingleFlight
 
-from ...accounts import read_session_async
+from ...accounts import async_read_session
 from ...core.concurrency import gather_bounded
 from ...core.file_stat import same_file_version
 from ...core.timing import current_send_timing
@@ -50,7 +50,7 @@ class AsyncClaudeClient(BaseClaudeClient):
     async def _discover(self):
         data, values = await asyncio.gather(
             self.http.request("GET", "/api/bootstrap"),
-            read_session_async(self.path),
+            async_read_session(self.path),
         )
         organization = self._resolve_organization(data, values)
         selected = await self.http.request(

@@ -30,7 +30,7 @@ from .base import (
     remote_id,
 )
 from .catalogs import parse_model_catalog
-from .records import conversation, project, response_events
+from .records import async_response_events, conversation, project
 from .resources import (
     AsyncGrokChat,
     AsyncGrokMessage,
@@ -270,7 +270,7 @@ class AsyncGrokProvider(
     def _stream_provider_events(
         self, request: ProviderRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
-        return response_events(
+        return async_response_events(
             request,
             prepare=self._prepare_stream,
             raise_stream_error=self._raise_stream_error,

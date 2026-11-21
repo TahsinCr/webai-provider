@@ -34,7 +34,7 @@ from webaiprovider.providers.chatgpt.async_client import (
     AsyncChatGPTProjectEditor as ChatGPTProjectEditor,
 )
 from webaiprovider.providers.chatgpt.async_client import (
-    prepare_chatgpt_attachments,
+    async_prepare_chatgpt_attachments,
 )
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.discovery import project_id
@@ -1430,7 +1430,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await asyncio.wait_for(release_confirm.wait(), 1.0)
 
         with patch(
-            "webaiprovider.providers.chatgpt.async_provider.confirm_deleted",
+            "webaiprovider.providers.chatgpt.async_provider.async_confirm_deleted",
             side_effect=blocked_confirm,
         ):
             task = asyncio.create_task(self.provider._delete_chat_data("cid-1"))
@@ -1444,7 +1444,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
     async def test_delete_chat_skips_confirm_deleted_when_server_confirms_patch(self):
         self.client.delete_conversation = AsyncMock(return_value=True)
         with patch(
-            "webaiprovider.providers.chatgpt.async_provider.confirm_deleted",
+            "webaiprovider.providers.chatgpt.async_provider.async_confirm_deleted",
             side_effect=AssertionError("unexpected confirm_deleted polling"),
         ):
             await self.provider._delete_chat_data("cid-1")
@@ -1718,7 +1718,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 {"bytes": b"b", "name": "second.txt", "mime_type": "text/plain"},
             ),
         )
-        result = await prepare_chatgpt_attachments(self.client, request)
+        result = await async_prepare_chatgpt_attachments(self.client, request)
         self.assertEqual([item["id"] for item in result], ["id-first.txt", "id-second.txt"])
 
     async def test_stream_request_emits_mid_stream_bound_once_and_skips_trailing_duplicate(self):

@@ -136,7 +136,7 @@ class _NativeDownloadResponse:
         return self.response.iter_content(chunk_size=chunk_size)
 
 
-def download_source_sync(
+def download_source(
     source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
 ) -> bytes:
     from ..errors import ProviderError, UnsupportedOperationError
@@ -177,7 +177,7 @@ def download_source_sync(
         raise ProviderError("File transfer failed") from None
 
 
-async def download_source(
+async def async_download_source(
     source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
 ) -> bytes:
-    return await asyncio.to_thread(download_source_sync, source, max_bytes=max_bytes)
+    return await asyncio.to_thread(download_source, source, max_bytes=max_bytes)

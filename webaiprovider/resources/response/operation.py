@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from eventflow import StateMachine
 
-from ...collections import _publish_collection_change, _publish_collection_change_sync
+from ...collections import _async_publish_collection_change, _publish_collection_change
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
 from ...core.state import _OPERATION_TERMINAL_STATES, _OPERATION_TRANSITIONS, OperationState
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from ..chat.chat import AsyncChat, Chat
 
 
-def _close_sync_iterator(stream: Iterator[Any] | None) -> None:
+def _close_iterator(stream: Iterator[Any] | None) -> None:
     close = getattr(stream, "close", None)
     if close is not None:
         original = sys.exc_info()[1]
@@ -42,7 +42,7 @@ def _close_sync_iterator(stream: Iterator[Any] | None) -> None:
             raise original from cleanup
 
 
-async def _close_async_iterator(stream: AsyncIterator[Any] | None) -> None:
+async def _async_close_iterator(stream: AsyncIterator[Any] | None) -> None:
     close = getattr(stream, "aclose", None)
     if close is not None:
         original = sys.exc_info()[1]
@@ -426,7 +426,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
             if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
-                    await _publish_collection_change(
+                    await _async_publish_collection_change(
                         emitter,
                         "chat.responses",
                         "update" if action in ("edit", "retry") else "create",
@@ -489,7 +489,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
             raise
         finally:
             try:
-                await _close_async_iterator(stream)
+                await _async_close_iterator(stream)
             finally:
                 fin = AsyncOperationHooks.run_lifecycle(
                     hooks_chain, "on_finally", "chat.send", context
@@ -614,7 +614,7 @@ class MessageOperation(_BaseMessageOperation):
             if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
-                    _publish_collection_change_sync(
+                    _publish_collection_change(
                         emitter,
                         "chat.responses",
                         "update" if action in ("edit", "retry") else "create",
@@ -674,7 +674,7 @@ class MessageOperation(_BaseMessageOperation):
             raise
         finally:
             try:
-                _close_sync_iterator(stream)
+                _close_iterator(stream)
             finally:
                 self._hook_results["on_finally"] = OperationHooks.run_lifecycle(
                     hooks_chain, "on_finally", "chat.send", context
@@ -734,7 +734,7 @@ class MessageOperation(_BaseMessageOperation):
                 self._completed = True
             return
         assert self._context is not None
-        self._context.run(_close_sync_iterator, self._iterator)
+        self._context.run(_close_iterator, self._iterator)
 
     def _next_event(self, deadline=None) -> StreamEvent | _StreamPause:
         assert self._context is not None and self._iterator is not None

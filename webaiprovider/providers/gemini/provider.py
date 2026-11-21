@@ -26,7 +26,7 @@ from ...transport import Transport
 from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
 from .client import GeminiClient, GeminiProjectEditor
 from .errors import GeminiStreamError
-from .generation import _gemini_upload_spec, iter_response_events
+from .generation import _gemini_upload_spec, response_events
 from .history import parse_chat_page
 from .notebooks import GeminiNotebooks, notebook_id
 from .resources import (
@@ -235,7 +235,7 @@ class GeminiProvider(
 
     def _stream_provider_events(self, request: ProviderRequest) -> Iterator[ProviderStreamEvent]:
         deadline = time.monotonic() + self.stream_total_timeout
-        iterator = iter_response_events(
+        iterator = response_events(
             request,
             prepare=self._prepare_send_context,
             request_timeout=(15, self.stream_idle_timeout + 10),

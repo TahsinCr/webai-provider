@@ -33,11 +33,11 @@ from .sentinel import SentinelRuntime
 __all__ = [
     "ChatGPTClient",
     "ChatGPTProjectEditor",
-    "prepare_chatgpt_attachments_sync",
+    "prepare_chatgpt_attachments",
 ]
 
 
-def prepare_chatgpt_attachments_sync(client: Any, request: ProviderRequest) -> list[Any]:
+def prepare_chatgpt_attachments(client: Any, request: ProviderRequest) -> list[Any]:
     attachments: list[Any] = []
     for item in request.attachments:
         if isinstance(item, dict) and ("bytes" in item or "path" in item):

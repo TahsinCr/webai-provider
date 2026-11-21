@@ -29,7 +29,7 @@ from .base import (
 )
 from .catalogs import parse_model_catalog
 from .client import GrokClient, GrokProjectEditor
-from .records import conversation, iter_response_events, project
+from .records import conversation, project, response_events
 from .resources import (
     GrokArtifact,
     GrokAttachment,
@@ -250,7 +250,7 @@ class GrokProvider(
         )
 
     def _stream_provider_events(self, request: ProviderRequest) -> Iterator[ProviderStreamEvent]:
-        return iter_response_events(
+        return response_events(
             request,
             prepare=self._prepare_stream,
             raise_stream_error=self._raise_stream_error,

@@ -13,14 +13,14 @@ from eventflow import ErrorPolicy, EventBus, EventEnvelope, StateMachine
 
 from .accounts.status import SessionStatus
 from .base import (
+    _OPENING_PROVIDERS,
     BaseProvider,
     Capability,
     ProviderType,
     _construct_provider,
-    _OPENING_PROVIDERS,
     _StreamEventTranslator,
 )
-from .collections import _publish_collection_change_sync
+from .collections import _publish_collection_change
 from .core.hooks import OperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
 from .core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
@@ -31,7 +31,7 @@ from .resources.chat.types import Conversation
 from .resources.message.attachment import Attachment
 from .resources.message.message import Message
 from .resources.message.protocol import ConversationBound
-from .resources.message.request import build_message_request_pipeline_sync, run_pipeline_sync
+from .resources.message.request import build_message_request_pipeline, run_pipeline
 from .resources.model.collections import ModelsCollection
 from .resources.model.model import EffortRef, ModelRef, ModelSelection
 from .resources.model.types import Models, _model_refs_from_catalog
@@ -39,7 +39,7 @@ from .resources.project.collections import ProjectsCollection
 from .resources.project.project import Project
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
-from .resources.response.operation import StreamEvent, _close_sync_iterator
+from .resources.response.operation import StreamEvent, _close_iterator
 from .resources.response.response import Response
 from .resources.response.source import Source
 from .transport import StreamResponse, Transport, TransportConfig, TransportResponse
@@ -156,7 +156,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._chats = self._make_chats()
         self._projects = self._make_projects()
         self.models = ModelsCollection(self._load_models, provider=self)
-        self._send_pipeline = build_message_request_pipeline_sync(
+        self._send_pipeline = build_message_request_pipeline(
             provider_id=self.id,
             account_id=self.account_id,
             model_resolver=self.models.resolve,
@@ -282,7 +282,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def _wait_for_opening(self) -> None:
         if self.lifecycle_state == LifecycleState.OPENING:
             if id(self) in _OPENING_PROVIDERS.get():
-                raise ProviderError("Cannot perform this operation from a provider opening callback")
+                raise ProviderError(
+                    "Cannot perform this operation from a provider opening callback"
+                )
             self._lifecycle_condition.wait_for(
                 lambda: self.lifecycle_state != LifecycleState.OPENING
             )
@@ -415,7 +417,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 yield from events
             finally:
                 lock.release()
-                _close_sync_iterator(events)
+                _close_iterator(events)
 
     def _execute_stream_events(
         self, operation: Any, send_lock: threading.Lock
@@ -430,7 +432,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             attachments=tuple(operation.message.attachments),
             parameters={"chat": operation.chat, "message": operation.message},
         )
-        prepared = run_pipeline_sync(self._send_pipeline, prep_context)
+        prepared = run_pipeline(self._send_pipeline, prep_context)
         translator = _StreamEventTranslator(self, operation)
         stream = self._stream_provider_events(prepared.request)
         try:
@@ -451,7 +453,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                         and not operation.chat.temporary
                         and (not had_remote_id or was_pending_branch)
                     ):
-                        _publish_collection_change_sync(
+                        _publish_collection_change(
                             self,
                             "chats",
                             "create",
@@ -473,7 +475,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         except Exception as exc:
             raise ProviderError("Provider request failed") from exc
         finally:
-            _close_sync_iterator(stream)
+            _close_iterator(stream)
 
     def _prepare_session(self) -> None:
         return None
@@ -579,7 +581,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 name=project.name,
                 instructions=project.instructions or "",
             )
-        _publish_collection_change_sync(self, "projects", "update", updated)
+        _publish_collection_change(self, "projects", "update", updated)
         return updated
 
     def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Any:

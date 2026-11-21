@@ -11,8 +11,8 @@ from webaiprovider.errors import ProviderError, UnsupportedOperationError
 from webaiprovider.transport.downloader import (
     DownloadSource,
     NativeDownloadClient,
+    async_download_source,
     cookie_header,
-    download_source,
     resolve_network_addresses,
 )
 
@@ -73,7 +73,7 @@ class DownloadAddressTests(unittest.TestCase):
 class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_requires_provider_resolved_source(self):
         with self.assertRaises(UnsupportedOperationError):
-            await download_source(None)
+            await async_download_source(None)
 
     async def test_download_streams_success_and_rejects_http_failure(self):
         class Client(NativeDownloadClient):
@@ -93,17 +93,17 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         success = DownloadSource("https://files.example/test", client_factory=lambda: Client(200))
-        self.assertEqual(await download_source(success), b"ab")
+        self.assertEqual(await async_download_source(success), b"ab")
 
         failure = DownloadSource("https://files.example/test", client_factory=lambda: Client(403))
         with self.assertRaisesRegex(ProviderError, "HTTP 403"):
-            await download_source(failure)
+            await async_download_source(failure)
 
     async def test_download_rejects_custom_transport_outside_native_boundary(self):
         source = DownloadSource("https://files.example/test", client_factory=object)
 
         with self.assertRaisesRegex(ProviderError, "unsupported download transport"):
-            await download_source(source)
+            await async_download_source(source)
 
     def test_sensitive_cookie_values_are_validated(self):
         self.assertEqual(
@@ -172,7 +172,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         ):
             oversized = DownloadSource("https://files.example/huge.bin?sig=secret")
             with self.assertRaisesRegex(ProviderError, "exceeds size limit") as ctx:
-                await download_source(oversized, max_bytes=8)
+                await async_download_source(oversized, max_bytes=8)
             self.assertNotIn("secret", str(ctx.exception))
 
         failing_session = FakeSession(
@@ -188,7 +188,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         ):
             failing = DownloadSource("https://files.example/blob?sig=topsecret")
             with self.assertRaisesRegex(ProviderError, "File transfer failed") as ctx:
-                await download_source(failing)
+                await async_download_source(failing)
             self.assertNotIn("topsecret", str(ctx.exception))
 
     def test_no_proxy_bypass_still_triggers_ssrf_and_dns_pinning(self):

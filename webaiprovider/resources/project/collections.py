@@ -11,8 +11,8 @@ from ...collections import (
     AsyncRemoteCollection,
     Page,
     RemoteCollection,
+    _async_publish_collection_change,
     _publish_collection_change,
-    _publish_collection_change_sync,
 )
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
@@ -22,9 +22,9 @@ from ...errors import (
     RemoteNotFound,
     UnsupportedOperationError,
 )
-from ...transport.downloader import DownloadSource, download_source, download_source_sync
+from ...transport.downloader import DownloadSource, async_download_source, download_source
 from ..message.attachment import Attachment
-from ..operations import execute_with_hooks, execute_with_hooks_sync
+from ..operations import async_execute_with_hooks, execute_with_hooks
 from .project import AsyncProject, Project, _is_project_attachment
 from .types import ProjectData as ProviderProject
 
@@ -148,7 +148,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
         async def on_success(ctx) -> None:
             project: AsyncProject = ctx.result
             if project.remote_id:
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "projects", "create", project, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -158,7 +158,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
                 payload={"title": project.title},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="project.create",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -210,7 +210,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
 
         async def on_success(ctx) -> None:
             if ctx.metadata.get("remote_update"):
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "projects", "update", target, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -220,7 +220,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
                 payload={"title": target.title},
             )
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="project.update",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -250,7 +250,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
 
         async def on_success(ctx) -> None:
             if target.remote_id:
-                await _publish_collection_change(
+                await _async_publish_collection_change(
                     provider, "projects", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
             await provider._emit(
@@ -259,7 +259,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
                 resource_id=rid,
             )
 
-        await execute_with_hooks(
+        await async_execute_with_hooks(
             operation_name="project.delete",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -328,7 +328,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
         def on_success(ctx) -> None:
             project: Project = ctx.result
             if project.remote_id:
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "projects", "create", project, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -338,7 +338,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
                 payload={"title": project.title},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="project.create",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -393,7 +393,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
 
         def on_success(ctx) -> None:
             if ctx.metadata.get("remote_update"):
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "projects", "update", target, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -403,7 +403,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
                 payload={"title": target.title},
             )
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="project.update",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -433,7 +433,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
 
         def on_success(ctx) -> None:
             if target.remote_id:
-                _publish_collection_change_sync(
+                _publish_collection_change(
                     provider, "projects", "delete", target.remote_id, operation_id=ctx.operation_id
                 )
             provider._emit(
@@ -442,7 +442,7 @@ class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
                 resource_id=rid,
             )
 
-        execute_with_hooks_sync(
+        execute_with_hooks(
             operation_name="project.delete",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -716,7 +716,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         action, event, payload = self._attachment_change(attachment, kind)
         scope = self.project.remote_id
         if scope:
-            await _publish_collection_change(
+            await _async_publish_collection_change(
                 provider,
                 "project.attachments",
                 action,
@@ -798,7 +798,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         async def on_success(ctx) -> None:
             await self._publish_attachment_change(provider, ctx, ctx.result, kind)
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="project.attachment.add",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -838,7 +838,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
             for attachment in ctx.result:
                 await self._publish_attachment_change(provider, ctx, attachment)
 
-        return await execute_with_hooks(
+        return await async_execute_with_hooks(
             operation_name="project.attachment.add_many",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -881,7 +881,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         async def on_success(ctx) -> None:
             await self._publish_attachment_change(provider, ctx, file_id)
 
-        await execute_with_hooks(
+        await async_execute_with_hooks(
             operation_name="project.attachment.remove",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -936,7 +936,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
             for file_id in file_ids:
                 await self._publish_attachment_change(provider, ctx, file_id)
 
-        await execute_with_hooks(
+        await async_execute_with_hooks(
             operation_name="project.attachment.remove_many",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -961,7 +961,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
                 source: DownloadSource | None = await provider._resolve_download_data(
                     item.remote_url
                 )
-                return await download_source(source)
+                return await async_download_source(source)
         return self._read_local_attachment(item)
 
 
@@ -974,7 +974,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         action, event, payload = self._attachment_change(attachment, kind)
         scope = self.project.remote_id
         if scope:
-            _publish_collection_change_sync(
+            _publish_collection_change(
                 provider,
                 "project.attachments",
                 action,
@@ -1056,7 +1056,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         def on_success(ctx) -> None:
             self._publish_attachment_change(provider, ctx, ctx.result, kind)
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="project.attachment.add",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -1096,7 +1096,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             for attachment in ctx.result:
                 self._publish_attachment_change(provider, ctx, attachment)
 
-        return execute_with_hooks_sync(
+        return execute_with_hooks(
             operation_name="project.attachment.add_many",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -1139,7 +1139,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         def on_success(ctx) -> None:
             self._publish_attachment_change(provider, ctx, file_id)
 
-        execute_with_hooks_sync(
+        execute_with_hooks(
             operation_name="project.attachment.remove",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -1194,7 +1194,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             for file_id in file_ids:
                 self._publish_attachment_change(provider, ctx, file_id)
 
-        execute_with_hooks_sync(
+        execute_with_hooks(
             operation_name="project.attachment.remove_many",
             context=context,
             hooks_chain=(provider.hooks, self.hooks),
@@ -1217,5 +1217,5 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             with provider._activity():
                 provider._require_provider()
                 source: DownloadSource | None = provider._resolve_download_data(item.remote_url)
-                return download_source_sync(source)
+                return download_source(source)
         return self._read_local_attachment(item)

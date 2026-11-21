@@ -29,7 +29,7 @@ from ...transport import HTTPTransport, Transport, TransportConfig
 from ...transport.downloader import DownloadSource
 from .auth import BrowserSession
 from .base import BaseChatGPTClient, BaseChatGPTProvider
-from .client import ChatGPTClient, ChatGPTProjectEditor, prepare_chatgpt_attachments_sync
+from .client import ChatGPTClient, ChatGPTProjectEditor, prepare_chatgpt_attachments
 from .collections import ChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
 from .errors import ChatGPTAuthenticationError, ChatGPTError
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from ...accounts.account import Account
 
 
-def confirm_deleted_sync(read: Any, missing: Any = lambda value: False) -> None:
+def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
     """Poll a remote resource until removal is confirmed or raise ProviderError."""
     for delay in (0, 0.2, 0.5, 1):
         if delay:
@@ -284,7 +284,7 @@ class ChatGPTProvider(
             with self._client_scope() as client:
                 return client.get_conversation(conversation_id)
 
-        confirm_deleted_sync(readback, lambda value: value.get("is_visible") is False)
+        confirm_deleted(readback, lambda value: value.get("is_visible") is False)
 
     def _move_chat_data(
         self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
@@ -342,7 +342,7 @@ class ChatGPTProvider(
                     raise
         if self._check_delete_project_response(response):
             return
-        confirm_deleted_sync(lambda: self._get_project_data(project_id))
+        confirm_deleted(lambda: self._get_project_data(project_id))
 
     def _stream_provider_events(self, request: ProviderRequest) -> Iterator[ProviderStreamEvent]:
         timing = current_send_timing()
@@ -360,7 +360,7 @@ class ChatGPTProvider(
                     )
                 client.temporary_conversations = self._temporary_conversations
                 client.pending_branches = self._pending_branches
-                attachments = prepare_chatgpt_attachments_sync(client, request)
+                attachments = prepare_chatgpt_attachments(client, request)
                 for kind, value in client.iter_send_prompt(
                     request.conversation_id,
                     request.prompt,

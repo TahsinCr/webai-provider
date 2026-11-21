@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from ...accounts import read_session_async, save_session_async
+from ...accounts import async_read_session, async_save_session
 from ...accounts.credentials import CredentialStore
 from ...core.concurrency import gather_bounded
 from ...core.file_stat import same_file_version
@@ -50,10 +50,10 @@ __all__ = [
     "AsyncGeminiNotebooks",
     "AsyncGeminiProjectEditor",
     "AsyncGeminiRPC",
-    "generate_async",
-    "response_events",
-    "upload_file_references_async",
-    "upload_files_async",
+    "async_generate",
+    "async_response_events",
+    "async_upload_file_references",
+    "async_upload_files",
 ]
 
 
@@ -85,7 +85,7 @@ class AsyncGeminiClient(BaseGeminiClient):
     async def open(self):
         from curl_cffi.requests import AsyncSession
 
-        cookies = self._extract_cookies(await read_session_async(self.credential_file))
+        cookies = self._extract_cookies(await async_read_session(self.credential_file))
         if self.http_factory is not None:
             self.http = self.http_factory(
                 cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
@@ -186,7 +186,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                 return
             record, now = pending
             try:
-                await save_session_async(self.credential_file, record)
+                await async_save_session(self.credential_file, record)
             except (OSError, ValueError):
                 self._mark_persist_failed()
                 return
@@ -301,14 +301,14 @@ class AsyncGeminiNotebooks:
         return parse_notebook_detail(await self.read(remote), remote, self.account_id)
 
 
-async def upload_files_async(client, items):
+async def async_upload_files(client, items):
     return [
         [[reference], filename]
-        for reference, filename, _ in await upload_file_references_async(client, items)
+        for reference, filename, _ in await async_upload_file_references(client, items)
     ]
 
 
-async def upload_file_references_async(client, items):
+async def async_upload_file_references(client, items):
     from curl_cffi import CurlMime
 
     specs = await asyncio.to_thread(_prepare_upload_specs, items)
@@ -382,7 +382,7 @@ class AsyncGeminiProjectEditor(BaseGeminiProjectEditor):
             name, mime_type = values["name"], "text/plain"
             uploaded, text = None, [values["text"], 1]
         elif kind == "file":
-            ((reference, name, mime_type),) = await upload_file_references_async(
+            ((reference, name, mime_type),) = await async_upload_file_references(
                 await self.rpc.connect(), [values["path"]]
             )
             if not reference.startswith("/"):
@@ -404,14 +404,14 @@ class AsyncGeminiProjectEditor(BaseGeminiProjectEditor):
         return self._finalize_remove_source(values.get("current"), resource, result)
 
 
-async def generate_async(
+async def async_generate(
     client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
 ) -> AsyncGenerator[dict, None]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
 
     if files is None:
-        files = await upload_files_async(client, request.attachments)
+        files = await async_upload_files(client, request.attachments)
     headers, data = generation_request(client, request, metadata, files, notebook)
     frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
     timing = current_send_timing()
@@ -450,12 +450,12 @@ async def generate_async(
     await client.persist(force=False)
 
 
-async def response_events(
+async def async_response_events(
     request: ProviderRequest, *, prepare, request_timeout, media, remember
 ) -> AsyncGenerator[ProviderStreamEvent, None]:
     client, request, metadata, context, action_files = await prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
-    async for chunk in generate_async(
+    async for chunk in async_generate(
         client,
         request,
         metadata,

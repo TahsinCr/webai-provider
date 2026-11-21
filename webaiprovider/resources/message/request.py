@@ -13,7 +13,7 @@ from .protocol import ProviderRequest
 from .types import MessageAction
 
 
-def run_pipeline_sync(
+def run_pipeline(
     pipeline: Pipeline[OperationContext], context: OperationContext
 ) -> OperationContext:
     """Run a blocking Pipeline while preserving original cause exceptions at API boundaries."""
@@ -25,7 +25,7 @@ def run_pipeline_sync(
         raise
 
 
-async def run_pipeline_unwrapped(
+async def async_run_pipeline(
     pipeline: AsyncPipeline[OperationContext], context: OperationContext
 ) -> OperationContext:
     """Run an AsyncPipeline while preserving original cause exceptions at API boundaries."""
@@ -147,7 +147,7 @@ def _set_model_selection(context: OperationContext, selection: ModelSelection) -
     return context
 
 
-def build_message_request_pipeline_sync(
+def build_message_request_pipeline(
     *,
     provider_id: str,
     account_id: str,
@@ -175,7 +175,7 @@ def build_message_request_pipeline_sync(
     return pipeline
 
 
-def build_message_request_pipeline(
+def async_build_message_request_pipeline(
     *,
     provider_id: str,
     account_id: str,

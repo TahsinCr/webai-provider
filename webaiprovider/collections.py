@@ -315,7 +315,7 @@ def _build_change_payload(collection: str, action: str, item: Any) -> dict[str, 
     }
 
 
-def _report_read_sync(
+def _report_read(
     method: Callable[_ReadParams, _ReadResult],
 ) -> Callable[_ReadParams, _ReadResult]:
     """Emit once for the outer synchronous query, only if the source was read."""
@@ -353,7 +353,7 @@ def _report_read_sync(
     return cast("Callable[_ReadParams, _ReadResult]", report)
 
 
-def _publish_collection_change_sync(
+def _publish_collection_change(
     provider, collection, action, item, *, scope_id=None, operation_id=None
 ) -> None:
     payload = _build_change_payload(collection, action, item)
@@ -366,7 +366,7 @@ def _publish_collection_change_sync(
         )
 
 
-def _report_read(
+def _async_report_read(
     method: Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]],
 ) -> Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]]:
     """Emit once for the outer query, only if the source was read."""
@@ -404,7 +404,7 @@ def _report_read(
     return cast("Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]]", report)
 
 
-async def _publish_collection_change(
+async def _async_publish_collection_change(
     provider, collection, action, item, *, scope_id=None, operation_id=None
 ):
     payload = _build_change_payload(collection, action, item)
@@ -463,7 +463,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
                         return matched
         return matched
 
-    @_report_read
+    @_async_report_read
     async def list(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -473,7 +473,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
     ) -> list[T]:
         return await self._collect_items(predicate, limit=limit, **options)
 
-    @_report_read
+    @_async_report_read
     async def get(self, item_id: str, /) -> T:
         direct = await self._fetch_by_id(item_id)
         if direct is not None:
@@ -486,7 +486,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
             raise RemoteNotFound(f"Record was not found: {item_id}")
         return item
 
-    @_report_read
+    @_async_report_read
     async def first(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -501,7 +501,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
                     return item
         return None
 
-    @_report_read
+    @_async_report_read
     async def last(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -516,7 +516,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
                     matched = item
         return matched
 
-    @_report_read
+    @_async_report_read
     async def single(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -533,7 +533,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
                         raise self._ambiguous(matches)
         return matches[0] if matches else None
 
-    @_report_read
+    @_async_report_read
     async def find(
         self,
         query: str,
@@ -553,7 +553,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
             return await self.last(pred, **options)
         return await self.first(pred, **options)
 
-    @_report_read
+    @_async_report_read
     async def search(
         self,
         query: str,
@@ -655,7 +655,7 @@ class AsyncCollection(AsyncBaseCollection[_ItemT]):
         items = await self._load_items()
         yield items if limit is None else items[:limit]
 
-    @_report_read
+    @_async_report_read
     async def list(
         self, predicate: Predicate[_ItemT] | None = None, *, limit: int | None = None
     ) -> list[_ItemT]:
@@ -856,7 +856,7 @@ class RemoteCollection(BaseCollection[T]):
                         return matched
         return matched
 
-    @_report_read_sync
+    @_report_read
     def list(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -866,7 +866,7 @@ class RemoteCollection(BaseCollection[T]):
     ) -> list[T]:
         return self._collect_items(predicate, limit=limit, **options)
 
-    @_report_read_sync
+    @_report_read
     def get(self, item_id: str, /) -> T:
         direct = self._fetch_by_id(item_id)
         if direct is not None:
@@ -879,7 +879,7 @@ class RemoteCollection(BaseCollection[T]):
             raise RemoteNotFound(f"Record was not found: {item_id}")
         return item
 
-    @_report_read_sync
+    @_report_read
     def first(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -894,7 +894,7 @@ class RemoteCollection(BaseCollection[T]):
                     return item
         return None
 
-    @_report_read_sync
+    @_report_read
     def last(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -909,7 +909,7 @@ class RemoteCollection(BaseCollection[T]):
                     matched = item
         return matched
 
-    @_report_read_sync
+    @_report_read
     def single(
         self,
         predicate: Callable[[T], bool] | None = None,
@@ -926,7 +926,7 @@ class RemoteCollection(BaseCollection[T]):
                         raise self._ambiguous(matches)
         return matches[0] if matches else None
 
-    @_report_read_sync
+    @_report_read
     def find(
         self,
         query: str,
@@ -946,7 +946,7 @@ class RemoteCollection(BaseCollection[T]):
             return self.last(pred, **options)
         return self.first(pred, **options)
 
-    @_report_read_sync
+    @_report_read
     def search(
         self,
         query: str,
