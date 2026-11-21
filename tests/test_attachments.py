@@ -45,8 +45,10 @@ class AttachmentsTests(unittest.TestCase):
         self.assertIn(att1, col)
         self.assertIs(col.find("test2.bin"), att2)
 
+        snapshot = iter(col)
         updated = col.update(att1.id, name="renamed.bin", mime_type="application/x-test")
-        self.assertIs(updated, att1)
+        self.assertIs(col.get(att1.id), updated)
+        self.assertEqual(att1.name, "test1.bin")
         self.assertEqual(updated.name, "renamed.bin")
         self.assertEqual(updated.mime_type, "application/x-test")
 
@@ -56,6 +58,7 @@ class AttachmentsTests(unittest.TestCase):
 
         col.delete(att2.id)
         self.assertEqual(len(col), 0)
+        self.assertEqual(list(snapshot), [att1, att2])
 
 
 class AttachmentPolicyTests(unittest.TestCase):

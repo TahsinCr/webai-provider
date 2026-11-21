@@ -6,6 +6,7 @@ import mimetypes
 import os
 import uuid
 from collections.abc import Iterable
+from copy import copy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -154,13 +155,15 @@ class Attachment:
 class Attachments(Collection[Attachment]):
     """In-memory collection of attachments bound to a message or draft."""
 
+    _mutable = True
+
     def __init__(
         self,
         items: Iterable[Attachment] | None = None,
         *,
         attachment_type: type[Attachment] = Attachment,
     ) -> None:
-        super().__init__(list(items) if items is not None else None)
+        super().__init__(items)
         self._attachment_type = attachment_type
 
     def create(
@@ -172,19 +175,18 @@ class Attachments(Collection[Attachment]):
     ) -> Attachment:
         """Prepare an attachment and add it to this collection."""
         if isinstance(item, Attachment):
-            self._items.append(item)
-            return item
-        if isinstance(item, bytes):
+            attachment = item
+        elif isinstance(item, bytes):
             if not name:
                 raise ValueError("A filename is required when attaching byte data")
-            att = self._attachment_type.from_bytes(item, name, mime_type=mime_type)
-            self._items.append(att)
-            return att
-        if isinstance(item, (Path, str)):
-            att = self._attachment_type.from_path(item, name=name, mime_type=mime_type)
-            self._items.append(att)
-            return att
-        raise TypeError(f"Unsupported attachment type: {type(item)}")
+            attachment = self._attachment_type.from_bytes(item, name, mime_type=mime_type)
+        elif isinstance(item, (Path, str)):
+            attachment = self._attachment_type.from_path(item, name=name, mime_type=mime_type)
+        else:
+            raise TypeError(f"Unsupported attachment type: {type(item)}")
+        with self._write_lock:
+            self._items = (*self._items, attachment)
+        return attachment
 
     def update(
         self,
@@ -193,23 +195,27 @@ class Attachments(Collection[Attachment]):
         name: str | None = None,
         mime_type: str | None = None,
     ) -> Attachment:
-        """Update an attachment's display name or media type."""
-        item_id = target.id if isinstance(target, Attachment) else target
-        attachment = self.get(item_id)
-        if name is not None:
-            attachment.name = name
-        if mime_type is not None:
-            attachment.mime_type = mime_type
-            attachment._explicit_media_type = mime_type
-        return attachment
+        with self._write_lock:
+            item_id = target.id if isinstance(target, Attachment) else target
+            attachment = self.get(item_id)
+            if name is None and mime_type is None:
+                return attachment
+            updated = copy(attachment)
+            if name is not None:
+                updated.name = name
+            if mime_type is not None:
+                updated.mime_type = mime_type
+                updated._explicit_media_type = mime_type
+            self._items = tuple(updated if item is attachment else item for item in self._items)
+            return updated
 
     def delete(self, target: Attachment | str) -> bool:
-        """Detach an item from this collection without deleting its source file."""
         item_id = target.id if isinstance(target, Attachment) else target
-        for index, item in enumerate(self._items):
-            if item.id == item_id:
-                del self._items[index]
-                return True
+        with self._write_lock:
+            for index, item in enumerate(self._items):
+                if item.id == item_id:
+                    self._items = self._items[:index] + self._items[index + 1 :]
+                    return True
         return False
 
     @property

@@ -70,15 +70,18 @@ class Response:
 
     @property
     def parts(self) -> ResponseParts:
-        return self._parts
+        return self._content[0]
 
     def _set_parts(self, parts: Sequence[ResponsePart] | ResponseParts) -> None:
-        self._parts = parts if isinstance(parts, ResponseParts) else ResponseParts(parts)
-        self._text = "\n".join(part.text for part in self._parts if isinstance(part, TextPart))
+        snapshot = parts if isinstance(parts, ResponseParts) else ResponseParts(parts)
+        self._content = (
+            snapshot,
+            "\n".join(part.text for part in snapshot if isinstance(part, TextPart)),
+        )
 
     @property
     def text(self) -> str:
-        return self._text
+        return self._content[1]
 
     def retry(
         self,

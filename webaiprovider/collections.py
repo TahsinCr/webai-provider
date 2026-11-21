@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterat
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
+from threading import Lock
 from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, cast
 
@@ -571,8 +572,13 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
 class Collection(BaseCollection[_ItemT]):
     """Synchronous collection operating over in-memory objects without network I/O."""
 
+    _mutable = False
+    _write_lock: Lock
+
     def __init__(self, items: Iterable[_ItemT] | None = None) -> None:
-        self._items: list[_ItemT] = list(items) if items is not None else []
+        self._items: tuple[_ItemT, ...] = tuple(items) if items is not None else ()
+        if self._mutable:
+            self._write_lock = Lock()
 
     def list(
         self,
@@ -632,7 +638,8 @@ class Collection(BaseCollection[_ItemT]):
         return iter(self._items)
 
     def __getitem__(self, index: Any) -> Any:
-        return self._items[index]
+        items = self._items[index]
+        return list(items) if isinstance(index, slice) else items
 
     def __contains__(self, item: Any) -> bool:
         target_id = self._extract_id(item) if not isinstance(item, str) else item
