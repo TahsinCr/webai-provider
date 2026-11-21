@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
+    from .async_client import AsyncClaudeClient as AsyncClaudeClient
     from .async_provider import AsyncClaudeProvider as AsyncClaudeProvider
     from .catalogs import ClaudeModels as ClaudeModels
     from .client import ClaudeClient as ClaudeClient
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from .resources import ClaudeSource as ClaudeSource
 
 _EXPORTS = {
+    "AsyncClaudeClient": "async_client",
     "ClaudeClient": "client",
     "ClaudeCompatibilityError": "errors",
     "ClaudeError": "errors",

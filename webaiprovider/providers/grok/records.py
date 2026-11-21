@@ -397,6 +397,163 @@ def _reconcile_grok_native(raw_native_text, raw_native_analysis, streamed_text, 
             yield TextReplacement(native, channel) if channel else TextReplacement(native)
 
 
+class _GrokStreamProcessor:
+    """Shared incremental Grok event state machine for both sync and async streams."""
+
+    def __init__(
+        self,
+        request: ProviderRequest,
+        *,
+        model: str | None,
+        raise_stream_error: Callable[[object], None],
+        remember: Callable[[str, str], None],
+    ) -> None:
+        self.existing_conversation_id = request.conversation_id
+        self.conversation_id = request.conversation_id
+        self.response_id: str | None = None
+        self.user_response_id: str | None = None
+        self.streamed_text = StringIO()
+        self.streamed_analysis = StringIO()
+        self.raw_native_text: str | None = None
+        self.raw_native_analysis: str | None = None
+        self.sources: tuple[dict[str, Any], ...] = ()
+        self.raw_search_results: list[dict] = []
+        self.seen_search_keys: set[str] = set()
+        self.file_records: list[dict[str, Any]] = []
+        self.seen_file_urls: set[str] = set()
+        self.response_model = model
+        self.complete = False
+        self.completion_notified = False
+        self.bound = False
+        self.text_filter = GrokTextFilter()
+        self.analysis_filter = GrokTextFilter()
+        self._raise_stream_error = raise_stream_error
+        self._remember = remember
+
+    def _finalize_turn(self):
+        if self.raw_search_results and not self.sources:
+            self.sources = sources_from({"sources": self.raw_search_results})
+        yield from _flush_grok_filters(
+            self.text_filter, self.streamed_text, self.analysis_filter, self.streamed_analysis
+        )
+        yield from _reconcile_grok_native(
+            self.raw_native_text,
+            self.raw_native_analysis,
+            self.streamed_text,
+            self.streamed_analysis,
+        )
+
+    def feed(self, chunk: dict[str, Any]):
+        result = chunk.get("result")
+        if not isinstance(result, dict):
+            result = chunk
+        native_conversation = result.get("conversation")
+        response = result.get("response")
+        if not isinstance(response, dict):
+            response = result
+        if not self.conversation_id and isinstance(native_conversation, dict):
+            self.conversation_id = native_conversation.get("conversationId")
+            if self.conversation_id and not self.bound:
+                yield ConversationBound(self.conversation_id)
+                self.bound = True
+        if not self.conversation_id and not self.existing_conversation_id:
+            self.conversation_id = result.get("conversationId") or response.get("conversationId")
+            if self.conversation_id and not self.bound:
+                yield ConversationBound(self.conversation_id)
+                self.bound = True
+        error = response.get("error") or result.get("error") or chunk.get("error")
+        if error:
+            self._raise_stream_error(error)
+        user = response.get("userResponse")
+        if isinstance(user, dict) and user.get("responseId"):
+            self.user_response_id = user["responseId"]
+        native = response.get("modelResponse")
+        if isinstance(native, dict):
+            self.response_id = native.get("responseId") or self.response_id
+            self.response_model = native.get("model") or self.response_model
+            _append_web_search_results(native, self.raw_search_results, self.seen_search_keys)
+            if len(self.seen_file_urls) < MAX_FILE_REFERENCES and any(
+                native.get(key) for key in _GROK_FILE_KEYS
+            ):
+                self.file_records.extend(_assistant_files(native, seen=self.seen_file_urls))
+            if isinstance(native.get("message"), str):
+                self.raw_native_text = native["message"]
+            if native.get("thinkingTrace") is not None:
+                self.raw_native_analysis = native["thinkingTrace"]
+            if native.get("partial") is False:
+                self.complete = True
+        token = response.get("token")
+        if isinstance(token, str) and token:
+            analysis = response.get("isThinking") or response.get("messageTag") in (
+                "header",
+                "summary",
+            )
+            cleaner = self.analysis_filter if analysis else self.text_filter
+            visible = cleaner.feed(token)
+            if visible:
+                (self.streamed_analysis if analysis else self.streamed_text).write(visible)
+                yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
+        if response.get("responseId") and not self.response_id:
+            self.response_id = response["responseId"]
+        if response.get("done") is True or response.get("finished") is True:
+            self.complete = True
+        if (
+            self.complete
+            and not self.completion_notified
+            and (self.existing_conversation_id or self.conversation_id)
+        ):
+            yield from self._finalize_turn()
+            yield ResponseComplete()
+            self.completion_notified = True
+
+    def finish(self):
+        yield from self._finalize_turn()
+        if not self.conversation_id:
+            raise ProviderError("Grok did not return a conversation ID")
+        if not self.complete:
+            raise ProviderError("Grok stream ended before response completion; it was not resent")
+        if self.response_id:
+            self._remember(self.conversation_id, self.response_id)
+        if not self.bound and not self.existing_conversation_id:
+            yield ConversationBound(self.conversation_id)
+        if self.streamed_text.tell() and len(self.seen_file_urls) < MAX_FILE_REFERENCES:
+            self.file_records.extend(
+                files_from(
+                    self.streamed_text.getvalue(), rule=_GROK_FILE_RULE, seen=self.seen_file_urls
+                )
+            )
+        if self.response_id and (self.streamed_text.tell() or self.file_records or self.sources):
+            yield MessageMetadata(
+                message_id=self.response_id,
+                user_message_id=self.user_response_id,
+                model=self.response_model,
+                effort=None,
+                sources=self.sources,
+                files=tuple(self.file_records),
+            )
+        if not self.completion_notified:
+            yield ResponseComplete()
+
+
+def iter_response_events(
+    request: ProviderRequest,
+    *,
+    prepare: Callable[[ProviderRequest], tuple[Any, str | None]],
+    raise_stream_error: Callable[[object], None],
+    remember: Callable[[str, str], None],
+):
+    chunks, model = prepare(request)
+    processor = _GrokStreamProcessor(
+        request,
+        model=model,
+        raise_stream_error=raise_stream_error,
+        remember=remember,
+    )
+    for chunk in chunks:
+        yield from processor.feed(chunk)
+    yield from processor.finish()
+
+
 async def response_events(
     request: ProviderRequest,
     *,
@@ -405,114 +562,14 @@ async def response_events(
     remember: Callable[[str, str], None],
 ) -> AsyncGenerator[ProviderStreamEvent, None]:
     chunks, model = await prepare(request)
-    conversation_id = existing_conversation_id = request.conversation_id
-    response_id = user_response_id = None
-    streamed_text, streamed_analysis = StringIO(), StringIO()
-    raw_native_text = raw_native_analysis = None
-    sources = ()
-    raw_search_results: list[dict] = []
-    seen_search_keys: set[str] = set()
-    file_records: list[dict[str, Any]] = []
-    seen_file_urls: set[str] = set()
-    response_model = model
-    complete = False
-    completion_notified = False
-    bound = False
-    text_filter, analysis_filter = GrokTextFilter(), GrokTextFilter()
-
-    def finalize_turn():
-        nonlocal sources
-        if raw_search_results and not sources:
-            sources = sources_from({"sources": raw_search_results})
-        yield from _flush_grok_filters(
-            text_filter, streamed_text, analysis_filter, streamed_analysis
-        )
-        yield from _reconcile_grok_native(
-            raw_native_text, raw_native_analysis, streamed_text, streamed_analysis
-        )
-
+    processor = _GrokStreamProcessor(
+        request,
+        model=model,
+        raise_stream_error=raise_stream_error,
+        remember=remember,
+    )
     async for chunk in chunks:
-        result = chunk.get("result")
-        if not isinstance(result, dict):
-            result = chunk
-        native_conversation = result.get("conversation")
-        response = result.get("response")
-        if not isinstance(response, dict):
-            response = result
-        if not conversation_id and isinstance(native_conversation, dict):
-            conversation_id = native_conversation.get("conversationId")
-            if conversation_id and not bound:
-                yield ConversationBound(conversation_id)
-                bound = True
-        if not conversation_id and not existing_conversation_id:
-            conversation_id = result.get("conversationId") or response.get("conversationId")
-            if conversation_id and not bound:
-                yield ConversationBound(conversation_id)
-                bound = True
-        error = response.get("error") or result.get("error") or chunk.get("error")
-        if error:
-            raise_stream_error(error)
-        user = response.get("userResponse")
-        if isinstance(user, dict) and user.get("responseId"):
-            user_response_id = user["responseId"]
-        native = response.get("modelResponse")
-        if isinstance(native, dict):
-            response_id = native.get("responseId") or response_id
-            response_model = native.get("model") or response_model
-            _append_web_search_results(native, raw_search_results, seen_search_keys)
-            if len(seen_file_urls) < MAX_FILE_REFERENCES and any(
-                native.get(key) for key in _GROK_FILE_KEYS
-            ):
-                file_records.extend(_assistant_files(native, seen=seen_file_urls))
-            if isinstance(native.get("message"), str):
-                raw_native_text = native["message"]
-            if native.get("thinkingTrace") is not None:
-                raw_native_analysis = native["thinkingTrace"]
-            if native.get("partial") is False:
-                complete = True
-        token = response.get("token")
-        if isinstance(token, str) and token:
-            analysis = response.get("isThinking") or response.get("messageTag") in (
-                "header",
-                "summary",
-            )
-            cleaner = analysis_filter if analysis else text_filter
-            visible = cleaner.feed(token)
-            if visible:
-                (streamed_analysis if analysis else streamed_text).write(visible)
-                yield TextDelta(visible, "analysis") if analysis else TextDelta(visible)
-        if response.get("responseId") and not response_id:
-            response_id = response["responseId"]
-        if response.get("done") is True or response.get("finished") is True:
-            complete = True
-        if complete and not completion_notified and (existing_conversation_id or conversation_id):
-            for event in finalize_turn():
-                yield event
-            yield ResponseComplete()
-            completion_notified = True
-
-    for event in finalize_turn():
+        for event in processor.feed(chunk):
+            yield event
+    for event in processor.finish():
         yield event
-    if not conversation_id:
-        raise ProviderError("Grok did not return a conversation ID")
-    if not complete:
-        raise ProviderError("Grok stream ended before response completion; it was not resent")
-    if response_id:
-        remember(conversation_id, response_id)
-    if not bound and not existing_conversation_id:
-        yield ConversationBound(conversation_id)
-    if streamed_text.tell() and len(seen_file_urls) < MAX_FILE_REFERENCES:
-        file_records.extend(
-            files_from(streamed_text.getvalue(), rule=_GROK_FILE_RULE, seen=seen_file_urls)
-        )
-    if response_id and (streamed_text.tell() or file_records or sources):
-        yield MessageMetadata(
-            message_id=response_id,
-            user_message_id=user_response_id,
-            model=response_model,
-            effort=None,
-            sources=sources,
-            files=tuple(file_records),
-        )
-    if not completion_notified:
-        yield ResponseComplete()

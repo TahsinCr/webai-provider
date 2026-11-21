@@ -140,17 +140,14 @@ class AccountsTests(unittest.TestCase):
                 with self.subTest(provider=kind):
                     provider = Provider(Account.from_cookies(kind, {"fixture": "saved"}))
                     try:
-                        with patch.object(
-                            provider,
-                            "_call",
-                            side_effect=AssertionError("Status must not start the loop"),
-                        ):
-                            status = provider.session_status()
+                        self.assertFalse(hasattr(provider, "_loop"))
+                        self.assertFalse(hasattr(provider, "_provider"))
+                        status = provider.session_status()
                         self.assertEqual(status.state, SessionState.UNKNOWN)
                         self.assertTrue(status.saved_snapshot)
                     finally:
                         provider.close()
-                    with self.assertRaisesRegex(RuntimeError, "provider is closed"):
+                    with self.assertRaisesRegex(ProviderError, "closing or is closed"):
                         provider.session_status()
         self.assertEqual(threads, [caller] * 4)
 

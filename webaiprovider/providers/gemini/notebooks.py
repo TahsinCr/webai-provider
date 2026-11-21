@@ -1,7 +1,9 @@
-"""Gemini notebook mappings over the account-owned HTTP RPC reader."""
+"""Gemini notebook mappings and blocking notebook reader."""
+
+from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -72,14 +74,48 @@ def project_from_native(row, account_id):
     )
 
 
-class Notebooks:
-    def __init__(self, account_id):
-        self.account_id = account_id
-        self.reader: Callable[..., Awaitable[list[Any]]] | None = None
+def parse_notebook_list(parts: list[Any], account_id: str) -> Page[ProjectData]:
+    rows = [row for part in parts for row in field(part, 2, []) or []]
+    return Page(tuple(project_from_native(row, account_id) for row in rows))
 
-    async def read(self, remote=None, mode=None, cursor=None):
+
+def parse_notebook_chats(parts: list[Any], remote: str) -> Page[Conversation]:
+    rows = [row for part in parts for row in field(part, 2, []) or []]
+    conversations = []
+    for row in rows:
+        if not isinstance(field(row, 0), str) or not isinstance(field(row, 1), str):
+            raise GeminiCompatibilityError("Gemini notebook conversation mapping has changed")
+        conversations.append(
+            Conversation(
+                row[0],
+                row[1],
+                project=ProjectData(remote, ""),
+                metadata={"native": row},
+            )
+        )
+    cursor_value = field(parts[-1], 1)
+    return Page(tuple(conversations), cursor_value if isinstance(cursor_value, str) else None)
+
+
+def parse_notebook_detail(parts: list[Any], remote: str, account_id: str) -> ProjectData:
+    rows = [row for part in parts for row in part if field(row, 0) == remote]
+    if not rows:
+        raise GeminiNotFoundError("Gemini notebook details were not found")
+    if len(rows) != 1:
+        raise GeminiError("Gemini notebook details were not found")
+    return project_from_native(rows[0], account_id)
+
+
+class Notebooks:
+    """Blocking Gemini notebook reader."""
+
+    def __init__(self, account_id: str):
+        self.account_id = account_id
+        self.reader: Callable[..., list[Any]] | None = None
+
+    def read(self, remote=None, mode=None, cursor=None):
         if self.reader is not None:
-            return await self.reader(
+            return self.reader(
                 "notebooks",
                 remote=notebook_id(remote) if remote else None,
                 operation=mode or "list",
@@ -87,38 +123,15 @@ class Notebooks:
             )
         raise GeminiError("Gemini notebook HTTP reader is not configured")
 
-    async def list(self, cursor=None):
+    def list(self, cursor=None):
         if cursor:
             raise GeminiError("Gemini notebook pagination is not supported by this version")
-        parts = await self.read()
-        rows = [row for part in parts for row in field(part, 2, []) or []]
-        return Page(tuple(project_from_native(row, self.account_id) for row in rows))
+        return parse_notebook_list(self.read(), self.account_id)
 
-    async def chats(self, remote, cursor=None):
+    def chats(self, remote, cursor=None):
         remote = notebook_id(remote)
-        parts = await self.read(remote, mode="chats", cursor=cursor)
-        rows = [row for part in parts for row in field(part, 2, []) or []]
-        conversations = []
-        for row in rows:
-            if not isinstance(field(row, 0), str) or not isinstance(field(row, 1), str):
-                raise GeminiCompatibilityError("Gemini notebook conversation mapping has changed")
-            conversations.append(
-                Conversation(
-                    row[0],
-                    row[1],
-                    project=ProjectData(remote, ""),
-                    metadata={"native": row},
-                )
-            )
-        cursor_value = field(parts[-1], 1)
-        return Page(tuple(conversations), cursor_value if isinstance(cursor_value, str) else None)
+        return parse_notebook_chats(self.read(remote, mode="chats", cursor=cursor), remote)
 
-    async def get(self, remote):
+    def get(self, remote):
         remote = notebook_id(remote)
-        parts = await self.read(remote)
-        rows = [row for part in parts for row in part if field(row, 0) == remote]
-        if not rows:
-            raise GeminiNotFoundError("Gemini notebook details were not found")
-        if len(rows) != 1:
-            raise GeminiError("Gemini notebook details were not found")
-        return project_from_native(rows[0], self.account_id)
+        return parse_notebook_detail(self.read(remote), remote, self.account_id)

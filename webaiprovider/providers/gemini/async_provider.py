@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
@@ -15,28 +13,29 @@ from ...base import Capability, ProviderType
 from ...collections import Page
 from ...core.cache import BoundedCache
 from ...core.timing import current_send_timing
-from ...errors import AccountPaused, FeatureUnavailable, ProviderError
+from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
-from ...resources.message.protocol import (
-    ProviderRequest,
-    ProviderStreamEvent,
-)
-from ...resources.message.types import MessageAction, target_message
+from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
+from ...resources.message.types import target_message
 from ...resources.model import ModelCatalogState
 from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
-from ...transport.downloader import DownloadSource, NativeDownloadClient, cookie_header
-from . import generation
-from .base import BaseGeminiProvider
+from .async_client import (
+    AsyncGeminiClient,
+    AsyncGeminiNotebooks,
+    AsyncGeminiProjectEditor,
+    AsyncGeminiRPC,
+    response_events,
+)
+from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
 from .errors import GeminiCompatibilityError, GeminiStreamError
-from .history import action_turn_index, parse_chat_history, parse_chat_page
-from .media import PLACEHOLDER, valid_media_url
-from .notebooks import Notebooks, field, notebook_id
-from .projects import GeminiProjectEditor
+from .generation import _gemini_upload_spec
+from .history import parse_chat_history, parse_chat_page
+from .notebooks import notebook_id
 from .resources import (
     AsyncGeminiChat,
     AsyncGeminiMessage,
@@ -46,13 +45,9 @@ from .resources import (
     GeminiResponse,
     GeminiSource,
 )
-from .rpc import GeminiRPC, rpc_value
-from .session import GeminiSession
 
 if TYPE_CHECKING:
     from ...accounts.account import Account
-
-_CHAT_METADATA_TTL_SECONDS = 1800.0
 
 
 class AsyncGeminiProvider(
@@ -62,15 +57,11 @@ class AsyncGeminiProvider(
     ],
     BaseGeminiProvider,
 ):
-    stream_idle_timeout = 300
-    stream_total_timeout = 600
-
     _message_type = AsyncGeminiMessage
     _response_type = GeminiResponse
     _source_type = GeminiSource
     _artifact_type = GeminiArtifact
     _attachment_type = GeminiAttachment
-
     _chat_followup_page_size = 100
 
     def _make_chats(self) -> AsyncChatsCollection[AsyncGeminiChat]:
@@ -85,10 +76,10 @@ class AsyncGeminiProvider(
         *,
         type: ProviderType | str | None = None,
         client_factory: Any = None,
-        notebooks: Notebooks | None = None,
+        notebooks: AsyncGeminiNotebooks | None = None,
         transport: AsyncTransport | None = None,
     ) -> None:
-        if transport is not None and transport.origin != "https://gemini.google.com":
+        if transport is not None and transport.origin != ORIGIN:
             raise ValueError("Gemini transport must use the Gemini origin")
         self._client_factory = client_factory
         self._provided_transport = transport
@@ -96,7 +87,7 @@ class AsyncGeminiProvider(
         super().__init__(account, type=type, transport=transport)
         self._media: dict[tuple[str | None, str], dict[str, Any]] = {}
         self.cookie_file = account.store()
-        self._client: GeminiSession | None = None
+        self._client: AsyncGeminiClient | None = None
         self._cached_models: tuple[Model, ...] | None = None
         self._catalog_at: float | None = None
         self._model_gate = asyncio.Lock()
@@ -114,28 +105,22 @@ class AsyncGeminiProvider(
             ttl=120.0,
             clock=lambda: time.monotonic(),
         )
-        self.rpc: GeminiRPC = GeminiRPC(self._connect)
-        self.notebooks: Notebooks = notebooks or Notebooks(account.id)
+        self.rpc: AsyncGeminiRPC = AsyncGeminiRPC(self._connect)
+        self.notebooks: AsyncGeminiNotebooks = notebooks or AsyncGeminiNotebooks(account.id)
         self.notebooks.reader = self.rpc.read
-        self.editor: GeminiProjectEditor = GeminiProjectEditor(self.rpc, self.notebooks)
+        self.editor: AsyncGeminiProjectEditor = AsyncGeminiProjectEditor(self.rpc, self.notebooks)
 
-    def _active_transport(self) -> AsyncTransport | None:
-        return self._connected_transport
-
-    def _invalidate_project_cache(self, project_id: str) -> None:
-        self._project_contexts.remove(notebook_id(project_id))
-
-    async def _connect(self) -> GeminiSession:
+    async def _connect(self) -> AsyncGeminiClient:
         async with self._connect_gate:
             return await self._connect_once()
 
-    async def _connect_once(self) -> GeminiSession:
+    async def _connect_once(self) -> AsyncGeminiClient:
         if self._client is not None:
             return self._client
         if not session_exists(self.cookie_file):
             raise AccountPaused("No Gemini session; sign in through the Accounts section")
         client = (
-            GeminiSession(self.cookie_file, transport=self._provided_transport)
+            AsyncGeminiClient(self.cookie_file, transport=self._provided_transport)
             if self._client_factory is None
             else self._client_factory(self.cookie_file)
         )
@@ -162,12 +147,6 @@ class AsyncGeminiProvider(
             self._chat_metadata.clear()
             self._project_contexts.clear()
 
-    def _take_chat_metadata(self, conversation_id: str):
-        return self._chat_metadata.get(conversation_id)
-
-    def _remember_chat_metadata(self, conversation_id: str, metadata: Any) -> None:
-        self._chat_metadata.put(conversation_id, list(metadata))
-
     async def _prepare_session(self) -> None:
         self._prime_models(await self._load_catalog())
 
@@ -178,16 +157,6 @@ class AsyncGeminiProvider(
     async def _authenticate(self) -> SessionStatus:
         await self._connect()
         return SessionStatus(SessionState.AUTHENTICATED, True)
-
-    def _session_status(self) -> SessionStatus:
-        saved = session_exists(self.cookie_file)
-        if self._client:
-            state = SessionState.AUTHENTICATED
-        elif saved:
-            state = SessionState.UNKNOWN
-        else:
-            state = SessionState.LOGIN_REQUIRED
-        return SessionStatus(state, saved)
 
     async def _forget_session(self) -> SessionStatus:
         async with self._gate, self._connect_gate:
@@ -215,12 +184,7 @@ class AsyncGeminiProvider(
     async def _list_chats_data(
         self, *, cursor: str | None = None, limit: int = 50
     ) -> Page[Conversation]:
-        try:
-            offset = int(cursor or 0)
-        except (ValueError, TypeError):
-            raise ValueError("invalid Gemini conversation cursor") from None
-        if offset < 0 or not 1 <= limit <= 100:
-            raise ValueError("invalid Gemini conversation page")
+        offset = self._parse_list_chats_args(cursor, limit)
         parts = await self.rpc.call(
             "MaZiqc", [offset + limit + 1, None, [None, None, 1, None, 1]], "/app"
         )
@@ -234,21 +198,8 @@ class AsyncGeminiProvider(
         if len(parts) != 1:
             raise GeminiCompatibilityError("Gemini history response format changed")
         chat = await asyncio.to_thread(parse_chat_history, parts[0], conversation_id)
-        turns = rpc_value(parts[0], 0, default=[])
-        turn = turns[0] if turns else None
-        metadata = [
-            conversation_id,
-            rpc_value(turn, 0, 1) or "",
-            rpc_value(turn, 3, 0, 0, 0) or "",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "",
-        ]
-        if conversation_id not in self._temporary and AsyncGeminiProvider._usable_chat_metadata(
+        metadata = self._extract_history_metadata(parts[0], conversation_id)
+        if conversation_id not in self._temporary and self._usable_chat_metadata(
             metadata, conversation_id
         ):
             self._remember_chat_metadata(conversation_id, metadata)
@@ -258,16 +209,8 @@ class AsyncGeminiProvider(
         current = await self._get_chat_data(conversation_id)
         _, target = target_message(current.messages, message_id, "assistant")
         result = await self.rpc.call("KDNZr", [conversation_id, target.metadata["turn_id"]], "/app")
-        remote = rpc_value(result, 0, 0, 0)
-        if not isinstance(remote, str) or not remote.startswith("c_") or remote == conversation_id:
-            raise ProviderError("Gemini did not confirm a new conversation")
-        chat = await self._get_chat_data(remote)
-        title = rpc_value(result, 0, 0, 1)
-        if isinstance(title, str) and title.strip():
-            chat = replace(
-                chat, title=title, metadata={**chat.metadata, "title_unavailable": False}
-            )
-        return chat
+        remote, title = self._parse_branch_result(result, conversation_id)
+        return self._apply_branch_title(await self._get_chat_data(remote), title)
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
         await self._connect()
@@ -275,10 +218,9 @@ class AsyncGeminiProvider(
         self._chat_metadata.remove(conversation_id)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
-        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 100:
-            raise ValueError("Gemini chat title must contain 1–100 characters")
+        cleaned = self._validate_chat_title(title)
         client = await self._connect()
-        await client.rename_conversation(conversation_id, title.strip())
+        await client.rename_conversation(conversation_id, cleaned)
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         if self.notebooks is None:
@@ -293,24 +235,18 @@ class AsyncGeminiProvider(
     async def _list_project_chats_data(
         self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
+        del limit
         if self.notebooks is None:
             raise FeatureUnavailable(Capability.PROJECTS)
         return await self.notebooks.chats(project_id, cursor)
 
     async def _create_project_data(
-        self,
-        name: str,
-        instructions: str = "",
-        **options: Any,
+        self, name: str, instructions: str = "", **options: Any
     ) -> ProjectData:
         del options
         if self.editor is None:
             raise FeatureUnavailable(Capability.PROJECT_CREATE)
-        if not name.strip() or instructions:
-            raise ValueError(
-                "Provide only a name when creating a notebook; edit instructions afterward"
-            )
-        remote = await self.editor.create(name=name.strip())
+        remote = await self.editor.create(name=self._validate_create_project(name, instructions))
         return await self._get_project_data(remote)
 
     async def _delete_project_data(self, project_id: str) -> None:
@@ -327,11 +263,7 @@ class AsyncGeminiProvider(
         if task is None:
             raise RuntimeError("Gemini streaming requires an active asyncio task")
         deadline_cancel = object()
-
-        def cancel_at_deadline() -> None:
-            task.cancel(deadline_cancel)
-
-        timeout = loop.call_later(self.stream_total_timeout, cancel_at_deadline)
+        timeout = loop.call_later(self.stream_total_timeout, lambda: task.cancel(deadline_cancel))
         try:
             async for event in iterator:
                 yield event
@@ -344,22 +276,13 @@ class AsyncGeminiProvider(
             await iterator.aclose()
 
     def _stream(self, request: ProviderRequest) -> AsyncGenerator[ProviderStreamEvent, None]:
-        return generation.response_events(
+        return response_events(
             request,
             prepare=self._prepare_send_context,
             request_timeout=(15, self.stream_idle_timeout + 10),
             media=self._media,
             remember=self._remember_response,
         )
-
-    def _remember_response(self, cid: str, metadata: Any, *, temporary: bool) -> None:
-        if cid and not temporary and AsyncGeminiProvider._usable_chat_metadata(metadata, cid):
-            self._remember_chat_metadata(cid, metadata)
-        if temporary:
-            self._temporary[cid] = metadata
-            while len(self._temporary) > 32:
-                oldest = next(iter(self._temporary))
-                self._temporary.pop(oldest)
 
     async def _prepare_send_context(self, request: ProviderRequest):
         timing = current_send_timing()
@@ -407,108 +330,38 @@ class AsyncGeminiProvider(
         notebook = await self.notebooks.get(project)
         if project_started is not None:
             timing.record("pre_send_project_context_ms", time.perf_counter_ns() - project_started)
-        value = field(field(notebook.metadata.get("native"), 1), 12)
-        if not isinstance(value, list) or not value or value[0] not in (1, 2):
-            raise ProviderError("Gemini notebook context could not be read")
-        self._project_contexts.put(project, list(value))
-        return project, value
+        return self._cache_notebook_context(project, notebook)
 
     async def _load_chat_continuation(self, request: ProviderRequest, timing: Any):
-        metadata = self._temporary.get(request.conversation_id) if request.temporary else None
-        if request.temporary and request.conversation_id and metadata is None:
-            raise ProviderError("Temporary Gemini context is no longer in memory")
-        if metadata is not None:
-            return request, metadata, None
-
-        cached = (
-            self._take_chat_metadata(request.conversation_id) if request.conversation_id else None
+        done, metadata, expected_turn, recent_action = self._prepare_continuation_lookup(
+            request, timing
         )
-        usable = AsyncGeminiProvider._usable_chat_metadata(cached, request.conversation_id)
-        if cached is not None and usable and not request.action:
-            if timing is not None:
-                timing.increment("pre_send_conversation_cache_hit")
-            return request, list(cached), None
-
-        if timing is not None and request.conversation_id:
-            timing.increment("pre_send_conversation_cache_miss")
-        metadata = [request.conversation_id or "", "", "", None, None, None, None, None, None, ""]
-        if not request.conversation_id:
+        if done:
             return request, metadata, None
 
-        suffix = "user" if request.action == MessageAction.EDIT else "model"
-        recent_action = request.action and usable and request.message_id == f"{cached[1]}:{suffix}"
-
-        async def read_history(limit):
+        async def read_history(limit: int):
             return await self.rpc.call(
-                "hNvQHb",
-                [request.conversation_id, limit, None, 1, [1], [4], None, 1],
-                "/app",
+                "hNvQHb", [request.conversation_id, limit, None, 1, [1], [4], None, 1], "/app"
             )
 
         history_started = time.perf_counter_ns() if timing is not None else None
         try:
             limit = 1000 if request.action else 1
             parts = await read_history(2 if recent_action else limit)
-            if recent_action:
-                turns = rpc_value(parts, 0, 0, default=[])
-                if (
-                    not isinstance(turns, list)
-                    or len(turns) != 2
-                    or rpc_value(turns[0], 0, 1) != cached[1]
-                    or not rpc_value(turns[1], 0, 1)
-                    or not rpc_value(turns[1], 3, 0, 0, 0)
-                ):
-                    parts = await read_history(limit)
+            if recent_action and self._needs_full_continuation_history(parts, expected_turn):
+                parts = await read_history(limit)
         finally:
             if history_started is not None:
                 timing.record(
                     "pre_send_get_conversation_ms", time.perf_counter_ns() - history_started
                 )
-
-        turns = rpc_value(parts[0], 0, default=[])
-        turn = turns[0] if turns else None
-        action_files = None
-        if request.action:
-            if request.message_id is None:
-                raise ValueError("message action requires a message ID")
-            role = "user" if request.action == MessageAction.EDIT else "assistant"
-            selected_index = action_turn_index(
-                parts[0], request.message_id, role, request.action.value
-            )
-            original = turns[selected_index]
-            action_files = rpc_value(original, 2, 0, 3) or []
-            if not isinstance(action_files, list):
-                raise ProviderError("Gemini message attachments cannot be preserved")
-            if request.action == MessageAction.RETRY:
-                request = replace(
-                    request,
-                    prompt=rpc_value(original, 2, 0, 0) or "",
-                    action=MessageAction.EDIT if selected_index > 0 else MessageAction.RETRY,
-                )
-            turn = turns[selected_index + 1] if selected_index + 1 < len(turns) else None
-        rid = rpc_value(turn, 0, 1)
-        rcid = rpc_value(turn, 3, 0, 0, 0)
-        if turn is not None and (not rid or not rcid):
-            raise GeminiCompatibilityError(
-                "Could not retrieve Gemini conversation continuation IDs."
-            )
-        metadata[1:3] = [rid or "", rcid or ""]
-        return request, metadata, action_files
+        return self._apply_continuation_parts(request, metadata, parts)
 
     async def _upload_file(self, path: Any) -> dict[str, Any]:
-        from .generation import _gemini_upload_spec
-
         filename, mime, size, _content, local_path = await asyncio.to_thread(
             _gemini_upload_spec, path
         )
-        return {
-            "id": filename,
-            "path": local_path,
-            "name": filename,
-            "mime_type": mime,
-            "size_bytes": size,
-            "deferred_upload": True,
-        }
+        return self._deferred_upload_record(filename, mime, size, local_path)
 
     async def _resolve_download(
         self,
@@ -517,33 +370,20 @@ class AsyncGeminiProvider(
         message_id: str | None = None,
     ) -> Any | None:
         del message_id
-        stable_reference = bool(PLACEHOLDER.fullmatch(url) or url.startswith("gemini-media:"))
-        if not stable_reference and not valid_media_url(url):
+        stable_reference, supported = self._is_stable_media_reference(url)
+        if not supported:
             return None
         target = self._media.get((conversation_id, url))
         if stable_reference and conversation_id and conversation_id not in self._temporary:
-            target = None
-            chat = await self._get_chat_data(conversation_id)
-            for message in chat.messages:
-                for content in message.content:
-                    resource = content.resource
-                    if resource and resource.id == url:
-                        target = {"url": resource.remote_url, "name": resource.name}
-        if target is None and valid_media_url(url):
-            target = {"url": url, "name": "image"}
-        if not target or not valid_media_url(target["url"]):
-            raise ValueError("The provider did not return the file URL; sync the conversation")
-
-        headers = {"Referer": "https://gemini.google.com/"}
-        # Generated media can require the owning account, through the owning HTTP session.
-        # Never attach Google cookies to arbitrary user-controlled CDN subdomains.
-        host = urlsplit(target["url"]).hostname
-        if host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}:
+            target = self._extract_media_target_from_chat(
+                await self._get_chat_data(conversation_id), url
+            )
+        cookie_values = None
+        if self._download_needs_cookies(target, url):
             client = self._client
-            values = (
+            cookie_values = (
                 client.http.cookies.get_dict()
                 if client is not None and client.http is not None
                 else await read_session_async(self.cookie_file)
             )
-            headers["Cookie"] = cookie_header(values, ("__Secure-1PSID", "__Secure-1PSIDTS"))
-        return DownloadSource(target["url"], target["name"], True, headers, NativeDownloadClient)
+        return self._finalize_download_source(target, url, cookie_values)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from importlib import import_module
-from unittest.mock import ANY, AsyncMock
+from unittest.mock import ANY, AsyncMock, Mock
 
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import Account, AsyncMessageOperation, AsyncProvider, OperationState, Provider
@@ -385,10 +385,9 @@ class ProviderResourceFamilyTests(unittest.TestCase):
             with self.subTest(provider=provider_id):
                 module = import_module(f"webaiprovider.providers.{provider_id}.resources")
                 provider = Provider(Account.from_cookies(provider_id, {}))
-                runtime_provider = provider._provider
-                runtime_provider._prepare_session = AsyncMock()
-                runtime_provider._close_session = AsyncMock()
-                runtime_provider._get_chat_data = AsyncMock(
+                provider._prepare_session = Mock()
+                provider._close_session = Mock()
+                provider._get_chat_data = Mock(
                     return_value=Conversation(
                         "chat-1",
                         "Fixture",
@@ -406,31 +405,26 @@ class ProviderResourceFamilyTests(unittest.TestCase):
                         ),
                     )
                 )
-                runtime_provider._get_project_data = AsyncMock(
+                provider._get_project_data = Mock(
                     return_value=NativeProject(
                         "project-1", "Fixture", resources=(Attachment("attachment-1", "note.txt"),)
                     )
                 )
-                scripted = StreamTestProvider(
-                    provider_id,
-                    "default",
-                    (
-                        TextDelta("Next answer"),
-                        MessageMetadata(message_id="answer-2"),
-                        ResponseComplete(),
-                    ),
-                )
-                runtime_provider._stream_provider_events = scripted._stream_provider_events
+
+                def _stream_sync(_request):
+                    yield TextDelta("Next answer")
+                    yield MessageMetadata(message_id="answer-2")
+                    yield ResponseComplete()
+
+                provider._stream_provider_events = _stream_sync
                 with provider:
                     chat, responses = provider.chats.get_with_responses("chat-1", limit=1)
                     response = responses[0]
                     self.assertIs(type(chat), getattr(module, f"{name}Chat"))
-                    self.assertIs(type(chat._resource), getattr(module, f"Async{name}Chat"))
+                    self.assertFalse(hasattr(chat, "_resource"))
                     self.assertIs(type(response), getattr(module, f"{name}Response"))
                     self.assertIs(type(response.message), getattr(module, f"{name}Message"))
-                    self.assertIs(
-                        type(response.message._resource), getattr(module, f"Async{name}Message")
-                    )
+                    self.assertFalse(hasattr(response.message, "_resource"))
                     self.assertIs(
                         type(next(iter(response.sources))), getattr(module, f"{name}Source")
                     )
@@ -439,7 +433,7 @@ class ProviderResourceFamilyTests(unittest.TestCase):
                     )
                     project = provider.projects.get("project-1")
                     self.assertIs(type(project), getattr(module, f"{name}Project"))
-                    self.assertIs(type(project._resource), getattr(module, f"Async{name}Project"))
+                    self.assertFalse(hasattr(project, "_resource"))
                     self.assertIs(
                         type(project.attachments.list()[0]), getattr(module, f"{name}Attachment")
                     )

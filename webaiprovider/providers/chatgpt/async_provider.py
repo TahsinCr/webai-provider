@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import math
-import re
+import mimetypes
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import quote, urlsplit
 
 from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
@@ -19,42 +18,28 @@ from ...async_provider import AsyncProvider
 from ...base import Capability, ProviderType
 from ...collections import Page
 from ...core.concurrency import maybe_await
-from ...core.json import json_dumps
 from ...core.timing import current_send_timing
-from ...errors import (
-    FeatureUnavailable,
-    ProviderError,
-    RateLimited,
-    RemoteNotFound,
-)
+from ...errors import FeatureUnavailable, ProviderError, RateLimited, RemoteNotFound
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
-from ...resources.message.protocol import (
-    ConversationBound,
-    ProviderRequest,
-    ProviderStreamEvent,
-    ResponseComplete,
-    TextDelta,
-    TextReplacement,
-)
+from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import target_message
 from ...resources.model.model import ModelCatalog
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData, ProjectOptions
-from ...transport import (
-    AsyncHTTPTransport,
-    AsyncTransport,
-    TransportConfig,
-)
+from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.downloader import DownloadSource
+from .async_client import (
+    AsyncChatGPTClient,
+    AsyncChatGPTProjectEditor,
+    prepare_chatgpt_attachments,
+)
 from .auth import BrowserSession
-from .base import BaseChatGPTProvider
-from .client import ChatGPTClient, prepare_chatgpt_attachments
+from .base import BaseChatGPTClient, BaseChatGPTProvider
 from .collections import AsyncChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
 from .errors import ChatGPTAuthenticationError, ChatGPTError
-from .formats import emit_post_send_events, message_files
-from .projects import ChatGPTProjectEditor
+from .formats import emit_post_send_events
 from .resources import (
     AsyncChatGPTChat,
     AsyncChatGPTMessage,
@@ -118,9 +103,9 @@ class AsyncChatGPTProvider(
         self._provided_transport = transport
         self._owned_transport: AsyncHTTPTransport | None = None
         self.session_state = session or BrowserSession(account.store())
-        resolved_factory = ChatGPTClient if client_factory is None else client_factory
+        resolved_factory = AsyncChatGPTClient if client_factory is None else client_factory
         self._factory = resolved_factory
-        self._persistent_client = resolved_factory is ChatGPTClient
+        self._persistent_client = resolved_factory is AsyncChatGPTClient
         self._client: Any = None
         self._client_lock = asyncio.Lock()
         self._temporary_conversations: OrderedDict[str, Any] = OrderedDict()
@@ -133,26 +118,13 @@ class AsyncChatGPTProvider(
         self._read_loop: asyncio.AbstractEventLoop | None = None
         self._read_semaphore: asyncio.Semaphore | None = None
         self._history_list_next_request = 0.0
-        self.editor = ChatGPTProjectEditor(
+        self.editor = AsyncChatGPTProjectEditor(
             self.session_state,
             self._factory,
             client_scope=self._ensure_client,
         )
         self._effective_transport = transport or self._ensure_owned_transport()
         super().__init__(account, type=type, transport=transport)
-
-    @property
-    def session(self) -> BrowserSession:
-        return self.session_state
-
-    def _active_transport(self) -> AsyncTransport | None:
-        return self._effective_transport
-
-    def _transport_headers(self, method: str, path: str) -> dict[str, str]:
-        client = self._client
-        if client is not None and callable(getattr(client, "_transport_headers", None)):
-            return client._transport_headers(method, path)
-        return {}
 
     def _ensure_owned_transport(self) -> AsyncHTTPTransport:
         if self._owned_transport is None:
@@ -177,7 +149,7 @@ class AsyncChatGPTProvider(
         async with self._client_lock:
             if self._client is None:
                 options: dict[str, Any] = {}
-                if self._provided_transport is not None or self._factory is ChatGPTClient:
+                if self._provided_transport is not None or self._factory is AsyncChatGPTClient:
                     options["transport"] = self._effective_transport
                 client = self._factory(self.session_state, **options)
                 client.temporary_conversations = self._temporary_conversations
@@ -221,7 +193,6 @@ class AsyncChatGPTProvider(
         return self._read_semaphore
 
     async def _prepare_session(self) -> None:
-        """Bootstrap cookie credentials, then warm and retain the native async client."""
         done = asyncio.Event()
         previous_done = self._prepare_done
         self._prepare_done = done
@@ -229,7 +200,7 @@ class AsyncChatGPTProvider(
             if previous_done is not None:
                 await previous_done.wait()
             auth_ready = True
-            if self._factory is ChatGPTClient:
+            if self._factory is AsyncChatGPTClient:
                 try:
                     await self.session_state.load_async()
                 except ChatGPTAuthenticationError:
@@ -276,14 +247,6 @@ class AsyncChatGPTProvider(
                 if self._provided_transport is not None:
                     await self._provided_transport.close()
 
-    def _session_status(self) -> SessionStatus:
-        saved = session_exists(self.session_state.session_file)
-        return SessionStatus(
-            SessionState.UNKNOWN if saved else SessionState.LOGIN_REQUIRED,
-            saved,
-            "snapshot_not_verified" if saved else "no_saved_session",
-        )
-
     async def _authenticate(self, *, capture_browser: bool = True) -> SessionStatus:
         async with self._gate:
             await self._discard_client()
@@ -317,19 +280,15 @@ class AsyncChatGPTProvider(
         return SessionStatus(SessionState.LOGIN_REQUIRED, False, "browser_session_retained")
 
     async def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
-        async with self._catalog_lock:
-            async with self._client_scope() as client:
-                return await maybe_await(
-                    client.model_catalog(refresh=True) if force else client.model_catalog()
-                )
+        async with self._catalog_lock, self._client_scope() as client:
+            return await maybe_await(
+                client.model_catalog(refresh=True) if force else client.model_catalog()
+            )
 
     async def _list_chats_data(
         self, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_SIZE
     ) -> Page[Conversation]:
-        offset = int(cursor or "0")
-        if offset < 0 or not 1 <= limit <= 100:
-            raise ValueError("invalid conversation page")
-
+        offset = self._parse_list_chats_args(cursor, limit)
         await self._wait_for_prepare()
         loop = asyncio.get_running_loop()
         async with self._history_list_gate:
@@ -340,22 +299,9 @@ class AsyncChatGPTProvider(
                 async with self._client_scope() as client:
                     raw = await maybe_await(client.list_page(offset, limit))
             except RateLimited as error:
-                retry_after = error.retry_after
-                if (
-                    not isinstance(retry_after, (int, float))
-                    or not math.isfinite(retry_after)
-                    or retry_after <= 0
-                ):
-                    retry_after = 2.0
-                self._history_list_next_request = loop.time() + max(0.75, retry_after)
+                self._history_list_next_request = loop.time() + self._compute_list_backoff(error)
                 raise
-        items = raw.get("items", [])
-        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-            raise ValueError("invalid conversation page")
-        return Page(
-            tuple(self._conversation(item) for item in items),
-            str(offset + len(items)) if len(items) == limit else None,
-        )
+        return self._build_list_chats_page(raw, offset, limit)
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         await self._wait_for_prepare()
@@ -380,41 +326,8 @@ class AsyncChatGPTProvider(
                     )
                 )
             ).json()
-            preview = result.get("conversation") if isinstance(result, dict) else None
-            if not isinstance(preview, dict):
-                raise ValueError("ChatGPT did not confirm a new conversation")
-            remote = preview.get("conversation_id")
-            if not isinstance(remote, str) or not remote or remote == conversation_id:
-                raise ValueError("ChatGPT did not confirm a new conversation")
-            if quote(remote, safe="") != remote:
-                raise ValueError("Invalid branch conversation identity")
-            mapping, node = preview.get("mapping"), preview.get("current_node")
-            if not isinstance(mapping, dict) or node not in mapping:
-                raise ValueError("ChatGPT branch preview has no selected message path")
-            selected, seen = [], set()
-            while node in mapping and node not in seen:
-                seen.add(node)
-                item = mapping[node]
-                if item.get("message"):
-                    selected.append(item["message"])
-                node = item.get("parent")
-            preview = dict(
-                preview,
-                messages=list(reversed(selected)),
-                pending_branch={
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                },
-            )
-            preview.pop("mapping", None)
-            client.pending_branches = self._pending_branches
-            client.pending_branches[remote] = preview
-            client.pending_branches.move_to_end(remote)
-            while len(client.pending_branches) > 32:
-                client.pending_branches.popitem(last=False)
-            remember = getattr(client, "_remember_conversation", None)
-            if callable(remember):
-                remember(preview)
+            remote, preview = self._parse_branch_preview(result, conversation_id, message_id)
+            self._register_pending_branch(client, remote, preview)
             return self._conversation(preview)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
@@ -438,14 +351,14 @@ class AsyncChatGPTProvider(
     async def _move_chat_data(
         self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
     ) -> None:
+        del source_project_id
         async with self._client_scope() as client:
             await maybe_await(client.move_conversation(conversation_id, project_id))
 
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         await self._wait_for_prepare()
-        async with self._project_read_semaphore():
-            async with self._client_scope() as client:
-                raw = await maybe_await(client.list_projects(cursor))
+        async with self._project_read_semaphore(), self._client_scope() as client:
+            raw = await maybe_await(client.list_projects(cursor))
         return Page(tuple(self._project(item) for item in raw["items"]), raw.get("cursor"))
 
     async def _create_project_data(
@@ -482,15 +395,11 @@ class AsyncChatGPTProvider(
         self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
         await self._wait_for_prepare()
-        async with self._project_read_semaphore():
-            async with self._client_scope() as client:
-                raw = await maybe_await(
-                    client.list_project_chats(project_id, cursor, limit=min(limit or 30, 30))
-                )
-        return Page(
-            tuple(self._conversation(item) for item in raw["items"]),
-            raw.get("cursor"),
-        )
+        async with self._project_read_semaphore(), self._client_scope() as client:
+            raw = await maybe_await(
+                client.list_project_chats(project_id, cursor, limit=min(limit or 30, 30))
+            )
+        return Page(tuple(self._conversation(item) for item in raw["items"]), raw.get("cursor"))
 
     async def _delete_project_data(self, project_id: str) -> None:
         async with self._client_scope() as client:
@@ -501,19 +410,11 @@ class AsyncChatGPTProvider(
                     response = await maybe_await(client.request("DELETE", url, expect_json=False))
                     break
                 except ChatGPTError as error:
-                    if attempt == 0 and any(
-                        f"HTTP {code} " in str(error) for code in (502, 503, 504)
-                    ):
+                    if attempt == 0 and BaseChatGPTClient._is_retryable_gateway_error(error):
                         await asyncio.sleep(0.25)
                         continue
                     raise
-        payload = (
-            response.json() if response is not None and getattr(response, "content", None) else None
-        )
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise ChatGPTError("ChatGPT refused to delete the project.")
-        confirmed = getattr(response, "status_code", None) in (200, 202, 204)
-        if confirmed:
+        if self._check_delete_project_response(response):
             return
         await confirm_deleted(lambda: self._get_project_data(project_id))
 
@@ -528,18 +429,9 @@ class AsyncChatGPTProvider(
 
         def event(value: dict[str, Any]) -> None:
             nonlocal bound_emitted
-            kind = value.get("type")
-            if kind == "bound":
-                cid = value.get("conversation_id")
-                if isinstance(cid, str) and cid and cid != bound_emitted:
-                    bound_emitted = cid
-                    publish(("event", ConversationBound(cid)))
-            elif kind == "delta":
-                publish(("event", TextDelta(value.get("text", ""), value.get("channel"))))
-            elif kind == "replace":
-                publish(("event", TextReplacement(value.get("text", ""), value.get("channel"))))
-            elif kind == "response_complete":
-                publish(("event", ResponseComplete()))
+            bound_emitted, translated = self._translate_raw_event(value, bound_emitted)
+            if translated is not None:
+                publish(("event", translated))
 
         event._accepts_bound = True  # type: ignore[attr-defined]
 
@@ -560,16 +452,7 @@ class AsyncChatGPTProvider(
                             request.conversation_id,
                             request.prompt,
                             on_event=event,
-                            **({"attachments": attachments} if attachments else {}),
-                            **({"model": request.model} if request.model is not None else {}),
-                            **({"effort": request.effort} if request.effort is not None else {}),
-                            **({"project_id": request.project_id} if request.project_id else {}),
-                            **({"temporary": True} if request.temporary else {}),
-                            **(
-                                {"action": request.action, "message_id": request.message_id}
-                                if request.action
-                                else {}
-                            ),
+                            **self._build_send_kwargs(request, attachments),
                         )
                     )
                     emit_post_send_events(
@@ -632,8 +515,6 @@ class AsyncChatGPTProvider(
                 raise asyncio.CancelledError
 
     async def _upload_file(self, path: Any, *, cancel_event: Any = None) -> dict[str, Any]:
-        import mimetypes
-
         path_obj = Path(path)
         mime = mimetypes.guess_type(path_obj.name)[0] or "application/octet-stream"
         if self._persistent_client:
@@ -668,19 +549,14 @@ class AsyncChatGPTProvider(
             if callable(close):
                 await maybe_await(close())
 
-    @staticmethod
-    async def _download_conversation_snapshot(client: Any, conversation_id: str, matches: Any):
-        cached_fn = getattr(client, "_cached_conversation", None)
-        if callable(cached_fn):
-            cached = cached_fn(conversation_id)
-            if isinstance(cached, dict) and matches(cached):
-                return cached
-        temporary = getattr(client, "temporary_conversations", None)
-        if isinstance(temporary, dict):
-            temp_snapshot = temporary.get(conversation_id)
-            if isinstance(temp_snapshot, dict) and matches(temp_snapshot):
-                return temp_snapshot
-        return await maybe_await(client.get_conversation(conversation_id))
+    @classmethod
+    async def _download_conversation_snapshot(cls, client: Any, conversation_id: str, matches: Any):
+        cached = cls._cached_download_snapshot(client, conversation_id, matches)
+        return (
+            cached
+            if cached is not None
+            else await maybe_await(client.get_conversation(conversation_id))
+        )
 
     async def _resolve_download(
         self,
@@ -690,25 +566,13 @@ class AsyncChatGPTProvider(
     ) -> Any | None:
         parsed = urlsplit(url)
         if parsed.scheme == "file-service":
-            file_id = parsed.netloc
-            if (
-                not re.fullmatch(r"file[-_][A-Za-z0-9_-]+", file_id)
-                or parsed.path
-                or not conversation_id
-            ):
-                raise ValueError("File must belong to the selected conversation")
-
-            def has_file(chat_payload: dict) -> bool:
-                return any(
-                    file.get("url") == url
-                    for item in chat_payload.get("messages", ())
-                    if isinstance(item, dict)
-                    for file in message_files(item)
-                )
-
+            file_id = self._validate_file_service_id(parsed, conversation_id)
+            assert conversation_id is not None
             async with self._client_scope() as client:
-                chat = await self._download_conversation_snapshot(client, conversation_id, has_file)
-                if not has_file(chat):
+                chat = await self._download_conversation_snapshot(
+                    client, conversation_id, lambda p: self._has_file_service_url(p, url)
+                )
+                if not self._has_file_service_url(chat, url):
                     raise ValueError("File was not found in the conversation record or has expired")
                 result = (
                     await maybe_await(
@@ -720,58 +584,30 @@ class AsyncChatGPTProvider(
                         )
                     )
                 ).json()
-                target = result.get("download_url") if isinstance(result, dict) else None
-                if not target or urlsplit(target).scheme != "https":
-                    raise ValueError("Provider did not return a file download URL")
-                headers = dict(client.headers) if urlsplit(target).netloc == "chatgpt.com" else {}
-                return DownloadSource(target, result.get("file_name"), True, headers)
-        if (
-            parsed.scheme == "https"
-            and parsed.netloc == "chatgpt.com"
-            and parsed.path == "/backend-api/estuary/content"
-        ):
-            file_id = parse_qs(parsed.query).get("id", [None])[0]
-            if file_id and file_id.startswith(("file-", "file_")) and conversation_id:
-                return await self._resolve_download(
-                    "file-service://" + file_id, conversation_id, message_id
+                return self._build_download_source(
+                    result,
+                    client,
+                    result.get("file_name") if isinstance(result, dict) else None,
                 )
-
+        estuary_id = self._parse_estuary_file_id(parsed, conversation_id)
+        if estuary_id is not None:
+            if estuary_id:
+                return await self._resolve_download(
+                    "file-service://" + estuary_id, conversation_id, message_id
+                )
             async with self._client_scope() as client:
                 return DownloadSource(url, force_download=True, headers=dict(client.headers))
         if parsed.scheme != "sandbox":
             return None
-        if not conversation_id:
-            raise ValueError("Conversation ID is not available for this file yet")
-        sandbox_path = unquote(parsed.path)
-        if not sandbox_path.startswith("/mnt/data/"):
-            raise ValueError("Unsupported conversation file path")
-
-        def select_sandbox_message(chat_payload: dict) -> dict | None:
-            candidates = chat_payload.get("messages", [])
-            if not candidates and isinstance(chat_payload.get("mapping"), dict):
-                candidates = [
-                    node.get("message")
-                    for node in chat_payload["mapping"].values()
-                    if isinstance(node, dict)
-                ]
-            matched = [
-                item
-                for item in candidates
-                if isinstance(item, dict) and sandbox_path in json_dumps(item.get("content", {}))
-            ]
-            selected = next(
-                (item for item in matched if item.get("id") == message_id),
-                matched[0] if len(matched) == 1 else None,
-            )
-            return selected if isinstance(selected, dict) and selected.get("id") else None
-
+        sandbox_path = self._validate_sandbox_path(parsed, conversation_id)
+        assert conversation_id is not None
         async with self._client_scope() as client:
             chat = await self._download_conversation_snapshot(
                 client,
                 conversation_id,
-                lambda payload: select_sandbox_message(payload) is not None,
+                lambda p: self._select_sandbox_message(p, sandbox_path, message_id) is not None,
             )
-            selected = select_sandbox_message(chat)
+            selected = self._select_sandbox_message(chat, sandbox_path, message_id)
             if selected is None:
                 raise ValueError("File was not found in the conversation record or has expired")
             endpoint = (
@@ -788,8 +624,4 @@ class AsyncChatGPTProvider(
                     )
                 )
             ).json()
-            target = result.get("download_url") if isinstance(result, dict) else None
-            if not target or urlsplit(target).scheme != "https":
-                raise ValueError("Provider did not return a file download URL")
-            headers = dict(client.headers) if urlsplit(target).netloc == "chatgpt.com" else {}
-            return DownloadSource(target, sandbox_path.rsplit("/", 1)[-1], True, headers)
+            return self._build_download_source(result, client, sandbox_path.rsplit("/", 1)[-1])

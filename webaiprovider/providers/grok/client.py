@@ -1,160 +1,83 @@
-"""Origin-scoped Grok web transport and workspace editor."""
+"""Origin-scoped blocking Grok web client and workspace editor."""
 
-import asyncio
-import base64
-import os
-import stat
-from urllib.parse import quote
+from __future__ import annotations
 
-from ...core.json import json_loads
+import mimetypes
+import threading
+import time
+from collections.abc import Callable, Iterator
+from typing import Any
+
 from ...errors import AccountPaused, ProviderError
-from ...transport import AsyncHttpSession
-from ...transport.frames import SSEFrameDecoder, aiter_bounded_lines
-from .base import validate_upload_candidate
+from ...resources.project.types import ProjectData
+from ...transport import HttpSession
+from ...transport.frames import SSEFrameDecoder, iter_bounded_lines
+from .base import (
+    _MAX_LINE_BYTES,
+    _MAX_STREAM_BYTES,
+    ORIGIN,
+    BaseGrokClient,
+    BaseGrokProjectEditor,
+    _b64_ascii,
+    remote_id,
+)
+from .records import conversation
 
-ORIGIN = "https://grok.com"
-_MAX_LINE_BYTES = 1_048_576
-_MAX_STREAM_BYTES = 64 * 1024 * 1024
-_MAX_CHAT_FILE_BYTES = 3 * 1024 * 1024
-_MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024
-
-
-def remote_id(value):
-    if not isinstance(value, str) or not value or len(value) > 512:
-        raise ValueError("Grok record ID is invalid")
-    if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise ValueError("Grok record ID is invalid")
-    return quote(value, safe="")
+__all__ = ["GrokClient", "GrokProjectEditor"]
 
 
-def _read_limited(
-    path,
-    *,
-    max_bytes=_MAX_WORKSPACE_FILE_BYTES,
-    error="Grok file is empty or exceeds the size limit",
-):
-    with path.open("rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= max_bytes:
-            raise ValueError(error)
-        data = stream.read(info.st_size + 1)
-        if len(data) > info.st_size:
-            data += stream.read(max_bytes + 1 - len(data))
-    if not 0 < len(data) <= max_bytes:
-        raise ValueError(error)
-    return data
+class GrokClient(BaseGrokClient):
+    """Blocking Grok HTTP client running directly on the caller thread."""
 
-
-def _b64_ascii(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-
-def _iter_bounded_lines(response):
-    return aiter_bounded_lines(
-        response.aiter_bytes(),
-        max_line_bytes=_MAX_LINE_BYTES,
-        max_stream_bytes=_MAX_STREAM_BYTES,
-        error_label="Grok stream",
-    )
-
-
-class GrokClient:
     def __init__(self, credential_file, *, client_factory=None, transport=None):
-        self.session = AsyncHttpSession(
-            ORIGIN, credential_file, None, client_factory=client_factory
-        )
+        self.session = HttpSession(ORIGIN, credential_file, None, client_factory=client_factory)
         self.http = transport or self.session
-        if transport is not None and self.http.origin != "https://grok.com":
-            raise ValueError("Provider transport origin does not match its account")
-        self._auth_lock = asyncio.Lock()
+        self._validate_transport_origin(transport)
+        self._auth_lock = threading.Lock()
 
-    async def authenticate(self):
-        async with self._auth_lock:
-            return await self._check_authentication()
+    def authenticate(self):
+        with self._auth_lock:
+            return self._check_authentication()
 
-    async def _ensure_authenticated(self):
+    def _ensure_authenticated(self):
         if not self.session.authenticated:
-            async with self._auth_lock:
+            with self._auth_lock:
                 if not self.session.authenticated:
-                    await self._check_authentication()
+                    self._check_authentication()
 
-    async def _check_authentication(self):
+    def _check_authentication(self):
         try:
-            status = await self.http.request("GET", "/rest/user-settings")
+            status = self.http.request("GET", "/rest/user-settings")
+            verified = self._validate_auth_status(status)
         except AccountPaused:
             self.session.authenticated = False
             raise
-        if not isinstance(status, dict):
-            self.session.authenticated = False
-            raise AccountPaused(
-                "The Grok session could not be verified; verify it again in the Accounts section."
-            )
         self.session.authenticated = True
-        return status
+        return verified
 
-    async def request(self, method, path, **options):
-        await self._ensure_authenticated()
+    def request(self, method: str, path: str, **options: Any) -> Any:
+        self._ensure_authenticated()
         try:
-            return await self.http.request(method, path, **options)
+            return self.http.request(method, path, **options)
         except AccountPaused:
             self.session.authenticated = False
             raise
 
-    async def upload_file(self, path=None, *, content=None, name=None, mime_type=None):
-        def _prepare():
-            filename, resolved_mime, _, file = validate_upload_candidate(
-                path, content=content, name=name, mime_type=mime_type
-            )
-            payload = (
-                content
-                if content is not None
-                else _read_limited(
-                    file,
-                    max_bytes=_MAX_CHAT_FILE_BYTES,
-                    error="Grok chat file is empty or exceeds the 3 MiB limit",
-                )
-            )
-            return filename, resolved_mime, len(payload), _b64_ascii(payload)
-
-        filename, resolved_mime, payload_size, encoded = await asyncio.to_thread(_prepare)
-        result = await self.request(
+    def upload_file(self, path=None, *, content=None, name=None, mime_type=None) -> dict[str, Any]:
+        filename, resolved_mime, payload_size, encoded = self._prepare_chat_upload(
+            path, content=content, name=name, mime_type=mime_type
+        )
+        result = self.request(
             "POST",
             "/rest/app-chat/upload-file-v2/complete",
-            json={
-                "directUpload": {
-                    "fileData": encoded,
-                    "fileName": filename,
-                    "fileMimeType": resolved_mime,
-                    "fileSource": "SELF_UPLOAD_FILE_SOURCE",
-                }
-            },
+            json=self._chat_upload_body(filename, resolved_mime, encoded),
         )
-        metadata = result.get("fileMetadata") if isinstance(result, dict) else None
-        asset_id = (
-            (metadata.get("assetId") or metadata.get("fileMetadataId"))
-            if isinstance(metadata, dict)
-            else None
-        )
-        if (
-            not isinstance(result, dict)
-            or not isinstance(metadata, dict)
-            or result.get("terminalError")
-            or not isinstance(asset_id, str)
-            or not asset_id
-        ):
-            raise ProviderError("Grok chat file upload failed")
-        return {
-            "id": asset_id,
-            "name": metadata.get("name") or metadata.get("fileName") or filename,
-            "mime_type": metadata.get("mimeType") or metadata.get("fileMimeType") or resolved_mime,
-            "size_bytes": payload_size,
-            "grok_file": metadata,
-        }
+        return self._chat_upload_result(result, filename, resolved_mime, payload_size)
 
-    async def events(self, path, body):
-        await self._ensure_authenticated()
+    def events(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        self._ensure_authenticated()
         try:
-            async with self.http.stream(
+            with self.http.stream(
                 "POST",
                 path,
                 json=body,
@@ -163,34 +86,116 @@ class GrokClient:
                 timeout=600,
             ) as response:
                 decoder = SSEFrameDecoder(max_event_bytes=_MAX_LINE_BYTES, utf8_errors="strict")
-
-                def parse(raw):
-                    try:
-                        event = json_loads(raw)
-                    except ValueError:
-                        raise ProviderError("Grok stream response format has changed") from None
-                    if not isinstance(event, dict):
-                        raise ProviderError("Grok stream response format has changed")
-                    return event
-
-                async for line in _iter_bounded_lines(response):
+                for line in iter_bounded_lines(
+                    response.iter_bytes(),
+                    max_line_bytes=_MAX_LINE_BYTES,
+                    max_stream_bytes=_MAX_STREAM_BYTES,
+                    error_label="Grok stream",
+                ):
                     if line.startswith(("data:", "event:", "id:", "retry:", ":")) or not line:
                         for frame in decoder.feed_line(line):
                             if frame.data != "[DONE]":
-                                yield parse(frame.data)
+                                yield self._parse_stream_json(frame.data)
                     elif line.strip() != "[DONE]":
-                        yield parse(line)
+                        yield self._parse_stream_json(line)
                 for frame in decoder.feed(b"", final=True):
                     if frame.data != "[DONE]":
-                        yield parse(frame.data)
+                        yield self._parse_stream_json(frame.data)
         except AccountPaused:
             self.session.authenticated = False
             raise
 
-    async def close(self):
+    def close(self) -> None:
         try:
-            await self.http.close()
+            self.http.close()
         finally:
             if self.http is not self.session:
-                await self.session.close()
+                self.session.close()
         self.session.authenticated = False
+
+
+class GrokProjectEditor(BaseGrokProjectEditor):
+    """Blocking Grok workspace mutations."""
+
+    def __init__(self, transport: GrokClient):
+        self.client = transport
+
+    def options(self, project_id: str | None = None):
+        return self._options(project_id)
+
+    def update(self, project_id: str, **values: Any):
+        body = self._update_body(values)
+        result = self.client.request("PUT", "/rest/workspaces/" + remote_id(project_id), json=body)
+        return self._finalize_update(project_id, body, result, values.get("current"))
+
+    def read_metadata(self, project_id: str, current: ProjectData) -> ProjectData:
+        data = self.client.request("GET", "/rest/workspaces/" + remote_id(project_id))
+        return self._validate_metadata_response(project_id, current, data)
+
+    def move_chat(
+        self,
+        conversation_id: str,
+        project_id: str | None,
+        *,
+        source_project_id: str | None,
+        fetch_metadata: Callable[[str], Any],
+    ) -> None:
+        if source_project_id == project_id:
+            return
+        conversation_path = "/conversations/" + remote_id(conversation_id)
+        if project_id:
+            self.client.request(
+                "POST",
+                "/rest/workspaces/" + remote_id(project_id) + "/conversations",
+                json={"conversationId": conversation_id},
+            )
+        if source_project_id:
+            try:
+                self.client.request(
+                    "DELETE",
+                    "/rest/workspaces/" + remote_id(source_project_id) + conversation_path,
+                )
+            except Exception:
+                if project_id:
+                    try:
+                        self.client.request(
+                            "DELETE",
+                            "/rest/workspaces/" + remote_id(project_id) + conversation_path,
+                        )
+                    except Exception:
+                        raise ProviderError(
+                            "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
+                        ) from None
+                raise
+        for _ in range(5):
+            updated = conversation(fetch_metadata(conversation_id))
+            if (updated.project.id if updated.project is not None else None) == project_id:
+                return
+            time.sleep(0.1)
+        raise ProviderError(
+            "Grok conversation project membership could not be confirmed by the server"
+        )
+
+    def add_source(self, project_id: str, **values: Any):
+        if values.get("kind") not in ("text", "file"):
+            raise ValueError("Grok supports only text and file resources")
+        if values["kind"] == "text":
+            name, raw = self._prepare_text_source(values)
+            mime_type, encoded = "text/plain", _b64_ascii(raw)
+        else:
+            name, mime_type, encoded = self._prepare_workspace_file(
+                values["path"], guess_type=mimetypes.guess_type
+            )
+        name = self._validate_workspace_name(name, values.get("existing_resources", ()))
+        result = self.client.request(
+            "POST",
+            "/rest/workspaces/" + remote_id(project_id) + "/files/upload",
+            json={"fileName": name, "mimeType": mime_type, "content": encoded},
+        )
+        return self._source_result(result, name, mime_type)
+
+    def remove_source(self, project_id: str, **values: Any):
+        method, path, kwargs = self._resolve_remove_call(
+            "/rest/workspaces/" + remote_id(project_id), values
+        )
+        return self.client.request(method, path, **kwargs)

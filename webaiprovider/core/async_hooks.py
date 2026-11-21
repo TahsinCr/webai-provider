@@ -35,21 +35,6 @@ class AsyncOperationHooks(OperationHooks):
                     type(error).__name__,
                 )
 
-    def _entries_for(self, stage: str, operation_name: str) -> list[Callable[..., Any]]:
-        stage_map = self._lifecycle.get(stage)
-        if stage_map is None:
-            return []
-        exact = stage_map.get(operation_name)
-        wildcard = stage_map.get("*")
-        if not exact and not wildcard:
-            return []
-        result: list[Callable[..., Any]] = []
-        if exact:
-            result.extend(exact)
-        if wildcard:
-            result.extend(wildcard)
-        return result
-
     @staticmethod
     async def run_before(
         hooks_chain: Sequence[AsyncOperationHooks],

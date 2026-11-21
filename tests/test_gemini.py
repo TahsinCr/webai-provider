@@ -14,10 +14,27 @@ from tests.fixtures import notebook
 from tests.provider_fakes import provider_account
 from webaiprovider.errors import AccountPaused, ProviderError
 from webaiprovider.providers.gemini import AsyncGeminiProvider
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiClient as GeminiSession,
+)
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiNotebooks as Notebooks,
+)
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiProjectEditor as GeminiProjectEditor,
+)
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiRPC as GeminiRPC,
+)
+from webaiprovider.providers.gemini.async_client import (
+    generate_async as generate,
+)
+from webaiprovider.providers.gemini.async_client import (
+    upload_files_async as upload_files,
+)
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
-from webaiprovider.providers.gemini.generation import generation_request, upload_files
-from webaiprovider.providers.gemini.notebooks import Notebooks, project_from_native
-from webaiprovider.providers.gemini.session import GeminiSession
+from webaiprovider.providers.gemini.generation import generation_request
+from webaiprovider.providers.gemini.notebooks import project_from_native
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import EffortOption, Model
@@ -72,7 +89,9 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         factory = Mock(return_value=http)
         session = GeminiSession(Path("unused"), http_factory=factory)
         with (
-            patch("webaiprovider.providers.gemini.session.read_session_async", return_value=saved),
+            patch(
+                "webaiprovider.providers.gemini.async_client.read_session_async", return_value=saved
+            ),
             self.assertRaises(AccountPaused),
         ):
             await session.open()
@@ -161,7 +180,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             }
 
         request = ProviderRequest("question")
-        with patch("webaiprovider.providers.gemini.generation.generate", generate):
+        with patch("webaiprovider.providers.gemini.async_client.generate_async", generate):
             _ = [event async for event in provider._stream(request)]
 
         self.assertEqual(events, ["activity", "generation"])
@@ -490,7 +509,6 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         auth_client.close.assert_awaited_once()
 
     async def test_rpc_is_account_owned_and_never_retries_writes(self):
-        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         client = SimpleNamespace(
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","rpc","[]"]]\n'))
@@ -503,7 +521,6 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             await rpc.call("rpc", [])
 
     async def test_large_rpc_json_is_decoded_off_the_provider_loop(self):
-        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         response = SimpleNamespace(
             content=b" " * (256 * 1024),
@@ -553,7 +570,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             if len(delays) == 3:
                 raise asyncio.CancelledError
 
-        with patch("webaiprovider.providers.gemini.session.asyncio.sleep", side_effect=sleep):
+        with patch("webaiprovider.providers.gemini.async_client.asyncio.sleep", side_effect=sleep):
             task = asyncio.create_task(session.refresh())
             with self.assertRaises(asyncio.CancelledError):
                 await task
@@ -572,7 +589,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with patch("webaiprovider.providers.gemini.session.asyncio.sleep", new=AsyncMock()):
+        with patch("webaiprovider.providers.gemini.async_client.asyncio.sleep", new=AsyncMock()):
             await asyncio.wait_for(session.refresh(), 1)
 
         session.http.post.assert_awaited_once()
@@ -639,7 +656,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_generation_rejection_is_typed_and_does_not_replay_the_request(self):
         from webaiprovider.providers.gemini.errors import GeminiGenerationRejected
-        from webaiprovider.providers.gemini.generation import generate
 
         frame = [None] * 6
         frame[5] = [None, None, [[None, [1]]]]
@@ -653,7 +669,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
         from webaiprovider.core.timing import SendTiming, use_send_timing
-        from webaiprovider.providers.gemini.generation import generate
 
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[8] = "rcid", ["answer"], [2]
@@ -707,8 +722,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_aborts_an_actual_stalled_http_transfer(self):
         from curl_cffi.requests import AsyncSession
 
-        from webaiprovider.providers.gemini.generation import generate
-
         accepted = asyncio.Event()
         requests = []
 
@@ -744,7 +757,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with patch(
-                "webaiprovider.providers.gemini.generation.BASE", f"http://127.0.0.1:{port}/"
+                "webaiprovider.providers.gemini.async_client.BASE", f"http://127.0.0.1:{port}/"
             ):
                 stream = generate(session, ProviderRequest("question"), [])
                 pending = asyncio.create_task(anext(stream))
@@ -765,7 +778,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
     async def test_incomplete_stream_is_not_success_or_retried(self):
-        from webaiprovider.providers.gemini.generation import generate
 
         response = self.response([b""])
         session = self.session(response)
@@ -775,7 +787,6 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         session.persist.assert_not_awaited()
 
     async def test_cancellation_closes_stream_without_resending(self):
-        from webaiprovider.providers.gemini.generation import generate
 
         entered = asyncio.Event()
 
@@ -933,7 +944,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"))
         session.batch = AsyncMock()
         with patch(
-            "webaiprovider.providers.gemini.session.time.monotonic", side_effect=[1.0, 1.0, 301.0]
+            "webaiprovider.providers.gemini.async_client.time.monotonic",
+            side_effect=[1.0, 1.0, 301.0],
         ):
             await session.sync_activity()
             await session.sync_activity()
@@ -961,7 +973,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
             _ = [
                 e
                 async for e in provider._stream_provider_events(
@@ -1108,7 +1120,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             }
 
         async def retry(message_id):
-            with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
+            with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
                 return [
                     event
                     async for event in provider._stream_provider_events(
@@ -1261,7 +1273,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
             patch(
-                "webaiprovider.providers.gemini.session.read_session_async",
+                "webaiprovider.providers.gemini.async_client.read_session_async",
                 return_value={"__Secure-1PSID": "fixture"},
             ),
             self.assertRaisesRegex(GeminiSignInRequired, "Sign in again") as failure,
@@ -1292,10 +1304,10 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         session = GeminiSession(Path("unused"), http_factory=lambda **_kwargs: http)
         with (
             patch(
-                "webaiprovider.providers.gemini.session.read_session_async",
+                "webaiprovider.providers.gemini.async_client.read_session_async",
                 return_value={"__Secure-1PSID": "cookie-1"},
             ),
-            patch("webaiprovider.providers.gemini.session.save_session_async", AsyncMock()),
+            patch("webaiprovider.providers.gemini.async_client.save_session_async", AsyncMock()),
         ):
             await session.open()
             try:
@@ -1310,7 +1322,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_batch_debounces_auxiliary_cookie_persistence_and_close_flushes(self):
         from webaiprovider.accounts.credentials import save_session
-        from webaiprovider.providers.gemini import session as gemini_session_mod
+        from webaiprovider.providers.gemini import async_client as gemini_session_mod
         from webaiprovider.providers.gemini.rpc import RPCPayload
 
         with tempfile.TemporaryDirectory() as folder:
@@ -1481,7 +1493,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_notebook_file_source_uses_uploaded_reference_and_confirms_new_id(self):
-        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
 
         project_id = "notebooks/abcdef"
@@ -1502,7 +1513,9 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             "file", {source["id"] for source in (await editor.options(project_id)).sources}
         )
         upload = AsyncMock(return_value=[("/uploaded", old.name, "application/pdf")])
-        with patch("webaiprovider.providers.gemini.projects.upload_file_references", upload):
+        with patch(
+            "webaiprovider.providers.gemini.async_client.upload_file_references_async", upload
+        ):
             added = await editor.add_source(
                 project_id, kind="file", path="paper.pdf", existing_resources=(old,)
             )
@@ -1535,7 +1548,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_notebook_editor_update_reuses_current_snapshot_and_skips_get(self):
-        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
 
         detail = [None] * 13
         detail[12] = [2, None, None, None, 1]
@@ -1553,7 +1565,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         rpc.call.assert_awaited_once()
 
     async def test_notebook_editor_returns_project_data_for_update_and_remove_source(self):
-        from webaiprovider.providers.gemini.projects import GeminiProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -1587,7 +1598,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
         notebooks.get.assert_not_awaited()
 
     async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
-        from webaiprovider.providers.gemini import async_provider as gemini_provider_mod
         from webaiprovider.resources.message.protocol import MessageMetadata
 
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
@@ -1633,18 +1643,21 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             for chunk in chunks:
                 yield chunk
 
+        from webaiprovider.providers.gemini import async_client as gemini_async_mod
+        from webaiprovider.providers.gemini import generation as gemini_generation_mod
+
         try:
             with (
-                patch.object(gemini_provider_mod.generation, "generate", side_effect=fake_generate),
+                patch.object(gemini_async_mod, "generate_async", side_effect=fake_generate),
                 patch.object(
-                    gemini_provider_mod.generation,
+                    gemini_generation_mod,
                     "sources_from",
-                    wraps=gemini_provider_mod.generation.sources_from,
+                    wraps=gemini_generation_mod.sources_from,
                 ) as norm_sources,
                 patch.object(
-                    gemini_provider_mod.generation,
+                    gemini_generation_mod,
                     "files_from",
-                    wraps=gemini_provider_mod.generation.files_from,
+                    wraps=gemini_generation_mod.files_from,
                 ) as norm_files,
             ):
                 events = [e async for e in provider._stream(request)]
@@ -1659,7 +1672,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_flushes_psidcc_immediately_and_enforces_429_cooldown(self):
         from webaiprovider.accounts.credentials import save_session
         from webaiprovider.errors import RateLimited
-        from webaiprovider.providers.gemini import session as gemini_session_mod
+        from webaiprovider.providers.gemini import async_client as gemini_session_mod
         from webaiprovider.providers.gemini.rpc import RPCPayload
 
         with tempfile.TemporaryDirectory() as folder:
@@ -1729,7 +1742,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_rpc_malformed_json_raises_gemini_compatibility_error(self):
         from webaiprovider.providers.gemini.errors import GeminiCompatibilityError
-        from webaiprovider.providers.gemini.rpc import GeminiRPC, rpc_parts
+        from webaiprovider.providers.gemini.rpc import rpc_parts
 
         with self.assertRaises(GeminiCompatibilityError):
             list(rpc_parts('[["wrb.fr","ESY5D","{bad-json"]]', "ESY5D"))
@@ -1796,8 +1809,6 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_notebook_get_raises_remote_not_found_when_server_returns_empty_or_null(self):
         from webaiprovider.errors import RemoteNotFound
-        from webaiprovider.providers.gemini.notebooks import Notebooks
-        from webaiprovider.providers.gemini.rpc import GeminiRPC
 
         client = SimpleNamespace(
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","HcT8bb",null]]'))
@@ -1853,7 +1864,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             }
 
         provider._prepare_send_context = fake_prepare
-        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
             events = [
                 event async for event in provider._stream_provider_events(ProviderRequest("hi"))
             ]

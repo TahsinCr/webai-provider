@@ -15,8 +15,13 @@ from webaiprovider.base import (
 )
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.claude import AsyncClaudeProvider
+from webaiprovider.providers.claude.async_client import (
+    AsyncClaudeClient as ClaudeClient,
+)
+from webaiprovider.providers.claude.async_client import (
+    AsyncClaudeProjectEditor as ClaudeProjectEditor,
+)
 from webaiprovider.providers.claude.catalogs import parse_model_catalog
-from webaiprovider.providers.claude.client import ClaudeClient
 from webaiprovider.providers.claude.records import (
     conversation,
     conversation_attachment_count,
@@ -655,7 +660,6 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["files"], [{"uuid": "file-1", "file_uuid": "fu-1"}])
 
     async def test_project_editor_remove_source_with_resource_skips_project_get(self):
-        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
 
         transport = SimpleNamespace(
@@ -739,7 +743,6 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_project_editor_update_and_remove_source_return_project_data(self):
-        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -1133,7 +1136,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
     def test_upload_candidate_rejects_non_regular_files_via_fstat(self):
         import tempfile
 
-        from webaiprovider.providers.claude.client import validate_upload_candidate
+        from webaiprovider.providers.claude.base import validate_upload_candidate
         from webaiprovider.providers.gemini.generation import _gemini_upload_spec
 
         with tempfile.TemporaryDirectory() as folder:

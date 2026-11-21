@@ -29,13 +29,19 @@ async def _async_body(count: int, size: int):
         yield bytes(size)
 
 
-def _sync_transport(count: int) -> HTTPTransport:
+def _sync_transport(
+    count: int, size: int = _CHUNK_BYTES, *, origin: str = _ORIGIN
+) -> HTTPTransport:
+    def body():
+        for _ in range(count):
+            yield bytes(size)
+
     @contextmanager
     def stream(*args, **options):
-        yield SimpleNamespace(status_code=200, headers={}, iter_content=partial(_body, count))
+        yield SimpleNamespace(status_code=200, headers={}, iter_content=body)
 
     client = SimpleNamespace(stream=stream)
-    return HTTPTransport(_ORIGIN, client_getter=lambda: client)
+    return HTTPTransport(origin, client_getter=lambda: client)
 
 
 def _async_transport(count: int, size: int, *, origin: str = _ORIGIN) -> AsyncHTTPTransport:
@@ -74,14 +80,14 @@ def _buffered(count: int) -> tuple[Case, Case]:
 
 
 def _provider_stream(loops: int) -> float:
-    transport = _async_transport(_STREAM_CHUNKS, 64, origin="https://claude.ai")
+    transport = _sync_transport(_STREAM_CHUNKS, 64, origin="https://claude.ai")
 
-    async def offline_session():
+    def offline_session():
         pass
 
     provider = Provider(Account.from_cookies("claude", {}), transport=transport)
-    provider._provider._prepare_session = offline_session
-    provider._provider._close_session = offline_session
+    provider._prepare_session = offline_session
+    provider._close_session = offline_session
 
     def consume():
         with provider.transport.stream("GET", "/fixture") as response:

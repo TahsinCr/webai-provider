@@ -22,7 +22,7 @@ from webaiprovider import (
 from webaiprovider.core.timing import SendTiming
 from webaiprovider.errors import ProviderError, RateLimited
 from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession
-from webaiprovider.providers.chatgpt.client import ChatGPTClient
+from webaiprovider.providers.chatgpt.async_client import AsyncChatGPTClient as ChatGPTClient
 from webaiprovider.providers.claude import AsyncClaudeProvider
 from webaiprovider.providers.gemini import AsyncGeminiProvider
 from webaiprovider.providers.grok import AsyncGrokProvider
@@ -601,46 +601,39 @@ class BlockingTransportTests(unittest.TestCase):
         self.assertEqual(order, ["stream", "client"])
 
     def test_provider_shutdown_waits_for_raw_transport_calls(self):
-        class FixtureAsyncProvider(AsyncProvider):
-            pass
-
         class FixtureProvider(Provider):
-            def _make_async_provider(self, account, **options):
-                return FixtureAsyncProvider(account, **options)
+            pass
 
         for operation in ("send", "request", "stream"):
             with self.subTest(operation=operation):
-                entered, close_started, transport_closed = (threading.Event() for _ in range(3))
-                release = asyncio.Event()
+                entered, close_started, transport_closed, release = (
+                    threading.Event() for _ in range(4)
+                )
 
-                async def chunks():
-                    await release.wait()
+                def chunks():
+                    release.wait(timeout=2)
                     yield b'{"ok":true}'
 
                 class Client:
-                    @asynccontextmanager
-                    async def stream(self, *_args, **_kw):
+                    @contextmanager
+                    def stream(self, *_args, **_kw):
                         entered.set()
                         yield FakeHTTPResponse(200, stream=chunks())
 
-                    async def close(self):
+                    def close(self):
                         transport_closed.set()
 
-                transport = AsyncHTTPTransport(
-                    "https://claude.ai", client_factory=lambda **_: Client()
-                )
+                transport = HTTPTransport("https://claude.ai", client_factory=lambda **_: Client())
                 provider = FixtureProvider(
                     Account.from_cookies("claude", {}), transport=transport
                 ).open()
                 self.addCleanup(provider.close)
-                loop = provider._loop
-                assert loop is not None
 
-                async def watch_close(event):
+                def watch_close(event):
                     if event.event == "provider.closing":
                         close_started.set()
 
-                provider._call(provider._provider.events.subscribe(watch_close))
+                provider.events.subscribe(watch_close)
 
                 def read():
                     raw = provider.transport
@@ -649,15 +642,13 @@ class BlockingTransportTests(unittest.TestCase):
                     if operation == "send":
                         return raw.send("GET", "/fixture").json()
                     with raw.stream("GET", "/fixture") as response:
-                        with self.assertRaisesRegex(ProviderError, "active HTTP stream"):
-                            provider.close()
                         return b"".join(response.iter_bytes())
 
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     reading = pool.submit(read)
                     try:
                         self.assertTrue(entered.wait(2))
-                        self.assertEqual(provider._provider._active_operations, 1)
+                        self.assertEqual(provider._active_operations, 1)
                         close = (
                             provider.transport.close if operation == "request" else provider.close
                         )
@@ -666,39 +657,43 @@ class BlockingTransportTests(unittest.TestCase):
                         self.assertFalse(transport_closed.is_set())
                         self.assertFalse(closing.done())
                     finally:
-                        loop.call_soon_threadsafe(release.set)
+                        release.set()
                     expected = b'{"ok":true}' if operation == "stream" else {"ok": True}
                     self.assertEqual(reading.result(timeout=2), expected)
                     closing.result(timeout=2)
                 self.assertTrue(transport_closed.is_set())
-                self.assertTrue(provider._provider.closed)
+                self.assertTrue(provider.closed)
 
     def test_blocking_stream_close_cancels_a_pending_read(self):
         started = threading.Event()
         received = threading.Event()
+        released = threading.Event()
         chunks = []
         exits = []
         errors = []
 
-        async def hung_chunks():
+        def hung_chunks():
             yield b"first"
             started.set()
-            await asyncio.Event().wait()
-            yield b"never"
+            released.wait(timeout=2)
 
-        @asynccontextmanager
-        async def open_stream(*_args, **_kwargs):
+        class ClosableResponse(FakeHTTPResponse):
+            def close(self):
+                released.set()
+
+        @contextmanager
+        def open_stream(*_args, **_kwargs):
             try:
-                yield FakeHTTPResponse(200, stream=hung_chunks())
+                yield ClosableResponse(200, stream=hung_chunks())
             finally:
                 exits.append(True)
 
-        transport = AsyncHTTPTransport(
+        transport = HTTPTransport(
             "https://chatgpt.com", client_getter=lambda: SimpleNamespace(stream=open_stream)
         )
         provider = Provider(Account.from_cookies("chatgpt", {}), transport=transport)
-        provider._provider._prepare_session = AsyncMock()
-        provider._provider._close_session = AsyncMock()
+        provider._prepare_session = Mock()
+        provider._close_session = Mock()
         provider.open()
         self.addCleanup(provider.close)
         holder = []
@@ -872,7 +867,7 @@ class BlockingTransportTests(unittest.TestCase):
                 server.shutdown()
                 worker.join(timeout=2)
 
-    def test_all_blocking_provider_facades_use_the_injected_async_transport(self):
+    def test_all_blocking_provider_facades_use_the_injected_sync_transport(self):
         for provider_type, origin in (
             ("chatgpt", "https://chatgpt.com"),
             ("claude", "https://claude.ai"),
@@ -880,16 +875,16 @@ class BlockingTransportTests(unittest.TestCase):
             ("grok", "https://grok.com"),
         ):
             with self.subTest(provider=provider_type):
-                request = AsyncMock(return_value=FakeHTTPResponse(200, json={"ok": True}))
-                transport = AsyncHTTPTransport(
+                request = Mock(return_value=FakeHTTPResponse(200, json={"ok": True}))
+                transport = HTTPTransport(
                     origin, client_getter=lambda: SimpleNamespace(request=request)
                 )
                 provider = Provider(Account.from_cookies(provider_type, {}), transport=transport)
-                provider._provider._prepare_session = AsyncMock()
-                provider._provider._close_session = AsyncMock()
+                provider._prepare_session = Mock()
+                provider._close_session = Mock()
                 with provider:
                     self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
-                request.assert_awaited_once()
+                request.assert_called_once()
 
     def test_chatgpt_native_and_public_transport_share_headers_without_refreshing_with_old_token(
         self,
@@ -929,31 +924,32 @@ class BlockingTransportTests(unittest.TestCase):
         closed = threading.Event()
         exits = []
 
-        async def chunks(data=b"stream"):
+        def chunks(data=b"stream"):
             threads.add(threading.get_ident())
             yield data
 
-        @asynccontextmanager
-        async def stream(*args, **options):
+        @contextmanager
+        def stream(*args, **options):
+            del options
             fixture = args[1].endswith("/fixture")
             try:
                 yield SimpleNamespace(
                     status_code=200,
                     headers={"content-type": "application/json"} if fixture else {},
-                    aiter_content=lambda: chunks(b'{"ok": true}' if fixture else b"stream"),
+                    iter_content=lambda: chunks(b'{"ok": true}' if fixture else b"stream"),
                     encoding="utf-8",
                 )
             finally:
                 exits.append(True)
                 closed.set()
 
-        transport = AsyncHTTPTransport(
+        transport = HTTPTransport(
             "https://claude.ai",
             client_getter=lambda: SimpleNamespace(stream=stream),
         )
         provider = Provider(Account.from_cookies("claude", {}), transport=transport)
-        provider._provider._prepare_session = AsyncMock()
-        provider._provider._close_session = AsyncMock()
+        provider._prepare_session = Mock()
+        provider._close_session = Mock()
         with provider:
             self.assertEqual(provider.transport.request("GET", "/fixture"), {"ok": True})
             with provider.transport.stream("GET", "/stream") as response:

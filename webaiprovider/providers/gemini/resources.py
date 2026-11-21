@@ -3,7 +3,6 @@ from __future__ import annotations
 from ...resources.chat.chat import (
     AsyncBranchableChat,
     BranchableChat,
-    Chat,
 )
 from ...resources.message.attachment import Attachment
 from ...resources.message.message import AsyncMessage, Message
@@ -17,7 +16,7 @@ class AsyncGeminiChat(AsyncBranchableChat):
     pass
 
 
-class GeminiChat(BranchableChat, Chat):
+class GeminiChat(BranchableChat):
     __slots__ = ()
 
 
@@ -40,7 +39,7 @@ class AsyncGeminiMessage(AsyncMessage):
 
 class GeminiMessage(Message):
     __slots__ = ()
-    _resource_type = AsyncGeminiMessage
+    _attachment_type = GeminiAttachment
 
 
 class GeminiResponse(Response):

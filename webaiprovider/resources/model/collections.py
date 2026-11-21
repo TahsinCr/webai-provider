@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+import threading
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
     AsyncCollection,
     RemoteCollection,
     _report_read,
+    _report_read_sync,
 )
 from ...errors import RemoteNotFound
 from .model import EffortRef, ModelRef, ModelSelection
@@ -116,12 +118,49 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         return _resolve_model_selection(target, await self.list())
 
 
-class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
-    _collection: AsyncModelsCollection
+class ModelsCollection(RemoteCollection[ModelRef]):
+    """Synchronous session model catalog backed by a native blocking loader."""
 
-    def __init__(self, owner: Provider[Any, Any]) -> None:
-        super().__init__(owner, owner._provider.models)
+    _collection_name = "models"
 
+    def __init__(
+        self,
+        loader: Callable[[bool], list[ModelRef]],
+        *,
+        provider: Provider[Any, Any] | None = None,
+    ) -> None:
+        self._loader = loader
+        self._provider = provider
+        self._items: tuple[ModelRef, ...] | None = None
+        self._lock = threading.Lock()
+
+    def _read_context(self):
+        return self._provider, None
+
+    def _clear(self) -> None:
+        self._items = None
+
+    def _reload(self) -> tuple[ModelRef, ...]:
+        self._mark_remote_read()
+        self._items = tuple(self._loader(True))
+        return self._items
+
+    def _load_items(self) -> tuple[ModelRef, ...]:
+        if self._items is None:
+            with self._lock:
+                if self._items is None:
+                    return self._reload()
+        return self._items
+
+    def _iter_batches(
+        self, *, limit: int | None = None, **options: Any
+    ) -> Iterator[Sequence[ModelRef]]:
+        if options:
+            raise TypeError(f"Unexpected model list option: {next(iter(options))}")
+        items = self._load_items()
+        yield items if limit is None else items[:limit]
+
+    @_report_read_sync
     def list(
         self,
         predicate: Callable[[ModelRef], bool] | None = None,
@@ -131,27 +170,48 @@ class ModelsCollection(RemoteCollection[ModelRef, ModelRef]):
     ) -> list[ModelRef]:
         if options:
             raise TypeError(f"Unexpected model list option: {next(iter(options))}")
-        self._owner._ensure_blocking_call()
-        items = self._collection._items
-        if items is not None:
-            return self._filter_items(items, predicate, limit=limit)
-        return self._owner._call(self._collection.list(predicate, limit=limit))
+        return self._collect_items(predicate, limit=limit)
 
-    def get(self, model_id: str, /) -> ModelRef:
-        self._owner._ensure_blocking_call()
-        items = self._collection._items
-        if items is not None:
-            return _model_by_id(items, model_id)
-        return self._owner._call(self._collection.get(model_id))
-
+    @_report_read_sync
     def refresh(self) -> list[ModelRef]:
-        return self._owner._call(self._collection.refresh())
+        """Replace the session catalog after a successful provider load."""
+        with self._lock:
+            return list(self._reload())
+
+    @_report_read_sync
+    def get(self, model_id: str, /) -> ModelRef:
+        return _model_by_id(self._load_items(), model_id)
+
+    @_report_read_sync
+    def find(
+        self,
+        query: str,
+        /,
+        *,
+        exact: bool = False,
+        startswith: bool = False,
+        endswith: bool = False,
+        single: bool = False,
+        last: bool = False,
+        **options: Any,
+    ) -> ModelRef | None:
+        if isinstance(query, Models) and not (exact or startswith or endswith or last or options):
+            models = self._load_items()
+            result = SelectionResolver.resolve(query, models)
+            if not isinstance(result, ModelRef):
+                raise TypeError("Model query did not resolve to a model")
+            return result
+        return super().find(
+            query,
+            exact=exact,
+            startswith=startswith,
+            endswith=endswith,
+            single=single,
+            last=last,
+            **options,
+        )
 
     def resolve(
         self, target: Models | EffortRef | ModelRef | ModelSelection | str
     ) -> ModelSelection:
-        self._owner._ensure_blocking_call()
-        items = self._collection._items
-        if items is not None:
-            return _resolve_model_selection(target, items)
-        return self._owner._call(self._collection.resolve(target))
+        return _resolve_model_selection(target, self.list())

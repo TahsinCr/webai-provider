@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Iterable
+import threading
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from copy import copy
 from dataclasses import dataclass
 from time import monotonic_ns
@@ -13,6 +14,7 @@ from ...collections import (
     BaseCollection,
     RemoteCollection,
     _report_read,
+    _report_read_sync,
     validate_limit,
     validate_predicate,
 )
@@ -27,13 +29,16 @@ from ..message.types import MessageData
 from ..model.model import EffortRef, ModelRef, ModelSelection
 from ..model.types import Models
 from .artifact import Artifact
-from .operation import AsyncMessageOperation, MessageOperation, _close_async_iterator
+from .operation import (
+    AsyncMessageOperation,
+    MessageOperation,
+    _close_async_iterator,
+    _close_sync_iterator,
+)
 from .response import Response
 from .source import Source
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
     from ..chat.chat import Chat
     from .operation import StreamEvent
 
@@ -155,10 +160,19 @@ class _HistoryRead:
     reported: bool = False
 
 
-class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
-    """Conversation turn collection pairing assistant Responses with their triggering user Messages."""
+class _BaseResponsesCollection:
+    """Shared turn tracking, history reconciliation, and message-operation builders."""
 
     _collection_name = "chat.responses"
+    _default_message_type: type[Any] = AsyncMessage
+    _operation_type: type[Any] = AsyncMessageOperation
+    chat: Any
+    _turns: list[Response]
+    _known_responses: dict[str, Response]
+    _known_messages: dict[str, Any]
+    _history_read: int
+    _history_applied: int
+    _execute_send: Callable[[Any], Any]
 
     @property
     def _read_provider(self):
@@ -168,13 +182,11 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
     def _scope_id(self):
         return self.chat.remote_id
 
-    def __init__(self, chat: AsyncChat) -> None:
+    def _init_responses_state(self, chat: Any) -> None:
         self.chat = chat
-        self.hooks = AsyncOperationHooks()
-        self._turns: list[Response] = []
-        self._known_responses: dict[str, Response] = {}
-        self._known_messages: dict[str, AsyncMessage] = {}
-        self._history_flight: SingleFlight[str] | None = None
+        self._turns = []
+        self._known_responses = {}
+        self._known_messages = {}
         self._history_read = 0
         self._history_applied = 0
 
@@ -231,7 +243,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             return False
         return BaseCollection._item_matches_exact_id(item, item_id)
 
-    def _track_local_message(self, message: AsyncMessage) -> Response:
+    def _track_local_message(self, message: Any) -> Response:
         self._known_messages[message.id] = message
         if message.remote_id:
             self._known_messages[message.remote_id] = message
@@ -253,7 +265,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 
     def _reconcile_live_response(
         self,
-        operation: AsyncMessageOperation,
+        operation: Any,
         response: Response,
     ) -> Response:
         target_id = response.remote_id or response.id
@@ -302,47 +314,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             if response.message.remote_id:
                 self._known_messages[response.message.remote_id] = response.message
 
-    async def _load_history(self, *, fresh: bool = False) -> list[Response]:
-        remote_id = self.chat.remote_id
-        if not remote_id:
-            return list(self._turns)
-        provider = self.chat.provider
-        if provider is None:
-            raise ProviderError("Chat is not attached to an open provider")
-        provider._require_provider()
-
-        async def read() -> _HistoryRead:
-            # SingleFlight shields its worker from waiter cancellation. Track
-            # the worker itself so shutdown cannot close its transport early.
-            async with provider._activity():
-                provider._require_provider()
-                self._history_read += 1
-                read_id = self._history_read
-                started_ns = monotonic_ns()
-                conversation = await provider._get_chat_data(remote_id)
-                if read_id < self._history_applied or self.chat.remote_id != remote_id:
-                    return _HistoryRead(list(self._turns), started_ns)
-                responses = self._apply_history(conversation, provider)
-                self._history_applied = read_id
-                return _HistoryRead(responses, started_ns)
-
-        if fresh:
-            result = await read()
-        else:
-            if provider.closing and not provider._has_active_operation():
-                raise ProviderError("Provider is closing or is closed")
-            if self._history_flight is None:
-                self._history_flight = SingleFlight()
-            result = await self._history_flight.run(remote_id, read)
-        if not result.reported:
-            self._mark_remote_read(result.started_ns)
-            result.reported = True
-        return result.items
-
     def _apply_history(
         self,
         conversation: Conversation,
-        provider: AsyncProvider[Any, Any],
+        provider: Any,
         *,
         limit: int | None = None,
     ) -> list[Response]:
@@ -368,10 +343,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
         responses: list[Response] = []
         seen_user_ids: set[str] = set()
         seen_resp_ids: set[str] = set()
-        pending_user: AsyncMessage | None = None
+        pending_user: Any = None
         answered = False
 
-        def build_unanswered(user_msg: AsyncMessage) -> Response:
+        def build_unanswered(user_msg: Any) -> Response:
             resp_id = f"unanswered:{user_msg.id}"
             seen_resp_ids.add(resp_id)
             resp = existing_responses.get(resp_id)
@@ -485,39 +460,28 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
 
         return responses
 
-    @_report_read
-    async def list(
-        self,
-        predicate: Callable[[Response], bool] | None = None,
-        *,
-        limit: int | None = 50,
-        fresh: bool = False,
+    @staticmethod
+    def _filter_history_responses(
+        responses: list[Response],
+        predicate: Callable[[Response], bool] | None,
+        validated: int | None,
     ) -> list[Response]:
-        validate_predicate(predicate)
-        validated = validate_limit(limit)
-        if validated == 0:
-            return []
-        responses = await self._load_history(fresh=fresh)
         if predicate is not None:
             responses = [item for item in responses if predicate(item)]
         if validated is None:
             return list(responses) if predicate is None else responses
         return responses[-validated:]
 
-    async def _iter_batches(self, *, limit=None, fresh=False, **options):
-        items = await self._load_history(fresh=fresh)
-        yield items if limit is None else items[:limit]
-
-    def create(
+    def _prepare_create_message(
         self,
         message: AsyncMessage | Message | str,
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
-        **metadata: Any,
-    ) -> AsyncMessageOperation:
+        metadata: dict[str, Any],
+    ) -> Any:
         if isinstance(message, str):
-            msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
+            msg = getattr(self.chat.provider, "_message_type", self._default_message_type)(
                 content=message,
                 model=model,
                 attachments=attachments,
@@ -525,7 +489,7 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
                 chat=self.chat,
             )
         else:
-            msg = message._resource if isinstance(message, Message) else message
+            msg = message
             if msg.chat is not None and msg.chat is not self.chat:
                 raise ValueError("Message belongs to a different chat")
             if any(item.message is msg for item in self._turns):
@@ -536,32 +500,15 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             if attachments is not None:
                 for item in attachments:
                     msg.attachments.create(item)
-
         self._track_local_message(msg)
-        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+        return msg
 
-    async def _execute_send(self, operation: AsyncMessageOperation) -> AsyncIterator[StreamEvent]:
-        provider = self.chat.provider
-        if provider is None:
-            raise ProviderError("No provider session is attached to this chat")
-        stream = provider._require_provider()._execute_stream(operation)
-        try:
-            async for event in stream:
-                yield event
-        finally:
-            await _close_async_iterator(stream)
-
-    def _resolve_known_message(
-        self, target: Response | AsyncMessage | Message | str
-    ) -> AsyncMessage:
+    def _resolve_known_message(self, target: Response | AsyncMessage | Message | str) -> Any:
         if isinstance(target, Response):
             if target.message is None:
                 raise UnsupportedOperationError("Response has no associated user message")
-            msg = target.message
-            return msg._resource if isinstance(msg, Message) else msg
-        if isinstance(target, Message):
-            return target._resource
-        if isinstance(target, AsyncMessage):
+            return target.message
+        if isinstance(target, (Message, AsyncMessage)):
             return target
         found_msg = self._known_messages.get(target)
         if found_msg is not None:
@@ -571,68 +518,48 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             None,
         )
         if found_resp is not None and found_resp.message is not None:
-            msg = found_resp.message
-            return msg._resource if isinstance(msg, Message) else msg
+            return found_resp.message
         raise RemoteNotFound(f"Record was not found: {target}")
 
     def _resolve_retry_target(
         self, target: Response | AsyncMessage | Message | str
-    ) -> tuple[str, AsyncMessage | None, Any]:
+    ) -> tuple[str, Any, Any]:
         if isinstance(target, Response):
             action_id = (
                 target.remote_id
                 or target.id
                 or (target.message.remote_id or target.message.id if target.message else "")
             )
-            prompt_msg = target.message
-            if isinstance(prompt_msg, Message):
-                prompt_msg = prompt_msg._resource
-            return action_id, prompt_msg, target.model
+            return action_id, target.message, target.model
         if isinstance(target, (Message, AsyncMessage)):
-            msg = target._resource if isinstance(target, Message) else target
-            resp = msg.response
+            resp = target.response
             if resp is not None:
                 action_id = resp.remote_id or resp.id
-                return action_id, msg, resp.model or msg.model
-            return msg.remote_id or msg.id, msg, msg.model
+                return action_id, target, resp.model or target.model
+            return target.remote_id or target.id, target, target.model
         found_resp = self._known_responses.get(target) or next(
             (r for r in self._turns if self._item_matches_exact_id(r, target)),
             None,
         )
         if found_resp is not None:
-            prompt_msg = found_resp.message
-            if isinstance(prompt_msg, Message):
-                prompt_msg = prompt_msg._resource
             return (
                 found_resp.remote_id or found_resp.id,
-                prompt_msg,
+                found_resp.message,
                 found_resp.model,
             )
         found_msg = self._resolve_known_message(target)
         return found_msg.remote_id or found_msg.id, found_msg, found_msg.model
 
-    def update(
-        self,
-        target: Response | AsyncMessage | Message | str,
-        *,
-        content: str | None = None,
-        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-        **options: Any,
-    ) -> AsyncMessageOperation:
-        msg = self._resolve_known_message(target)
-        new_content = content if content is not None else msg.content
-        return self.edit(msg, new_content, model=model, **options)
-
-    def edit(
+    def _build_edit_message(
         self,
         target: Response | AsyncMessage | Message | str,
         new_content: str,
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-        **options: Any,
-    ) -> AsyncMessageOperation:
+        options: dict[str, Any],
+    ) -> Any:
         msg_target = self._resolve_known_message(target)
-        msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
+        msg = getattr(self.chat.provider, "_message_type", self._default_message_type)(
             content=new_content,
             model=model if model is not None else msg_target.model,
             attachments=(copy(item) for item in msg_target.attachments),
@@ -645,20 +572,20 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             chat=self.chat,
         )
         self._known_messages[msg.id] = msg
-        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+        return msg
 
-    def retry(
+    def _build_retry_message(
         self,
         target: Response | AsyncMessage | Message | str,
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-        **options: Any,
-    ) -> AsyncMessageOperation:
+        options: dict[str, Any],
+    ) -> Any:
         action_id, prompt_msg, default_model = self._resolve_retry_target(target)
         attachments = (
             (copy(item) for item in prompt_msg.attachments) if prompt_msg is not None else None
         )
-        msg = getattr(self.chat.provider, "_message_type", AsyncMessage)(
+        msg = getattr(self.chat.provider, "_message_type", self._default_message_type)(
             content=prompt_msg.content if prompt_msg is not None else "",
             model=model if model is not None else default_model,
             attachments=attachments,
@@ -671,13 +598,10 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             chat=self.chat,
         )
         self._known_messages[msg.id] = msg
-        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+        return msg
 
-    async def delete(self, target: Response | AsyncMessage | Message | str) -> None:
-        """Delete an unsent local response/message; deleting persisted remote turns is unsupported."""
-        if isinstance(target, Message):
-            target = target._resource
-        if isinstance(target, AsyncMessage):
+    def _delete_local(self, target: Response | AsyncMessage | Message | str) -> None:
+        if isinstance(target, (AsyncMessage, Message)):
             if target.remote_id:
                 raise UnsupportedOperationError(
                     "Deleting persisted remote responses is not supported"
@@ -723,26 +647,214 @@ class AsyncResponsesCollection(AsyncRemoteCollection[Response]):
             self._known_messages.pop(key, None)
 
 
-class ResponsesCollection(RemoteCollection[Response, Response]):
-    def __init__(self, owner: Provider[Any, Any], chat: AsyncChat) -> None:
-        super().__init__(owner, chat.responses)
-        self.hooks = OperationHooks(chat.responses.hooks)
+class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[Response]):
+    """Conversation turn collection pairing assistant Responses with their triggering user Messages."""
 
-    def _wrap(self, item: Response, *, chat_view: Chat | None = None) -> Response:
-        return self._owner._wrap_response(item, chat_view=chat_view)
+    _default_message_type = AsyncMessage
+    _operation_type = AsyncMessageOperation
+
+    def __init__(self, chat: AsyncChat) -> None:
+        self._init_responses_state(chat)
+        self.hooks = AsyncOperationHooks()
+        self._history_flight: SingleFlight[str] | None = None
+
+    async def _load_history(self, *, fresh: bool = False) -> list[Response]:
+        remote_id = self.chat.remote_id
+        if not remote_id:
+            return list(self._turns)
+        provider = self.chat.provider
+        if provider is None:
+            raise ProviderError("Chat is not attached to an open provider")
+        provider._require_provider()
+
+        async def read() -> _HistoryRead:
+            # SingleFlight shields its worker from waiter cancellation. Track
+            # the worker itself so shutdown cannot close its transport early.
+            async with provider._activity():
+                provider._require_provider()
+                self._history_read += 1
+                read_id = self._history_read
+                started_ns = monotonic_ns()
+                conversation = await provider._get_chat_data(remote_id)
+                if read_id < self._history_applied or self.chat.remote_id != remote_id:
+                    return _HistoryRead(list(self._turns), started_ns)
+                responses = self._apply_history(conversation, provider)
+                self._history_applied = read_id
+                return _HistoryRead(responses, started_ns)
+
+        if fresh:
+            result = await read()
+        else:
+            if provider.closing and not provider._has_active_operation():
+                raise ProviderError("Provider is closing or is closed")
+            if self._history_flight is None:
+                self._history_flight = SingleFlight()
+            result = await self._history_flight.run(remote_id, read)
+        if not result.reported:
+            self._mark_remote_read(result.started_ns)
+            result.reported = True
+        return result.items
+
+    @_report_read
+    async def list(
+        self,
+        predicate: Callable[[Response], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        fresh: bool = False,
+    ) -> list[Response]:
+        validate_predicate(predicate)
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        responses = await self._load_history(fresh=fresh)
+        return self._filter_history_responses(responses, predicate, validated)
+
+    async def _iter_batches(self, *, limit=None, fresh=False, **options):
+        del options
+        items = await self._load_history(fresh=fresh)
+        yield items if limit is None else items[:limit]
+
+    def create(
+        self,
+        message: AsyncMessage | Message | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
+        **metadata: Any,
+    ) -> AsyncMessageOperation:
+        msg = self._prepare_create_message(
+            message, model=model, attachments=attachments, metadata=metadata
+        )
+        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+
+    async def _execute_send(self, operation: AsyncMessageOperation) -> AsyncIterator[StreamEvent]:
+        provider = self.chat.provider
+        if provider is None:
+            raise ProviderError("No provider session is attached to this chat")
+        stream = provider._require_provider()._execute_stream(operation)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await _close_async_iterator(stream)
+
+    def update(
+        self,
+        target: Response | AsyncMessage | Message | str,
+        *,
+        content: str | None = None,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        **options: Any,
+    ) -> AsyncMessageOperation:
+        msg = self._resolve_known_message(target)
+        new_content = content if content is not None else msg.content
+        return self.edit(msg, new_content, model=model, **options)
+
+    def edit(
+        self,
+        target: Response | AsyncMessage | Message | str,
+        new_content: str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        **options: Any,
+    ) -> AsyncMessageOperation:
+        msg = self._build_edit_message(target, new_content, model=model, options=options)
+        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+
+    def retry(
+        self,
+        target: Response | AsyncMessage | Message | str,
+        *,
+        model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
+        **options: Any,
+    ) -> AsyncMessageOperation:
+        msg = self._build_retry_message(target, model=model, options=options)
+        return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
+
+    async def delete(self, target: Response | AsyncMessage | Message | str) -> None:
+        """Delete an unsent local response/message; deleting persisted remote turns is unsupported."""
+        self._delete_local(target)
+
+
+class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
+    """Blocking conversation turn collection running directly on the caller thread."""
+
+    _default_message_type = Message
+    _operation_type = MessageOperation
+
+    def __init__(self, chat: Chat) -> None:
+        self._init_responses_state(chat)
+        self.hooks = OperationHooks()
+        self._history_lock = threading.Lock()
+
+    def _load_history(self, *, fresh: bool = False) -> list[Response]:
+        del fresh
+        remote_id = self.chat.remote_id
+        if not remote_id:
+            return list(self._turns)
+        provider = self.chat.provider
+        if provider is None:
+            raise ProviderError("Chat is not attached to an open provider")
+        provider._require_provider()
+        with provider._activity():
+            provider._require_provider()
+            with self._history_lock:
+                self._history_read += 1
+                read_id = self._history_read
+            started_ns = monotonic_ns()
+            conversation = provider._get_chat_data(remote_id)
+            with self._history_lock:
+                if read_id < self._history_applied or self.chat.remote_id != remote_id:
+                    items = list(self._turns)
+                else:
+                    items = self._apply_history(conversation, provider)
+                    self._history_applied = read_id
+        self._mark_remote_read(started_ns)
+        return items
+
+    @_report_read_sync
+    def list(
+        self,
+        predicate: Callable[[Response], bool] | None = None,
+        *,
+        limit: int | None = 50,
+        fresh: bool = False,
+    ) -> list[Response]:
+        validate_predicate(predicate)
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        responses = self._load_history(fresh=fresh)
+        return self._filter_history_responses(responses, predicate, validated)
+
+    def _iter_batches(self, *, limit=None, fresh=False, **options):
+        del options
+        items = self._load_history(fresh=fresh)
+        yield items if limit is None else items[:limit]
 
     def create(
         self,
         message: Message | AsyncMessage | str,
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
-        attachments: Any = None,
+        attachments: Iterable[Attachment] | Attachments | None = None,
         **metadata: Any,
     ) -> MessageOperation:
-        return MessageOperation(
-            self._owner,
-            self._collection.create(message, model=model, attachments=attachments, **metadata),
+        msg = self._prepare_create_message(
+            message, model=model, attachments=attachments, metadata=metadata
         )
+        return MessageOperation(self.chat, msg, executor=self._execute_send)
+
+    def _execute_send(self, operation: MessageOperation) -> Iterator[StreamEvent]:
+        provider = self.chat.provider
+        if provider is None:
+            raise ProviderError("No provider session is attached to this chat")
+        stream = provider._require_provider()._execute_stream(operation)
+        try:
+            yield from stream
+        finally:
+            _close_sync_iterator(stream)
 
     def update(
         self,
@@ -752,10 +864,9 @@ class ResponsesCollection(RemoteCollection[Response, Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        return MessageOperation(
-            self._owner,
-            self._collection.update(target, content=content, model=model, **options),
-        )
+        msg = self._resolve_known_message(target)
+        new_content = content if content is not None else msg.content
+        return self.edit(msg, new_content, model=model, **options)
 
     def edit(
         self,
@@ -765,10 +876,8 @@ class ResponsesCollection(RemoteCollection[Response, Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        return MessageOperation(
-            self._owner,
-            self._collection.edit(target, new_content, model=model, **options),
-        )
+        msg = self._build_edit_message(target, new_content, model=model, options=options)
+        return MessageOperation(self.chat, msg, executor=self._execute_send)
 
     def retry(
         self,
@@ -777,10 +886,8 @@ class ResponsesCollection(RemoteCollection[Response, Response]):
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         **options: Any,
     ) -> MessageOperation:
-        return MessageOperation(
-            self._owner,
-            self._collection.retry(target, model=model, **options),
-        )
+        msg = self._build_retry_message(target, model=model, options=options)
+        return MessageOperation(self.chat, msg, executor=self._execute_send)
 
     def delete(self, target: Response | Message | AsyncMessage | str) -> None:
-        self._owner._call(self._collection.delete(target))
+        self._delete_local(target)

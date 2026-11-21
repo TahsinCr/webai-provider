@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -11,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
+from eventflow import EventBus, EventEnvelope, EventFilter
 
 import webaiprovider
 from webaiprovider import (
@@ -284,13 +285,155 @@ class _PagedRecordsAsyncProvider(_ScriptedAsyncProvider):
 
 
 class _ScriptedSyncProvider(Provider):
-    def _make_async_provider(self, account, **options):
-        return _ScriptedAsyncProvider(account, **options)
+    capabilities = _ScriptedAsyncProvider.capabilities
+
+    def __init__(self, account: Account, **options: object) -> None:
+        super().__init__(account, **options)  # type: ignore[arg-type]
+        self.prepare_calls = 0
+        self.close_calls = 0
+        self.fail_prepare: Exception | None = None
+        self.pages: list[tuple[list[Conversation], str | None]] = []
+        self.conversations: dict[str, Conversation] = {}
+        self.list_calls: list[tuple[str | None, int | None]] = []
+        self.get_chat_calls: list[str] = []
+        self.rename_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[str] = []
+        self.loop_threads: set[int] = set()
+        self.page_error_at: int | None = None
+        self.projects_data: dict[str, ProjectData] = {}
+        self.project_chats: dict[str, list[Conversation]] = {}
+        self.upload_calls: list[tuple[str, Path]] = []
+        self.remove_calls: list[tuple[str, str]] = []
+        self.received_requests: list[ProviderRequest] = []
+        self.stream_error: Exception | None = None
+
+    def _prepare_session(self) -> None:
+        self.prepare_calls += 1
+        if self.fail_prepare is not None:
+            raise self.fail_prepare
+
+    def _close_session(self) -> None:
+        self.close_calls += 1
+
+    def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
+        del force
+        return ModelCatalog(ModelCatalogState.AVAILABLE)
+
+    def seed_paginated(self, count: int, *, page_size: int = 50, overlap: bool = False) -> None:
+        items = [Conversation(id=f"c-{i}", title=f"Chat {i:03d}") for i in range(count)]
+        for conv in items:
+            self.conversations[conv.id] = conv
+        self.pages.clear()
+        for start in range(0, count, page_size):
+            end = min(start + page_size, count)
+            chunk = list(items[start:end])
+            if overlap and start > 0:
+                chunk.insert(0, items[start - 1])
+            next_cursor = str(end) if end < count else None
+            self.pages.append((chunk, next_cursor))
+
+    def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Page[Conversation]:
+        self.loop_threads.add(threading.get_ident())
+        call_index = len(self.list_calls) + 1
+        self.list_calls.append((cursor, limit))
+        if self.page_error_at is not None and call_index == self.page_error_at:
+            raise ProviderError(f"Simulated pagination failure on call {call_index}")
+        start = int(cursor) if cursor is not None else 0
+        if not self.pages:
+            return Page((), None)
+        for chunk, next_cursor in self.pages:
+            chunk_ids = [c.id for c in chunk]
+            target_id = f"c-{start}"
+            if target_id in chunk_ids or (cursor is None and chunk is self.pages[0][0]):
+                return Page(tuple(chunk[:limit]), next_cursor)
+        return Page((), None)
+
+    def _get_chat_data(self, conversation_id: str) -> Conversation:
+        self.get_chat_calls.append(conversation_id)
+        if conversation_id not in self.conversations:
+            raise RemoteNotFound(f"Missing chat: {conversation_id}")
+        return self.conversations[conversation_id]
+
+    def _rename_chat_data(self, conversation_id: str, title: str) -> None:
+        self.rename_calls.append((conversation_id, title))
+        conv = self.conversations.get(conversation_id)
+        if conv is not None:
+            self.conversations[conversation_id] = replace(conv, title=title)
+
+    def _delete_chat_data(self, conversation_id: str) -> None:
+        self.delete_calls.append(conversation_id)
+        self.conversations.pop(conversation_id, None)
+
+    def _list_projects_data(
+        self, *, cursor: str | None = None, limit: int = 50
+    ) -> Page[ProjectData]:
+        del cursor, limit
+        return Page(tuple(self.projects_data.values()), None)
+
+    def _get_project_data(self, project_id: str) -> ProjectData:
+        if project_id not in self.projects_data:
+            raise RemoteNotFound(f"Missing project: {project_id}")
+        return self.projects_data[project_id]
+
+    def _list_project_chats_data(
+        self, project_id: str, *, cursor: str | None = None, limit: int | None = None
+    ) -> Page[Conversation]:
+        del cursor, limit
+        return Page(tuple(self.project_chats.get(project_id, ())), None)
+
+    def _create_project_data(
+        self, name: str, instructions: str = "", **options: object
+    ) -> ProjectData:
+        del options
+        pid = f"p-{len(self.projects_data) + 1}"
+        data = ProjectData(id=pid, name=name, instructions=instructions or None)
+        self.projects_data[pid] = data
+        return data
+
+    def _stream_provider_events(self, request: ProviderRequest):
+        self.received_requests.append(request)
+        if self.stream_error is not None:
+            raise self.stream_error
+        cid = request.conversation_id or f"c-live-{len(self.received_requests)}"
+        if cid not in self.conversations:
+            self.conversations[cid] = Conversation(id=cid, title="Live Chat")
+            yield ConversationBound(cid)
+        yield MessageMetadata(
+            message_id="m-live-1",
+            user_message_id="u-live-1",
+            model="gpt-5",
+            sources=(
+                {"id": "src-live", "url": "https://example.com/live", "title": "Live Source"},
+            ),
+            files=(
+                {
+                    "id": "art-live",
+                    "name": "output.txt",
+                    "media_type": "text/plain",
+                    "url": "https://example.com/output.txt",
+                },
+            ),
+        )
+        yield TextDelta(f"Echo: {request.prompt}")
+        yield ResponseComplete()
 
 
-class _PagedSyncProvider(Provider):
-    def _make_async_provider(self, account, **options):
-        return _PagedRecordsAsyncProvider(account, **options)
+class _PagedSyncProvider(_ScriptedSyncProvider):
+    def __init__(self, account: Account, **options: object) -> None:
+        super().__init__(account, **options)
+        self._batches: list[list[Conversation]] = []
+        self.fetch_calls: list[str | None] = []
+
+    def seed_batches(self, paged_batches: list[list[Conversation]]) -> None:
+        self._batches = paged_batches
+
+    def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50) -> Page[Conversation]:
+        del limit
+        self.fetch_calls.append(cursor)
+        idx = int(cursor) if cursor is not None else 0
+        items = self._batches[idx] if idx < len(self._batches) else []
+        next_cursor = str(idx + 1) if idx + 1 < len(self._batches) else None
+        return Page(tuple(items), next_cursor)
 
 
 class TestPublicSurfaceAndExports(unittest.TestCase):
@@ -527,7 +670,7 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sources.find("Alpha", last=True).id, "s3")
 
         sync_provider = _PagedSyncProvider(_account())
-        sync_provider._provider.seed_batches(  # type: ignore[attr-defined]
+        sync_provider.seed_batches(
             [
                 [Conversation(id="c1", title="Sync One"), Conversation(id="c2", title="Other")],
                 [Conversation(id="c3", title="Sync Two")],
@@ -582,9 +725,9 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
 
         asyncio.run(check_async())
         with _ScriptedSyncProvider(_account()) as provider:
-            provider._provider.conversations["chat"] = history
+            provider.conversations["chat"] = history
             chat, responses = provider.chats.get_with_responses("chat", include_projects=True)
-            self.assertEqual(provider._provider.get_chat_calls, ["chat"])
+            self.assertEqual(provider.get_chat_calls, ["chat"])
             self.assertIs(responses[0].chat, chat)
             self.assertEqual(responses[0].text, "Answer")
 
@@ -1044,47 +1187,24 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSyncCallerAndConcurrency(unittest.TestCase):
-    def test_sync_rejects_a_foreign_future_without_stranding_calls(self) -> None:
+    def test_sync_provider_runs_natively_without_event_loop_bridge(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
         self.addCleanup(provider.close)
-        foreign_loop = asyncio.new_event_loop()
-        self.addCleanup(foreign_loop.close)
-        foreign_future = foreign_loop.create_future()
-        self.addCleanup(foreign_future.cancel)
+        self.assertFalse(hasattr(provider, "_loop"))
+        self.assertFalse(hasattr(provider, "_provider"))
+        self.assertFalse(hasattr(provider, "_call"))
+        self.assertEqual(provider.chats.create("Native").title, "Native")
 
-        with self.assertRaisesRegex(ValueError, "different loop"):
-            provider._call(foreign_future)
-        self.assertEqual(provider.chats.create("Recovered").title, "Recovered")
-
-        entered = threading.Event()
-        release = asyncio.Event()
-
-        async def hold_driver():
-            entered.set()
-            await release.wait()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            holding = pool.submit(provider._call, hold_driver())
-            try:
-                self.assertTrue(entered.wait(2))
-                with self.assertRaisesRegex(ValueError, "different loop"):
-                    provider._call(foreign_future)
-                self.assertFalse(holding.done())
-            finally:
-                assert provider._loop is not None
-                provider._loop.call_soon_threadsafe(release.set)
-            holding.result(timeout=2)
-
-    def test_sync_close_can_retry_cleanup_on_the_same_loop(self) -> None:
+    def test_sync_close_can_retry_cleanup_on_caller_thread(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
-        loops = []
+        threads: list[int] = []
 
-        async def cleanup() -> None:
-            loops.append(asyncio.get_running_loop())
-            if len(loops) == 1:
+        def cleanup() -> None:
+            threads.append(threading.get_ident())
+            if len(threads) == 1:
                 raise RuntimeError("cleanup transient failure")
 
-        provider._provider._close_session = cleanup  # type: ignore[method-assign]
+        provider._close_session = cleanup  # type: ignore[method-assign]
         try:
             with self.assertRaises(Exception):
                 provider.close()
@@ -1095,13 +1215,11 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             provider.close()
 
         self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
-        self.assertEqual(len(loops), 2)
-        self.assertIs(loops[0], loops[1])
+        self.assertEqual(threads, [threading.get_ident(), threading.get_ident()])
 
     def test_sync_caller_callback_reenters_provider_and_concurrent_threads_succeed(self) -> None:
         sync_provider = _ScriptedSyncProvider(_account())
-        async_provider: _ScriptedAsyncProvider = sync_provider._provider  # type: ignore[assignment]
-        async_provider.seed_paginated(5, page_size=50)
+        sync_provider.seed_paginated(5, page_size=50)
 
         callback_done = threading.Event()
         callback_threads: list[int] = []
@@ -1109,7 +1227,6 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
 
         self.assertIsInstance(sync_provider.events, EventBus)
         self.assertIsInstance(sync_provider.hooks, OperationHooks)
-        self.assertIsInstance(sync_provider._provider.events, AsyncEventBus)
 
         def on_opened(_event: EventEnvelope[str]) -> None:
             callback_threads.append(threading.get_ident())
@@ -1128,9 +1245,9 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
         try:
             self.assertTrue(callback_done.wait(timeout=3.0))
             self.assertEqual(reentered_ids, [["c-0", "c-1", "c-2"]])
-            self.assertEqual(len(async_provider.loop_threads), 1)
+            self.assertEqual(len(sync_provider.loop_threads), 1)
             self.assertEqual(callback_threads, [threading.get_ident()])
-            self.assertEqual(async_provider.loop_threads, {threading.get_ident()})
+            self.assertEqual(sync_provider.loop_threads, {threading.get_ident()})
 
             # Multi-thread sync facade concurrency sharing single runtime
             def worker(idx: int) -> str:
@@ -1193,7 +1310,7 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
 
     def test_close_cannot_skip_a_concurrent_first_open(self) -> None:
         provider = _ScriptedSyncProvider(_account())
-        condition = provider._state_lock
+        condition = provider._lifecycle_condition
         closing_at_lock = threading.Event()
         resume_close = threading.Event()
         closer_thread = None
@@ -1217,7 +1334,7 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             closer_thread = threading.current_thread()
             provider.close()
 
-        provider._state_lock = Gate()  # type: ignore[assignment]
+        provider._lifecycle_condition = Gate()  # type: ignore[assignment]
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 closing = pool.submit(close)
@@ -1228,48 +1345,45 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
                     resume_close.set()
                 closing.result(timeout=2)
             self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSED)
-            self.assertIsNone(provider._loop)
+            self.assertFalse(hasattr(provider, "_loop"))
         finally:
             provider.close()
 
     def test_sync_parallel_chats_do_not_block_each_other_while_same_chat_serializes(self) -> None:
         provider = _ScriptedSyncProvider(_account()).open()
-        async_provider: _ScriptedAsyncProvider = provider._provider  # type: ignore[assignment]
         driver_entered = threading.Event()
         follower_entered = threading.Event()
-        release_driver = asyncio.Event()
-        release_follower = asyncio.Event()
+        release_driver = threading.Event()
+        release_follower = threading.Event()
         caller_threads: dict[str, int] = {}
         execution_threads: dict[str, int] = {}
         same_chat_active = 0
         same_chat_max_active = 0
 
-        async def scripted_stream(request: ProviderRequest) -> AsyncIterator[ProviderStreamEvent]:
+        def scripted_stream(request: ProviderRequest):
             nonlocal same_chat_active, same_chat_max_active
             prompt = request.prompt
             if prompt == "driver":
                 driver_entered.set()
-                await release_driver.wait()
+                release_driver.wait(timeout=2)
             elif prompt == "follower":
                 execution_threads["follower-start"] = threading.get_ident()
                 follower_entered.set()
-                await release_follower.wait()
+                release_follower.wait(timeout=2)
                 execution_threads["follower-end"] = threading.get_ident()
             elif prompt.startswith("same-chat-"):
                 same_chat_active += 1
                 same_chat_max_active = max(same_chat_max_active, same_chat_active)
                 try:
-                    await asyncio.sleep(0.02)
+                    time.sleep(0.02)
                 finally:
                     same_chat_active -= 1
             yield TextDelta(prompt)
 
-        async_provider._stream_provider_events = scripted_stream  # type: ignore[method-assign]
+        provider._stream_provider_events = scripted_stream  # type: ignore[method-assign]
         try:
             chat1 = provider.chats.create("One")
             chat2 = provider.chats.create("Two")
-            loop = provider._loop
-            assert loop is not None
 
             def send(chat, prompt):
                 caller_threads[prompt] = threading.get_ident()
@@ -1284,16 +1398,18 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
 
                     follower = pool.submit(send, chat2, "follower")
                     self.assertTrue(follower_entered.wait(2))
-                    self.assertEqual(execution_threads["follower-start"], caller_threads["driver"])
-                    loop.call_soon_threadsafe(release_driver.set)
+                    self.assertEqual(
+                        execution_threads["follower-start"], caller_threads["follower"]
+                    )
+                    release_driver.set()
                     self.assertEqual(driver.result(timeout=2), "driver")
                     self.assertFalse(follower.done())
-                    loop.call_soon_threadsafe(release_follower.set)
+                    release_follower.set()
                     self.assertEqual(follower.result(timeout=2), "follower")
                     self.assertEqual(execution_threads["follower-end"], caller_threads["follower"])
                 finally:
-                    loop.call_soon_threadsafe(release_driver.set)
-                    loop.call_soon_threadsafe(release_follower.set)
+                    release_driver.set()
+                    release_follower.set()
 
                 a = pool.submit(send, chat1, "same-chat-a")
                 b = pool.submit(send, chat1, "same-chat-b")
@@ -1619,14 +1735,53 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
         class _BranchableChat(BranchableChat, Chat):
             pass
 
-        class _BranchableSyncProvider(Provider):
-            def _make_async_provider(self, account, **options):
-                return _BranchableAsyncProvider(account, **options)
+        class _BranchableSyncProvider(_ScriptedSyncProvider):
+            capabilities = _BranchableAsyncProvider.capabilities
+
+            def __init__(self, account: Account, **options: object) -> None:
+                super().__init__(account, **options)
+                self.branch_calls: list[tuple[str, str]] = []
 
             def _make_chats(self):
                 from webaiprovider.resources.chat.collections import ChatsCollection
 
                 return ChatsCollection(self, _BranchableChat)
+
+            def _branch_chat_data(self, conversation_id: str, message_id: str) -> Conversation:
+                self.branch_calls.append((conversation_id, message_id))
+                branched = Conversation(
+                    id="c-branch-1",
+                    title="Branched Chat",
+                    messages=(
+                        MessageData(
+                            id="u-live-1",
+                            role="user",
+                            content=(Content(kind="text", text="Original"),),
+                        ),
+                        MessageData(
+                            id="m-live-1",
+                            role="assistant",
+                            content=(Content(kind="text", text="Branched copy"),),
+                        ),
+                    ),
+                )
+                self.conversations[branched.id] = branched
+                return branched
+
+            def _stream_provider_events(self, request: ProviderRequest):
+                self.received_requests.append(request)
+                cid = request.conversation_id or f"c-live-{len(self.received_requests)}"
+                if cid not in self.conversations:
+                    self.conversations[cid] = Conversation(id=cid, title="Live Chat")
+                    yield ConversationBound(cid)
+                reply_text = (
+                    f"Retried:{request.message_id}"
+                    if request.action == MessageAction.RETRY
+                    else f"Echo: {request.prompt}"
+                )
+                yield MessageMetadata(message_id="m-live-1", user_message_id="u-live-1")
+                yield TextDelta(reply_text)
+                yield ResponseComplete()
 
         return (
             _BranchableAsyncProvider,

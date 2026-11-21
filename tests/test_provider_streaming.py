@@ -255,9 +255,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
 
         provider.client.events = fake_events
 
-        with patch(
-            "webaiprovider.providers.claude.async_provider.session_exists", return_value=True
-        ):
+        with patch("webaiprovider.providers.claude.base.session_exists", return_value=True):
             events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "claude-conv-123")
@@ -292,9 +290,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         provider.client.authenticated = False
 
         with (
-            patch(
-                "webaiprovider.providers.claude.async_provider.session_exists", return_value=False
-            ),
+            patch("webaiprovider.providers.claude.base.session_exists", return_value=False),
             self.assertRaises(AccountPaused),
         ):
             _ = [event async for event in provider._execute_stream(operation)]
@@ -416,7 +412,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
                 "response_complete": True,
             }
 
-        with patch("webaiprovider.providers.gemini.generation.generate", fake_generate):
+        with patch("webaiprovider.providers.gemini.async_client.generate_async", fake_generate):
             events = [event async for event in provider._execute_stream(operation)]
 
         self.assertEqual(chat.remote_id, "gemini-conv-321")

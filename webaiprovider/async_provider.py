@@ -9,10 +9,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
-from eventflow import AsyncEventBus, ErrorPolicy, EventBus, EventEnvelope, StateMachine
+from eventflow import AsyncEventBus, ErrorPolicy, EventEnvelope, StateMachine
 
-from .accounts.status import SessionState, SessionStatus
-from .base import BaseProvider, Capability, ProviderType, _construct_provider
+from .accounts.status import SessionStatus
+from .base import (
+    BaseProvider,
+    Capability,
+    ProviderType,
+    _construct_provider,
+    _StreamEventTranslator,
+)
 from .collections import _publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
@@ -22,13 +28,7 @@ from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
 from .resources.message.attachment import Attachment
 from .resources.message.message import AsyncMessage
-from .resources.message.protocol import (
-    ConversationBound,
-    MessageMetadata,
-    TextDelta,
-    TextReplacement,
-    ThoughtDelta,
-)
+from .resources.message.protocol import ConversationBound
 from .resources.message.request import build_message_request_pipeline, run_pipeline_unwrapped
 from .resources.model.collections import AsyncModelsCollection
 from .resources.model.model import EffortRef, ModelRef, ModelSelection
@@ -37,21 +37,7 @@ from .resources.project.collections import AsyncProjectsCollection
 from .resources.project.project import AsyncProject
 from .resources.project.types import ProjectData, ProjectOptions
 from .resources.response.artifact import Artifact
-from .resources.response.collections import _build_artifacts, _build_sources
-from .resources.response.operation import (
-    ArtifactDiscovered,
-    OutputBegin,
-    OutputDelta,
-    OutputEnd,
-    OutputReplace,
-    SourceDiscovered,
-    StreamEvent,
-    ThinkingBegin,
-    ThinkingDelta,
-    ThinkingEnd,
-    ThinkingReplace,
-    _close_async_iterator,
-)
+from .resources.response.operation import StreamEvent, _close_async_iterator
 from .resources.response.response import Response
 from .resources.response.source import Source
 from .transport import AsyncTransport
@@ -128,9 +114,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         self.events: AsyncEventBus[EventEnvelope[str]] = AsyncEventBus(
             error_policy=ErrorPolicy.ISOLATE
         )
-        self._sync_events: (
-            tuple[EventBus[EventEnvelope[str]], Callable[[EventEnvelope[str]], None]] | None
-        ) = None
         self._event_sequence = 0
         self.hooks: AsyncOperationHooks = AsyncOperationHooks()
         self.lifecycle = StateMachine(
@@ -159,9 +142,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     def _make_projects(self) -> _ProjectsT:
         return cast("_ProjectsT", AsyncProjectsCollection(self, AsyncProject))
 
-    def _active_transport(self) -> AsyncTransport | None:
-        return None
-
     @property
     def transport(self) -> AsyncTransport:
         self._require_provider()
@@ -171,22 +151,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         if active is None:
             raise ProviderError("This provider has no configured transport")
         return active
-
-    @property
-    def opened(self) -> bool:
-        return self._opened
-
-    @property
-    def closed(self) -> bool:
-        return self.lifecycle.state == LifecycleState.CLOSED
-
-    @property
-    def closing(self) -> bool:
-        return self.lifecycle.state == LifecycleState.CLOSING
-
-    @property
-    def lifecycle_state(self) -> LifecycleState:
-        return self.lifecycle.state
 
     def _has_active_operation(self, *, send_lock_id: int | None = None) -> bool:
         pid = id(self)
@@ -248,21 +212,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             self._active_operations -= 1
             self._lifecycle_condition.notify_all()
 
-    def _bind_sync_events(
-        self,
-        bus: EventBus[EventEnvelope[str]],
-        enqueue: Callable[[EventEnvelope[str]], None],
-    ) -> None:
-        self._sync_events = bus, enqueue
-
-    @property
-    def _has_event_subscribers(self) -> bool:
-        return bool(self.events.subscriber_count or self._sync_event_enqueue())
-
-    def _sync_event_enqueue(self) -> Callable[[EventEnvelope[str]], None] | None:
-        binding = self._sync_events
-        return binding[1] if binding is not None and binding[0].subscriber_count else None
-
     async def _emit(
         self,
         name: str,
@@ -271,10 +220,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         resource_id: str | None = None,
         payload: object | None = None,
     ) -> None:
-        """Publish to async subscribers and enqueue delivery for the sync caller."""
+        """Publish an observer event to async subscribers."""
         self._event_sequence += 1
-        enqueue = self._sync_event_enqueue()
-        if enqueue is None and not self.events.subscriber_count:
+        if not self.events.subscriber_count:
             return
         event = EventEnvelope(
             event=name,
@@ -287,8 +235,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 "payload": payload,
             },
         )
-        if enqueue is not None:
-            enqueue(event)
         await self.events.publish(event)
 
     async def _emit_safe(
@@ -306,9 +252,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             )
         except Exception as error:
             _log.warning("Event dispatch failed: event=%s error=%s", name, type(error).__name__)
-
-    def _prime_models(self, catalog: ModelCatalog) -> None:
-        self.models._items = tuple(_model_refs_from_catalog(self.id, catalog))
 
     async def _load_models(self, refresh: bool = False) -> list[ModelRef]:
         async with self._activity():
@@ -355,11 +298,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
 
     async def open(self: _ProviderT) -> _ProviderT:
         await self._open_session()
-        return self
-
-    def _require_provider(self) -> AsyncProvider[Any, Any]:
-        if not self._opened:
-            raise ProviderError("Open the provider before using its resources")
         return self
 
     async def _close_session_resources(self) -> None:
@@ -451,10 +389,8 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             parameters={"chat": operation.chat, "message": operation.message},
         )
         prepared = await run_pipeline_unwrapped(self._send_pipeline, prep_context)
-        request = prepared.request
-        output_started = thinking_started = False
-        thinking_text = ""
-        stream = self._stream_provider_events(request)
+        translator = _StreamEventTranslator(self, operation)
+        stream = self._stream_provider_events(prepared.request)
         try:
             async for event in stream:
                 if isinstance(event, ConversationBound):
@@ -485,61 +421,11 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                             resource_id=event.conversation_id,
                             payload={"title": operation.chat.title, "local_id": operation.chat.id},
                         )
-                elif isinstance(event, ThoughtDelta) or (
-                    isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
-                ):
-                    delta = event.text
-                    replaced = False
-                    if isinstance(event, TextReplacement):
-                        replaced = not event.text.startswith(thinking_text)
-                        delta = event.text[len(thinking_text) :] if not replaced else ""
-                        thinking_text = event.text
-                    else:
-                        thinking_text += delta
-                    if not thinking_started:
-                        thinking_started = True
-                        yield ThinkingBegin()
-                    if isinstance(event, TextReplacement) and replaced:
-                        yield ThinkingReplace(text=thinking_text)
-                    elif delta:
-                        yield ThinkingDelta(delta=delta)
-                elif isinstance(event, TextReplacement):
-                    if not event.text and not output_started:
-                        continue
-                    if thinking_started:
-                        completed_thinking = thinking_text
-                        thinking_text = ""
-                        thinking_started = False
-                        yield ThinkingEnd(text=completed_thinking)
-                    if not output_started:
-                        output_started = True
-                        yield OutputBegin()
-                    yield OutputReplace(text=event.text)
-                elif isinstance(event, TextDelta) and event.text:
-                    if thinking_started:
-                        completed_thinking = thinking_text
-                        thinking_text = ""
-                        thinking_started = False
-                        yield ThinkingEnd(text=completed_thinking)
-                    if not output_started:
-                        output_started = True
-                        yield OutputBegin()
-                    yield OutputDelta(delta=event.text)
-                elif isinstance(event, MessageMetadata):
-                    if event.user_message_id:
-                        operation.message.id = event.user_message_id
-                        operation.message.remote_id = event.user_message_id
-                    if event.message_id:
-                        operation._assistant_message_id = event.message_id
-                    for source in _build_sources(event.sources, self._source_type):
-                        yield SourceDiscovered(source)
-                    for artifact in _build_artifacts(None, event.files, self._artifact_type):
-                        yield ArtifactDiscovered(artifact)
-
-            if thinking_started:
-                yield ThinkingEnd(text=thinking_text)
-            if output_started:
-                yield OutputEnd()
+                else:
+                    for item in translator.feed(event):
+                        yield item
+            for item in translator.finish():
+                yield item
         except (ProviderError, ValueError):
             raise
         except Exception as exc:
@@ -555,9 +441,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
 
     async def _authenticate(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "not_implemented")
-
-    def _session_status(self) -> SessionStatus:
-        return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
 
     async def _forget_session(self) -> SessionStatus:
         raise FeatureUnavailable(Capability.AUTH, "forget_session_not_implemented")
@@ -615,9 +498,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         current: ProjectData | None = None,
     ) -> ProjectData:
         raise FeatureUnavailable(Capability.RESOURCES, "not_implemented")
-
-    def _invalidate_project_cache(self, project_id: str) -> None:
-        del project_id
 
     async def authenticate(self) -> SessionStatus:
         return await self._authenticate_session()

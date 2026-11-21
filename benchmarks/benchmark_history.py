@@ -42,8 +42,14 @@ class _AsyncHistoryProvider(AsyncProvider):
 
 
 class _HistoryProvider(Provider):
-    def _make_async_provider(self, account: Account, **options) -> _AsyncHistoryProvider:
-        return _AsyncHistoryProvider(account, **options)
+    def __init__(self, account: Account, **options) -> None:
+        super().__init__(account, **options)
+        self.snapshot: Conversation
+
+    def _get_chat_data(self, conversation_id: str) -> Conversation:
+        if conversation_id != self.snapshot.id:
+            raise AssertionError("Unexpected benchmark chat")
+        return self.snapshot
 
 
 def _account() -> Account:
@@ -61,7 +67,7 @@ async def _async_provider(messages: int):
 @contextmanager
 def _provider(messages: int):
     provider = _HistoryProvider(_account())
-    provider._provider.snapshot = _history(messages)
+    provider.snapshot = _history(messages)
     with provider:
         yield provider
 

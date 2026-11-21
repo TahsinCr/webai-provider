@@ -75,12 +75,6 @@ def _fnv1a_finalize_py(hash_value: int) -> str:
     return f"{hash_value:08x}"
 
 
-def _fnv1a_step_utf16(hash_value: int, text: str) -> int:
-    if _native is not None:
-        return _native.fnv1a_step_utf16(hash_value, text)
-    return _fnv1a_step_utf16_py(hash_value, text)
-
-
 def _fnv1a_avalanche(text: str) -> str:
     """Match the Sentinel SDK's UTF-16 FNV-1a and avalanche mix."""
     if _native is not None:

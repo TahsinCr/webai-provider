@@ -6,10 +6,55 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from ..core.async_hooks import AsyncOperationHooks
+from ..core.hooks import OperationHooks
 from ..core.types import OperationContext
 from ..errors import OperationCancelledError
 
 _log = logging.getLogger(__name__)
+
+
+def execute_with_hooks_sync(
+    *,
+    operation_name: str,
+    context: OperationContext,
+    hooks_chain: Sequence[OperationHooks],
+    work: Callable[[OperationContext], Any],
+    on_success_event: Callable[[OperationContext], None] | None = None,
+    on_cancelled_event: Callable[[OperationContext], None] | None = None,
+    on_error_event: Callable[[OperationContext], None] | None = None,
+) -> Any:
+    """Execute one blocking operation through before -> work -> success/error/cancelled -> finally."""
+    try:
+        context = OperationHooks.run_before(hooks_chain, operation_name, context)
+        result = work(context)
+        context.result = result
+        if on_success_event is not None:
+            try:
+                on_success_event(context)
+            except Exception as event_error:
+                context.metadata["success_event_error"] = type(event_error).__name__
+                _log.warning(
+                    "Success event dispatch failed: operation=%s error_type=%s",
+                    operation_name,
+                    type(event_error).__name__,
+                )
+        OperationHooks.run_lifecycle(hooks_chain, "on_success", operation_name, context)
+        return context.result
+    except OperationCancelledError as error:
+        context.cancelled = True
+        context.error = error
+        if on_cancelled_event is not None:
+            on_cancelled_event(context)
+        OperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
+        raise
+    except Exception as error:
+        context.error = error
+        if on_error_event is not None:
+            on_error_event(context)
+        OperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
+        raise
+    finally:
+        OperationHooks.run_lifecycle(hooks_chain, "on_finally", operation_name, context)
 
 
 async def execute_with_hooks(

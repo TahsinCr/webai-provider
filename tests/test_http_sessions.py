@@ -17,10 +17,20 @@ from tests.fakes import FakeCookiesJar, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.accounts.credentials import read_session, save_session, save_session_async
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
-from webaiprovider.providers.claude.client import ClaudeClient, organization_from_bootstrap
+from webaiprovider.providers.claude.async_client import (
+    AsyncClaudeClient as ClaudeClient,
+)
+from webaiprovider.providers.claude.async_client import (
+    AsyncClaudeProjectEditor as ClaudeProjectEditor,
+)
+from webaiprovider.providers.claude.base import organization_from_bootstrap
 from webaiprovider.providers.claude.errors import ClaudeRequestNotSent
-from webaiprovider.providers.gemini.projects import GeminiProjectEditor
-from webaiprovider.providers.gemini.rpc import GeminiRPC
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiProjectEditor as GeminiProjectEditor,
+)
+from webaiprovider.providers.gemini.async_client import (
+    AsyncGeminiRPC as GeminiRPC,
+)
 from webaiprovider.transport import AsyncHttpSession, HttpSession
 
 
@@ -598,8 +608,6 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
 
 class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_uploaded_files_use_native_file_uuid_and_documents_stay_separate(self):
-        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
-
         pid = "11111111-1111-1111-1111-111111111111"
         transport = SimpleNamespace(
             base=AsyncMock(return_value="/api/organizations/org"),
@@ -626,8 +634,6 @@ class ClaudeFileDeletionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_deleted_foreign_source_cannot_be_submitted(self):
-        from webaiprovider.providers.claude.projects import ClaudeProjectEditor
-
         transport = SimpleNamespace(
             base=AsyncMock(return_value="/api/organizations/org"),
             request=AsyncMock(return_value={"docs": [], "files": []}),

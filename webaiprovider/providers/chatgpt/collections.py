@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import cast
-
 from ...resources.project.collections import AsyncProjectsCollection, ProjectsCollection
 from .resources import AsyncChatGPTProject, ChatGPTProject
 
@@ -26,8 +24,5 @@ class ChatGPTProjectsCollection(ProjectsCollection[ChatGPTProject]):
         instruction: str | None = None,
         memory_share: bool = True,
     ) -> ChatGPTProject:
-        collection = cast(AsyncChatGPTProjectsCollection, self._collection)
-        project = self._owner._call(
-            collection.create(title, instruction=instruction, memory_share=memory_share)
-        )
-        return self._wrap(project)
+        """Create a project with shared default memory or project-only memory."""
+        return self._create_project(title, instruction, memory_share=memory_share)

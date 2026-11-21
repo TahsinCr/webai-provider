@@ -1,16 +1,17 @@
-"""Bounded Gemini generation protocol and streaming disk uploads."""
+"""Bounded Gemini generation protocol, shared stream processors, and blocking uploads."""
 
-import asyncio
+from __future__ import annotations
+
 import json
 import mimetypes
 import os
 import stat
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
-from ...core.concurrency import gather_bounded
 from ...core.file_stat import same_file_version
 from ...core.json import json_loads
 from ...core.timing import current_send_timing
@@ -28,6 +29,7 @@ from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
 from ...transport.frames import JSPBFrameDecoder
+from .base import BASE, HEADERS
 from .errors import (
     GeminiCompatibilityError,
     GeminiError,
@@ -37,7 +39,6 @@ from .errors import (
 from .history import candidate_metadata, published_activity, published_thoughts
 from .media import GEMINI_FILE_RULE, candidate_files, resolve_image_links
 from .rpc import rpc_value
-from .session import BASE, HEADERS
 
 
 def _gemini_upload_spec(value):
@@ -75,31 +76,30 @@ def _gemini_upload_spec(value):
     return filename, content_type, size, content, local_path
 
 
-async def upload_files(session, items):
+def _prepare_upload_specs(items):
+    if len(items) > GEMINI_ATTACHMENTS.max_files:
+        raise ValueError("Too many Gemini attachments")
+    prepared = []
+    for value in items:
+        spec = _gemini_upload_spec(value)
+        before = os.stat(spec[4]) if spec[4] is not None else None
+        prepared.append((spec, before))
+    return prepared
+
+
+def upload_files_sync(client, items):
     return [
         [[reference], filename]
-        for reference, filename, _ in await upload_file_references(session, items)
+        for reference, filename, _ in upload_file_references_sync(client, items)
     ]
 
 
-async def upload_file_references(session, items):
+def upload_file_references_sync(client, items):
     from curl_cffi import CurlMime
 
-    if len(items) > GEMINI_ATTACHMENTS.max_files:
-        raise ValueError("Too many Gemini attachments")
-
-    def _prepare_specs():
-        prepared = []
-        for value in items:
-            spec = _gemini_upload_spec(value)
-            before = os.stat(spec[4]) if spec[4] is not None else None
-            prepared.append((spec, before))
-        return prepared
-
-    specs = await asyncio.to_thread(_prepare_specs)
-
-    async def upload_one(entry):
-        spec, before = entry
+    specs = _prepare_upload_specs(items)
+    results = []
+    for spec, before in specs:
         filename, content_type, _size, content, local_path = spec
         mime = CurlMime()
         try:
@@ -109,14 +109,14 @@ async def upload_file_references(session, items):
                 filename=filename,
                 **({"data": content} if content is not None else {"local_path": local_path}),
             )
-            response = await session.upload_transport.send(
+            response = client.upload_transport.send(
                 "POST",
                 "/upload",
                 headers={
                     "Origin": "https://gemini.google.com",
                     "Referer": "https://gemini.google.com/",
                     "X-Tenant-Id": "bard-storage",
-                    "Push-ID": session.push_id,
+                    "Push-ID": client.push_id,
                 },
                 multipart=mime,
                 impersonate="chrome",
@@ -124,14 +124,13 @@ async def upload_file_references(session, items):
                 allow_redirects=False,
             )
             if local_path is not None and before is not None:
-                after = await asyncio.to_thread(os.stat, local_path)
+                after = os.stat(local_path)
                 if not same_file_version(before, after):
                     raise GeminiError("File changed while it was being uploaded")
-            return response.text, filename, content_type
+            results.append((response.text, filename, content_type))
         finally:
             mime.close()
-
-    return await gather_bounded(specs, upload_one, limit=2)
+    return results
 
 
 def generation_request(session, request, metadata, files, notebook=None):
@@ -213,180 +212,155 @@ def generation_request(session, request, metadata, files, notebook=None):
     return headers, {"at": session.token, "f.req": json.dumps([None, json.dumps(body)])}
 
 
-async def generate(
-    session, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
-) -> AsyncGenerator[dict, None]:
-    from curl_cffi.const import CurlECode
-    from curl_cffi.requests.exceptions import RequestException
+class _GeminiFrameProcessor:
+    """Shared JSPB frame parser for sync and async Gemini generation streams."""
 
-    if files is None:
-        files = await upload_files(session, request.attachments)
-    headers, data = generation_request(session, request, metadata, files, notebook)
-    frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
-    completed = False
-    last_text = last_thoughts = ""
-    timing = current_send_timing()
-    sse_connect_started = time.perf_counter_ns() if timing is not None else None
-    response_opened = None
-    first_event = False
-    first_assistant_text = False
-    last_event_at = None
-    try:
-        async with session.transport.stream(
-            "POST",
-            "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
-            params=session.params(),
-            headers=headers,
-            data=data,
-            allow_redirects=False,
-            timeout=request_timeout,
-        ) as response:
-            response_opened = time.perf_counter_ns() if timing is not None else None
-            if sse_connect_started is not None:
-                timing.record("sse_connect_ms", response_opened - sse_connect_started)
+    def __init__(self, request: ProviderRequest, metadata: list[Any], timing: Any) -> None:
+        self.request = request
+        self.metadata = metadata
+        self.timing = timing
+        self.completed = False
+        self.last_text = ""
+        self.last_thoughts = ""
+        self.response_opened: int | None = None
+        self.first_event = False
+        self.first_assistant_text = False
+        self.last_event_at: int | None = None
 
-            async def parts():
-                async for chunk in response.aiter_bytes():
-                    for packet in frames.feed(chunk):
-                        for frame in packet if isinstance(packet, list) else (packet,):
-                            yield frame
-                for packet in frames.feed(b"", final=True):
-                    for frame in packet if isinstance(packet, list) else (packet,):
-                        yield frame
+    def feed_frame(self, frame: Any):
+        event_at = time.perf_counter_ns() if self.timing is not None else None
+        if self.timing is not None:
+            self.last_event_at = event_at
+            if not self.first_event and self.response_opened is not None and event_at is not None:
+                self.first_event = True
+                self.timing.record("sse_first_event_ms", event_at - self.response_opened)
+                self.timing.record(
+                    "button_to_first_sse_event_ms", event_at - self.timing.started_ns
+                )
+        if rpc_value(frame, 5, 2, 0, 1, 0):
+            raise GeminiGenerationRejected("Gemini rejected the generation request")
+        payload = rpc_value(frame, 2)
+        if not isinstance(payload, str):
+            return
+        try:
+            body = json_loads(payload)
+        except ValueError as error:
+            raise GeminiCompatibilityError("Gemini response body format has changed") from error
+        returned = rpc_value(body, 1)
+        if isinstance(returned, list) and returned:
+            cand_id = self.metadata[2] if len(self.metadata) > 2 else None
+            self.metadata = list(returned)
+            if cand_id and len(self.metadata) >= 2:
+                self.metadata.extend([None] * max(0, 3 - len(self.metadata)))
+                self.metadata[2] = cand_id
+            if rpc_value(self.metadata, 0) and not rpc_value(body, 4):
+                yield {"cid": self.metadata[0], "metadata": self.metadata, "context_only": True}
+        context = rpc_value(body, 25)
+        if isinstance(context, str):
+            self.completed = True
+        for candidate in rpc_value(body, 4, default=[]):
+            if not rpc_value(candidate, 0):
+                continue
+            cid = rpc_value(self.metadata, 0) or self.request.conversation_id
+            current = list(self.metadata)
+            current.extend([None] * max(0, 3 - len(current)))
+            current[2] = candidate[0]
+            if len(current) >= 3 and current[2]:
+                self.metadata = list(current)
+            response_complete = rpc_value(candidate, 8, 0) == 2
+            self.completed = self.completed or response_complete
+            text = rpc_value(candidate, 1, 0)
+            if isinstance(text, str) and text.startswith(
+                (
+                    "http://googleusercontent.com/card_content/",
+                    "https://googleusercontent.com/card_content/",
+                )
+            ):
+                text = rpc_value(candidate, 22, 0) or text
+            if (
+                self.timing is not None
+                and not self.first_assistant_text
+                and isinstance(text, str)
+                and text.strip()
+                and self.response_opened is not None
+                and event_at is not None
+            ):
+                self.first_assistant_text = True
+                self.timing.record("sse_first_assistant_text_ms", event_at - self.response_opened)
+                self.timing.record(
+                    "button_to_first_assistant_text_ms", event_at - self.timing.started_ns
+                )
+            self.last_text = text or self.last_text
+            activity = published_activity(candidate)
+            self.last_thoughts = published_thoughts(candidate, activity[0], self.last_thoughts)
+            yield {
+                "cid": cid,
+                "metadata": current,
+                "text": self.last_text,
+                "thoughts": self.last_thoughts,
+                "files": candidate_files(candidate),
+                "sources": candidate_metadata(candidate, activity)["sources"],
+                "response_complete": response_complete,
+            }
+        if isinstance(context, str):
+            self.metadata = [None] * 9 + [context]
+            yield {
+                "cid": self.request.conversation_id,
+                "metadata": self.metadata,
+                "context_only": True,
+            }
 
-            async for frame in parts():
-                event_at = time.perf_counter_ns() if timing is not None else None
-                if timing is not None:
-                    last_event_at = event_at
-                    if not first_event:
-                        first_event = True
-                        timing.record("sse_first_event_ms", event_at - response_opened)
-                        timing.record("button_to_first_sse_event_ms", event_at - timing.started_ns)
-                if rpc_value(frame, 5, 2, 0, 1, 0):
-                    raise GeminiGenerationRejected("Gemini rejected the generation request")
-                payload = rpc_value(frame, 2)
-                if not isinstance(payload, str):
-                    continue
-                try:
-                    body = json_loads(payload)
-                except ValueError as error:
-                    raise GeminiCompatibilityError(
-                        "Gemini response body format has changed"
-                    ) from error
-                returned = rpc_value(body, 1)
-                if isinstance(returned, list) and returned:
-                    cand_id = metadata[2] if len(metadata) > 2 else None
-                    metadata = list(returned)
-                    if cand_id and len(metadata) >= 2:
-                        metadata.extend([None] * max(0, 3 - len(metadata)))
-                        metadata[2] = cand_id
-                    if rpc_value(metadata, 0) and not rpc_value(body, 4):
-                        yield {
-                            "cid": metadata[0],
-                            "metadata": metadata,
-                            "context_only": True,
-                        }
-                context = rpc_value(body, 25)
-                if isinstance(context, str):
-                    completed = True
-                for candidate in rpc_value(body, 4, default=[]):
-                    if not rpc_value(candidate, 0):
-                        continue
-                    cid = rpc_value(metadata, 0) or request.conversation_id
-                    current = list(metadata)
-                    current.extend([None] * max(0, 3 - len(current)))
-                    current[2] = candidate[0]
-                    if len(current) >= 3 and current[2]:
-                        metadata = list(current)
-                    response_complete = rpc_value(candidate, 8, 0) == 2
-                    completed = completed or response_complete
-                    text = rpc_value(candidate, 1, 0)
-                    if isinstance(text, str) and text.startswith(
-                        (
-                            "http://googleusercontent.com/card_content/",
-                            "https://googleusercontent.com/card_content/",
-                        )
-                    ):
-                        text = rpc_value(candidate, 22, 0) or text
-                    if (
-                        timing is not None
-                        and not first_assistant_text
-                        and isinstance(text, str)
-                        and text.strip()
-                    ):
-                        first_assistant_text = True
-                        timing.record("sse_first_assistant_text_ms", event_at - response_opened)
-                        timing.record(
-                            "button_to_first_assistant_text_ms", event_at - timing.started_ns
-                        )
-                    last_text = text or last_text
-                    activity = published_activity(candidate)
-                    last_thoughts = published_thoughts(candidate, activity[0], last_thoughts)
-                    yield {
-                        "cid": cid,
-                        "metadata": current,
-                        "text": last_text,
-                        "thoughts": last_thoughts,
-                        "files": candidate_files(candidate),
-                        "sources": candidate_metadata(candidate, activity)["sources"],
-                        "response_complete": response_complete,
-                    }
-                if isinstance(context, str):
-                    metadata = [None] * 9 + [context]
-                    yield {
-                        "cid": request.conversation_id,
-                        "metadata": metadata,
-                        "context_only": True,
-                    }
-    except RequestException as error:
-        if error.code != CurlECode.OPERATION_TIMEDOUT:
-            raise
-        raise GeminiStreamError(
-            "The Gemini request timed out; it was not retried automatically "
-            "and conversation history was preserved."
-        ) from None
-    if completed and last_event_at is not None and response_opened is not None:
-        timing.record("sse_last_event_ms", last_event_at - response_opened)
-        timing.record("button_to_last_sse_event_ms", last_event_at - timing.started_ns)
-    if not completed:
-        raise GeminiStreamError(
-            "Gemini stream ended before completion; the request was not retried"
-        )
-    await session.persist(force=False)
+    def verify_complete(self) -> None:
+        if (
+            self.completed
+            and self.last_event_at is not None
+            and self.response_opened is not None
+            and self.timing is not None
+        ):
+            self.timing.record("sse_last_event_ms", self.last_event_at - self.response_opened)
+            self.timing.record(
+                "button_to_last_sse_event_ms", self.last_event_at - self.timing.started_ns
+            )
+        if not self.completed:
+            raise GeminiStreamError(
+                "Gemini stream ended before completion; the request was not retried"
+            )
 
 
-async def response_events(
-    request: ProviderRequest, *, prepare, request_timeout, media, remember
-) -> AsyncGenerator[ProviderStreamEvent, None]:
-    client, request, metadata, context, action_files = await prepare(request)
-    bound, visible, cid = bool(request.conversation_id), False, request.conversation_id
-    final_rid = None
-    raw_files: list[dict] = []
-    seen_file_keys: set[tuple[str, str]] = set()
-    raw_sources: list[dict] = []
-    seen_source_keys: set[str] = set()
-    rendered_by_channel = {"analysis": "", "final": ""}
-    async for chunk in generate(
-        client,
-        request,
-        metadata,
-        context,
-        files=action_files,
-        request_timeout=request_timeout,
-    ):
-        cid = chunk.get("cid") or cid
-        metadata = chunk["metadata"]
-        if cid and not bound and cid != request.conversation_id:
-            yield ConversationBound(cid)
-            bound = True
+class _GeminiResponseProcessor:
+    """Shared response event reducer for sync and async Gemini streams."""
+
+    def __init__(
+        self, request: ProviderRequest, metadata: list[Any], media: dict, remember
+    ) -> None:
+        self.request = request
+        self.metadata = metadata
+        self.media = media
+        self.remember = remember
+        self.bound = bool(request.conversation_id)
+        self.visible = False
+        self.cid = request.conversation_id
+        self.final_rid: str | None = None
+        self.raw_files: list[dict] = []
+        self.seen_file_keys: set[tuple[str, str]] = set()
+        self.raw_sources: list[dict] = []
+        self.seen_source_keys: set[str] = set()
+        self.rendered_by_channel = {"analysis": "", "final": ""}
+
+    def feed_chunk(self, chunk: dict[str, Any]):
+        self.cid = chunk.get("cid") or self.cid
+        self.metadata = chunk["metadata"]
+        if self.cid and not self.bound and self.cid != self.request.conversation_id:
+            yield ConversationBound(self.cid)
+            self.bound = True
         if chunk.get("context_only"):
-            continue
+            return
         images = chunk["files"]
         for image in images:
             key = (str(image["alias"]), str(image["url"]))
-            if key not in seen_file_keys:
-                seen_file_keys.add(key)
-                raw_files.append(
+            if key not in self.seen_file_keys:
+                self.seen_file_keys.add(key)
+                self.raw_files.append(
                     {
                         "id": image["alias"],
                         "name": image["name"],
@@ -394,10 +368,10 @@ async def response_events(
                         "media_type": image.get("media_type"),
                     }
                 )
-            media[cid, image["alias"]] = image
-            media[cid, image["url"]] = image
-        while len(media) > 256:
-            media.pop(next(iter(media)))
+            self.media[self.cid, image["alias"]] = image
+            self.media[self.cid, image["url"]] = image
+        while len(self.media) > 256:
+            self.media.pop(next(iter(self.media)))
         chunk_sources = chunk.get("sources")
         if chunk_sources:
             for item in chunk_sources:
@@ -405,38 +379,103 @@ async def response_events(
                     continue
                 source_key = item.get("url") or item.get("title")
                 if source_key:
-                    if source_key not in seen_source_keys:
-                        seen_source_keys.add(source_key)
-                        raw_sources.append(item)
-                elif item not in raw_sources:
-                    raw_sources.append(item)
-        visible = visible or bool(chunk["text"] or images)
+                    if source_key not in self.seen_source_keys:
+                        self.seen_source_keys.add(source_key)
+                        self.raw_sources.append(item)
+                elif item not in self.raw_sources:
+                    self.raw_sources.append(item)
+        self.visible = self.visible or bool(chunk["text"] or images)
         for channel, content_text in (
             ("analysis", chunk["thoughts"]),
             ("final", resolve_image_links(chunk["text"], images)),
         ):
-            rendered = rendered_by_channel[channel]
+            rendered = self.rendered_by_channel[channel]
             if not content_text or content_text == rendered:
                 continue
             if content_text.startswith(rendered):
                 yield TextDelta(content_text[len(rendered) :], channel)
             else:
                 yield TextReplacement(content_text, channel)
-            rendered_by_channel[channel] = content_text
+            self.rendered_by_channel[channel] = content_text
         if chunk.get("response_complete"):
             yield ResponseComplete()
-        rid = metadata[1] if len(metadata) > 1 else None
+        rid = self.metadata[1] if len(self.metadata) > 1 else None
         if rid:
-            final_rid = rid
-    if not visible or not cid:
-        raise GeminiStreamError("Gemini response did not complete; the request was not retried")
-    if final_rid:
-        yield MessageMetadata(
-            message_id=final_rid + ":model",
-            user_message_id=final_rid + ":user",
-            model=request.model,
-            effort=request.effort,
-            sources=sources_from({"sources": raw_sources}) if raw_sources else (),
-            files=files_from({"files": raw_files}, rule=GEMINI_FILE_RULE) if raw_files else (),
-        )
-    remember(cid, metadata, temporary=request.temporary)
+            self.final_rid = rid
+
+    def finish(self):
+        if not self.visible or not self.cid:
+            raise GeminiStreamError("Gemini response did not complete; the request was not retried")
+        if self.final_rid:
+            yield MessageMetadata(
+                message_id=self.final_rid + ":model",
+                user_message_id=self.final_rid + ":user",
+                model=self.request.model,
+                effort=self.request.effort,
+                sources=sources_from({"sources": self.raw_sources}) if self.raw_sources else (),
+                files=files_from({"files": self.raw_files}, rule=GEMINI_FILE_RULE)
+                if self.raw_files
+                else (),
+            )
+        self.remember(self.cid, self.metadata, temporary=self.request.temporary)
+
+
+def generate_sync(
+    client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
+) -> Iterator[dict]:
+    from curl_cffi.const import CurlECode
+    from curl_cffi.requests.exceptions import RequestException
+
+    if files is None:
+        files = upload_files_sync(client, request.attachments)
+    headers, data = generation_request(client, request, metadata, files, notebook)
+    frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
+    timing = current_send_timing()
+    sse_connect_started = time.perf_counter_ns() if timing is not None else None
+    processor = _GeminiFrameProcessor(request, metadata, timing)
+    try:
+        with client.transport.stream(
+            "POST",
+            "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
+            params=client.params(),
+            headers=headers,
+            data=data,
+            allow_redirects=False,
+            timeout=request_timeout,
+        ) as response:
+            processor.response_opened = time.perf_counter_ns() if timing is not None else None
+            if sse_connect_started is not None and processor.response_opened is not None:
+                timing.record("sse_connect_ms", processor.response_opened - sse_connect_started)
+            for chunk in response.iter_bytes():
+                for packet in frames.feed(chunk):
+                    for frame in packet if isinstance(packet, list) else (packet,):
+                        yield from processor.feed_frame(frame)
+            for packet in frames.feed(b"", final=True):
+                for frame in packet if isinstance(packet, list) else (packet,):
+                    yield from processor.feed_frame(frame)
+    except RequestException as error:
+        if error.code != CurlECode.OPERATION_TIMEDOUT:
+            raise
+        raise GeminiStreamError(
+            "The Gemini request timed out; it was not retried automatically "
+            "and conversation history was preserved."
+        ) from None
+    processor.verify_complete()
+    client.persist(force=False)
+
+
+def iter_response_events(
+    request: ProviderRequest, *, prepare, request_timeout, media, remember
+) -> Iterator[ProviderStreamEvent]:
+    client, request, metadata, context, action_files = prepare(request)
+    reducer = _GeminiResponseProcessor(request, metadata, media, remember)
+    for chunk in generate_sync(
+        client,
+        request,
+        metadata,
+        context,
+        files=action_files,
+        request_timeout=request_timeout,
+    ):
+        yield from reducer.feed_chunk(chunk)
+    yield from reducer.finish()

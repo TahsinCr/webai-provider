@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
+    from .async_client import AsyncChatGPTClient as AsyncChatGPTClient
     from .async_provider import AsyncChatGPTProvider as AsyncChatGPTProvider
     from .auth import BrowserSession as BrowserSession
     from .catalogs import ChatGPTModels as ChatGPTModels
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from .resources import ChatGPTSource as ChatGPTSource
 
 _EXPORTS = {
+    "AsyncChatGPTClient": "async_client",
     "BrowserSession": "auth",
     "ChatGPTClient": "client",
     "ChatGPTError": "errors",

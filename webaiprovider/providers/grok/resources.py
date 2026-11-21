@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from ...resources.chat.chat import (
     AsyncMovableChat,
-    Chat,
     MovableChat,
 )
 from ...resources.message.attachment import Attachment
@@ -17,7 +16,7 @@ class AsyncGrokChat(AsyncMovableChat):
     pass
 
 
-class GrokChat(MovableChat, Chat):
+class GrokChat(MovableChat):
     __slots__ = ()
 
 
@@ -40,7 +39,7 @@ class AsyncGrokMessage(AsyncMessage):
 
 class GrokMessage(Message):
     __slots__ = ()
-    _resource_type = AsyncGrokMessage
+    _attachment_type = GrokAttachment
 
 
 class GrokResponse(Response):

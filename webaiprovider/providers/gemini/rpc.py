@@ -1,6 +1,7 @@
-"""Gemini notebook RPCs through the account-owned HTTP session."""
+"""Gemini notebook RPC helpers and blocking RPC client."""
 
-import asyncio
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 
@@ -38,6 +39,51 @@ def rpc_parts(text, rpc):
                         ) from error
 
 
+def decode_rpc_response(response, rpc, allow_empty):
+    parts = []
+    for line in response.text.splitlines():
+        if not line.startswith('[["wrb.fr"'):
+            continue
+        try:
+            rows = json_loads(line)
+        except (ValueError, TypeError) as error:
+            raise GeminiCompatibilityError("Gemini notebook RPC response changed") from error
+        if not isinstance(rows, list):
+            raise GeminiCompatibilityError("Gemini notebook RPC response changed")
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 3:
+                continue
+            if row[0] == "wrb.fr" and row[1] == rpc:
+                if row[2] is None:
+                    if allow_empty:
+                        return []
+                    raise ProviderError("Gemini denied permission or the RPC contract changed.")
+                try:
+                    parts.append(json_loads(row[2]))
+                except (ValueError, TypeError) as error:
+                    raise GeminiCompatibilityError(
+                        "Gemini notebook RPC response changed"
+                    ) from error
+    if not parts:
+        raise ProviderError("Gemini notebook RPC response changed")
+    return parts
+
+
+def resolve_notebook_rpc_read(mode, *, remote=None, operation="list", cursor=None):
+    if mode != "notebooks":
+        raise ValueError("Unsupported Gemini RPC group")
+    if remote:
+        remote = notebook_id(remote)
+    if operation == "chats":
+        if not remote:
+            raise ValueError("Notebook required")
+        return "MaZiqc", [10, cursor, [None, None, 1, remote, 1]], "/notebooks/view", False
+    if remote:
+        path = "/notebook/" + remote.split("/")[1]
+        return "HcT8bb", [remote, ["en"], 0], path, True
+    return "CNgdBe", [2, ["en"], 0, None, [2]], "/notebooks/view", False
+
+
 @dataclass(frozen=True)
 class RPCPayload:
     rpcid: str
@@ -48,62 +94,25 @@ class RPCPayload:
 
 
 class GeminiRPC:
+    """Blocking Gemini RPC client running directly on the caller thread."""
+
     def __init__(self, connect):
         self.connect = connect
 
-    async def call(self, rpc, args, source_path="/notebooks/view", allow_empty=False):
-
-        client = await self.connect()
-        response = await client.batch(
+    def call(self, rpc, args, source_path="/notebooks/view", allow_empty=False):
+        client = self.connect()
+        response = client.batch(
             [RPCPayload(rpcid=rpc, payload=json.dumps(args))],
             source_path=source_path,
         )
-        if len(getattr(response, "content", b"")) >= 256 * 1024:
-            return await asyncio.to_thread(self._decode, response, rpc, allow_empty)
-        return self._decode(response, rpc, allow_empty)
+        return decode_rpc_response(response, rpc, allow_empty)
 
     @staticmethod
     def _decode(response, rpc, allow_empty):
-        parts = []
-        for line in response.text.splitlines():
-            if not line.startswith('[["wrb.fr"'):
-                continue
-            try:
-                rows = json_loads(line)
-            except (ValueError, TypeError) as error:
-                raise GeminiCompatibilityError("Gemini notebook RPC response changed") from error
-            if not isinstance(rows, list):
-                raise GeminiCompatibilityError("Gemini notebook RPC response changed")
-            for row in rows:
-                if not isinstance(row, list) or len(row) < 3:
-                    continue
-                if row[0] == "wrb.fr" and row[1] == rpc:
-                    if row[2] is None:
-                        if allow_empty:
-                            return []
-                        raise ProviderError("Gemini denied permission or the RPC contract changed.")
-                    try:
-                        parts.append(json_loads(row[2]))
-                    except (ValueError, TypeError) as error:
-                        raise GeminiCompatibilityError(
-                            "Gemini notebook RPC response changed"
-                        ) from error
-        if not parts:
-            raise ProviderError("Gemini notebook RPC response changed")
-        return parts
+        return decode_rpc_response(response, rpc, allow_empty)
 
-    async def read(self, mode, *, remote=None, operation="list", cursor=None):
-        if mode != "notebooks":
-            raise ValueError("Unsupported Gemini RPC group")
-        if remote:
-            remote = notebook_id(remote)
-        if operation == "chats":
-            if not remote:
-                raise ValueError("Notebook required")
-            rpc, args = "MaZiqc", [10, cursor, [None, None, 1, remote, 1]]
-        elif remote:
-            path = "/notebook/" + remote.split("/")[1]
-            return await self.call("HcT8bb", [remote, ["en"], 0], path, allow_empty=True)
-        else:
-            rpc, args = "CNgdBe", [2, ["en"], 0, None, [2]]
-        return await self.call(rpc, args, "/notebooks/view")
+    def read(self, mode, *, remote=None, operation="list", cursor=None):
+        rpc, args, path, allow_empty = resolve_notebook_rpc_read(
+            mode, remote=remote, operation=operation, cursor=cursor
+        )
+        return self.call(rpc, args, path, allow_empty=allow_empty)

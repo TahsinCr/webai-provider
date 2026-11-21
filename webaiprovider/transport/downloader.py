@@ -136,7 +136,7 @@ class _NativeDownloadResponse:
         return self.response.iter_content(chunk_size=chunk_size)
 
 
-async def download_source(
+def download_source_sync(
     source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
 ) -> bytes:
     from ..errors import ProviderError, UnsupportedOperationError
@@ -146,7 +146,7 @@ async def download_source(
             "Provider did not resolve this URL to a safe download source"
         )
 
-    def read_source() -> bytes:
+    try:
         factory = source.client_factory
         client = (
             NativeDownloadClient(allow_private=False)
@@ -171,10 +171,13 @@ async def download_source(
                     raise ProviderError("Downloaded file exceeds size limit")
                 chunks.append(chunk)
             return b"".join(chunks)
-
-    try:
-        return await asyncio.to_thread(read_source)
     except ProviderError:
         raise
     except Exception:
         raise ProviderError("File transfer failed") from None
+
+
+async def download_source(
+    source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
+) -> bytes:
+    return await asyncio.to_thread(download_source_sync, source, max_bytes=max_bytes)

@@ -7,10 +7,15 @@ from enum import Enum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
+from .accounts.status import SessionState, SessionStatus
+from .core.state import LifecycleState
 from .core.types import OperationContext
+from .errors import ProviderError
 
 if TYPE_CHECKING:
     from .accounts.account import Account
+    from .resources.model.model import ModelCatalog
+    from .resources.response.operation import StreamEvent
 
 
 class ProviderType(str, Enum):
@@ -139,6 +144,143 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} type={self.type.value!r} account={self.account.id!r}>"
+
+    def _active_transport(self) -> Any | None:
+        return None
+
+    def _session_status(self) -> SessionStatus:
+        return SessionStatus(SessionState.UNKNOWN, reason="not_implemented")
+
+    def _invalidate_project_cache(self, project_id: str) -> None:
+        del project_id
+
+    @property
+    def opened(self) -> bool:
+        return self._opened
+
+    @property
+    def closed(self) -> bool:
+        return self.lifecycle.state == LifecycleState.CLOSED
+
+    @property
+    def closing(self) -> bool:
+        return self.lifecycle.state == LifecycleState.CLOSING
+
+    @property
+    def lifecycle_state(self) -> LifecycleState:
+        return self.lifecycle.state
+
+    @property
+    def _has_event_subscribers(self) -> bool:
+        return bool(self.events.subscriber_count)
+
+    def _require_provider(self) -> Any:
+        if not self._opened:
+            raise ProviderError("Open the provider before using its resources")
+        return self
+
+    def _prime_models(self, catalog: ModelCatalog) -> None:
+        from .resources.model.types import _model_refs_from_catalog
+
+        self.models._items = tuple(_model_refs_from_catalog(self.id, catalog))
+
+
+class _StreamEventTranslator:
+    """Shared pure provider-stream-to-public-StreamEvent state machine (zero asyncio)."""
+
+    def __init__(self, provider: Any, operation: Any) -> None:
+        self._provider = provider
+        self._operation = operation
+        self.output_started = False
+        self.thinking_started = False
+        self.thinking_text = ""
+
+    def feed(self, event: Any) -> list[StreamEvent]:
+        from .resources.message.protocol import (
+            MessageMetadata,
+            TextDelta,
+            TextReplacement,
+            ThoughtDelta,
+        )
+        from .resources.response.collections import _build_artifacts, _build_sources
+        from .resources.response.operation import (
+            ArtifactDiscovered,
+            OutputBegin,
+            OutputDelta,
+            OutputReplace,
+            SourceDiscovered,
+            ThinkingBegin,
+            ThinkingDelta,
+            ThinkingEnd,
+            ThinkingReplace,
+        )
+
+        emitted: list[StreamEvent] = []
+        if isinstance(event, ThoughtDelta) or (
+            isinstance(event, (TextDelta, TextReplacement)) and event.channel == "analysis"
+        ):
+            delta = event.text
+            replaced = False
+            if isinstance(event, TextReplacement):
+                replaced = not event.text.startswith(self.thinking_text)
+                delta = event.text[len(self.thinking_text) :] if not replaced else ""
+                self.thinking_text = event.text
+            else:
+                self.thinking_text += delta
+            if not self.thinking_started:
+                self.thinking_started = True
+                emitted.append(ThinkingBegin())
+            if isinstance(event, TextReplacement) and replaced:
+                emitted.append(ThinkingReplace(text=self.thinking_text))
+            elif delta:
+                emitted.append(ThinkingDelta(delta=delta))
+            return emitted
+
+        if isinstance(event, TextReplacement):
+            if not event.text and not self.output_started:
+                return emitted
+            if self.thinking_started:
+                emitted.append(ThinkingEnd(text=self.thinking_text))
+                self.thinking_text = ""
+                self.thinking_started = False
+            if not self.output_started:
+                self.output_started = True
+                emitted.append(OutputBegin())
+            emitted.append(OutputReplace(text=event.text))
+            return emitted
+
+        if isinstance(event, TextDelta) and event.text:
+            if self.thinking_started:
+                emitted.append(ThinkingEnd(text=self.thinking_text))
+                self.thinking_text = ""
+                self.thinking_started = False
+            if not self.output_started:
+                self.output_started = True
+                emitted.append(OutputBegin())
+            emitted.append(OutputDelta(delta=event.text))
+            return emitted
+
+        if isinstance(event, MessageMetadata):
+            if event.user_message_id:
+                self._operation.message.id = event.user_message_id
+                self._operation.message.remote_id = event.user_message_id
+            if event.message_id:
+                self._operation._assistant_message_id = event.message_id
+            for source in _build_sources(event.sources, self._provider._source_type):
+                emitted.append(SourceDiscovered(source))
+            for artifact in _build_artifacts(None, event.files, self._provider._artifact_type):
+                emitted.append(ArtifactDiscovered(artifact))
+        return emitted
+
+    def finish(self) -> list[StreamEvent]:
+        from .resources.response.operation import OutputEnd, ThinkingEnd
+
+        emitted: list[StreamEvent] = []
+        if self.thinking_started:
+            emitted.append(ThinkingEnd(text=self.thinking_text))
+        if self.output_started:
+            emitted.append(OutputEnd())
+        return emitted
 
 
 def _provider_class(provider_type: ProviderType, *, asynchronous: bool):

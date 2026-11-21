@@ -269,6 +269,103 @@ _ReadParams = ParamSpec("_ReadParams")
 _ReadResult = TypeVar("_ReadResult")
 
 
+def _build_read_payload(
+    collection_name: str,
+    method_name: str,
+    read: _Read,
+    result: Any,
+    args: tuple[Any, ...],
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(result, tuple):
+        result_items = [result[0]]
+    elif isinstance(result, list):
+        result_items = result
+    else:
+        result_items = [] if result is None else [result]
+    complete = (
+        read.exhausted
+        and method_name == "list"
+        and "limit" in options
+        and options["limit"] is None
+        and (not args or args[0] is None)
+        and options.get("predicate") is None
+    )
+    return {
+        "collection": collection_name,
+        "operation": method_name,
+        "items": [_event_item(item) for item in result_items],
+        "complete": complete,
+        "include_projects": bool(options.get("include_projects")),
+        "started_ns": read.started_ns,
+    }
+
+
+def _build_change_payload(collection: str, action: str, item: Any) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    record = {"id": item} if isinstance(item, str) else _event_item(item)
+    if not record["id"]:
+        return None
+    return {
+        "collection": collection,
+        "action": action,
+        "items": [record],
+        "confirmed_ns": monotonic_ns(),
+    }
+
+
+def _report_read_sync(
+    method: Callable[_ReadParams, _ReadResult],
+) -> Callable[_ReadParams, _ReadResult]:
+    """Emit once for the outer synchronous query, only if the source was read."""
+
+    invoke: Callable[..., _ReadResult] = method
+
+    @wraps(method)
+    def report(self, *args, **options):
+        provider, scope_id = self._read_context()
+        current = _active_read.get()
+        if provider is None or (current is not None and current.collection is self):
+            return invoke(self, *args, **options)
+        read = _Read(self)
+        token = _active_read.set(read)
+        missing = None
+        try:
+            result = invoke(self, *args, **options)
+        except RemoteNotFound as error:
+            missing = error
+            result = None
+        finally:
+            _active_read.reset(token)
+        if read.started_ns is not None and provider._has_event_subscribers:
+            provider._emit_safe(
+                "collection.read.completed",
+                resource_id=scope_id,
+                payload=_build_read_payload(
+                    self._collection_name, method.__name__, read, result, args, options
+                ),
+            )
+        if missing is not None:
+            raise missing
+        return result
+
+    return cast("Callable[_ReadParams, _ReadResult]", report)
+
+
+def _publish_collection_change_sync(
+    provider, collection, action, item, *, scope_id=None, operation_id=None
+) -> None:
+    payload = _build_change_payload(collection, action, item)
+    if payload is not None:
+        provider._emit_safe(
+            "collection.changed",
+            operation_id=operation_id,
+            resource_id=scope_id,
+            payload=payload,
+        )
+
+
 def _report_read(
     method: Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]],
 ) -> Callable[_ReadParams, Coroutine[Any, Any, _ReadResult]]:
@@ -293,31 +390,12 @@ def _report_read(
         finally:
             _active_read.reset(token)
         if read.started_ns is not None and provider._has_event_subscribers:
-            if isinstance(result, tuple):
-                result_items = [result[0]]
-            elif isinstance(result, list):
-                result_items = result
-            else:
-                result_items = [] if result is None else [result]
-            complete = (
-                read.exhausted
-                and method.__name__ == "list"
-                and "limit" in options
-                and options["limit"] is None
-                and (not args or args[0] is None)
-                and options.get("predicate") is None
-            )
             await provider._emit_safe(
                 "collection.read.completed",
                 resource_id=scope_id,
-                payload={
-                    "collection": self._collection_name,
-                    "operation": method.__name__,
-                    "items": [_event_item(item) for item in result_items],
-                    "complete": complete,
-                    "include_projects": bool(options.get("include_projects")),
-                    "started_ns": read.started_ns,
-                },
+                payload=_build_read_payload(
+                    self._collection_name, method.__name__, read, result, args, options
+                ),
             )
         if missing is not None:
             raise missing
@@ -329,20 +407,13 @@ def _report_read(
 async def _publish_collection_change(
     provider, collection, action, item, *, scope_id=None, operation_id=None
 ):
-    if item is None:
-        return
-    record = {"id": item} if isinstance(item, str) else _event_item(item)
-    if record["id"]:
+    payload = _build_change_payload(collection, action, item)
+    if payload is not None:
         await provider._emit_safe(
             "collection.changed",
             operation_id=operation_id,
             resource_id=scope_id,
-            payload={
-                "collection": collection,
-                "action": action,
-                "items": [record],
-                "confirmed_ns": monotonic_ns(),
-            },
+            payload=payload,
         )
 
 
@@ -591,6 +662,59 @@ class AsyncCollection(AsyncBaseCollection[_ItemT]):
         return await self._collect_items(predicate, limit=limit)
 
 
+class _PageState(Generic[T]):
+    """Shared pagination, deduplication, and cursor-guard state for sync/async remote collections."""
+
+    def __init__(self, collection: Any, validated_limit: int | None) -> None:
+        self.collection = collection
+        self.validated = validated_limit
+        self.cursor: str | None = None
+        self.seen_cursors: set[str] = set()
+        self.seen_keys: set[str] = set()
+        self.collected = 0
+
+    def next_page_limit(self) -> int:
+        remaining = None if self.validated is None else self.validated - self.collected
+        page_size = self.collection._default_page_size
+        if self.cursor is not None and self.collection._followup_page_size:
+            page_size = self.collection._followup_page_size
+        return min(page_size, remaining) if remaining is not None else page_size
+
+    def consume(self, page: Any) -> tuple[list[T], bool]:
+        if not isinstance(page, Page):
+            raise ProviderError("Provider returned an invalid pagination page")
+        unique_batch: list[T] = []
+        for item in page.items:
+            key = self.collection._item_key(item)
+            if key in self.seen_keys:
+                continue
+            self.seen_keys.add(key)
+            unique_batch.append(item)
+            self.collected += 1
+            if self.validated is not None and self.collected >= self.validated:
+                break
+        if self.validated is not None and self.collected >= self.validated:
+            return unique_batch, True
+        next_cursor = page.next_cursor
+        if next_cursor is None:
+            read = _active_read.get()
+            if read is not None and read.collection is self.collection:
+                read.exhausted = True
+            return unique_batch, True
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in self.seen_cursors:
+            raise ProviderError("Provider pagination returned an invalid or repeating cursor")
+        self.seen_cursors.add(next_cursor)
+        self.cursor = next_cursor
+        return unique_batch, False
+
+    def attach_partial_count(self, error: Exception) -> None:
+        if not hasattr(error, "partial_count"):
+            try:
+                setattr(error, "partial_count", self.collected)
+            except Exception:
+                pass
+
+
 class AsyncRemoteCollection(AsyncBaseCollection[T]):
     """Asynchronous remote collection with hidden pagination and unified queries."""
 
@@ -629,127 +753,180 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
         validated = validate_limit(limit)
         if validated == 0:
             return
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        seen_keys: set[str] = set()
-        collected = 0
+        state = _PageState[T](self, validated)
         try:
             for _ in range(self._max_remote_pages):
-                remaining = None if validated is None else validated - collected
-                page_size = self._default_page_size
-                if cursor is not None and self._followup_page_size:
-                    page_size = self._followup_page_size
-                page_limit = min(page_size, remaining) if remaining is not None else page_size
                 self._mark_remote_read()
-                page = await self._fetch_page(cursor, page_limit, **options)
-                if not isinstance(page, Page):
-                    raise ProviderError("Provider returned an invalid pagination page")
-                unique_batch: list[T] = []
-                for item in page.items:
-                    key = self._item_key(item)
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    unique_batch.append(item)
-                    collected += 1
-                    if validated is not None and collected >= validated:
-                        break
-                if unique_batch:
-                    yield unique_batch
-                if validated is not None and collected >= validated:
+                page = await self._fetch_page(state.cursor, state.next_page_limit(), **options)
+                batch, done = state.consume(page)
+                if batch:
+                    yield batch
+                if done:
                     return
-                next_cursor = page.next_cursor
-                if next_cursor is None:
-                    read = _active_read.get()
-                    if read is not None and read.collection is self:
-                        read.exhausted = True
-                    return
-                if (
-                    not isinstance(next_cursor, str)
-                    or not next_cursor
-                    or next_cursor in seen_cursors
-                ):
-                    raise ProviderError(
-                        "Provider pagination returned an invalid or repeating cursor"
-                    )
-                seen_cursors.add(next_cursor)
-                cursor = next_cursor
             raise ProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
         except Exception as error:
-            if not hasattr(error, "partial_count"):
-                try:
-                    setattr(error, "partial_count", collected)
-                except Exception:
-                    pass
+            state.attach_partial_count(error)
             raise
 
 
-class RemoteCollection(BaseCollection[U], Generic[_ItemT, U]):
-    """Synchronous view of the provider's remote collection."""
+class RemoteCollection(BaseCollection[T]):
+    """Synchronous remote collection with hidden pagination and unified queries."""
 
-    def __init__(self, owner: Provider[Any, Any], collection: AsyncBaseCollection[_ItemT]) -> None:
-        self._owner = owner
-        self._collection = collection
+    _collection_name = ""
+    _max_remote_pages = 2000
+    _default_page_size = 50
+    _followup_page_size: int | None = None
 
-    def _wrap(self, item: _ItemT) -> U:
-        return item  # type: ignore[return-value]
+    def _read_context(self) -> tuple[Provider[Any, Any] | None, str | None]:
+        return self._read_provider, self._scope_id
 
-    def _wrap_optional(self, item: _ItemT | None) -> U | None:
-        return self._wrap(item) if item is not None else None
+    @property
+    def _read_provider(self) -> Provider[Any, Any] | None:
+        return None
 
-    def _wrap_predicate(
-        self, predicate: Callable[[U], bool] | None
-    ) -> Callable[[_ItemT], bool] | None:
-        if predicate is None:
-            return None
+    @property
+    def _scope_id(self) -> str | None:
+        return None
+
+    def _mark_remote_read(self, started_ns: int | None = None) -> None:
+        read = _active_read.get()
+        if read is not None and read.collection is self and read.started_ns is None:
+            read.started_ns = monotonic_ns() if started_ns is None else started_ns
+
+    def _item_key(self, item: object) -> str:
+        return getattr(item, "remote_id", None) or self._extract_id(item) or str(id(item))
+
+    def _fetch_page(
+        self,
+        cursor: str | None,
+        page_limit: int | None,
+        **options: Any,
+    ) -> Page[T]:
+        raise NotImplementedError("This collection does not use pagination")
+
+    def _fetch_by_id(self, item_id: str) -> T | None:
+        return None
+
+    def _iter_batches(
+        self,
+        *,
+        limit: int | None = None,
+        **options: Any,
+    ) -> Iterator[Sequence[T]]:
+        validated = validate_limit(limit)
+        if validated == 0:
+            return
+        state = _PageState[T](self, validated)
+        try:
+            for _ in range(self._max_remote_pages):
+                self._mark_remote_read()
+                page = self._fetch_page(state.cursor, state.next_page_limit(), **options)
+                batch, done = state.consume(page)
+                if batch:
+                    yield batch
+                if done:
+                    return
+            raise ProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
+        except Exception as error:
+            state.attach_partial_count(error)
+            raise
+
+    def _collect_items(
+        self,
+        predicate: Callable[[T], bool] | None = None,
+        *,
+        limit: int | None = None,
+        **options: Any,
+    ) -> list[T]:
         validate_predicate(predicate)
-        return lambda item: bool(predicate(self._wrap(item)))
+        validated = validate_limit(limit)
+        if validated == 0:
+            return []
+        if predicate is None:
+            items: list[T] = []
+            for batch in self._iter_batches(limit=validated, **options):
+                items.extend(batch)
+            return items
+        matched: list[T] = []
+        for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate(item):
+                    matched.append(item)
+                    if validated is not None and len(matched) >= validated:
+                        return matched
+        return matched
 
+    @_report_read_sync
     def list(
         self,
-        predicate: Callable[[U], bool] | None = None,
+        predicate: Callable[[T], bool] | None = None,
         *,
         limit: int | None = 50,
         **options: Any,
-    ) -> list[U]:
-        async_pred = self._wrap_predicate(predicate)
-        return [
-            self._wrap(item)
-            for item in self._owner._call(self._collection.list(async_pred, limit=limit, **options))
-        ]
+    ) -> list[T]:
+        return self._collect_items(predicate, limit=limit, **options)
 
-    def get(self, item_id: str, /) -> U:
-        return self._wrap(self._owner._call(self._collection.get(item_id)))
+    @_report_read_sync
+    def get(self, item_id: str, /) -> T:
+        direct = self._fetch_by_id(item_id)
+        if direct is not None:
+            return direct
+        return self._find_id(item_id)
 
+    def _find_id(self, item_id: str, **options: Any) -> T:
+        item = self.first(lambda item: self._item_matches_exact_id(item, item_id), **options)
+        if item is None:
+            raise RemoteNotFound(f"Record was not found: {item_id}")
+        return item
+
+    @_report_read_sync
     def first(
         self,
-        predicate: Callable[[U], bool] | None = None,
+        predicate: Callable[[T], bool] | None = None,
         /,
         **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(self._owner._call(self._collection.first(async_pred, **options)))
+    ) -> T | None:
+        validate_predicate(predicate)
+        page_limit = 1 if predicate is None else None
+        for batch in self._iter_batches(limit=page_limit, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    return item
+        return None
 
+    @_report_read_sync
     def last(
         self,
-        predicate: Callable[[U], bool] | None = None,
+        predicate: Callable[[T], bool] | None = None,
         /,
         **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(self._owner._call(self._collection.last(async_pred, **options)))
+    ) -> T | None:
+        validate_predicate(predicate)
+        matched: T | None = None
+        for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    matched = item
+        return matched
 
+    @_report_read_sync
     def single(
         self,
-        predicate: Callable[[U], bool] | None = None,
+        predicate: Callable[[T], bool] | None = None,
         /,
         **options: Any,
-    ) -> U | None:
-        async_pred = self._wrap_predicate(predicate)
-        return self._wrap_optional(
-            self._owner._call(self._collection.single(async_pred, **options))
-        )
+    ) -> T | None:
+        validate_predicate(predicate)
+        matches: list[T] = []
+        for batch in self._iter_batches(limit=None, **options):
+            for item in batch:
+                if predicate is None or predicate(item):
+                    matches.append(item)
+                    if len(matches) > 1:
+                        raise self._ambiguous(matches)
+        return matches[0] if matches else None
 
+    @_report_read_sync
     def find(
         self,
         query: str,
@@ -761,21 +938,15 @@ class RemoteCollection(BaseCollection[U], Generic[_ItemT, U]):
         single: bool = False,
         last: bool = False,
         **options: Any,
-    ) -> U | None:
-        return self._wrap_optional(
-            self._owner._call(
-                self._collection.find(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
-                    single=single,
-                    last=last,
-                    **options,
-                )
-            )
-        )
+    ) -> T | None:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        if single:
+            return self.single(pred, **options)
+        if last:
+            return self.last(pred, **options)
+        return self.first(pred, **options)
 
+    @_report_read_sync
     def search(
         self,
         query: str,
@@ -786,17 +957,6 @@ class RemoteCollection(BaseCollection[U], Generic[_ItemT, U]):
         endswith: bool = False,
         limit: int | None = None,
         **options: Any,
-    ) -> list[U]:
-        return [
-            self._wrap(item)
-            for item in self._owner._call(
-                self._collection.search(
-                    query,
-                    exact=exact,
-                    startswith=startswith,
-                    endswith=endswith,
-                    limit=limit,
-                    **options,
-                )
-            )
-        ]
+    ) -> list[T]:
+        pred = self._query_predicate(query, exact=exact, startswith=startswith, endswith=endswith)
+        return self.list(pred, limit=limit, **options)

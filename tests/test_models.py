@@ -4,7 +4,7 @@ import asyncio
 import copy
 import threading
 import unittest
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, call
 
 from webaiprovider.accounts import Account
 from webaiprovider.async_provider import AsyncProvider
@@ -333,21 +333,27 @@ class BlockingCatalogTests(unittest.TestCase):
         provider = Provider(Account.from_cookies("grok", {}))
         self.addCleanup(provider.close)
         model = ModelRef("grok", "fast", "Grok 3")
-        loader = AsyncMock(return_value=[model])
-        provider._provider.models._loader = loader
+        caller = threading.get_ident()
+        loader_threads: list[int] = []
+
+        def load(refresh: bool = False) -> list[ModelRef]:
+            loader_threads.append(threading.get_ident())
+            self.assertTrue(refresh)
+            return [model]
+
+        provider.models._loader = load
 
         self.assertEqual(provider.models.list(), [model])
-        caller = threading.get_ident()
 
         def predicate(item):
             self.assertEqual(threading.get_ident(), caller)
             return item is model
 
-        with patch.object(provider, "_call", side_effect=AssertionError("Unexpected loop call")):
-            self.assertEqual(provider.models.list(predicate, limit=1), [model])
-            self.assertIs(provider.models.get(model.id), model)
-            self.assertEqual(provider.models.resolve(model), ModelSelection(model))
-        loader.assert_awaited_once_with(True)
+        self.assertFalse(hasattr(provider, "_loop"))
+        self.assertEqual(provider.models.list(predicate, limit=1), [model])
+        self.assertIs(provider.models.get(model.id), model)
+        self.assertEqual(provider.models.resolve(model), ModelSelection(model))
+        self.assertEqual(loader_threads, [caller])
 
 
 class EntitlementTests(unittest.TestCase):

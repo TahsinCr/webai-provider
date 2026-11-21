@@ -509,10 +509,11 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         sync_provider = ChatGPTProvider(acc)
         try:
-            sync_branched = sync_provider._wrap_chat(branched_chat)
-            self.assertEqual(sync_branched.metadata, {**branch_meta, "local_only": True})
-            sync_branched.metadata = {"custom": 1}
-            self.assertEqual(branched_chat.metadata, {"custom": 1})
+            sync_chat = sync_provider.chats.create("Branch copy")
+            sync_chat.metadata = dict(branch_meta)
+            self.assertEqual(sync_chat.metadata, branch_meta)
+            sync_chat.metadata = {"custom": 1}
+            self.assertEqual(sync_chat.metadata, {"custom": 1})
         finally:
             sync_provider.close()
 
@@ -542,11 +543,12 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(asynchronous.account_id, account.id)
                     self.assertIs(asynchronous.type, ProviderType.parse(kind))
                     self.assertIs(type(synchronous), native_sync)
-                    self.assertIs(type(synchronous._provider), native_async)
-                    self.assertIs(synchronous.capabilities, synchronous._provider.capabilities)
+                    self.assertFalse(hasattr(synchronous, "_provider"))
+                    self.assertFalse(hasattr(synchronous, "_loop"))
+                    self.assertEqual(synchronous.capabilities, asynchronous.capabilities)
                     for chat_type in (
                         type(await asynchronous.chats.create()),
-                        type(synchronous.chats._wrap(asynchronous.chats._new())),
+                        type(synchronous.chats.create()),
                     ):
                         for operation in ("branch", "move_to"):
                             self.assertEqual(
@@ -586,11 +588,18 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider._create_project_data.await_args.kwargs["memory_share"], False)
         await provider.close()
 
-    async def test_sync_provider_rejects_blocking_inside_running_loop(self) -> None:
+    def test_sync_provider_has_no_loop_bridge_and_runs_on_caller_thread(self) -> None:
         provider = Provider(Account.from_cookies("chatgpt", {"cookie": "test"}))
-        with self.assertRaisesRegex(RuntimeError, "cannot block an event loop"):
-            provider.open()
+        self.assertFalse(hasattr(provider, "_loop"))
+        self.assertFalse(hasattr(provider, "_provider"))
+        self.assertFalse(hasattr(provider, "_call"))
+        caller = threading.get_ident()
+        threads: list[int] = []
+        provider._prepare_session = lambda: threads.append(threading.get_ident())
+        provider._close_session = lambda: threads.append(threading.get_ident())
+        provider.open()
         provider.close()
+        self.assertEqual(threads, [caller, caller])
 
     def test_catalogs_and_selection_resolver(self) -> None:
         self.assertEqual(ChatGPTModels.GPT_6_INSTANT.id, "gpt-6-instant")
@@ -1062,34 +1071,29 @@ class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_run_on_the_caller(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class RecordingChatGPTProvider(AsyncChatGPTProvider):
+        class RecordingChatGPTProvider(ChatGPTProvider):
             def __init__(self, account: Account, **options) -> None:
                 self.thread_ids: list[int] = []
                 self.memory_share = None
                 super().__init__(account, **options)
 
-            async def _prepare_session(self) -> None:
+            def _prepare_session(self) -> None:
                 self.thread_ids.append(threading.get_ident())
 
-            async def _close_session(self) -> None:
+            def _close_session(self) -> None:
                 self.thread_ids.append(threading.get_ident())
 
-            async def _create_project_data(self, name, instructions="", **opts):
+            def _create_project_data(self, name, instructions="", **opts):
                 self.thread_ids.append(threading.get_ident())
                 self.memory_share = opts.get("memory_share", True)
                 return NativeProject("project-1", name, instructions)
 
-            async def _stream_provider_events(self, _request):
+            def _stream_provider_events(self, _request):
                 self.thread_ids.append(threading.get_ident())
                 yield TextDelta("done")
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with (
-            patch.object(
-                ChatGPTProvider, "_make_async_provider", side_effect=RecordingChatGPTProvider
-            ),
-            ChatGPTProvider(account) as provider,
-        ):
+        with RecordingChatGPTProvider(account) as provider:
             project = provider.projects.create("Notes", memory_share=False)
             chat = provider.chats.create("Draft", project=project)
 
@@ -1110,9 +1114,9 @@ class TestSyncApi(unittest.TestCase):
             [event.event for event in events],
             ["output.begin", "output.delta", "output.end"],
         )
-        self.assertFalse(provider._provider.memory_share)
-        self.assertTrue(provider._provider.thread_ids)
-        self.assertEqual(set(provider._provider.thread_ids), {threading.get_ident()})
+        self.assertFalse(provider.memory_share)
+        self.assertTrue(provider.thread_ids)
+        self.assertEqual(set(provider.thread_ids), {threading.get_ident()})
 
     def test_sync_include_projects_and_chatgpt_move_to(self) -> None:
         from webaiprovider.base import Capability
@@ -1121,18 +1125,18 @@ class TestSyncApi(unittest.TestCase):
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class RecordingChatGPTProvider(AsyncChatGPTProvider):
+        class RecordingChatGPTProvider(ChatGPTProvider):
             def __init__(self, account: Account, **options) -> None:
                 self.moved: list[tuple[str, str | None]] = []
                 super().__init__(account, **options)
 
-            async def _prepare_session(self) -> None:
+            def _prepare_session(self) -> None:
                 return None
 
-            async def _close_session(self) -> None:
+            def _close_session(self) -> None:
                 return None
 
-            async def _list_projects_data(self, *, cursor: str | None = None):
+            def _list_projects_data(self, *, cursor: str | None = None):
                 del cursor
                 return Page(
                     (
@@ -1142,10 +1146,10 @@ class TestSyncApi(unittest.TestCase):
                     None,
                 )
 
-            async def _list_project_chats_data(
+            def _list_project_chats_data(
                 self, project_id: str, *, cursor: str | None = None, limit=None
             ):
-                del cursor
+                del cursor, limit
                 if project_id == "p-1":
                     return Page(
                         (
@@ -1159,38 +1163,34 @@ class TestSyncApi(unittest.TestCase):
                     )
                 return Page((), None)
 
-            async def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
+            def _list_chats_data(self, *, cursor: str | None = None, limit: int = 50):
                 del cursor, limit
                 return Page(
                     (Conversation("c-loose", "Loose"),),
                     None,
                 )
 
-            async def _get_chat_data(self, conversation_id: str):
+            def _get_chat_data(self, conversation_id: str):
                 del conversation_id
                 raise FeatureUnavailable(Capability.CHAT)
 
-            async def _get_project_data(self, project_id: str):
+            def _get_project_data(self, project_id: str):
                 del project_id
                 raise FeatureUnavailable(Capability.PROJECTS)
 
-            async def _get_chat_metadata(self, conversation_id: str) -> Conversation:
+            def _get_chat_metadata(self, conversation_id: str) -> Conversation:
                 project_id = self.moved[-1][1] if self.moved else None
                 project = ProjectData(project_id, "") if project_id else None
                 return Conversation(conversation_id, "Loose", project=project)
 
-            async def _move_chat_data(
+            def _move_chat_data(
                 self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
             ) -> None:
+                del source_project_id
                 self.moved.append((conversation_id, project_id))
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with (
-            patch.object(
-                ChatGPTProvider, "_make_async_provider", side_effect=RecordingChatGPTProvider
-            ),
-            ChatGPTProvider(account) as provider,
-        ):
+        with RecordingChatGPTProvider(account) as provider:
             self.assertEqual(provider.chats.search("Proj Chat"), [])
             found = provider.chats.search("Proj Chat", include_projects=True)
             self.assertEqual(len(found), 1)
@@ -1217,7 +1217,7 @@ class TestSyncApi(unittest.TestCase):
             detached = moved.move_to(None)
             self.assertIsNone(detached.project)
             self.assertEqual(
-                provider._provider.moved,
+                provider.moved,
                 [("c-loose", "p-1"), ("c-loose", "p-2"), ("c-loose", None)],
             )
 
@@ -1436,50 +1436,44 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         deltas = [TextDelta(f"t{i}") for i in range(12)]
 
-        class BufferedStreamProvider(AsyncChatGPTProvider):
-            async def _prepare_session(self) -> None:
+        class BufferedStreamProvider(ChatGPTProvider):
+            def __init__(self, account: Account, **options) -> None:
+                self.stream_threads: list[int] = []
+                super().__init__(account, **options)
+
+            def _prepare_session(self) -> None:
                 return None
 
-            async def _close_session(self) -> None:
+            def _close_session(self) -> None:
                 return None
 
-            async def _stream_provider_events(self, _request):
+            def _stream_provider_events(self, _request):
+                self.stream_threads.append(threading.get_ident())
                 yield ConversationBound("chat-1")
                 for d in deltas:
                     yield d
                 yield ResponseComplete()
 
         account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        with (
-            patch.object(
-                ChatGPTProvider, "_make_async_provider", side_effect=BufferedStreamProvider
-            ),
-            ChatGPTProvider(account) as provider,
-        ):
+        caller = threading.get_ident()
+        with BufferedStreamProvider(account) as provider:
             chat = provider.chats.create()
-            with patch.object(provider, "_call", wraps=provider._call) as loop_calls:
-                operation = chat.responses.create("hello")
-                events = list(operation.stream())
-            call_count = loop_calls.call_count
+            operation = chat.responses.create("hello")
+            events = list(operation.stream())
 
         received_deltas = [event.delta for event in events if isinstance(event, OutputDelta)]
         self.assertEqual(received_deltas, [f"t{i}" for i in range(12)])
         self.assertIsInstance(events[-1], OutputEnd)
-        self.assertLessEqual(call_count, 5)
+        self.assertEqual(provider.stream_threads, [caller])
 
         class FailingBufferedProvider(BufferedStreamProvider):
-            async def _stream_provider_events(self, _request):
+            def _stream_provider_events(self, _request):
                 yield TextDelta("d0")
                 yield TextDelta("d1")
                 yield TextDelta("d2")
                 raise ProviderError("stream aborted")
 
-        with (
-            patch.object(
-                ChatGPTProvider, "_make_async_provider", side_effect=FailingBufferedProvider
-            ),
-            ChatGPTProvider(account) as provider,
-        ):
+        with FailingBufferedProvider(account) as provider:
             chat = provider.chats.create()
             collected = []
             with self.assertRaisesRegex(ProviderError, "stream aborted"):
@@ -1490,23 +1484,18 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 ["d0", "d1", "d2"],
             )
 
-            class CustomAsyncOp(AsyncMessageOperation):
-                async def stream(self):
+            class CustomSyncOp(MessageOperation):
+                def stream(self):
                     yield OutputBegin()
                     yield OutputDelta("custom")
                     yield OutputEnd()
 
             sync_base = chat.responses.create("hello")
-
-            async def make_custom():
-                return CustomAsyncOp(
-                    sync_base._operation.chat,
-                    sync_base._operation.message,
-                    executor=sync_base._operation._executor,
-                )
-
-            custom_async_op = provider._call(make_custom())
-            custom_sync_op = MessageOperation(provider, custom_async_op)
+            custom_sync_op = CustomSyncOp(
+                sync_base.chat,
+                sync_base.message,
+                executor=sync_base._executor,
+            )
             self.assertEqual(
                 [type(e) for e in custom_sync_op.stream()],
                 [OutputBegin, OutputDelta, OutputEnd],

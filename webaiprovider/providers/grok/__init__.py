@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
+    from .async_client import AsyncGrokClient as AsyncGrokClient
     from .async_provider import AsyncGrokProvider as AsyncGrokProvider
     from .catalogs import GrokModels as GrokModels
     from .client import GrokClient as GrokClient
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from .resources import GrokSource as GrokSource
 
 _EXPORTS = {
+    "AsyncGrokClient": "async_client",
     "GrokClient": "client",
     "GrokModels": "catalogs",
     "GrokChat": "resources",

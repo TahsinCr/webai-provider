@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from typing import cast
-
 from ...resources.chat.chat import (
     AsyncBranchableChat,
     AsyncMovableChat,
     BranchableChat,
-    Chat,
     MovableChat,
 )
 from ...resources.message.attachment import Attachment
@@ -23,14 +20,12 @@ class AsyncChatGPTChat(AsyncBranchableChat, AsyncMovableChat):
         return await self._move_to(project, allow_reassignment=True)
 
 
-class ChatGPTChat(BranchableChat, MovableChat, Chat):
+class ChatGPTChat(BranchableChat, MovableChat):
     __slots__ = ()
 
-    def move_to(self, project: Project | AsyncProject | str | None) -> ChatGPTChat:
+    def move_to(self, project: Project | str | None) -> ChatGPTChat:
         """Assign, transfer, or detach this conversation."""
-        target = project._resource if isinstance(project, Project) else project
-        self._owner._call(cast(AsyncChatGPTChat, self._resource).move_to(target))
-        return self
+        return self._move_to(project, allow_reassignment=True)
 
 
 class AsyncChatGPTProject(AsyncProject):
@@ -52,7 +47,7 @@ class AsyncChatGPTMessage(AsyncMessage):
 
 class ChatGPTMessage(Message):
     __slots__ = ()
-    _resource_type = AsyncChatGPTMessage
+    _attachment_type = ChatGPTAttachment
 
 
 class ChatGPTResponse(Response):

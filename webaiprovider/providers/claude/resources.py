@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from ...resources.chat.chat import (
     AsyncMovableChat,
-    Chat,
     MovableChat,
 )
 from ...resources.message.attachment import Attachment
@@ -17,7 +16,7 @@ class AsyncClaudeChat(AsyncMovableChat):
     pass
 
 
-class ClaudeChat(MovableChat, Chat):
+class ClaudeChat(MovableChat):
     __slots__ = ()
 
 
@@ -40,7 +39,7 @@ class AsyncClaudeMessage(AsyncMessage):
 
 class ClaudeMessage(Message):
     __slots__ = ()
-    _resource_type = AsyncClaudeMessage
+    _attachment_type = ClaudeAttachment
 
 
 class ClaudeResponse(Response):

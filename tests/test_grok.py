@@ -16,12 +16,16 @@ from webaiprovider.accounts.cookies import select_cookies
 from webaiprovider.base import Capability
 from webaiprovider.errors import AccountPaused, ProviderError, RateLimited
 from webaiprovider.providers.grok import AsyncGrokProvider
-from webaiprovider.providers.grok.client import (
-    _MAX_LINE_BYTES,
-    GrokClient,
+from webaiprovider.providers.grok.async_client import (
+    AsyncGrokClient as GrokClient,
+)
+from webaiprovider.providers.grok.async_client import (
+    AsyncGrokProjectEditor as GrokProjectEditor,
+)
+from webaiprovider.providers.grok.async_client import (
     _iter_bounded_lines,
 )
-from webaiprovider.providers.grok.projects import GrokProjectEditor
+from webaiprovider.providers.grok.base import _MAX_LINE_BYTES
 from webaiprovider.providers.grok.records import GrokTextFilter, active_responses, conversation
 from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.protocol import (
@@ -194,7 +198,9 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         session = _grok_stream_session(
             status_code=401, check=Mock(side_effect=AccountPaused("expired"))
         )
-        with patch("webaiprovider.providers.grok.client.AsyncHttpSession", return_value=session):
+        with patch(
+            "webaiprovider.providers.grok.async_client.AsyncHttpSession", return_value=session
+        ):
             transport = GrokClient(Path("unused"))
 
         with self.assertRaises(AccountPaused):
@@ -206,7 +212,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_authentication_uses_protected_user_settings_resource(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value={}))
         with patch(
-            "webaiprovider.providers.grok.client.AsyncHttpSession",
+            "webaiprovider.providers.grok.async_client.AsyncHttpSession",
             return_value=bind_stream(session, "https://grok.com"),
         ):
             transport = GrokClient(Path("unused"))
@@ -219,7 +225,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_authentication_rejects_missing_resource_payload(self):
         session = SimpleNamespace(authenticated=False, request=AsyncMock(return_value=None))
         with patch(
-            "webaiprovider.providers.grok.client.AsyncHttpSession",
+            "webaiprovider.providers.grok.async_client.AsyncHttpSession",
             return_value=bind_stream(session, "https://grok.com"),
         ):
             transport = GrokClient(Path("unused"))
@@ -835,8 +841,6 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.bodies[0]["fileAttachments"], [metadata])
 
     async def test_grok_upload_file_accepts_file_metadata_id_and_sends_id_list(self):
-        from webaiprovider.providers.grok.client import GrokClient
-
         complete_response = {
             "fileMetadata": {
                 "fileMetadataId": "meta-123",
@@ -1011,7 +1015,7 @@ class AsyncGrokProviderTests(unittest.IsolatedAsyncioTestCase):
             path.write_bytes(b"# Project notes\n")
 
             with patch(
-                "webaiprovider.providers.grok.projects.mimetypes.guess_type",
+                "webaiprovider.providers.grok.async_client.mimetypes.guess_type",
                 return_value=("text/plain", None),
             ):
                 await editor.add_source("workspace", kind="file", path=path)

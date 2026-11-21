@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 from tests.fakes import FakeAsyncHTTPClient, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
-from webaiprovider.providers.chatgpt.client import ChatGPTClient
+from webaiprovider.providers.chatgpt.async_client import AsyncChatGPTClient as ChatGPTClient
 from webaiprovider.providers.chatgpt.formats import message_files
-from webaiprovider.providers.claude.client import ClaudeClient
+from webaiprovider.providers.claude.async_client import AsyncClaudeClient as ClaudeClient
 from webaiprovider.providers.claude.records import presented_files
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import parse_chat_history
@@ -213,7 +213,7 @@ class ChatGPTActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[0]["parent_message_id"], "branch-point")
 
     async def test_edit_first_turn_without_root_node_fetches_mapping_parent(self):
-        from webaiprovider.providers.chatgpt.client import ChatGPTError
+        from webaiprovider.providers.chatgpt.errors import ChatGPTError
 
         requests_seen = []
         mapping_status = 200

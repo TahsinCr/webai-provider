@@ -4,31 +4,22 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlencode
 
-from ...accounts import delete_session, session_exists
 from ...accounts.credentials import read_session_async
 from ...accounts.status import SessionState, SessionStatus
 from ...async_provider import AsyncProvider
-from ...base import Capability, ProviderType
+from ...base import ProviderType
 from ...collections import Page
-from ...errors import AccountPaused, FeatureUnavailable
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
-from ...resources.message.protocol import (
-    ProviderRequest,
-    ProviderStreamEvent,
-)
+from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
-from ...transport.downloader import DownloadSource, NativeDownloadClient, cookie_header
-from .base import BaseClaudeProvider
-from .client import ClaudeClient, remote_id, stream_response
-from .errors import ClaudeCompatibilityError
-from .projects import ClaudeProjectEditor
+from .async_client import AsyncClaudeClient, AsyncClaudeProjectEditor, stream_response
+from .base import BaseClaudeProvider, remote_id
 from .records import conversation, conversation_attachment_count, project
 from .resources import (
     AsyncClaudeChat,
@@ -72,18 +63,10 @@ class AsyncClaudeProvider(
     ) -> None:
         super().__init__(account, type=type, transport=transport)
         self.credential_file = account.store()
-        self.client = ClaudeClient(self.credential_file, transport=transport)
-        self.editor = ClaudeProjectEditor(self.client)
+        self.client = AsyncClaudeClient(self.credential_file, transport=transport)
+        self.editor = AsyncClaudeProjectEditor(self.client)
         self._gate = asyncio.Lock()
         self._rename_gate = asyncio.Lock()
-
-    def _active_transport(self) -> AsyncTransport | None:
-        return self.client.http
-
-    def _purge_credentials_unlocked(self) -> SessionStatus:
-        delete_session(self.credential_file)
-        self.client.authenticated = False
-        return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     async def purge_credentials(self) -> SessionStatus:
         async with self._gate:
@@ -101,16 +84,6 @@ class AsyncClaudeProvider(
             await self.client.request("status")
         return SessionStatus(SessionState.AUTHENTICATED, True)
 
-    def _session_status(self) -> SessionStatus:
-        saved = session_exists(self.credential_file)
-        if self.client.authenticated:
-            state = SessionState.AUTHENTICATED
-        elif saved:
-            state = SessionState.UNKNOWN
-        else:
-            state = SessionState.LOGIN_REQUIRED
-        return SessionStatus(state, saved)
-
     async def forget_session(self) -> SessionStatus:
         await self.close()
         return await self.purge_credentials()
@@ -122,12 +95,7 @@ class AsyncClaudeProvider(
         self, *, cursor: str | None = None, limit: int = 50
     ) -> Page[Conversation]:
         values = await self.client.request("chats", cursor=cursor, limit=limit)
-        if not isinstance(values, list):
-            raise ClaudeCompatibilityError("Claude conversation list response changed")
-        return Page(
-            tuple(conversation(x) for x in values),
-            str(int(cursor or 0) + limit) if len(values) == limit else None,
-        )
+        return self._parse_chats_page(values, cursor, limit)
 
     async def _get_chat_data(self, conversation_id: str) -> Conversation:
         raw = await self.client.request("history", conversation_id=conversation_id)
@@ -138,10 +106,10 @@ class AsyncClaudeProvider(
         return conversation_attachment_count(value)
 
     async def _rename_chat_data(self, conversation_id: str, title: str) -> None:
-        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200:
-            raise ValueError("Chat title must contain 1–200 characters")
         await self.client.request(
-            "rename_chat", conversation_id=conversation_id, title=title.strip()
+            "rename_chat",
+            conversation_id=conversation_id,
+            title=self._validate_chat_title(title),
         )
 
     async def _delete_chat_data(self, conversation_id: str) -> None:
@@ -150,6 +118,7 @@ class AsyncClaudeProvider(
     async def _move_chat_data(
         self, conversation_id: str, project_id: str | None, *, source_project_id: str | None
     ) -> None:
+        del source_project_id
         await self.client.request(
             "move_chat", conversation_id=conversation_id, project_id=project_id
         )
@@ -157,10 +126,7 @@ class AsyncClaudeProvider(
     async def _list_projects_data(self, *, cursor: str | None = None) -> Page[ProjectData]:
         if cursor:
             raise ValueError("Claude project listing does not use a cursor")
-        values = await self.client.request("projects")
-        if not isinstance(values, list):
-            raise ClaudeCompatibilityError("Claude project list response changed")
-        return Page(tuple(project(x) for x in values))
+        return self._parse_projects_page(await self.client.request("projects"))
 
     async def _get_project_data(self, project_id: str) -> ProjectData:
         return project(await self.client.request("project", project_id=project_id))
@@ -168,26 +134,21 @@ class AsyncClaudeProvider(
     async def _list_project_chats_data(
         self, project_id: str, *, cursor: str | None = None, limit: int | None = None
     ) -> Page[Conversation]:
+        del limit
         if cursor:
             raise ValueError("Claude project conversation listing does not use a cursor")
-        values = await self.client.request("project_chats", project_id=project_id)
-        if not isinstance(values, list):
-            raise ClaudeCompatibilityError("Claude project conversation response changed")
-        return Page(tuple(conversation(dict(x, project_uuid=project_id)) for x in values))
+        return self._parse_project_chats_page(
+            project_id, await self.client.request("project_chats", project_id=project_id)
+        )
 
     async def _create_project_data(
-        self,
-        name: str,
-        instructions: str = "",
-        **options: Any,
+        self, name: str, instructions: str = "", **options: Any
     ) -> ProjectData:
         del options
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 200:
-            raise ValueError("Project name must contain 1–200 characters")
         return project(
             await self.client.request(
-                "create_project", name=name.strip(), instructions=instructions
-            ),
+                "create_project", name=self._validate_project_name(name), instructions=instructions
+            )
         )
 
     async def _delete_project_data(self, project_id: str) -> None:
@@ -196,10 +157,7 @@ class AsyncClaudeProvider(
     async def _stream_provider_events(
         self, request: ProviderRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
-        if request.temporary and request.project_id:
-            raise FeatureUnavailable(Capability.TEMPORARY, "projects_not_supported")
-        if not session_exists(self.credential_file) and not self.client.authenticated:
-            raise AccountPaused("Verify the Claude account in the Accounts section")
+        self._validate_stream_preconditions(request)
         async with aclosing(stream_response(self.client, request)) as events:
             async for event in events:
                 yield event
@@ -219,28 +177,9 @@ class AsyncClaudeProvider(
             return None
         if not conversation_id:
             raise ValueError("Conversation ID is not available for this file yet")
-        base = await self.client.base()
-        endpoint = base + "/conversations/" + remote_id(conversation_id) + "/wiggle"
-        listing = await self.client.http.request("GET", endpoint + "/list-files?prefix=")
-        files = listing.get("files_metadata", []) if isinstance(listing, dict) else []
-        if not any(isinstance(item, dict) and item.get("path") == path for item in files):
-            raise ValueError("File was not found in the conversation record or has expired")
-        saved = await read_session_async(self.credential_file)
-        cookies = saved.get("cookies", saved)
-        values = {key: cookies.get(key) for key in ("sessionKey", "lastActiveOrg")}
-        if not values["sessionKey"]:
-            raise AccountPaused("Claude session could not be verified")
-        headers = {
-            "Cookie": cookie_header(values, ("sessionKey", "lastActiveOrg")),
-            "Referer": "https://claude.ai/",
-        }
-        return DownloadSource(
-            "https://claude.ai"
-            + endpoint
-            + "/download-file?"
-            + urlencode({"path": path}, quote_via=quote),
-            path.rsplit("/", 1)[-1],
-            True,
-            headers,
-            NativeDownloadClient,
+        endpoint = (
+            await self.client.base() + "/conversations/" + remote_id(conversation_id) + "/wiggle"
         )
+        listing = await self.client.http.request("GET", endpoint + "/list-files?prefix=")
+        saved = await read_session_async(self.credential_file)
+        return self._build_download_source(endpoint, path, listing, saved)

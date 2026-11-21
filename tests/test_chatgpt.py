@@ -26,7 +26,15 @@ from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
 from webaiprovider.providers.chatgpt import (
     AsyncChatGPTProvider,
     BrowserSession,
-    ChatGPTClient,
+)
+from webaiprovider.providers.chatgpt.async_client import (
+    AsyncChatGPTClient as ChatGPTClient,
+)
+from webaiprovider.providers.chatgpt.async_client import (
+    AsyncChatGPTProjectEditor as ChatGPTProjectEditor,
+)
+from webaiprovider.providers.chatgpt.async_client import (
+    prepare_chatgpt_attachments,
 )
 from webaiprovider.providers.chatgpt.catalogs import parse_model_catalog
 from webaiprovider.providers.chatgpt.discovery import project_id
@@ -82,7 +90,7 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_reuses_prepared_client_and_discards_it_after_cancel(self):
         PersistentClient.instances.clear()
         with patch(
-            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", PersistentClient
+            "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient", PersistentClient
         ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"), session=object(), client_factory=PersistentClient
@@ -400,7 +408,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_timezone_uses_a_real_iana_name_or_omits_the_optional_field(self):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-        from webaiprovider.providers.chatgpt.client import system_timezone
+        from webaiprovider.providers.chatgpt.base import system_timezone
 
         try:
             ZoneInfo("Asia/Tokyo")
@@ -410,7 +418,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         else:
             with patch.dict("os.environ", {"TZ": "Asia/Tokyo"}):
                 self.assertEqual(system_timezone(), "Asia/Tokyo")
-        with patch("webaiprovider.providers.chatgpt.client.system_timezone", return_value=None):
+        with patch("webaiprovider.providers.chatgpt.base.system_timezone", return_value=None):
             body = self.client.create_conversation_body(None, "Question")
         self.assertNotIn("timezone", body)
         self.assertIsInstance(body["timezone_offset_min"], int)
@@ -519,7 +527,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             return value
 
         with (
-            patch("webaiprovider.providers.chatgpt.client.OrderedDict", side_effect=create_buffer),
+            patch("webaiprovider.providers.chatgpt.base.OrderedDict", side_effect=create_buffer),
             patch.object(
                 self.client, "create_sentinel_headers", new_callable=AsyncMock, return_value={}
             ),
@@ -571,7 +579,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         request.assert_awaited_once()
 
     def test_system_timezone_caches_per_tz_environment(self):
-        from webaiprovider.providers.chatgpt.client import (
+        from webaiprovider.providers.chatgpt.base import (
             _cached_system_timezone,
             system_timezone,
         )
@@ -579,7 +587,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         _cached_system_timezone.cache_clear()
         self.addCleanup(_cached_system_timezone.cache_clear)
         with patch(
-            "webaiprovider.providers.chatgpt.client.ZoneInfo",
+            "webaiprovider.providers.chatgpt.base.ZoneInfo",
             side_effect=lambda value: Mock(key=value),
         ):
             with (
@@ -985,7 +993,6 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
             self.assertIsNone(provider._client)
 
     async def test_project_file_source_is_streamed_using_a_dedicated_client(self):
-        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
 
         path = Path(self.directory.name) / "source.txt"
         path.write_text("fixture")
@@ -1352,7 +1359,6 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                     )
 
     async def test_chatgpt_project_batch_cancels_and_joins_inflight_upload_on_failure(self):
-        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
 
         started = asyncio.Event()
         stopped: list[str] = []
@@ -1444,7 +1450,6 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             await self.provider._delete_chat_data("cid-1")
 
     async def test_project_update_reuses_staged_state_and_confirms_remote_result(self):
-        from webaiprovider.providers.chatgpt.projects import ChatGPTProjectEditor
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
@@ -1600,7 +1605,8 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 self.closed.set()
 
         with patch(
-            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", PersistentNativeClient
+            "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient",
+            PersistentNativeClient,
         ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
@@ -1634,7 +1640,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                 created.append(self)
 
         with patch(
-            "webaiprovider.providers.chatgpt.async_provider.ChatGPTClient", InspectableClient
+            "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient", InspectableClient
         ):
             provider = AsyncChatGPTProvider(
                 provider_account("chatgpt"),
@@ -1692,8 +1698,6 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         self.client.get_conversation.assert_awaited_once_with("chat-1")
 
     async def test_multi_attachment_upload_runs_concurrently_preserving_order(self):
-        from webaiprovider.providers.chatgpt.client import prepare_chatgpt_attachments
-
         entered = 0
         both_entered = asyncio.Event()
 
@@ -2090,11 +2094,11 @@ class SendOptionsTests(unittest.IsolatedAsyncioTestCase):
             "current_node": "node",
             "messages": [{"id": "user", "content": {"parts": ["text"]}}],
         }
-        with patch("webaiprovider.providers.chatgpt.client.time.monotonic", return_value=100.0):
+        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=100.0):
             self.client._remember_conversation(conversation)
-        with patch("webaiprovider.providers.chatgpt.client.time.monotonic", return_value=159.0):
+        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=159.0):
             self.assertIs(self.client._cached_conversation("remote"), conversation)
-        with patch("webaiprovider.providers.chatgpt.client.time.monotonic", return_value=160.0):
+        with patch("webaiprovider.providers.chatgpt.base.time.monotonic", return_value=160.0):
             self.assertIsNone(self.client._cached_conversation("remote"))
 
     async def test_cached_send_failure_does_not_resubmit_after_streamed_content(self):
