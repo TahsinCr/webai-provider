@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
 
 from .accounts.account import Account
 from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
-from .async_provider import AsyncProvider
 from .base import BaseProvider, Capability
 from .collections import (
     AsyncBaseCollection,
@@ -31,7 +32,7 @@ from .errors import (
     UnsupportedOperationError,
 )
 from .provider import Provider, ProviderType
-from .providers.chatgpt.async_provider import AsyncChatGPTProvider
+from .providers import resolve_lazy_export as _resolve_lazy_export
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection, ChatGPTProjectsCollection
 from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
@@ -40,15 +41,12 @@ from .providers.chatgpt.provider import (
     ChatGPTProvider,
 )
 from .providers.chatgpt.resources import AsyncChatGPTChat
-from .providers.claude.async_provider import AsyncClaudeProvider
 from .providers.claude.catalogs import ClaudeModels
 from .providers.claude.provider import ClaudeProvider
 from .providers.claude.resources import AsyncClaudeChat
-from .providers.gemini.async_provider import AsyncGeminiProvider
 from .providers.gemini.catalogs import GeminiModels
 from .providers.gemini.provider import GeminiProvider
 from .providers.gemini.resources import AsyncGeminiChat
-from .providers.grok.async_provider import AsyncGrokProvider
 from .providers.grok.catalogs import GrokModels
 from .providers.grok.provider import GrokProvider
 from .providers.grok.resources import AsyncGrokChat
@@ -105,6 +103,30 @@ from .resources.response.operation import (
 )
 from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
+
+if TYPE_CHECKING:
+    from .async_provider import AsyncProvider
+    from .providers.chatgpt.async_provider import AsyncChatGPTProvider
+    from .providers.claude.async_provider import AsyncClaudeProvider
+    from .providers.gemini.async_provider import AsyncGeminiProvider
+    from .providers.grok.async_provider import AsyncGrokProvider
+
+_ASYNC_EXPORTS = {
+    "AsyncProvider": "async_provider",
+    "AsyncChatGPTProvider": "providers.chatgpt.async_provider",
+    "AsyncClaudeProvider": "providers.claude.async_provider",
+    "AsyncGeminiProvider": "providers.gemini.async_provider",
+    "AsyncGrokProvider": "providers.grok.async_provider",
+}
+
+
+def __getattr__(name: str) -> Any:
+    return _resolve_lazy_export(__name__, _ASYNC_EXPORTS, name, globals())
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _ASYNC_EXPORTS.keys())
+
 
 __version__ = "1.3.0b0"
 

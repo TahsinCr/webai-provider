@@ -107,10 +107,6 @@ class GeminiRPC:
         )
         return decode_rpc_response(response, rpc, allow_empty)
 
-    @staticmethod
-    def _decode(response, rpc, allow_empty):
-        return decode_rpc_response(response, rpc, allow_empty)
-
     def read(self, mode, *, remote=None, operation="list", cursor=None):
         rpc, args, path, allow_empty = resolve_notebook_rpc_read(
             mode, remote=remote, operation=operation, cursor=cursor

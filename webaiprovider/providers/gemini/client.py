@@ -8,10 +8,13 @@ from pathlib import Path
 
 from ...accounts import read_session, save_session
 from ...accounts.credentials import CredentialStore
-from ...errors import ProviderError
+from ...errors import ProviderError, RateLimited
 from ...transport import HTTPTransport, Transport, TransportConfig
 from .base import (
     BASE,
+    COOKIE_REFRESH_INTERVAL,
+    COOKIE_REFRESH_OPTIONS,
+    COOKIE_REFRESH_URL,
     HEADERS,
     MODEL_CATALOG_SIGNATURE,
     ORIGIN,
@@ -50,6 +53,8 @@ class GeminiClient(BaseGeminiClient):
         )
         self._save_lock = threading.Lock()
         self._activity_lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
+        self._refresh_at = float("inf")
 
     def open(self):
         from curl_cffi.requests import Session
@@ -73,6 +78,7 @@ class GeminiClient(BaseGeminiClient):
             self._check_login_redirect(response)
             Transport.check(response)
             self._apply_bootstrap_html(response.text)
+            self._refresh_at = time.monotonic() + COOKIE_REFRESH_INTERVAL
             self.persist()
         except BaseException:
             self.close()
@@ -81,9 +87,32 @@ class GeminiClient(BaseGeminiClient):
 
     def request(self, method: str, url: str, **options):
         transport, path = self._resolve_request_transport(url)
+        if transport is self.transport and time.monotonic() >= self._refresh_at:
+            self._refresh_cookies()
         response = transport.send(method, path, check_status=False, **options)
         self._record_rate_limit(transport, response)
         return response
+
+    def _refresh_cookies(self) -> None:
+        from curl_cffi.requests.exceptions import RequestException
+
+        with self._refresh_lock:
+            if not self.verified or time.monotonic() < self._refresh_at:
+                return
+            delay = COOKIE_REFRESH_INTERVAL
+            response = None
+            try:
+                response = self.request("POST", COOKIE_REFRESH_URL, **COOKIE_REFRESH_OPTIONS)
+                Transport.check(response)
+                self.persist()
+            except RateLimited as error:
+                delay = min(max(error.retry_after or 15, 1), 900)
+            except (OSError, RequestException):
+                delay = 30
+            except ProviderError:
+                # Let the requested Gemini operation report its own authentication status.
+                delay = 30 if response is None or response.status_code >= 500 else float("inf")
+            self._refresh_at = time.monotonic() + delay
 
     def batch(self, payloads, source_path: str = "/app"):
         params, headers, data = self._batch_request_args(payloads, source_path)

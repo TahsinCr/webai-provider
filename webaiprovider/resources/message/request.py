@@ -141,6 +141,12 @@ def _prepare_attachments(context: OperationContext) -> OperationContext:
     return context
 
 
+def _set_model_selection(context: OperationContext, selection: ModelSelection) -> OperationContext:
+    context.parameters["resolved_model"] = selection.model.id
+    context.parameters["resolved_effort"] = selection.effort.id if selection.effort else None
+    return context
+
+
 def build_message_request_pipeline_sync(
     *,
     provider_id: str,
@@ -160,11 +166,7 @@ def build_message_request_pipeline_sync(
         if getattr(chat, "provider", None) is None:
             raise UnsupportedOperationError("Model selection requires an active provider session")
         resolved = model_resolver(context.model)
-        context.parameters["resolved_model"] = resolved.model.id
-        context.parameters["resolved_effort"] = (
-            resolved.effort.id if resolved.effort is not None else None
-        )
-        return context
+        return _set_model_selection(context, resolved)
 
     pipeline.add("normalize_input", _normalize_input)
     pipeline.add("validate_request", validate_request)
@@ -195,11 +197,7 @@ def build_message_request_pipeline(
         if getattr(chat, "provider", None) is None:
             raise UnsupportedOperationError("Model selection requires an active provider session")
         resolved = await model_resolver(context.model)
-        context.parameters["resolved_model"] = resolved.model.id
-        context.parameters["resolved_effort"] = (
-            resolved.effort.id if resolved.effort is not None else None
-        )
-        return context
+        return _set_model_selection(context, resolved)
 
     async def prepare_attachments(context: OperationContext) -> OperationContext:
         return _prepare_attachments(context)

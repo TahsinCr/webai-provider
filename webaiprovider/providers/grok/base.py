@@ -446,6 +446,11 @@ class BaseGrokProvider(BaseProvider):
         }
     )
 
+    def _send_continuation(self, request, conversation_id: str) -> tuple[str | None, bool]:
+        needs_history = request.action in (MessageAction.RETRY, MessageAction.EDIT)
+        parent = self._take_continuation(conversation_id)
+        return (None if needs_history else parent), needs_history
+
     def _take_continuation(self, conversation_id: str) -> str | None:
         return self._continuations.remove(conversation_id)
 

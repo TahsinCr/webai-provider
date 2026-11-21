@@ -20,8 +20,6 @@ def execute_with_hooks_sync(
     hooks_chain: Sequence[OperationHooks],
     work: Callable[[OperationContext], Any],
     on_success_event: Callable[[OperationContext], None] | None = None,
-    on_cancelled_event: Callable[[OperationContext], None] | None = None,
-    on_error_event: Callable[[OperationContext], None] | None = None,
 ) -> Any:
     """Execute one blocking operation through before -> work -> success/error/cancelled -> finally."""
     try:
@@ -43,14 +41,10 @@ def execute_with_hooks_sync(
     except OperationCancelledError as error:
         context.cancelled = True
         context.error = error
-        if on_cancelled_event is not None:
-            on_cancelled_event(context)
         OperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
         raise
     except Exception as error:
         context.error = error
-        if on_error_event is not None:
-            on_error_event(context)
         OperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
         raise
     finally:
@@ -64,8 +58,6 @@ async def execute_with_hooks(
     hooks_chain: Sequence[AsyncOperationHooks],
     work: Callable[[OperationContext], Awaitable[Any]],
     on_success_event: Callable[[OperationContext], Awaitable[None]] | None = None,
-    on_cancelled_event: Callable[[OperationContext], Awaitable[None]] | None = None,
-    on_error_event: Callable[[OperationContext], Awaitable[None]] | None = None,
 ) -> Any:
     """Execute one operation through before -> work -> success/error/cancelled -> finally."""
     cancelled = False
@@ -90,16 +82,12 @@ async def execute_with_hooks(
         cancelled = True
         context.cancelled = True
         context.error = error
-        if on_cancelled_event is not None:
-            await asyncio.shield(on_cancelled_event(context))
         await asyncio.shield(
             AsyncOperationHooks.run_lifecycle(hooks_chain, "on_cancelled", operation_name, context)
         )
         raise
     except Exception as error:
         context.error = error
-        if on_error_event is not None:
-            await on_error_event(context)
         await AsyncOperationHooks.run_lifecycle(hooks_chain, "on_error", operation_name, context)
         raise
     finally:

@@ -5,7 +5,6 @@ import contextvars
 import logging
 import threading
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
     from .accounts.account import Account
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
+    from .resources.response.operation import MessageOperation
 
 
 if TYPE_CHECKING:
@@ -68,16 +68,6 @@ else:
 _ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
 
 
-@dataclass(slots=True, eq=False)
-class _ActiveOperation:
-    provider_id: int
-    send_lock_id: int | None = None
-    active: bool = True
-
-
-_ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = contextvars.ContextVar(
-    "webai_sync_active_operations", default=()
-)
 _CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "webai_sync_closing_provider", default=None
 )
@@ -161,6 +151,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         self._closing_in_progress = False
         self._close_error: BaseException | None = None
         self._active_operations = 0
+        self._parked_sends: dict[MessageOperation, int] = {}
         self._locks_guard = threading.Lock()
         self._locks: WeakValueDictionary[tuple[str, str], threading.Lock] = WeakValueDictionary()
         self._chats = self._make_chats()
@@ -188,15 +179,6 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             raise ProviderError("This provider has no configured transport")
         return _TrackedTransport(self, active)
 
-    def _has_active_operation(self, *, send_lock_id: int | None = None) -> bool:
-        pid = id(self)
-        return any(
-            entry.active
-            and entry.provider_id == pid
-            and (send_lock_id is None or entry.send_lock_id == send_lock_id)
-            for entry in _ACTIVE_OPERATIONS.get()
-        )
-
     def _lock(self, kind: str, remote_id: str) -> threading.Lock:
         key = (kind, remote_id)
         with self._locks_guard:
@@ -217,16 +199,6 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         return self._lock("project", project_id)
 
     @contextlib.contextmanager
-    def _operation_marker(self, *, send_lock_id: int | None = None):
-        marker = _ActiveOperation(id(self), send_lock_id)
-        token = _ACTIVE_OPERATIONS.set((*_ACTIVE_OPERATIONS.get(), marker))
-        try:
-            yield
-        finally:
-            marker.active = False
-            _ACTIVE_OPERATIONS.reset(token)
-
-    @contextlib.contextmanager
     def _activity(self, *, send_lock_id: int | None = None):
         if send_lock_id is not None and self._has_active_operation(send_lock_id=send_lock_id):
             raise ProviderError("A send hook cannot start another send in the same conversation")
@@ -237,6 +209,16 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 yield
             finally:
                 self._end_activity()
+
+    def _set_send_parked(self, operation: MessageOperation, parked: bool) -> bool:
+        with self._lifecycle_condition:
+            if not parked:
+                self._parked_sends.pop(operation, None)
+            elif self.closing or self.closed:
+                return False
+            else:
+                self._parked_sends[operation] = threading.get_ident()
+            return True
 
     def _begin_activity(self, *, nested: bool = False) -> None:
         with self._lifecycle_condition:
@@ -361,10 +343,13 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 self.lifecycle.transition(LifecycleState.CLOSING)
             self._closing_in_progress = True
             self._close_error = None
+            parked = tuple(self._parked_sends)
 
         token = _CLOSING_PROVIDER.set(id(self))
         try:
             self._emit_safe("provider.closing")
+            for operation in parked:
+                operation.cancel()
             with self._lifecycle_condition:
                 self._lifecycle_condition.wait_for(lambda: self._active_operations == 0)
             self._opened = False
@@ -391,6 +376,15 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def _execute_stream(self, operation: Any) -> Generator[StreamEvent, None, None]:
         chat = operation.chat
         conversation_id = chat.remote_id or chat.id
+        caller = threading.get_ident()
+        with self._lifecycle_condition:
+            if any(
+                owner == caller and (pending.chat.remote_id or pending.chat.id) == conversation_id
+                for pending, owner in self._parked_sends.items()
+            ):
+                raise ProviderError(
+                    "Resume or cancel the paused send before sending in the same conversation"
+                )
         lock = self._send_lock(conversation_id)
         lock_id = id(lock)
         events = self._execute_stream_events(operation, lock)

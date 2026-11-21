@@ -573,6 +573,12 @@ class BaseClaudeClient:
             payload["is_temporary"] = True
         return payload
 
+    @staticmethod
+    def _created_chat_state(record):
+        if not isinstance(record, dict):
+            return None, False
+        return record.get("current_leaf_message_uuid"), record.get("is_temporary") is True
+
     def _lookup_cached_continuation(
         self, cid: str, v: dict[str, Any], timing: SendTiming | None
     ) -> tuple[bool, str | None, bool]:

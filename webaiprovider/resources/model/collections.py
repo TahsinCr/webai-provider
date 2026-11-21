@@ -40,6 +40,13 @@ def _resolve_model_selection(
     raise TypeError("Selection did not resolve to a model")
 
 
+def _find_catalog_model(query: Models, models: tuple[ModelRef, ...]) -> ModelRef:
+    result = SelectionResolver.resolve(query, models)
+    if not isinstance(result, ModelRef):
+        raise TypeError("Model query did not resolve to a model")
+    return result
+
+
 class AsyncModelsCollection(AsyncCollection[ModelRef]):
     _collection_name = "models"
 
@@ -96,11 +103,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         **options: Any,
     ) -> ModelRef | None:
         if isinstance(query, Models) and not (exact or startswith or endswith or last or options):
-            models = await self._load_items()
-            result = SelectionResolver.resolve(query, models)
-            if not isinstance(result, ModelRef):
-                raise TypeError("Model query did not resolve to a model")
-            return result
+            return _find_catalog_model(query, await self._load_items())
         return await super().find(
             query,
             exact=exact,
@@ -142,15 +145,17 @@ class ModelsCollection(RemoteCollection[ModelRef]):
 
     def _reload(self) -> tuple[ModelRef, ...]:
         self._mark_remote_read()
-        self._items = tuple(self._loader(True))
-        return self._items
+        items = tuple(self._loader(True))
+        self._items = items
+        return items
 
     def _load_items(self) -> tuple[ModelRef, ...]:
-        if self._items is None:
-            with self._lock:
-                if self._items is None:
-                    return self._reload()
-        return self._items
+        items = self._items
+        if items is not None:
+            return items
+        with self._lock:
+            items = self._items
+            return self._reload() if items is None else items
 
     def _iter_batches(
         self, *, limit: int | None = None, **options: Any
@@ -196,11 +201,7 @@ class ModelsCollection(RemoteCollection[ModelRef]):
         **options: Any,
     ) -> ModelRef | None:
         if isinstance(query, Models) and not (exact or startswith or endswith or last or options):
-            models = self._load_items()
-            result = SelectionResolver.resolve(query, models)
-            if not isinstance(result, ModelRef):
-                raise TypeError("Model query did not resolve to a model")
-            return result
+            return _find_catalog_model(query, self._load_items())
         return super().find(
             query,
             exact=exact,

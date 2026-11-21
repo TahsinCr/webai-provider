@@ -4,7 +4,12 @@ import json
 import unittest
 
 from webaiprovider.errors import FrameDecodeError
-from webaiprovider.transport.frames import JSPBFrameDecoder, SSEFrameDecoder
+from webaiprovider.transport.frames import (
+    JSPBFrameDecoder,
+    SSEFrameDecoder,
+    aiter_bounded_lines,
+    iter_bounded_lines,
+)
 
 
 def sse_data(chunks, **limits):
@@ -146,3 +151,38 @@ class FrameTests(unittest.TestCase):
             list(sse_data(chunks()))
 
         self.assertLess(consumed, 100)
+
+
+class BoundedLinesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sync_and_async_readers_share_boundaries_and_limits(self):
+        wire = "é\r\n\nend".encode()
+        cases = (
+            ([wire[:1], wire[1:3], wire[3:]], {"max_line_bytes": 4}, ["é", "", "end"]),
+            ([b"early\n", b"too-long"], {"max_line_bytes": 5}, None),
+            ([b"early\n", b"late"], {"max_stream_bytes": 8}, None),
+            ([b"broken: \xff"], {}, None),
+        )
+        for chunks, limits, expected in cases:
+            with self.subTest(chunks=chunks, limits=limits):
+
+                async def asynchronous_chunks():
+                    for chunk in chunks:
+                        yield chunk
+
+                if expected is None:
+                    with self.assertRaises(FrameDecodeError):
+                        list(iter_bounded_lines(chunks, **limits))
+                    with self.assertRaises(FrameDecodeError):
+                        [
+                            line
+                            async for line in aiter_bounded_lines(asynchronous_chunks(), **limits)
+                        ]
+                else:
+                    self.assertEqual(list(iter_bounded_lines(chunks, **limits)), expected)
+                    self.assertEqual(
+                        [
+                            line
+                            async for line in aiter_bounded_lines(asynchronous_chunks(), **limits)
+                        ],
+                        expected,
+                    )

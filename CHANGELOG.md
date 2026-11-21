@@ -71,7 +71,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Reduce repeated Gemini listing work by creating chat records only for the requested page and using larger follow-up pages for bounded lists. Repeated project chat IDs no longer consume the per-project limit.
 - Reuse the account model catalog loaded at session opening for the first model query. Explicit catalog refresh still requests up-to-date options.
 - Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
-- Reduce buffering overhead in the shared sync and async transports, and avoid creating an additional task for each chunk passed through the blocking transport facade.
+- Reduce buffering overhead in the shared sync and async transports.
 - Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
 - Run offline and live API tests separately. The live runner exercises the shared async provider implementation once per account. Blocking API coverage runs offline. The live runner paces account requests and reports cleanup and rate-limit skips separately from failures.
 
@@ -79,7 +79,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
 - Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
-- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport bridge, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
+- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
 - Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
 - Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
 - Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.
@@ -94,12 +94,15 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 - Remove unused JSON serialization and duplicate cleanup journal routing from the live test runner.
 
-- Remove the background provider portal and threaded HTTP facade. Synchronous callers drive a shared event loop, allowing independent requests to overlap.
+- Run all four synchronous providers on native blocking clients in the calling thread. Remove the shared event loop and compatibility wrappers.
 
 - Remove the unused `ThreadedTransport` adapter and legacy thread dispatch for synchronous hooks and events.
 - Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
 
 ### Fixed
+
+- Return from blocking stage waits as soon as the requested event is available. Publish one cancellation outcome when a send is cancelled or its driving iterator is closed.
+- Keep a stable snapshot for warm synchronous model reads during catalog invalidation. Refresh blocking Gemini credentials when due on the next request.
 
 - Isolate Gemini's file uploads from account cookies while keeping their connection pool available for subsequent uploads.
 - Keep artifact link rules scoped to each provider. Ignore malformed Grok attachment metadata, infer generated image formats from their names, and deduplicate file references as the stream arrives.

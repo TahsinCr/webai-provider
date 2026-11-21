@@ -39,6 +39,7 @@ from ...resources.project.types import ProjectData, ProjectOption, ProjectOption
 from ...transport.downloader import DownloadSource
 from ...transport.network import _is_ip_literal
 from ...transport.retry import parse_retry_after
+from .constants import CHATGPT_ORIGIN
 from .discovery import page as parse_page
 from .discovery import project as parse_project
 from .discovery import project_id as extract_project_id
@@ -614,6 +615,16 @@ class BaseChatGPTClient:
         if not temporary:
             self._remember_conversation(conversation)
         return resolved_id, conversation, previous_ids
+
+    def _edit_parent_lookup(
+        self, conversation, conversation_id, items, target_index, target, message_id
+    ) -> tuple[str | None, str | None]:
+        parent = self._find_local_edit_parent(conversation, items, target_index, target, message_id)
+        if parent is not None:
+            return parent, None
+        if not conversation_id or not message_id:
+            raise ChatGPTError("The original message parent is unavailable")
+        return None, f"{CHATGPT_ORIGIN}/backend-api/conversation/{quote(conversation_id, safe='')}"
 
     @staticmethod
     def _find_local_edit_parent(

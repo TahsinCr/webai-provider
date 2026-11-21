@@ -3,6 +3,9 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
@@ -16,6 +19,18 @@ if TYPE_CHECKING:
     from .accounts.account import Account
     from .resources.model.model import ModelCatalog
     from .resources.response.operation import StreamEvent
+
+
+@dataclass(slots=True, eq=False)
+class _ActiveOperation:
+    provider_id: int
+    send_lock_id: int | None = None
+    active: bool = True
+
+
+_ACTIVE_OPERATIONS: ContextVar[tuple[_ActiveOperation, ...]] = ContextVar(
+    "webai_active_operations", default=()
+)
 
 
 class ProviderType(str, Enum):
@@ -144,6 +159,25 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} type={self.type.value!r} account={self.account.id!r}>"
+
+    def _has_active_operation(self, *, send_lock_id: int | None = None) -> bool:
+        pid = id(self)
+        return any(
+            entry.active
+            and entry.provider_id == pid
+            and (send_lock_id is None or entry.send_lock_id == send_lock_id)
+            for entry in _ACTIVE_OPERATIONS.get()
+        )
+
+    @contextmanager
+    def _operation_marker(self, *, send_lock_id: int | None = None):
+        marker = _ActiveOperation(id(self), send_lock_id)
+        token = _ACTIVE_OPERATIONS.set((*_ACTIVE_OPERATIONS.get(), marker))
+        try:
+            yield
+        finally:
+            marker.active = False
+            _ACTIVE_OPERATIONS.reset(token)
 
     def _active_transport(self) -> Any | None:
         return None

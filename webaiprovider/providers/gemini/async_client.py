@@ -21,6 +21,9 @@ from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.frames import JSPBFrameDecoder
 from .base import (
     BASE,
+    COOKIE_REFRESH_INTERVAL,
+    COOKIE_REFRESH_OPTIONS,
+    COOKIE_REFRESH_URL,
     HEADERS,
     MODEL_CATALOG_SIGNATURE,
     ORIGIN,
@@ -190,21 +193,12 @@ class AsyncGeminiClient(BaseGeminiClient):
             self._mark_persisted(record, now)
 
     async def refresh(self):
-        interval = 600
+        interval = COOKIE_REFRESH_INTERVAL
         failures = 0
         while True:
             await asyncio.sleep(interval)
             try:
-                response = await self.request(
-                    "POST",
-                    "https://accounts.google.com/RotateCookies",
-                    headers={
-                        "Origin": "https://accounts.google.com",
-                        "Content-Type": "application/json",
-                    },
-                    data='[000,"-0000000000000000000"]',
-                    allow_redirects=False,
-                )
+                response = await self.request("POST", COOKIE_REFRESH_URL, **COOKIE_REFRESH_OPTIONS)
                 if 500 <= response.status_code < 600:
                     failures += 1
                     interval = min(15 * (2 ** min(failures - 1, 6)), 900)
@@ -212,7 +206,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                 AsyncTransport.check(response)
                 await self.persist()
                 failures = 0
-                interval = 600
+                interval = COOKIE_REFRESH_INTERVAL
             except asyncio.CancelledError:
                 raise
             except AccountPaused:
@@ -267,10 +261,6 @@ class AsyncGeminiRPC:
         )
         if len(getattr(response, "content", b"")) >= 256 * 1024:
             return await asyncio.to_thread(decode_rpc_response, response, rpc, allow_empty)
-        return decode_rpc_response(response, rpc, allow_empty)
-
-    @staticmethod
-    def _decode(response, rpc, allow_empty):
         return decode_rpc_response(response, rpc, allow_empty)
 
     async def read(self, mode, *, remote=None, operation="list", cursor=None):

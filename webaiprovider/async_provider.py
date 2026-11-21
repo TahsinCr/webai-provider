@@ -5,7 +5,6 @@ import contextlib
 import contextvars
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
@@ -71,16 +70,6 @@ else:
 _ProviderT = TypeVar("_ProviderT", bound="AsyncProvider[Any, Any]")
 
 
-@dataclass(slots=True, eq=False)
-class _ActiveOperation:
-    provider_id: int
-    send_lock_id: int | None = None
-    active: bool = True
-
-
-_ACTIVE_OPERATIONS: contextvars.ContextVar[tuple[_ActiveOperation, ...]] = contextvars.ContextVar(
-    "webai_active_operations", default=()
-)
 _CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "webai_closing_provider", default=None
 )
@@ -152,15 +141,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             raise ProviderError("This provider has no configured transport")
         return active
 
-    def _has_active_operation(self, *, send_lock_id: int | None = None) -> bool:
-        pid = id(self)
-        return any(
-            entry.active
-            and entry.provider_id == pid
-            and (send_lock_id is None or entry.send_lock_id == send_lock_id)
-            for entry in _ACTIVE_OPERATIONS.get()
-        )
-
     def _lock(self, kind: str, remote_id: str) -> asyncio.Lock:
         key = (kind, remote_id)
         lock = self._locks.get(key)
@@ -177,16 +157,6 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
 
     def _project_lock(self, project_id: str) -> asyncio.Lock:
         return self._lock("project", project_id)
-
-    @contextlib.contextmanager
-    def _operation_marker(self, *, send_lock_id: int | None = None):
-        marker = _ActiveOperation(id(self), send_lock_id)
-        token = _ACTIVE_OPERATIONS.set((*_ACTIVE_OPERATIONS.get(), marker))
-        try:
-            yield
-        finally:
-            marker.active = False
-            _ACTIVE_OPERATIONS.reset(token)
 
     @contextlib.asynccontextmanager
     async def _activity(self, *, send_lock_id: int | None = None):

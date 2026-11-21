@@ -33,8 +33,10 @@ from webaiprovider.providers.gemini.async_client import (
     upload_files_async as upload_files,
 )
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
+from webaiprovider.providers.gemini.client import GeminiClient
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.notebooks import project_from_native
+from webaiprovider.providers.gemini.rpc import decode_rpc_response
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import EffortOption, Model
@@ -520,6 +522,35 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ProviderError):
             await rpc.call("rpc", [])
 
+    def test_blocking_cookie_refresh_runs_only_when_due(self):
+        session = GeminiClient(Path("unused"))
+        session.verified = True
+        session.persist = Mock()
+        ok = SimpleNamespace(status_code=200, headers={})
+        session.transport.send = Mock(return_value=ok)
+        session.auth_transport.send = Mock(return_value=ok)
+        session._refresh_at = time.monotonic() + 100
+        session.request("POST", session.transport.origin + "/test")
+        session.auth_transport.send.assert_not_called()
+
+        session._refresh_at = time.monotonic() - 1
+        for _ in range(2):
+            session.request("POST", session.transport.origin + "/test")
+        session.auth_transport.send.assert_called_once()
+        self.assertEqual(session.auth_transport.send.call_args.args, ("POST", "/RotateCookies"))
+        self.assertEqual(session.transport.send.call_count, 3)
+        session.persist.assert_called_once()
+
+        session._refresh_at = time.monotonic() - 1
+        session.auth_transport.send.return_value = SimpleNamespace(
+            status_code=429, headers={"retry-after": "30"}
+        )
+        self.assertIs(session.request("POST", session.transport.origin + "/test"), ok)
+        self.assertIs(session.request("POST", session.transport.origin + "/test"), ok)
+        self.assertEqual(session.auth_transport.send.call_count, 2)
+        self.assertEqual(session.transport.send.call_count, 5)
+        session.persist.assert_called_once()
+
     async def test_large_rpc_json_is_decoded_off_the_provider_loop(self):
 
         response = SimpleNamespace(
@@ -528,16 +559,18 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         )
         client = SimpleNamespace(batch=AsyncMock(return_value=response))
         rpc = GeminiRPC(AsyncMock(return_value=client))
-        original = rpc._decode
         threads = []
 
         def decode(*args):
             threads.append(threading.get_ident())
-            return original(*args)
+            return decode_rpc_response(*args)
 
-        with patch.object(rpc, "_decode", side_effect=decode):
+        with patch(
+            "webaiprovider.providers.gemini.async_client.decode_rpc_response", side_effect=decode
+        ):
             self.assertEqual(await rpc.call("rpc", []), [[]])
-        self.assertNotEqual(threads, [threading.get_ident()])
+        self.assertEqual(len(threads), 1)
+        self.assertNotEqual(threads[0], threading.get_ident())
 
     async def test_close_cancels_and_joins_refresh_then_closes_http(self):
         session = GeminiSession(Path("unused"))
@@ -1751,7 +1784,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
 
         bad_response = SimpleNamespace(text='[["wrb.fr","CNgdBe","{not-json"]]')
         with self.assertRaises(GeminiCompatibilityError):
-            GeminiRPC._decode(bad_response, "CNgdBe", False)
+            decode_rpc_response(bad_response, "CNgdBe", False)
 
     async def test_get_chat_warms_metadata_and_prepare_send_runs_rpcs_concurrently(self):
         provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))

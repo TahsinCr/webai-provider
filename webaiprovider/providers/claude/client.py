@@ -134,14 +134,14 @@ class ClaudeClient(BaseClaudeClient):
                 path.rsplit("/chat_conversations/", 1)[0] + "/chat_conversations",
                 json=self._build_create_chat_payload(cid, v),
             )
-            if v.get("temporary") and (
-                not isinstance(created, dict) or created.get("is_temporary") is not True
-            ):
+            parent, is_temp = self._created_chat_state(created)
+            if v.get("temporary") and not is_temp:
                 try:
                     created = self.http.request("GET", path)
                 except Exception:
                     created = None
-                if not isinstance(created, dict) or created.get("is_temporary") is not True:
+                parent, is_temp = self._created_chat_state(created)
+                if not is_temp:
                     try:
                         self.request("delete_chat", conversation_id=cid)
                     except Exception:
@@ -152,8 +152,6 @@ class ClaudeClient(BaseClaudeClient):
                     raise ClaudeRequestNotSent(
                         "Claude temporary conversation could not be verified"
                     )
-            parent = created.get("current_leaf_message_uuid") if isinstance(created, dict) else None
-            is_temp = bool(isinstance(created, dict) and created.get("is_temporary") is True)
             return parent, v, is_temp
 
         hit, cached_parent, cached_temp = self._lookup_cached_continuation(cid, v, timing)

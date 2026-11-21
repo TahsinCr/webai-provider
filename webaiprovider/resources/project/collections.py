@@ -582,6 +582,19 @@ class _BaseProjectAttachments:
                 by_id[attachment.id] = attachment
         self._items = list(by_id.values())
 
+    @staticmethod
+    def _attachment_change(attachment: Attachment | str, kind: str | None):
+        if isinstance(attachment, str):
+            return "delete", "project.attachment.removed", {"attachment_id": attachment}
+        return (
+            "create",
+            "project.attachment.added",
+            {
+                "attachment_id": attachment.id,
+                "kind": attachment.metadata.get("kind", kind),
+            },
+        )
+
     def _known_resource_ids(self) -> set[str]:
         if self.project._provider_project is not None:
             return {r.id for r in self.project._provider_project.resources}
@@ -697,6 +710,27 @@ class _BaseProjectAttachments:
 class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Attachment]):
     """Unified file and text attachment collection for a project."""
 
+    async def _publish_attachment_change(
+        self, provider, context, attachment: Attachment | str, kind: str | None = None
+    ) -> None:
+        action, event, payload = self._attachment_change(attachment, kind)
+        scope = self.project.remote_id
+        if scope:
+            await _publish_collection_change(
+                provider,
+                "project.attachments",
+                action,
+                attachment,
+                scope_id=scope,
+                operation_id=context.operation_id,
+            )
+        await provider._emit(
+            event,
+            operation_id=context.operation_id,
+            resource_id=scope or self.project.id,
+            payload=payload,
+        )
+
     def __init__(self, project: AsyncProject) -> None:
         super().__init__()
         self.project = project
@@ -762,25 +796,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         )
 
         async def on_success(ctx) -> None:
-            added_att: Attachment = ctx.result
-            if self.project.remote_id:
-                await _publish_collection_change(
-                    provider,
-                    "project.attachments",
-                    "create",
-                    added_att,
-                    scope_id=self.project.remote_id,
-                    operation_id=ctx.operation_id,
-                )
-            await provider._emit(
-                "project.attachment.added",
-                operation_id=ctx.operation_id,
-                resource_id=self.project.remote_id or self.project.id,
-                payload={
-                    "attachment_id": added_att.id,
-                    "kind": added_att.metadata.get("kind", kind),
-                },
-            )
+            await self._publish_attachment_change(provider, ctx, ctx.result, kind)
 
         return await execute_with_hooks(
             operation_name="project.attachment.add",
@@ -819,25 +835,8 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
             return self._finalize_batch_add(coerced, created)
 
         async def on_success(ctx) -> None:
-            for added_att in ctx.result:
-                if self.project.remote_id:
-                    await _publish_collection_change(
-                        provider,
-                        "project.attachments",
-                        "create",
-                        added_att,
-                        scope_id=self.project.remote_id,
-                        operation_id=ctx.operation_id,
-                    )
-                await provider._emit(
-                    "project.attachment.added",
-                    operation_id=ctx.operation_id,
-                    resource_id=self.project.remote_id or self.project.id,
-                    payload={
-                        "attachment_id": added_att.id,
-                        "kind": added_att.metadata.get("kind"),
-                    },
-                )
+            for attachment in ctx.result:
+                await self._publish_attachment_change(provider, ctx, attachment)
 
         return await execute_with_hooks(
             operation_name="project.attachment.add_many",
@@ -880,21 +879,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         )
 
         async def on_success(ctx) -> None:
-            if self.project.remote_id:
-                await _publish_collection_change(
-                    provider,
-                    "project.attachments",
-                    "delete",
-                    file_id,
-                    scope_id=self.project.remote_id,
-                    operation_id=ctx.operation_id,
-                )
-            await provider._emit(
-                "project.attachment.removed",
-                operation_id=ctx.operation_id,
-                resource_id=self.project.remote_id or self.project.id,
-                payload={"attachment_id": file_id},
-            )
+            await self._publish_attachment_change(provider, ctx, file_id)
 
         await execute_with_hooks(
             operation_name="project.attachment.remove",
@@ -948,22 +933,8 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
             self._apply_removed_ids(updated, set(file_ids))
 
         async def on_success(ctx) -> None:
-            for fid in file_ids:
-                if self.project.remote_id:
-                    await _publish_collection_change(
-                        provider,
-                        "project.attachments",
-                        "delete",
-                        fid,
-                        scope_id=self.project.remote_id,
-                        operation_id=ctx.operation_id,
-                    )
-                await provider._emit(
-                    "project.attachment.removed",
-                    operation_id=ctx.operation_id,
-                    resource_id=self.project.remote_id or self.project.id,
-                    payload={"attachment_id": fid},
-                )
+            for file_id in file_ids:
+                await self._publish_attachment_change(provider, ctx, file_id)
 
         await execute_with_hooks(
             operation_name="project.attachment.remove_many",
@@ -996,6 +967,27 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
 
 class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
     """Blocking file and text attachment collection for a project."""
+
+    def _publish_attachment_change(
+        self, provider, context, attachment: Attachment | str, kind: str | None = None
+    ) -> None:
+        action, event, payload = self._attachment_change(attachment, kind)
+        scope = self.project.remote_id
+        if scope:
+            _publish_collection_change_sync(
+                provider,
+                "project.attachments",
+                action,
+                attachment,
+                scope_id=scope,
+                operation_id=context.operation_id,
+            )
+        provider._emit(
+            event,
+            operation_id=context.operation_id,
+            resource_id=scope or self.project.id,
+            payload=payload,
+        )
 
     def __init__(self, project: Project) -> None:
         super().__init__()
@@ -1062,25 +1054,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         )
 
         def on_success(ctx) -> None:
-            added_att: Attachment = ctx.result
-            if self.project.remote_id:
-                _publish_collection_change_sync(
-                    provider,
-                    "project.attachments",
-                    "create",
-                    added_att,
-                    scope_id=self.project.remote_id,
-                    operation_id=ctx.operation_id,
-                )
-            provider._emit(
-                "project.attachment.added",
-                operation_id=ctx.operation_id,
-                resource_id=self.project.remote_id or self.project.id,
-                payload={
-                    "attachment_id": added_att.id,
-                    "kind": added_att.metadata.get("kind", kind),
-                },
-            )
+            self._publish_attachment_change(provider, ctx, ctx.result, kind)
 
         return execute_with_hooks_sync(
             operation_name="project.attachment.add",
@@ -1119,25 +1093,8 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             return self._finalize_batch_add(coerced, created)
 
         def on_success(ctx) -> None:
-            for added_att in ctx.result:
-                if self.project.remote_id:
-                    _publish_collection_change_sync(
-                        provider,
-                        "project.attachments",
-                        "create",
-                        added_att,
-                        scope_id=self.project.remote_id,
-                        operation_id=ctx.operation_id,
-                    )
-                provider._emit(
-                    "project.attachment.added",
-                    operation_id=ctx.operation_id,
-                    resource_id=self.project.remote_id or self.project.id,
-                    payload={
-                        "attachment_id": added_att.id,
-                        "kind": added_att.metadata.get("kind"),
-                    },
-                )
+            for attachment in ctx.result:
+                self._publish_attachment_change(provider, ctx, attachment)
 
         return execute_with_hooks_sync(
             operation_name="project.attachment.add_many",
@@ -1180,21 +1137,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         )
 
         def on_success(ctx) -> None:
-            if self.project.remote_id:
-                _publish_collection_change_sync(
-                    provider,
-                    "project.attachments",
-                    "delete",
-                    file_id,
-                    scope_id=self.project.remote_id,
-                    operation_id=ctx.operation_id,
-                )
-            provider._emit(
-                "project.attachment.removed",
-                operation_id=ctx.operation_id,
-                resource_id=self.project.remote_id or self.project.id,
-                payload={"attachment_id": file_id},
-            )
+            self._publish_attachment_change(provider, ctx, file_id)
 
         execute_with_hooks_sync(
             operation_name="project.attachment.remove",
@@ -1248,22 +1191,8 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
             self._apply_removed_ids(updated, set(file_ids))
 
         def on_success(ctx) -> None:
-            for fid in file_ids:
-                if self.project.remote_id:
-                    _publish_collection_change_sync(
-                        provider,
-                        "project.attachments",
-                        "delete",
-                        fid,
-                        scope_id=self.project.remote_id,
-                        operation_id=ctx.operation_id,
-                    )
-                provider._emit(
-                    "project.attachment.removed",
-                    operation_id=ctx.operation_id,
-                    resource_id=self.project.remote_id or self.project.id,
-                    payload={"attachment_id": fid},
-                )
+            for file_id in file_ids:
+                self._publish_attachment_change(provider, ctx, file_id)
 
         execute_with_hooks_sync(
             operation_name="project.attachment.remove_many",

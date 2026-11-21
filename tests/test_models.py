@@ -329,6 +329,23 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BlockingCatalogTests(unittest.TestCase):
+    def test_warm_catalog_uses_one_snapshot_during_invalidation(self):
+        from webaiprovider import ModelsCollection
+
+        class Catalog(ModelsCollection):
+            def __getattribute__(self, name):
+                value = super().__getattribute__(name)
+                if name == "_items":
+                    self._clear()
+                return value
+
+        def reject_reload(_force):
+            self.fail("A warm read must not reload")
+
+        catalog = Catalog(reject_reload)
+        catalog._items = ()
+        self.assertEqual(catalog.list(), [])
+
     def test_loaded_catalog_lists_gets_and_resolves_on_caller_without_starting_loop(self):
         provider = Provider(Account.from_cookies("grok", {}))
         self.addCleanup(provider.close)

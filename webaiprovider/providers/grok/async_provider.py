@@ -15,7 +15,6 @@ from ...core.concurrency import gather_bounded
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
-from ...resources.message.types import MessageAction
 from ...resources.model.model import ModelCatalog
 from ...resources.project.collections import AsyncProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
@@ -256,14 +255,14 @@ class AsyncGrokProvider(
         conversation_id = request.conversation_id
         if not conversation_id:
             return ""
-        if request.action in (MessageAction.RETRY, MessageAction.EDIT):
-            self._continuations.remove(conversation_id)
-            history = await self._history(conversation_id)
-        else:
-            cached_parent = self._take_continuation(conversation_id)
-            if cached_parent is not None:
-                return cached_parent
-            history = await self._response_nodes(conversation_id)
+        cached_parent, needs_history = self._send_continuation(request, conversation_id)
+        if cached_parent is not None:
+            return cached_parent
+        history = (
+            await self._history(conversation_id)
+            if needs_history
+            else await self._response_nodes(conversation_id)
+        )
         return self._resolve_parent_from_history(
             request, history, file_attachments, image_attachments
         )

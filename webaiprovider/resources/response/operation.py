@@ -5,7 +5,9 @@ import contextlib
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -519,6 +521,9 @@ class MessageOperation(_BaseMessageOperation):
     ) -> None:
         self._init_operation_state(chat, message, executor)
         self._error: BaseException | None = None
+        self._iterator: Iterator[StreamEvent] | None = None
+        self._context: Context | None = None
+        self._driver_thread: int | None = None
         self._started = False
         self._condition = threading.Condition()
 
@@ -527,15 +532,27 @@ class MessageOperation(_BaseMessageOperation):
 
     def cancel(self) -> None:
         with self._condition:
-            if self._completed:
+            if self.state in _OPERATION_TERMINAL_STATES:
                 return
             self._cancelled = True
             self._transition_to(OperationState.CANCELLED)
-            if not self._started:
+            provider = self.chat.provider
+            if provider is not None:
+                provider._set_send_parked(self, False)
+            if not self._started and self._driver_thread is None:
+                self._iterator = self._context = None
                 self._error = OperationCancelledError("Operation cancelled")
                 self._events.append(TerminalStatus("cancelled", self._error))
                 self._completed = True
-            self._condition.notify_all()
+                self._condition.notify_all()
+                return
+            if self._driver_thread is not None:
+                return
+            self._driver_thread = threading.get_ident()
+        try:
+            self._close_driver()
+        finally:
+            self._release_driver()
 
     def _publish(self, event: StreamEvent) -> None:
         with self._condition:
@@ -545,7 +562,6 @@ class MessageOperation(_BaseMessageOperation):
 
     def _finish(self, status: TerminalStatus) -> None:
         with self._condition:
-            self._completed = True
             self._events.append(status)
             self._condition.notify_all()
         self.hooks.emit(status)
@@ -560,6 +576,8 @@ class MessageOperation(_BaseMessageOperation):
             assert self._executor is not None
             context = OperationHooks.run_before(hooks_chain, "chat.send", context)
             self._apply_before_context(context)
+            if self._cancelled:
+                raise OperationCancelledError("Operation cancelled")
             self._transition_to(OperationState.SENDING)
             if emitter is not None:
                 emitter._emit(
@@ -576,14 +594,18 @@ class MessageOperation(_BaseMessageOperation):
                 accumulator.record(event)
                 self._publish(event)
                 yield event
+                if self._cancelled:
+                    raise OperationCancelledError("Operation cancelled")
 
-            response = accumulator.build_response(self, session)
+            with self._condition:
+                if self._cancelled:
+                    raise OperationCancelledError("Operation cancelled")
+                response = accumulator.build_response(self, session)
+                self._response = response
+                self._transition_to(OperationState.COMPLETED)
             if emitter is not None:
                 context.resource_id = self.chat.remote_id or self.chat.id
                 context.result = response
-            self._response = response
-
-            self._transition_to(OperationState.COMPLETED)
             if emitter is not None:
                 if self.chat.remote_id and response.remote_id and not self.chat.temporary:
                     action = self.message.metadata.get("action")
@@ -605,7 +627,12 @@ class MessageOperation(_BaseMessageOperation):
                 hooks_chain, "on_success", "chat.send", context
             )
             self._finish(TerminalStatus("completed"))
-        except OperationCancelledError as error:
+        except (OperationCancelledError, GeneratorExit) as cause:
+            error = (
+                cause
+                if isinstance(cause, OperationCancelledError)
+                else OperationCancelledError("Operation stream closed")
+            )
             context.cancelled = True
             context.error = error
             self._cancelled = True
@@ -623,7 +650,7 @@ class MessageOperation(_BaseMessageOperation):
             )
             self._finish(TerminalStatus("cancelled", error))
             raise
-        except Exception as exc:
+        except BaseException as exc:
             context.error = exc
             self._error = exc
             self._transition_to(OperationState.FAILED)
@@ -652,16 +679,61 @@ class MessageOperation(_BaseMessageOperation):
                     self._condition.notify_all()
 
     def _claim_driver(self) -> bool:
-        with self._condition:
-            if self._cancelled and not self._started:
-                raise OperationCancelledError("Operation cancelled")
-            if not self._started:
-                if self._executor is None:
-                    raise ProviderError("No executor is configured for this operation")
-                self._started = True
-                self._transition_to(OperationState.PREPARING)
-                return True
+        if self._completed:
             return False
+        caller = threading.get_ident()
+        if self._driver_thread == caller:
+            raise ProviderError("Cannot drive a message operation from its callback")
+        if self._driver_thread is not None:
+            return False
+        if self._iterator is None:
+            if self._executor is None:
+                raise ProviderError("No executor is configured for this operation")
+            self._transition_to(OperationState.PREPARING)
+            self._context = copy_context()
+            self._iterator = self._drive()
+        self._driver_thread = caller
+        provider = self.chat.provider
+        if provider is not None:
+            provider._set_send_parked(self, False)
+        return True
+
+    def _release_driver(self) -> None:
+        with self._condition:
+            provider = self.chat.provider
+            if self._completed or (
+                not self._cancelled and (provider is None or provider._set_send_parked(self, True))
+            ):
+                self._clear_driver()
+                return
+        try:
+            self._close_driver()
+        finally:
+            with self._condition:
+                self._clear_driver()
+
+    def _clear_driver(self) -> None:
+        self._driver_thread = None
+        if self._completed:
+            self._iterator = self._context = None
+        self._condition.notify_all()
+
+    def _close_driver(self) -> None:
+        if not self._started:
+            error = OperationCancelledError("Operation cancelled")
+            with self._condition:
+                self._error = error
+                self._transition_to(OperationState.CANCELLED)
+                self._events.append(TerminalStatus("cancelled", error))
+                self._completed = True
+            return
+        assert self._context is not None
+        self._context.run(_close_sync_iterator, self._iterator)
+
+    def _next_event(self) -> StreamEvent:
+        assert self._context is not None and self._iterator is not None
+        self._started = True
+        return self._context.run(next, self._iterator)
 
     def _result(self) -> Response:
         if self._error is not None:
@@ -670,67 +742,92 @@ class MessageOperation(_BaseMessageOperation):
         return self._response
 
     def stream(self) -> Iterator[StreamEvent]:
-        if self._claim_driver():
-            yield from self._drive()
-            return
+        index = 0
+        caller = threading.get_ident()
+        drove = False
+        try:
+            while True:
+                with self._condition:
+                    self._condition.wait_for(
+                        lambda: (
+                            index < len(self._events)
+                            or self._completed
+                            or self._driver_thread in (None, caller)
+                        )
+                    )
+                    chunk = self._events[index:]
+                    index += len(chunk)
+                    done = self._completed
+                    drives = not chunk and self._claim_driver()
+                if chunk:
+                    for event in chunk:
+                        if not isinstance(event, TerminalStatus):
+                            yield event
+                elif done:
+                    self._result()
+                    return
+                elif drives:
+                    drove = True
+                    try:
+                        event = self._next_event()
+                    except StopIteration:
+                        continue
+                    finally:
+                        self._release_driver()
+                    index += 1
+                    yield event
+        except GeneratorExit:
+            if drove:
+                self.cancel()
+            raise
+
+    def wait_for(self, stage_name: str, *, timeout: float | None = None) -> StreamEvent | None:
+        """Wait for a stage, checking the deadline between blocking reads when driving."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         index = 0
         while True:
             with self._condition:
-                self._condition.wait_for(
-                    lambda current=index: current < len(self._events) or self._completed
-                )
-                done = index >= len(self._events)
-                if not done:
-                    chunk = [
-                        event
-                        for event in self._events[index:]
-                        if not isinstance(event, TerminalStatus)
-                    ]
-                    index = len(self._events)
-            if done:
-                if self._error is not None:
-                    raise self._error
-                return
-            yield from chunk
-
-    def wait_for(self, stage_name: str, *, timeout: float | None = None) -> StreamEvent | None:
-        if self._claim_driver():
-            found: StreamEvent | None = None
-            for event in self._drive():
-                if found is None and event.event == stage_name:
-                    found = event
-            if found is not None:
-                return found
-            for event in self._events:
-                if event.event == stage_name:
-                    return event
-            return None
-        deadline = None if timeout is None else time.monotonic() + timeout
-        index = 0
-        with self._condition:
-            while True:
                 while index < len(self._events):
                     event = self._events[index]
                     index += 1
                     if event.event == stage_name:
                         return event
-                if self._completed:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if self._completed or (remaining is not None and remaining <= 0):
                     return None
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return None
+                if not self._claim_driver():
                     self._condition.wait(timeout=remaining)
-                else:
-                    self._condition.wait()
+                    continue
+            try:
+                while deadline is None or time.monotonic() < deadline:
+                    try:
+                        event = self._next_event()
+                    except StopIteration:
+                        if deadline is not None and time.monotonic() >= deadline:
+                            return None
+                        break
+                    index += 1
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return None
+                    if event.event == stage_name:
+                        return event
+            finally:
+                self._release_driver()
 
     def start(self) -> Response:
-        if self._claim_driver():
-            for _ in self._drive():
-                pass
-            return self._result()
+        caller = threading.get_ident()
         with self._condition:
-            self._condition.wait_for(lambda: self._completed)
+            self._condition.wait_for(
+                lambda: self._completed or self._driver_thread in (None, caller)
+            )
+            drives = self._claim_driver()
+        if drives:
+            try:
+                assert self._context is not None and self._iterator is not None
+                self._started = True
+                self._context.run(deque, self._iterator, maxlen=0)
+            finally:
+                self._release_driver()
         return self._result()
 
     def wait(self) -> Response:

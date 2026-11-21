@@ -348,19 +348,18 @@ class ChatGPTClient(BaseChatGPTClient):
         target: dict[str, Any],
         message_id: str | None,
     ) -> str:
-        local = self._find_local_edit_parent(conversation, items, target_index, target, message_id)
-        if local is not None:
-            return local
-        if conversation_id and message_id:
-            url = urljoin(
-                CHATGPT_ORIGIN, f"/backend-api/conversation/{quote(conversation_id, safe='')}"
-            )
-            try:
-                data = self.request("GET", url).json()
-            except (RemoteNotFound, ValueError):
-                raise ChatGPTError("The original message parent is unavailable") from None
-            return self._extract_edit_parent_from_mapping(data, message_id)
-        raise ChatGPTError("The original message parent is unavailable")
+        parent, url = self._edit_parent_lookup(
+            conversation, conversation_id, items, target_index, target, message_id
+        )
+        if url is None:
+            assert parent is not None
+            return parent
+        assert message_id is not None
+        try:
+            data = self.request("GET", url).json()
+        except (RemoteNotFound, ValueError):
+            raise ChatGPTError("The original message parent is unavailable") from None
+        return self._extract_edit_parent_from_mapping(data, message_id)
 
     def _apply_message_action(
         self,

@@ -29,6 +29,13 @@ from .rpc import RPCPayload, rpc_parts, rpc_value
 ORIGIN = "https://gemini.google.com"
 BASE = ORIGIN + "/_/BardChatUi/data/"
 HEADERS = {"Origin": ORIGIN, "Referer": ORIGIN + "/", "X-Same-Domain": "1"}
+COOKIE_REFRESH_INTERVAL = 600
+COOKIE_REFRESH_URL = "https://accounts.google.com/RotateCookies"
+COOKIE_REFRESH_OPTIONS = {
+    "headers": {"Origin": "https://accounts.google.com", "Content-Type": "application/json"},
+    "data": '[000,"-0000000000000000000"]',
+    "allow_redirects": False,
+}
 GRAPHQL_PATH = "/_/BardChatUi/"
 GRAPHQL_SCHEMA = "GEMINI_WEB_GRAPHQL"
 MODEL_CATALOG_SIGNATURE = "2/3fx8hkya5YwhXIcIHgqPDyS+UZ/xU43IKaBmI1FKsqo="

@@ -1068,6 +1068,83 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSyncApi(unittest.TestCase):
+    def test_wait_for_returns_the_first_stage_without_finishing_the_send(self):
+        from webaiprovider import Chat, Message, MessageOperation, OutputDelta
+
+        steps = []
+
+        def events(_):
+            yield OutputDelta("first")
+            steps.append("finished")
+            yield OutputDelta(" second")
+
+        operation = MessageOperation(Chat(), Message("prompt"), executor=events)
+        self.assertIsNone(operation.wait_for("output.delta", timeout=0))
+        self.assertIsNone(operation.response)
+        self.assertEqual(operation.wait_for("output.delta", timeout=1).delta, "first")
+        self.assertEqual(steps, [])
+        self.assertEqual(operation.wait().text, "first second")
+
+    def test_cancel_at_eof_and_closed_iterator_share_a_cancelled_terminal(self):
+        from webaiprovider import (
+            Chat,
+            Message,
+            MessageOperation,
+            OperationCancelledError,
+            OperationState,
+            OutputDelta,
+        )
+
+        for close_iterator in (False, True):
+            with self.subTest(close_iterator=close_iterator):
+
+                def events(operation):
+                    yield OutputDelta("first")
+                    operation.cancel()
+
+                operation = MessageOperation(Chat(), Message("prompt"), executor=events)
+                if close_iterator:
+                    stream = operation.stream()
+                    next(stream)
+                    stream.close()
+                with self.assertRaises(OperationCancelledError):
+                    operation.wait()
+                self.assertEqual(operation.state, OperationState.CANCELLED)
+                statuses = [
+                    event.status for event in operation._events if event.event == "status.terminal"
+                ]
+                self.assertEqual(statuses, ["cancelled"])
+
+    def test_provider_close_cancels_a_send_parked_at_a_stage(self):
+        from webaiprovider import (
+            Chat,
+            Message,
+            MessageOperation,
+            OperationCancelledError,
+            OutputDelta,
+        )
+
+        provider = Provider(Account.from_cookies("grok", {"sso": "synthetic"}))
+        provider._prepare_session = lambda: None
+        provider._close_session = lambda: None
+        provider.open()
+        chat = Chat(provider=provider)
+
+        def events(_operation, _send_lock):
+            yield OutputDelta("first")
+            self.fail("Closed operation attempted to read another event")
+
+        provider._execute_stream_events = events
+        operation = MessageOperation(chat, Message("prompt"), executor=provider._execute_stream)
+        self.assertEqual(operation.wait_for("output.delta").delta, "first")
+        second = MessageOperation(chat, Message("second"), executor=provider._execute_stream)
+        with self.assertRaisesRegex(ProviderError, "paused send"):
+            second.start()
+        provider.close()
+        self.assertTrue(provider.closed)
+        with self.assertRaises(OperationCancelledError):
+            operation.wait()
+
     def test_sync_chat_project_and_stream_run_on_the_caller(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 

@@ -67,6 +67,20 @@ def _finalize_add_resource(
     return None, confirmed
 
 
+def _current_project(project_id: str, current: ProjectData | None) -> ProjectData | None:
+    return current if current is not None and current.id == project_id else None
+
+
+def _project_after_patch(editor, project_id, staged, result, changes):
+    from .types import ProjectData
+
+    confirmed = _patch_confirmed(changes)
+    if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
+        return result, confirmed, None
+    read = getattr(editor, "read_metadata", None)
+    return None, confirmed, (lambda: read(project_id, staged)) if callable(read) else None
+
+
 def _find_project_resource(before: ProjectData, resource_id: str) -> Any:
     source = next(
         (resource for resource in before.resources if resource.id == resource_id),
@@ -135,30 +149,21 @@ class ProjectMutationsMixin:
         instructions: str | None = None,
         current: ProjectData | None = None,
     ) -> ProjectData:
-        from .types import ProjectData
-
         if name is not None and not name.strip():
             raise ValueError("Project name is required")
-        staged = (
-            current
-            if current is not None and current.id == project_id
-            else await self._get_project_data(project_id)
-        )
+        staged = _current_project(project_id, current) or await self._get_project_data(project_id)
         changes = _project_patch_changes(staged, name=name, instructions=instructions)
         if not changes:
             return staged
         editor = self.editor
         result = await editor.update(project_id, current=staged, **changes)
-        confirmed = _patch_confirmed(changes)
-        if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
-            self._invalidate_project_cache(project_id)
-            return result
-        read_metadata = getattr(editor, "read_metadata", None)
-        return await self._project_after_write(
-            project_id,
-            confirmed,
-            read=(lambda: read_metadata(project_id, staged)) if callable(read_metadata) else None,
+        resolved, confirmed, read = _project_after_patch(
+            editor, project_id, staged, result, changes
         )
+        if resolved is not None:
+            self._invalidate_project_cache(project_id)
+            return resolved
+        return await self._project_after_write(project_id, confirmed, read=read)
 
     async def _add_project_resource(
         self,
@@ -168,11 +173,7 @@ class ProjectMutationsMixin:
         current: ProjectData | None = None,
         **values: Any,
     ) -> ProjectData:
-        before = (
-            current
-            if current is not None and current.id == project_id
-            else await self._get_project_data(project_id)
-        )
+        before = _current_project(project_id, current) or await self._get_project_data(project_id)
         result = await self.editor.add_source(
             project_id,
             kind=kind,
@@ -191,11 +192,7 @@ class ProjectMutationsMixin:
         *,
         current: ProjectData | None = None,
     ) -> ProjectData:
-        before = (
-            current
-            if current is not None and current.id == project_id
-            else await self._get_project_data(project_id)
-        )
+        before = _current_project(project_id, current) or await self._get_project_data(project_id)
         source = _find_project_resource(before, resource_id)
         result = await self.editor.remove_source(
             project_id,
@@ -249,30 +246,21 @@ class SyncProjectMutationsMixin:
         instructions: str | None = None,
         current: ProjectData | None = None,
     ) -> ProjectData:
-        from .types import ProjectData
-
         if name is not None and not name.strip():
             raise ValueError("Project name is required")
-        staged = (
-            current
-            if current is not None and current.id == project_id
-            else self._get_project_data(project_id)
-        )
+        staged = _current_project(project_id, current) or self._get_project_data(project_id)
         changes = _project_patch_changes(staged, name=name, instructions=instructions)
         if not changes:
             return staged
         editor = self.editor
         result = editor.update(project_id, current=staged, **changes)
-        confirmed = _patch_confirmed(changes)
-        if isinstance(result, ProjectData) and result.id == project_id and confirmed(result):
-            self._invalidate_project_cache(project_id)
-            return result
-        read_metadata = getattr(editor, "read_metadata", None)
-        return self._project_after_write(
-            project_id,
-            confirmed,
-            read=(lambda: read_metadata(project_id, staged)) if callable(read_metadata) else None,
+        resolved, confirmed, read = _project_after_patch(
+            editor, project_id, staged, result, changes
         )
+        if resolved is not None:
+            self._invalidate_project_cache(project_id)
+            return resolved
+        return self._project_after_write(project_id, confirmed, read=read)
 
     def _add_project_resource(
         self,
@@ -282,11 +270,7 @@ class SyncProjectMutationsMixin:
         current: ProjectData | None = None,
         **values: Any,
     ) -> ProjectData:
-        before = (
-            current
-            if current is not None and current.id == project_id
-            else self._get_project_data(project_id)
-        )
+        before = _current_project(project_id, current) or self._get_project_data(project_id)
         result = self.editor.add_source(
             project_id,
             kind=kind,
@@ -305,11 +289,7 @@ class SyncProjectMutationsMixin:
         *,
         current: ProjectData | None = None,
     ) -> ProjectData:
-        before = (
-            current
-            if current is not None and current.id == project_id
-            else self._get_project_data(project_id)
-        )
+        before = _current_project(project_id, current) or self._get_project_data(project_id)
         source = _find_project_resource(before, resource_id)
         result = self.editor.remove_source(
             project_id,
