@@ -227,6 +227,48 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(provider.close(), timeout=1)
         self.assertTrue(provider_closed.is_set())
 
+    async def test_double_cancel_shields_terminal_cleanup_and_releases_send_lock(self) -> None:
+        from webaiprovider import OperationEvent
+
+        class HangingProvider(AsyncProvider):
+            async def _stream_provider_events(self, _request):
+                yield TextDelta("partial")
+                await asyncio.Event().wait()
+
+        provider = HangingProvider(Account.from_cookies("chatgpt", {"session": "token"}))
+        await provider.open()
+        self.addAsyncCleanup(provider.close)
+        chat = await provider.chats.create(title="Double Cancel")
+        operation = chat.responses.create("prompt")
+
+        hook_entered = asyncio.Event()
+        hook_finished = asyncio.Event()
+        release_hook = asyncio.Event()
+        terminal_statuses: list[str] = []
+
+        async def slow_terminal(event) -> None:
+            terminal_statuses.append(event.status)
+            hook_entered.set()
+            await release_hook.wait()
+            hook_finished.set()
+
+        operation.chat.hooks.add("status.terminal", slow_terminal)
+        waiter = asyncio.create_task(operation.start())
+        await operation.wait_for(OperationEvent.OUTPUT_DELTA, timeout=1)
+        operation.cancel()
+        await hook_entered.wait()
+        operation._stream_task.cancel()
+        await asyncio.sleep(0)
+        release_hook.set()
+
+        with self.assertRaises((OperationCancelledError, asyncio.CancelledError)):
+            await waiter
+        await asyncio.wait_for(hook_finished.wait(), timeout=1)
+
+        self.assertEqual(terminal_statuses, ["cancelled"])
+        self.assertEqual(provider._active_operations, 0)
+        self.assertFalse(provider._send_lock(chat.id).locked())
+
 
 class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_execute_stream_emits_events_and_updates_operation(self) -> None:

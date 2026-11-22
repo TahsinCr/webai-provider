@@ -611,7 +611,8 @@ class AsyncMessageOperation(_BaseMessageOperation):
             try:
                 await self._send_scope.aclose()
                 if self._events and isinstance(self._events[-1], TerminalStatus):
-                    await self.chat.hooks.emit(self._events[-1])
+                    emit_terminal = self.chat.hooks.emit(self._events[-1])
+                    await (asyncio.shield(emit_terminal) if cancelled else emit_terminal)
             finally:
                 fin = AsyncOperationHooks.run_lifecycle(
                     hooks_chain, "on_finally", "chat.send", context

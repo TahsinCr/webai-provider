@@ -52,8 +52,6 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
-    from .resources.response.operation import AsyncMessageOperation
-
     _ChatsT = DefaultTypeVar(
         "_ChatsT",
         bound=AsyncChatsCollection[Any],
