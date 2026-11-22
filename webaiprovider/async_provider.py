@@ -22,7 +22,7 @@ from .base import (
 from .collections import _async_publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
-from .errors import FeatureUnavailable, ProviderError
+from .errors import AccountPaused, FeatureUnavailable, ProviderError
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
@@ -208,6 +208,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             await self._begin_activity(nested=nested)
             try:
                 yield
+            except AccountPaused:
+                self.account._clear_verified_session()
+                raise
             finally:
                 await self._end_activity()
 
@@ -537,12 +540,22 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def authenticate(self) -> SessionStatus:
         return await self._authenticate_session()
 
+    async def _account_fingerprint(self) -> str | None:
+        from .accounts.account import credential_fingerprint
+        from .accounts.credentials import async_read_session
+
+        try:
+            return credential_fingerprint(await async_read_session(self.account.store()))
+        except (AccountPaused, OSError, ValueError):
+            return None
+
     async def _authenticate_session(self, **options: Any) -> SessionStatus:
         async with self._activity(), self.models._lock:
             try:
                 return await self._authenticate(**options)
             finally:
                 self.models._clear()
+                self.account._clear_verified_session()
 
     async def session_status(self) -> SessionStatus:
         async with self._activity():
@@ -554,6 +567,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                 return await self._forget_session()
             finally:
                 self.models._clear()
+                self.account._clear_verified_session()
 
     async def conversation_attachment_count(self, conversation_id: str) -> int | None:
         async with self._activity():

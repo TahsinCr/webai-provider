@@ -13,7 +13,7 @@ from ...resources.message.types import (
     target_message,
 )
 from ...resources.project.types import ProjectData
-from ...resources.response.source import sources_from
+from ...resources.response.source import normalize_sources
 from .errors import GeminiCompatibilityError, GeminiError
 from .media import _field, candidate_files, resolve_image_links
 
@@ -59,11 +59,24 @@ def candidate_metadata(candidate, activity=None):
                     "title": history_value(entry, 3, 0, 2),
                 }
     _, activity_sources = activity if activity is not None else published_activity(candidate)
-    if not citations and not activity_sources:
-        return {"sources": ()}
-    ordered = [citations[key] for key in sorted(citations)]
-    ordered.extend(activity_sources)
-    return {"sources": sources_from({"sources": ordered})}
+    if not citations:
+        return {"sources": activity_sources}
+    normalized = normalize_sources(citations[key] for key in sorted(citations))
+    if not activity_sources:
+        return {"sources": normalized}
+    if len(normalized) >= 128:
+        return {"sources": normalized}
+    seen_urls = {item.get("url") for item in normalized if "url" in item}
+    merged = list(normalized)
+    for item in activity_sources:
+        if len(merged) >= 128:
+            break
+        url = item.get("url")
+        if url is None or url not in seen_urls:
+            if url is not None:
+                seen_urls.add(url)
+            merged.append(item)
+    return {"sources": tuple(merged)}
 
 
 def published_activity(candidate):
@@ -90,7 +103,7 @@ def published_activity(candidate):
             title = history_value(result, 2)
             if isinstance(url, str):
                 sources.append({"url": url, "title": title})
-    return tuple(steps), sources_from({"sources": sources}) if sources else ()
+    return tuple(steps), normalize_sources(sources) if sources else ()
 
 
 def published_thoughts(candidate, steps=None, previous=""):

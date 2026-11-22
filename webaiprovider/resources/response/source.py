@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -85,18 +85,38 @@ def _extract_source(value: Any, seen: set[Any]) -> dict[str, Any] | None:
     return item
 
 
+_LEAF_SOURCE_KEYS = frozenset(
+    ("url", "uri", "href", "title", "name", "description", "snippet", "file_id", "filename")
+)
+
+
+def normalize_sources(items: Iterable[Any]) -> tuple[dict[str, Any], ...]:
+    """Sanitize and deduplicate a flat sequence of raw source entries."""
+    sources: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for item in items:
+        if len(sources) >= 128:
+            break
+        entry = _extract_source(item, seen)
+        if entry is not None:
+            sources.append(entry)
+    return tuple(sources)
+
+
 def sources_from(*roots: Any) -> tuple[dict[str, Any], ...]:
     """Extract and sanitize web or file source citations from provider payloads."""
     sources: list[dict[str, Any]] = []
     seen: set[Any] = set()
     remaining_nodes = 512
 
-    def add(value: Any) -> None:
+    def add(value: Any) -> bool:
         if len(sources) >= 128:
-            return
+            return False
         entry = _extract_source(value, seen)
         if entry is not None:
             sources.append(entry)
+            return True
+        return False
 
     def visit(value: Any, depth: int = 0) -> None:
         nonlocal remaining_nodes
@@ -113,8 +133,11 @@ def sources_from(*roots: Any) -> tuple[dict[str, Any], ...]:
             entries = value.get(key)
             if isinstance(entries, (list, tuple)):
                 for item in entries[:128]:
-                    add(item)
-                    visit(item, depth + 1)
+                    extracted = add(item)
+                    if not (
+                        extracted and isinstance(item, dict) and _LEAF_SOURCE_KEYS.issuperset(item)
+                    ):
+                        visit(item, depth + 1)
         groups = value.get("search_result_groups")
         if isinstance(groups, (list, tuple)):
             for group in groups[:128]:

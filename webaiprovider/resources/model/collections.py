@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+import time
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from ...collections import (
@@ -19,6 +20,8 @@ from .types import Models
 if TYPE_CHECKING:
     from ...async_provider import AsyncProvider
     from ...provider import Provider
+
+MODEL_CATALOG_TTL = 300.0
 
 
 def _model_by_id(models: Sequence[ModelRef], model_id: str) -> ModelRef:
@@ -55,35 +58,53 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         loader: Callable[[bool], Awaitable[list[ModelRef]]],
         *,
         provider: AsyncProvider[Any, Any] | None = None,
+        ttl: float | None = MODEL_CATALOG_TTL,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._loader = loader
         self._provider = provider
-        self._items: tuple[ModelRef, ...] | None = None
+        self._ttl = ttl
+        self._clock = clock
+        self._snapshot: tuple[tuple[ModelRef, ...], float] | None = None
         self._lock = asyncio.Lock()
 
     def _read_context(self):
         return self._provider, None
 
-    def _clear(self) -> None:
-        self._items = None
+    def _prime(self, items: Iterable[ModelRef]) -> None:
+        self._snapshot = (tuple(items), self._clock())
 
-    async def _reload(self) -> tuple[ModelRef, ...]:
+    def _clear(self) -> None:
+        self._snapshot = None
+
+    def _is_fresh(self, snapshot: tuple[tuple[ModelRef, ...], float] | None) -> bool:
+        return snapshot is not None and (
+            self._ttl is None or self._clock() - snapshot[1] < self._ttl
+        )
+
+    async def _reload(self, *, force: bool) -> tuple[ModelRef, ...]:
         self._mark_remote_read()
-        self._items = tuple(await self._loader(True))
-        return self._items
+        items = tuple(await self._loader(force))
+        self._snapshot = (items, self._clock())
+        return items
 
     async def _load_items(self) -> tuple[ModelRef, ...]:
-        if self._items is None:
-            async with self._lock:
-                if self._items is None:
-                    return await self._reload()
-        return self._items
+        snapshot = self._snapshot
+        if self._is_fresh(snapshot):
+            assert snapshot is not None
+            return snapshot[0]
+        async with self._lock:
+            snapshot = self._snapshot
+            if self._is_fresh(snapshot):
+                assert snapshot is not None
+                return snapshot[0]
+            return await self._reload(force=False)
 
     @_async_report_read
     async def refresh(self) -> list[ModelRef]:
         """Replace the session catalog after a successful provider load."""
         async with self._lock:
-            return list(await self._reload())
+            return list(await self._reload(force=True))
 
     @_async_report_read
     async def get(self, model_id: str, /) -> ModelRef:
@@ -131,31 +152,47 @@ class ModelsCollection(RemoteCollection[ModelRef]):
         loader: Callable[[bool], list[ModelRef]],
         *,
         provider: Provider[Any, Any] | None = None,
+        ttl: float | None = MODEL_CATALOG_TTL,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._loader = loader
         self._provider = provider
-        self._items: tuple[ModelRef, ...] | None = None
+        self._ttl = ttl
+        self._clock = clock
+        self._snapshot: tuple[tuple[ModelRef, ...], float] | None = None
         self._lock = threading.Lock()
 
     def _read_context(self):
         return self._provider, None
 
-    def _clear(self) -> None:
-        self._items = None
+    def _prime(self, items: Iterable[ModelRef]) -> None:
+        self._snapshot = (tuple(items), self._clock())
 
-    def _reload(self) -> tuple[ModelRef, ...]:
+    def _clear(self) -> None:
+        self._snapshot = None
+
+    def _is_fresh(self, snapshot: tuple[tuple[ModelRef, ...], float] | None) -> bool:
+        return snapshot is not None and (
+            self._ttl is None or self._clock() - snapshot[1] < self._ttl
+        )
+
+    def _reload(self, *, force: bool) -> tuple[ModelRef, ...]:
         self._mark_remote_read()
-        items = tuple(self._loader(True))
-        self._items = items
+        items = tuple(self._loader(force))
+        self._snapshot = (items, self._clock())
         return items
 
     def _load_items(self) -> tuple[ModelRef, ...]:
-        items = self._items
-        if items is not None:
-            return items
+        snapshot = self._snapshot
+        if self._is_fresh(snapshot):
+            assert snapshot is not None
+            return snapshot[0]
         with self._lock:
-            items = self._items
-            return self._reload() if items is None else items
+            snapshot = self._snapshot
+            if self._is_fresh(snapshot):
+                assert snapshot is not None
+                return snapshot[0]
+            return self._reload(force=False)
 
     def _iter_batches(
         self, *, limit: int | None = None, **options: Any
@@ -181,7 +218,7 @@ class ModelsCollection(RemoteCollection[ModelRef]):
     def refresh(self) -> list[ModelRef]:
         """Replace the session catalog after a successful provider load."""
         with self._lock:
-            return list(self._reload())
+            return list(self._reload(force=True))
 
     @_report_read
     def get(self, model_id: str, /) -> ModelRef:

@@ -19,6 +19,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.attachment import GROK_ATTACHMENTS, Attachment
 from ...resources.message.protocol import ProviderRequest
 from ...resources.message.types import MessageAction
+from ...resources.model.collections import MODEL_CATALOG_TTL
 from ...resources.project.types import ProjectData, ProjectOptions, source_file
 from .records import active_responses, conversation, project
 
@@ -27,7 +28,7 @@ _MAX_LINE_BYTES = 1_048_576
 _MAX_STREAM_BYTES = 64 * 1024 * 1024
 _MAX_CHAT_FILE_BYTES = 3 * 1024 * 1024
 _MAX_WORKSPACE_FILE_BYTES = 20 * 1024 * 1024
-_CATALOG_TTL = 300.0
+_CATALOG_TTL = MODEL_CATALOG_TTL
 _CONTINUATION_TTL = 1800.0
 
 

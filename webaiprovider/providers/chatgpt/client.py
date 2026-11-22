@@ -212,12 +212,18 @@ class ChatGPTClient(BaseChatGPTClient):
         return self.list_page(0, DEFAULT_PAGE_SIZE)
 
     def model_catalog(self, *, refresh: bool = False):
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
         cached = getattr(self, "_model_catalog", None)
-        if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+        if cached is not None and not refresh and time.monotonic() - cached[0] < MODEL_CATALOG_TTL:
             return cached[1]
         with self._catalog_lock:
             cached = getattr(self, "_model_catalog", None)
-            if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+            if (
+                cached is not None
+                and not refresh
+                and time.monotonic() - cached[0] < MODEL_CATALOG_TTL
+            ):
                 return cached[1]
             raw = self.request(
                 "GET",

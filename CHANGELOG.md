@@ -12,6 +12,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Unify session model catalog caching (`ModelsCollection` and `AsyncModelsCollection`) with provider catalog TTLs (`MODEL_CATALOG_TTL`), reuse verified per-account session/bootstrap snapshots across `open()` calls until credentials change, expire, pause, or are forgotten, and optimize Gemini long-history source/media extraction.
 - Select stream milestones with `OperationEvent` in `wait_for()`. Register persistent stream and send hooks on `chat.hooks`.
 - Use stable snapshots for local collections and publish response parts and text together. Updating a message attachment replaces the item in the collection.
 - Keep the chat lock through terminal publication, reject same-thread mutations of paused sends, and lock only the chat during moves. Publish confirmed project attachment changes under the project lock.

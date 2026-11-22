@@ -82,8 +82,18 @@ class GrokProvider(
         self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
 
     def _prepare_session(self) -> None:
+        fingerprint = self._account_fingerprint()
+        cached = self.account._get_verified_session(fingerprint, ttl=_CATALOG_TTL)
+        if isinstance(cached, ModelCatalog):
+            self.client.session.authenticated = True
+            self._catalog = cached
+            self._catalog_at = time.monotonic()
+            self._prime_models(cached)
+            return
         self.client.authenticate()
-        self._prime_models(self._load_catalog())
+        catalog = self._load_catalog()
+        self._prime_models(catalog)
+        self.account._set_verified_session(self._account_fingerprint(), catalog)
 
     def _close_session(self) -> None:
         with self._gate:

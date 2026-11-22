@@ -24,7 +24,7 @@ from .collections import _publish_collection_change
 from .core.hooks import OperationHooks
 from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
 from .core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
-from .errors import FeatureUnavailable, ProviderError
+from .errors import AccountPaused, FeatureUnavailable, ProviderError
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
 from .resources.chat.types import Conversation
@@ -207,6 +207,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             self._begin_activity(nested=nested)
             try:
                 yield
+            except AccountPaused:
+                self.account._clear_verified_session()
+                raise
             finally:
                 self._end_activity()
 
@@ -556,12 +559,22 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def authenticate(self) -> SessionStatus:
         return self._authenticate_session()
 
+    def _account_fingerprint(self) -> str | None:
+        from .accounts.account import credential_fingerprint
+        from .accounts.credentials import read_session
+
+        try:
+            return credential_fingerprint(read_session(self.account.store()))
+        except (AccountPaused, OSError, ValueError):
+            return None
+
     def _authenticate_session(self, **options: Any) -> SessionStatus:
         with self._activity(), self.models._lock:
             try:
                 return self._authenticate(**options)
             finally:
                 self.models._clear()
+                self.account._clear_verified_session()
 
     def session_status(self) -> SessionStatus:
         with self._activity():
@@ -573,6 +586,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 return self._forget_session()
             finally:
                 self.models._clear()
+                self.account._clear_verified_session()
 
     def conversation_attachment_count(self, conversation_id: str) -> int | None:
         with self._activity():

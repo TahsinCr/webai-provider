@@ -244,11 +244,11 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
         self.assertEqual((await provider.models.list())[0].id, "gpt-6-pro")
-        provider._load_catalog.assert_awaited_once_with(force=True)
+        provider._load_catalog.assert_awaited_once_with(force=False)
         await provider.models.refresh()
         self.assertEqual(
             provider._load_catalog.await_args_list,
-            [call(force=True), call(force=True)],
+            [call(force=False), call(force=True)],
         )
 
     async def test_closing_session_clears_the_model_catalog(self) -> None:
@@ -307,7 +307,7 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             [[], None, []],
         )
         self.assertEqual(await catalog.list(), [])
-        loader.assert_awaited_once_with(True)
+        loader.assert_awaited_once_with(False)
 
     async def test_failed_refresh_keeps_the_last_valid_catalog(self) -> None:
         loads = 0
@@ -327,6 +327,46 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await catalog.list())[0], model)
         self.assertEqual(loads, 2)
 
+    async def test_model_collection_ttl_reloads_after_expiry_for_async_and_sync(self) -> None:
+        from webaiprovider import ModelsCollection
+
+        now = 100.0
+        first = ModelRef("gemini", "gemini-hydrogen", "Gemini 4 Hydrogen")
+        second = ModelRef("gemini", "gemini-neon", "Gemini 4 Neon")
+        async_calls: list[bool] = []
+
+        async def async_load(force: bool) -> list[ModelRef]:
+            async_calls.append(force)
+            return [first] if len(async_calls) == 1 else [second]
+
+        async_catalog = AsyncModelsCollection(async_load, ttl=300.0, clock=lambda: now)
+        async_catalog._prime([first])
+        self.assertEqual(await async_catalog.list(), [first])
+        self.assertEqual(async_calls, [])
+
+        now += 301.0
+        self.assertEqual(await async_catalog.list(), [first])
+        self.assertEqual(async_calls, [False])
+        self.assertEqual(await async_catalog.refresh(), [second])
+        self.assertEqual(async_calls, [False, True])
+
+        sync_calls: list[bool] = []
+
+        def sync_load(force: bool) -> list[ModelRef]:
+            sync_calls.append(force)
+            return [first] if len(sync_calls) == 1 else [second]
+
+        sync_catalog = ModelsCollection(sync_load, ttl=300.0, clock=lambda: now)
+        sync_catalog._prime([first])
+        self.assertEqual(sync_catalog.list(), [first])
+        self.assertEqual(sync_calls, [])
+
+        now += 301.0
+        self.assertEqual(sync_catalog.list(), [first])
+        self.assertEqual(sync_calls, [False])
+        self.assertEqual(sync_catalog.refresh(), [second])
+        self.assertEqual(sync_calls, [False, True])
+
 
 class BlockingCatalogTests(unittest.TestCase):
     def test_warm_catalog_uses_one_snapshot_during_invalidation(self):
@@ -335,7 +375,7 @@ class BlockingCatalogTests(unittest.TestCase):
         class Catalog(ModelsCollection):
             def __getattribute__(self, name):
                 value = super().__getattribute__(name)
-                if name == "_items":
+                if name == "_snapshot":
                     self._clear()
                 return value
 
@@ -343,7 +383,7 @@ class BlockingCatalogTests(unittest.TestCase):
             self.fail("A warm read must not reload")
 
         catalog = Catalog(reject_reload)
-        catalog._items = ()
+        catalog._prime(())
         self.assertEqual(catalog.list(), [])
 
     def test_loaded_catalog_lists_gets_and_resolves_on_caller_without_starting_loop(self):
@@ -355,7 +395,7 @@ class BlockingCatalogTests(unittest.TestCase):
 
         def load(refresh: bool = False) -> list[ModelRef]:
             loader_threads.append(threading.get_ident())
-            self.assertTrue(refresh)
+            self.assertFalse(refresh)
             return [model]
 
         provider.models._loader = load

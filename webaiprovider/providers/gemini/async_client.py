@@ -82,7 +82,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         self._save_lock = asyncio.Lock()
         self._activity_lock = asyncio.Lock()
 
-    async def open(self):
+    async def open(self, *, verified_bootstrap: dict[str, str] | None = None):
         from curl_cffi.requests import AsyncSession
 
         cookies = self._extract_cookies(await async_read_session(self.credential_file))
@@ -101,13 +101,16 @@ class AsyncGeminiClient(BaseGeminiClient):
                 curl_share=create_curl_share(),
             )
         try:
-            response = await self.request(
-                "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False
-            )
-            self._check_login_redirect(response)
-            AsyncTransport.check(response)
-            self._apply_bootstrap_html(response.text)
-            await self.persist()
+            if verified_bootstrap is not None:
+                self._apply_verified_bootstrap(verified_bootstrap)
+            else:
+                response = await self.request(
+                    "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False
+                )
+                self._check_login_redirect(response)
+                AsyncTransport.check(response)
+                self._apply_bootstrap_html(response.text)
+                await self.persist()
             self.refresh_task = asyncio.create_task(self.refresh(), name="gemini-session-refresh")
         except BaseException:
             await self.close()

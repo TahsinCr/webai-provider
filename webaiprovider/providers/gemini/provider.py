@@ -18,6 +18,7 @@ from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import target_message
 from ...resources.model import ModelCatalogState
+from ...resources.model.collections import MODEL_CATALOG_TTL
 from ...resources.model.model import Model, ModelCatalog
 from ...resources.project.collections import ProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
@@ -98,25 +99,25 @@ class GeminiProvider(
         self.notebooks.reader = self.rpc.read
         self.editor: GeminiProjectEditor = GeminiProjectEditor(self.rpc, self.notebooks)
 
-    def _connect(self) -> GeminiClient:
+    def _connect(self, *, verified_bootstrap: dict[str, str] | None = None) -> GeminiClient:
         with self._connect_gate:
-            return self._connect_once()
+            return self._connect_once(verified_bootstrap=verified_bootstrap)
 
-    def _connect_once(self) -> GeminiClient:
+    def _connect_once(self, *, verified_bootstrap: dict[str, str] | None = None) -> GeminiClient:
         if self._client is not None:
             return self._client
         if not session_exists(self.cookie_file):
             raise AccountPaused("No Gemini session; sign in through the Accounts section")
-        client = (
-            GeminiClient(self.cookie_file, transport=self._provided_transport)
-            if self._client_factory is None
-            else self._client_factory(self.cookie_file)
-        )
-        client.open()
+        if self._client_factory is None:
+            client = GeminiClient(self.cookie_file, transport=self._provided_transport)
+            client.open(verified_bootstrap=verified_bootstrap)
+        else:
+            client = self._client_factory(self.cookie_file)
+            client.open()
         if (
             self._cached_models is not None
             and self._catalog_at is not None
-            and (time.monotonic() - self._catalog_at < 300)
+            and (time.monotonic() - self._catalog_at < MODEL_CATALOG_TTL)
         ):
             client.models = self._cached_models
         self._client = client
@@ -136,7 +137,25 @@ class GeminiProvider(
             self._project_contexts.clear()
 
     def _prepare_session(self) -> None:
-        self._prime_models(self._load_catalog())
+        if self._client_factory is None:
+            cached = self.account._get_verified_session(
+                self._account_fingerprint(), ttl=MODEL_CATALOG_TTL
+            )
+            if isinstance(cached, tuple) and len(cached) == 2:
+                bootstrap, catalog = cached
+                if isinstance(bootstrap, dict) and isinstance(catalog, ModelCatalog):
+                    client = self._connect(verified_bootstrap=bootstrap)
+                    client.models = catalog.models
+                    self._cached_models = catalog.models
+                    self._catalog_at = time.monotonic()
+                    self._prime_models(catalog)
+                    return
+        catalog = self._load_catalog()
+        self._prime_models(catalog)
+        if self._client_factory is None and self._client is not None:
+            self.account._set_verified_session(
+                self._account_fingerprint(), (self._client._export_bootstrap(), catalog)
+            )
 
     def _close_session(self) -> None:
         with self._gate, self._connect_gate:
@@ -162,7 +181,7 @@ class GeminiProvider(
                 force
                 or not client.models
                 or self._catalog_at is None
-                or (time.monotonic() - self._catalog_at >= 300)
+                or (time.monotonic() - self._catalog_at >= MODEL_CATALOG_TTL)
             ):
                 client.models = client.discover_models()
                 self._cached_models = client.models

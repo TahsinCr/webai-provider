@@ -218,7 +218,7 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     def _prime_models(self, catalog: ModelCatalog) -> None:
         from .resources.model.types import _model_refs_from_catalog
 
-        self.models._items = tuple(_model_refs_from_catalog(self.id, catalog))
+        self.models._prime(_model_refs_from_catalog(self.id, catalog))
 
 
 class _StreamEventTranslator:

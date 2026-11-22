@@ -196,6 +196,8 @@ class AsyncChatGPTProvider(
         return self._read_semaphore
 
     async def _prepare_session(self) -> None:
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
         done = asyncio.Event()
         previous_done = self._prepare_done
         self._prepare_done = done
@@ -221,7 +223,17 @@ class AsyncChatGPTProvider(
                 if callable(prewarm):
                     prewarm()
                     prewarmed = True
-            self._prime_models(await self._load_catalog())
+                cached = self.account._get_verified_session(
+                    await self._account_fingerprint(), ttl=MODEL_CATALOG_TTL
+                )
+                if isinstance(cached, ModelCatalog):
+                    client._model_catalog = (time.monotonic(), cached)
+                    self._prime_models(cached)
+                    return
+            catalog = await self._load_catalog()
+            self._prime_models(catalog)
+            if self._persistent_client:
+                self.account._set_verified_session(await self._account_fingerprint(), catalog)
             if not prewarmed and self._persistent_client and self._client is not None:
                 prewarm = getattr(self._client, "trigger_sentinel_prewarm", None)
                 if callable(prewarm):

@@ -175,17 +175,33 @@ class ChatGPTProvider(
             close()
 
     def _prepare_session(self) -> None:
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
+        auth_ready = True
         if self._factory is ChatGPTClient:
             try:
                 self.session_state.load()
             except ChatGPTAuthenticationError:
+                auth_ready = False
                 stored = read_session(self.session_state.session_file)
                 cookies = stored.get("cookies", stored)
                 if not isinstance(cookies, dict):
                     raise
                 cookies = ProviderCookieFilter.filter_cookies("https://chatgpt.com", cookies)
                 self.session_state.import_cookies(cookies)
-        self._prime_models(self._load_catalog())
+        if self._persistent_client and auth_ready:
+            cached = self.account._get_verified_session(
+                self._account_fingerprint(), ttl=MODEL_CATALOG_TTL
+            )
+            if isinstance(cached, ModelCatalog):
+                client = self._ensure_client()
+                client._model_catalog = (time.monotonic(), cached)
+                self._prime_models(cached)
+                return
+        catalog = self._load_catalog()
+        self._prime_models(catalog)
+        if self._persistent_client:
+            self.account._set_verified_session(self._account_fingerprint(), catalog)
 
     def _close_session(self) -> None:
         try:

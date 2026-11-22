@@ -83,11 +83,20 @@ class AsyncGrokProvider(
         self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
 
     async def _prepare_session(self) -> None:
+        fingerprint = await self._account_fingerprint()
+        cached = self.account._get_verified_session(fingerprint, ttl=_CATALOG_TTL)
+        if isinstance(cached, ModelCatalog):
+            self.client.session.authenticated = True
+            self._catalog = cached
+            self._catalog_at = time.monotonic()
+            self._prime_models(cached)
+            return
         _, catalog = await asyncio.gather(
             self.client.authenticate(),
             self._load_catalog(),
         )
         self._prime_models(catalog)
+        self.account._set_verified_session(await self._account_fingerprint(), catalog)
 
     async def _close_session(self) -> None:
         async with self._gate:

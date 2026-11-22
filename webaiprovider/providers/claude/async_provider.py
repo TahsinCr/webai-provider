@@ -73,7 +73,28 @@ class AsyncClaudeProvider(
             return self._purge_credentials_unlocked()
 
     async def _prepare_session(self) -> None:
-        self._prime_models(await self.client.prepare())
+        import time
+
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
+        cached = self.account._get_verified_session(
+            await self._account_fingerprint(), ttl=MODEL_CATALOG_TTL
+        )
+        if isinstance(cached, tuple) and len(cached) == 2:
+            organization, catalog = cached
+            if isinstance(organization, str) and isinstance(catalog, ModelCatalog):
+                self.client.organization = organization
+                self.client.catalog = catalog
+                self.client.authenticated = True
+                self.client._discovered_at = time.monotonic()
+                self._prime_models(catalog)
+                return
+        catalog = await self.client.prepare()
+        self._prime_models(catalog)
+        if self.client.organization:
+            self.account._set_verified_session(
+                await self._account_fingerprint(), (self.client.organization, catalog)
+            )
 
     async def _close_session(self) -> None:
         async with self._rename_gate:

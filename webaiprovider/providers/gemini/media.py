@@ -62,48 +62,65 @@ def _field(container, index, default=None):
     if not isinstance(container, list) or not container:
         return default
     value = container[index] if index < len(container) else None
-    if value in (None, [], {}) or isinstance(value, dict):
-        sparse = container[-1] if isinstance(container[-1], dict) else {}
-        value = sparse.get(str(index + 1))
-    return default if value in (None, [], {}) else value
+    if value is None or value == [] or isinstance(value, dict):
+        tail = container[-1]
+        value = tail.get(str(index + 1)) if isinstance(tail, dict) else None
+    return default if value is None or value == [] or value == {} else value
 
 
 def candidate_files(candidate):
     rich = _nested_value(candidate, [12])
-    if not rich:
+    if not isinstance(rich, list) or not rich:
         return []
-    values = _nested_value(_field(rich, 7), [0], [])
     images = []
-    web = _field(rich, 1, [])
-    for index, item in enumerate(web if isinstance(web, list) else []):
-        url = _nested_value(item, [0, 0, 0])
-        if isinstance(url, str) and valid_media_url(url):
-            images.append(
-                {"url": url, "name": f"web-image-{index + 1}", "alias": f"web-image:{index}"}
-            )
-    for index, item in enumerate(values or []):
-        url = _nested_value(item, [0, 3, 3])
-        if isinstance(url, str) and valid_media_url(url):
-            images.append(
-                {
-                    "url": url,
-                    "media_type": _nested_value(item, [0, 3, 11]),
-                    "name": _nested_value(item, [0, 3, 2]) or f"image-{index + 1}.png",
-                    "alias": _nested_value(item, [1, 0])
-                    or f"http://googleusercontent.com/image_generation_content/{index}",
-                }
-            )
-    candidate_id = _nested_value(candidate, [0])
-    video = _nested_value(_field(rich, 59), [0, 0, 0, 0, 7, 1])
-    media = _field(rich, 86, [])
-    for kind, name, mime, url in (
-        ("video", "video.mp4", "video/mp4", video),
-        ("audio", "audio.mp3", "audio/mpeg", _nested_value(media, [0, 1, 7, 1])),
-        ("music-video", "music-video.mp4", "video/mp4", _nested_value(media, [1, 1, 7, 1])),
-    ):
-        if isinstance(url, str) and valid_media_url(url):
-            alias = f"gemini-media:{candidate_id}:{kind}" if isinstance(candidate_id, str) else url
-            images.append({"url": url, "name": name, "media_type": mime, "alias": alias})
+    web = _field(rich, 1)
+    if isinstance(web, list):
+        for index, item in enumerate(web):
+            url = _nested_value(item, [0, 0, 0])
+            if isinstance(url, str) and valid_media_url(url):
+                images.append(
+                    {"url": url, "name": f"web-image-{index + 1}", "alias": f"web-image:{index}"}
+                )
+    generated = _field(rich, 7)
+    values = _nested_value(generated, [0]) if generated is not None else None
+    if isinstance(values, list):
+        for index, item in enumerate(values):
+            url = _nested_value(item, [0, 3, 3])
+            if isinstance(url, str) and valid_media_url(url):
+                images.append(
+                    {
+                        "url": url,
+                        "media_type": _nested_value(item, [0, 3, 11]),
+                        "name": _nested_value(item, [0, 3, 2]) or f"image-{index + 1}.png",
+                        "alias": _nested_value(item, [1, 0])
+                        or f"http://googleusercontent.com/image_generation_content/{index}",
+                    }
+                )
+    video_root = _field(rich, 59)
+    media = _field(rich, 86)
+    if video_root is not None or media is not None:
+        candidate_id = _nested_value(candidate, [0])
+        video = _nested_value(video_root, [0, 0, 0, 0, 7, 1]) if video_root is not None else None
+        for kind, name, mime, url in (
+            ("video", "video.mp4", "video/mp4", video),
+            (
+                "audio",
+                "audio.mp3",
+                "audio/mpeg",
+                _nested_value(media, [0, 1, 7, 1]) if media is not None else None,
+            ),
+            (
+                "music-video",
+                "music-video.mp4",
+                "video/mp4",
+                _nested_value(media, [1, 1, 7, 1]) if media is not None else None,
+            ),
+        ):
+            if isinstance(url, str) and valid_media_url(url):
+                alias = (
+                    f"gemini-media:{candidate_id}:{kind}" if isinstance(candidate_id, str) else url
+                )
+                images.append({"url": url, "name": name, "media_type": mime, "alias": alias})
     return images
 
 

@@ -140,6 +140,28 @@ class BaseGeminiClient:
         self.verified = True
         self._activity_synced_at = time.monotonic()
 
+    def _export_bootstrap(self) -> dict[str, str]:
+        return {
+            "token": self.token,
+            "build": self.build,
+            "sid": self.sid,
+            "language": self.language,
+            "push_id": self.push_id,
+            "rpc_path_prefix": self.rpc_path_prefix,
+        }
+
+    def _apply_verified_bootstrap(self, bootstrap: dict[str, str]) -> None:
+        self.token = bootstrap.get("token", "")
+        self.build = bootstrap.get("build", "")
+        self.sid = bootstrap.get("sid", "")
+        self.language = bootstrap.get("language") or "en"
+        self.push_id = bootstrap.get("push_id", "")
+        self.rpc_path_prefix = bootstrap.get("rpc_path_prefix", "")
+        if not self.token:
+            raise AccountPaused("Gemini session is invalid; verify the account")
+        self.verified = True
+        self._activity_synced_at = time.monotonic()
+
     def params(self) -> dict[str, Any]:
         current = self.request_id
         self.request_id += 100000

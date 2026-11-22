@@ -153,6 +153,87 @@ class AccountsTests(unittest.TestCase):
             self.assertNotIn(str(target.resolve()), _SESSION_WRITE_LOCKS)
             self.assertEqual(len(_SESSION_WRITE_LOCKS), 0)
 
+    def test_verified_session_reuses_snapshot_until_credentials_change_or_forget(self):
+        from unittest.mock import Mock
+
+        from webaiprovider.resources.model import Model, ModelCatalog, ModelCatalogState
+
+        account = Account.from_cookies("grok", {"sso": "token-1"})
+        catalog = ModelCatalog(ModelCatalogState.AVAILABLE, (Model("fast", "Grok"),))
+
+        first = Provider(account)
+        first.client.authenticate = Mock()
+        first._load_catalog = Mock(return_value=catalog)
+        first.open()
+        first.close()
+        first.client.authenticate.assert_called_once()
+        first._load_catalog.assert_called_once()
+
+        second = Provider(account)
+        second.client.authenticate = Mock()
+        second._load_catalog = Mock(side_effect=AssertionError("expected cached catalog"))
+        second.open()
+        self.assertEqual([item.id for item in second.models.list()], ["fast"])
+        second.client.authenticate.assert_not_called()
+
+        # Credential change invalidates the verified snapshot automatically.
+        account.store().save({"sso": "token-2"})
+        third = Provider(account)
+        third.client.authenticate = Mock()
+        third._load_catalog = Mock(return_value=catalog)
+        third.open()
+        third.client.authenticate.assert_called_once()
+        third._load_catalog.assert_called_once()
+
+        # Explicit forget_session clears the cached verified snapshot.
+        third.forget_session()
+        third.close()
+        second.close()
+        self.assertIsNone(account._verified_session)
+
+    def test_gemini_verified_bootstrap_is_reused_and_cleared_on_account_paused(self):
+        from webaiprovider.providers.gemini.client import GeminiClient
+        from webaiprovider.resources.model import Model, ModelCatalog, ModelCatalogState
+
+        account = Account.from_cookies(
+            "gemini", {"__Secure-1PSID": "sid-1", "OSID": "o-1", "__Secure-OSID": "so-1"}
+        )
+        catalog = ModelCatalog(ModelCatalogState.AVAILABLE, (Model("gemini-hydrogen", "Hydrogen"),))
+        open_calls: list[dict[str, str] | None] = []
+
+        def fake_open(client, *, verified_bootstrap=None):
+            open_calls.append(verified_bootstrap)
+            if verified_bootstrap is not None:
+                client._apply_verified_bootstrap(verified_bootstrap)
+            else:
+                client._apply_bootstrap_html(
+                    '"SNlM0e":"tok-1","cfb2h":"bld-1","FdrFJe":"fsid-1","TuX5cc":"en"'
+                )
+            return client
+
+        with (
+            patch.object(GeminiClient, "open", fake_open),
+            patch.object(GeminiClient, "discover_models", return_value=catalog.models) as discover,
+        ):
+            first = Provider(account)
+            first.open()
+            first.close()
+
+            second = Provider(account)
+            second.open()
+            self.assertEqual([item.id for item in second.models.list()], ["gemini-hydrogen"])
+            self.assertEqual(second._client.token, "tok-1")
+            with self.assertRaises(AccountPaused):
+                with second._activity():
+                    raise AccountPaused("expired")
+            second.close()
+
+        self.assertEqual(discover.call_count, 1)
+        self.assertEqual(len(open_calls), 2)
+        self.assertIsNone(open_calls[0])
+        self.assertEqual(open_calls[1]["token"], "tok-1")
+        self.assertIsNone(account._verified_session)
+
 
 class AuthTests(unittest.TestCase):
     def test_browser_selection_and_import_share_provider_authentication_policy(self):

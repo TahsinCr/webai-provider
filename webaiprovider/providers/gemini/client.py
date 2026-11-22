@@ -57,7 +57,7 @@ class GeminiClient(BaseGeminiClient):
         self._refresh_lock = threading.Lock()
         self._refresh_at = float("inf")
 
-    def open(self):
+    def open(self, *, verified_bootstrap: dict[str, str] | None = None):
         from curl_cffi.requests import Session
 
         cookies = self._extract_cookies(read_session(self.credential_file))
@@ -76,12 +76,18 @@ class GeminiClient(BaseGeminiClient):
                 curl_share=create_curl_share(),
             )
         try:
-            response = self.request("GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False)
-            self._check_login_redirect(response)
-            Transport.check(response)
-            self._apply_bootstrap_html(response.text)
-            self._refresh_at = time.monotonic() + COOKIE_REFRESH_INTERVAL
-            self.persist()
+            if verified_bootstrap is not None:
+                self._apply_verified_bootstrap(verified_bootstrap)
+                self._refresh_at = time.monotonic() + COOKIE_REFRESH_INTERVAL
+            else:
+                response = self.request(
+                    "GET", ORIGIN + "/app", headers=HEADERS, allow_redirects=False
+                )
+                self._check_login_redirect(response)
+                Transport.check(response)
+                self._apply_bootstrap_html(response.text)
+                self._refresh_at = time.monotonic() + COOKIE_REFRESH_INTERVAL
+                self.persist()
         except BaseException:
             self.close()
             raise

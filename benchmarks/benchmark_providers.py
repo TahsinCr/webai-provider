@@ -14,8 +14,51 @@ _TURNS = 1_000
 _CHAT = "c_fixture"
 
 
-def _history_fixture(provider):
+def _history_fixture(provider, *, rich: bool = False):
     if provider == "gemini":
+        if rich:
+            turns = []
+            for i in reversed(range(_TURNS)):
+                candidate: list[object] = [None] * 38
+                candidate[0] = f"candidate_{i}"
+                candidate[1] = [f"Answer {i} [cite: 1, 2]"]
+                candidate[12] = [None] * 44
+                candidate[12][43] = [
+                    [
+                        ["[cite: 1, 2]"],
+                        [
+                            [
+                                None,
+                                None,
+                                None,
+                                [[None, f"https://example.com/a/{i}", f"Title A {i}"]],
+                            ],
+                            [
+                                None,
+                                None,
+                                None,
+                                [[None, f"https://example.com/b/{i}", f"Title B {i}"]],
+                            ],
+                        ],
+                    ]
+                ]
+                candidate[37] = [
+                    [f"Thought summary {i}"],
+                    [
+                        [
+                            None,
+                            f"Search query {i}",
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            [[None, f"https://example.com/s/{i}", f"Search {i}"]],
+                        ]
+                    ],
+                ]
+                turns.append([[_CHAT, f"r_{i}"], None, [[f"Question {i}"]], [[candidate]]])
+            return [turns]
         turns = [
             [[_CHAT, f"r_{i}"], None, [["Question"]], [[[f"candidate_{i}", ["Answer"]]]]]
             for i in reversed(range(_TURNS))
@@ -59,10 +102,10 @@ def _history_fixture(provider):
     }
 
 
-def _case(provider_name: str, *, retry: bool = False) -> Case:
+def _case(provider_name: str, *, retry: bool = False, rich: bool = False) -> Case:
     async def measure(loops: int) -> float:
         provider = AsyncProvider(Account.from_cookies(provider_name, {}))
-        fixture = _history_fixture(provider_name)
+        fixture = _history_fixture(provider_name, rich=rich)
         requests = 0
 
         async def fetch(*_args, **_kwargs):
@@ -122,7 +165,8 @@ def _case(provider_name: str, *, retry: bool = False) -> Case:
 
             async def operation():
                 chat = await provider._get_chat_data(_CHAT)
-                if len(chat.messages) != _TURNS * 2:
+                expected = _TURNS * 3 if rich and provider_name == "gemini" else _TURNS * 2
+                if len(chat.messages) != expected:
                     raise AssertionError("Unexpected history length")
 
         duration = await time_async(loops, operation)
@@ -130,7 +174,7 @@ def _case(provider_name: str, *, retry: bool = False) -> Case:
             raise AssertionError("Unexpected history requests")
         return duration
 
-    workload = "retry" if retry else "history"
+    workload = "retry" if retry else ("history_rich" if rich else "history")
     return Case(
         f"providers.{provider_name}.{workload}.{_TURNS}",
         lambda loops: asyncio.run(measure(loops)),
@@ -141,6 +185,7 @@ def _case(provider_name: str, *, retry: bool = False) -> Case:
 def cases() -> tuple[Case, ...]:
     return (
         *(_case(name) for name in ("chatgpt", "gemini", "claude", "grok")),
+        _case("gemini", rich=True),
         _case("gemini", retry=True),
         _case("claude", retry=True),
     )

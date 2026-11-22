@@ -260,12 +260,18 @@ class AsyncChatGPTClient(BaseChatGPTClient):
         return await self.list_page(0, DEFAULT_PAGE_SIZE)
 
     async def model_catalog(self, *, refresh: bool = False):
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
         cached = getattr(self, "_model_catalog", None)
-        if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+        if cached is not None and not refresh and time.monotonic() - cached[0] < MODEL_CATALOG_TTL:
             return cached[1]
         async with self._async_lock("_catalog_lock"):
             cached = getattr(self, "_model_catalog", None)
-            if cached is not None and not refresh and time.monotonic() - cached[0] < 300:
+            if (
+                cached is not None
+                and not refresh
+                and time.monotonic() - cached[0] < MODEL_CATALOG_TTL
+            ):
                 return cached[1]
             raw = (
                 await self.request(

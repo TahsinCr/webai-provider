@@ -475,11 +475,13 @@ class BaseClaudeClient:
         self._discovered_at = 0.0
 
     def _is_catalog_fresh(self, force: bool) -> bool:
+        from ...resources.model.collections import MODEL_CATALOG_TTL
+
         return bool(
             not force
             and self.organization
             and self.catalog is not None
-            and time.monotonic() - self._discovered_at < 300
+            and time.monotonic() - self._discovered_at < MODEL_CATALOG_TTL
         )
 
     def _record_discovered(self, organization: str, selected: Any) -> Any:
@@ -911,6 +913,7 @@ class BaseClaudeProvider(BaseProvider):
     def _purge_credentials_unlocked(self) -> SessionStatus:
         delete_session(self.credential_file)
         self.client.authenticated = False
+        self.account._clear_verified_session()
         return SessionStatus(SessionState.LOGIN_REQUIRED)
 
     def _session_status(self) -> SessionStatus:
