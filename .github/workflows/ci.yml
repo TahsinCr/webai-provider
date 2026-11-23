@@ -27,7 +27,13 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - run: python -m unittest discover -s tests -t . -p 'test_*.py' -v
+      - run: python run_tests.py
+      - name: Run Sentinel C99 tests (ASan + UBSan)
+        if: runner.os == 'Linux' && matrix.python == '3.13'
+        run: make -C webaiprovider/providers/chatgpt/sentinel test-san
+      - name: Run Pyright type contract check
+        if: runner.os == 'Linux' && matrix.python == '3.13'
+        run: npx --yes pyright tests/typing_contracts.py
 
   package:
     runs-on: ubuntu-latest

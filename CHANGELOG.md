@@ -9,6 +9,18 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Expose ordered thinking and visible response blocks through the local `response.parts` collection.
 - Expose generation end, remote verification, resolved content and terminal stream events, and let `wait_for` resume after a specific event.
 - Add explicit sync and async `chat.prepare()` to warm provider continuation state under the existing chat lock.
+- Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
+- Expose the blocking Gemini notebook reader as `GeminiNotebooks` from the Gemini package.
+- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
+- Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
+- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
+- Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
+- Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
+- Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.
+- Expose normalized stream events for answer text, thinking updates, sources, and artifacts. Message operations support incremental consumption, cancellation, and waiting for the completed response.
+- Expose the origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
+- Add an optional C extension for parts of ChatGPT's Sentinel runtime. The Python implementation remains available when the extension cannot be loaded, and the public provider API stays the same.
+- Add tag-triggered PyPI Trusted Publishing. The wheel workflow builds for CPython 3.10–3.14 on Linux and macOS (x86-64 and ARM64) and Windows (x86-64), and checks that the native extension loads from the installed wheel. The source distribution includes the C sources for local builds.
 
 ### Changed
 
@@ -16,32 +28,19 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Select stream milestones with `OperationEvent` in `wait_for()`. Register persistent stream and send hooks on `chat.hooks`.
 - Use stable snapshots for local collections and publish response parts and text together. Updating a message attachment replaces the item in the collection.
 - Keep the chat lock through terminal publication, reject same-thread mutations of paused sends, and lock only the chat during moves. Publish confirmed project attachment changes under the project lock.
-
 - Standardize bounded continuation caches across providers. ChatGPT keeps only the active node, model and project for normal follow-up sends. Persisted attachment downloads read conversation data for ownership verification on demand.
-
 - Use the lightweight Claude conversation read when preparing a chat, and reuse the cached continuation on the next normal send.
-
 - Group provider output blocks from the same turn into one historical response. Use `response.text` for visible text and `response.parts` for individual blocks.
-
 - Resolve synchronous model ID lookups from the loaded catalog on the calling thread.
-
 - Move response operation classes and streaming events to `webaiprovider.resources.response.operation`. Top-level imports remain available.
-
 - Use `New Chat` as the default title for new conversations.
 - Keep provider fallback chat titles and shared action labels in English.
-
 - Construct chat response collections directly across providers.
-
 - Reduce history decoding work across ChatGPT, Claude, Gemini, and Grok. Reuse message visibility and action checks, skip empty citation scans, and select the latest Grok branch in one pass.
-
 - List and resolve models from the loaded catalog directly on the calling thread in the synchronous API.
-
 - Read the synchronous provider session status on the calling thread without starting an event loop.
-
 - Provide a calling-thread `HttpSession` for saved-account HTTP requests and streams. The asynchronous counterpart is `AsyncHttpSession`.
-
 - Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.
-
 - Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.
 - Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
 - Use FlowEvent's cache and single-flight primitives for bounded continuation state and overlapping discovery reads.
@@ -51,30 +50,25 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Use curl_cffi for local browser debugging WebSockets and remove the separate websocket-client dependency. Require curl_cffi 0.17 or later for blocking WebSocket timeouts and message limits.
 - Define the shared `BaseProvider` as an abstract class with typed chat, project, and model collections.
 - Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.
-
 - Preserve explicit Claude draft titles when the remote chat is created, so an interrupted first send leaves an identifiable chat.
 - Reduce project rename and instruction readbacks on Claude and Grok by validating changed fields independently of source lists.
 - Keep local project options responsive while another operation is generating a response.
 - Request smaller project chat pages on ChatGPT and Grok and reduce repeated prefixes in unbounded Gemini chat listings.
 - Normalize only the selected active Claude message during retry and edit preparation.
 - Reduce memory allocations for Grok file reads and retained streaming events across providers.
-
 - Report native stream DNS, connection, TLS, first-byte timing, and connection reuse when send diagnostics are enabled.
 - Use smaller first pages for short chat lists and expand subsequent reads when filtering or duplicate records leave too few results.
 - Reuse complete ChatGPT project creation responses and fetch project details only when the server response lacks the saved settings or permissions.
 - Read ChatGPT project options independently of active message generation.
 - Read only the latest Gemini turns for a retry or edit when the server confirms the known active turn and its parent.
-
 - Resolve Claude retry and edit targets by their active native message identity when stream and history block indexes differ.
-
 - Reduce history normalization work across providers and parse only the selected Gemini turn when preparing a retry or edit.
-
 - Use concrete provider types consistently for chats, projects, messages, responses, sources, artifacts, and project attachments across the blocking and async APIs.
 - Standardize provider project editors and reuse the current project snapshot through the shared mutation path.
 - Define browser-cookie selection, validation, and persistence rules once per provider, including known alternate session cookies.
 - Share local file version checks during upload, keep provider file preflight off the event loop, and simplify Gemini session and RPC parsing.
 - Rename the Python import package from `webai_provider` to `webaiprovider`. The PyPI distribution remains `webai-provider`. Ship inline typing metadata and use `webaiprovider.__version__` as the package version source.
-- Replace the v1.3 `ProviderClient` API with account-scoped `Provider(account)` and `AsyncProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `ProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTProvider` or `AsyncChatGPTProvider`. Blocking calls reuse the same async implementation through a persistent event loop.
+- Replace the v1.3 `ProviderClient` API with account-scoped `Provider(account)` and `AsyncProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `ProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTProvider` or `AsyncChatGPTProvider`. Blocking calls run natively on the calling thread without starting a background event loop.
 - Send and read through `chat.responses`. Create a chat with `provider.chats.create()` or find an existing one with `provider.chats.get(id)`. Then `chat.responses.create(prompt)` prepares an operation, `operation.stream()` yields events, and `operation.wait()` returns the completed response. Both API variants also offer `chat.ask()` and `chat.stream()` shortcuts.
 - Read previous prompts and answers together with `chat.responses.list()`. A `Response` exposes the associated user `message` when available, along with answer text, sources, artifacts, and timing for live sends. Use `response.message.edit()` or `response.retry()` where supported. Both return an operation with the same streaming and waiting interface as a new send.
 - Manage project files and text sources with `project.attachments.create()`, `list()`, and `delete()`. Message attachments use a local `Attachments` collection with `create()`, metadata-only `update()`, and `delete()`. ChatGPT project creation accepts `memory_share=False` for project-only memory. Chat moves and branches remain available on the provider-specific chat types that support them.
@@ -91,31 +85,15 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
 - Reduce buffering overhead in the shared sync and async transports.
 - Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
-- Run offline and live API tests separately. The live runner exercises the shared async provider implementation once per account. Blocking API coverage runs offline. The live runner paces account requests and reports cleanup and rate-limit skips separately from failures.
+- Run offline and live API tests separately. The live runner supports `async` (default), `sync`, and `all` API modes across providers, paces account requests, and reports cleanup and rate-limit skips separately from failures.
 
 ### Fixed
 
 - Guard Sentinel proof-of-work buffer sizing and final nonce boundaries, avoid null-pointer arithmetic for empty prefixes, and initialize Windows performance-counter frequency safely across concurrent calls. Reuse stack storage for the nonce suffix when only the larger scratch buffer needs heap allocation.
 
-### Added
-
-- Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
-- Expose the blocking Gemini notebook reader as `GeminiNotebooks` from the Gemini package.
-- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
-- Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
-- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
-- Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
-- Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
-- Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.
-- Expose normalized stream events for answer text, thinking updates, sources, and artifacts. Message operations support incremental consumption, cancellation, and waiting for the completed response.
-- Expose the origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
-- Add an optional C extension for parts of ChatGPT's Sentinel runtime. The Python implementation remains available when the extension cannot be loaded, and the public provider API stays the same.
-- Add tag-triggered PyPI Trusted Publishing. The wheel workflow builds for CPython 3.10–3.14 on Linux and macOS (x86-64 and ARM64) and Windows (x86-64), and checks that the native extension loads from the installed wheel. The source distribution includes the C sources for local builds.
-
 ### Removed
 
 - Make provider coordination helpers internal. Use the provider event bus and operation hooks as the public interfaces.
-
 - Remove unused JSON serialization and duplicate cleanup journal routing from the live test runner.
 
 - Run all four synchronous providers on native blocking clients in the calling thread. Remove the shared event loop and compatibility wrappers.
