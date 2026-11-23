@@ -25,7 +25,9 @@ dependencies = [
     "browser-cookie3>=0.20.1,<0.21",
     "lz4>=4.4.5,<5",
     "curl-cffi>=0.17,<1",
-    "flowevent>=1.4.2,<2",
+    "flowcoord>=1.0.0,<2",
+    "flowevent>=2.0.0,<3",
+    "flowpipeline>=1.0.0,<2",
     "orjson>=3.10,<4",
 ]
 
