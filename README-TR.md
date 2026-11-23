@@ -1,6 +1,15 @@
+[![CI][ci-shield]](https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml)
+[![PyPI][pypi-shield]](https://pypi.org/project/webai-provider/)
+[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
+[![GPL-3.0-only][license-shield]](LICENSE)
+
+[English](README.md) | **Türkçe** | [Русский](README-RU.md)
+
 # webai-provider
 
 ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. v2 API; eşdeğer asenkron ve senkron arayüzler, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri sunar.
+
+> [Türkçe belgeler](docs/tr/README.md) kurulum, sohbet akışı, model seçimi, proje yönetimi ve API başvuru bölümlerini içerir.
 
 > **Beta:** Sağlayıcıların web siteleri ve özel web protokolleri önceden haber verilmeksizin değişebilir. Bu proje bağımsızdır ve sağlayıcılarla bağlantılı değildir.
 
@@ -8,10 +17,8 @@ ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemci
 
 Python 3.10 veya üzeri gerekir.
 
-Burada anlatılan v2 API geliştirme aşamasındadır ve yayımlanmış `v1.3-beta` paketinde bulunmaz. Bu API'yi içeren kaynak kodunu indirdikten sonra kurun:
-
 ```bash
-python -m pip install -e '.[dev]'
+pip install webai-provider
 ```
 
 ## Hızlı başlangıç
@@ -45,7 +52,7 @@ asyncio.run(main())
 
 `browser` verilmezse `Account.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `Account.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
 
-Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Her sağlayıcı, çağıran thread’lerin yürüttüğü tek bir olay döngüsünü kullanır:
+Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Senkron sınıflar arka planda olay döngüsü başlatmadan doğrudan çağıran thread üzerinde bloklayan (`curl_cffi`) G/Ç ile çalışır:
 
 ```python
 from webaiprovider import Account, ChatGPTProvider, ProviderType
@@ -106,9 +113,9 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncHttpSession` | Paylaşılan asenkron transport üzerinden hesap çerezlerini saklama |
 | `HttpSession` | Hesap çerezlerini kaydeden, çağıran thread’de çalışan senkron HTTP oturumu |
 
-Claude ve Grok `AsyncHttpSession` kullanır. Gemini ve ChatGPT web isteklerini `AsyncHTTPTransport` üzerinden gönderir. Senkron API, asenkron HTTP oturumunu ve tek bir olay döngüsünü paylaşır. Bir çağıran thread olay döngüsünü yürütürken bağımsız istekler örtüşebilir. Bir işlem başka bir çağrının thread’inde yürüyebilir ve işlem sürerken olay döngüsünü yürüten thread değişebilir. Çakışan sohbet ve proje değişiklikleri kaynak kilitleriyle sıralanır. Bir senkron çağrının olayları çağıran thread’de sırasıyla teslim edilir. Örtüşen çağrıların olayları farklı sırada teslim edilebilir. Sıra numarası olayın üretim sırasını gösterir.
+Claude ve Grok `AsyncHttpSession` / `HttpSession`, Gemini ve ChatGPT ise web isteklerinde `AsyncHTTPTransport` / `HTTPTransport` kullanır. Asenkron ve senkron katmanlar aynı origin, çerez ve güvenlik kurallarını paylaşır; senkron sağlayıcılar arka plan olay döngüsü açmadan doğrudan çağıran thread üzerinde çalışır. Çakışan sohbet ve proje değişiklikleri kaynak kilitleriyle sıralanır.
 
-Özel bir uygulama, `AsyncTransport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
+Özel bir uygulama, `AsyncTransport` veya `Transport` üzerinde `send`, `stream` ve `close` işlemlerini sağlayabilir veya yerleşik taşımalardan birini `client_factory` ile yapılandırabilir. Başlıklar, parametreler, JSON ve veri gibi standart HTTP seçenekleri seçili arka uca iletilir. Multipart biçimleri ve arka uca özgü seçenekler o arka ucun uzantı API’sine aittir.
 
 `TransportConfig` zaman aşımını ve tamponlanmış/akış yanıtı boyut sınırlarını belirler; varsayılan tampon sınırı 64 MiB’dir. Gerektiğinde akış sınırını ayrıca belirleyin. Uç nokta çağrıları zaman aşımını geçersiz kılabilir; gelişmiş kod HTTP hata yanıtını incelemek için `check_status=False` seçebilir. Bu, origin ve yönlendirme denetimlerini kapatmaz. Yollar sabit bir origin’e göredir. Mutlak veya protokole göreli URL’ler, yol geçişi, çakışan `Host` başlıkları ve yönlendirmeler reddedilir. Varsayılan başlıklar eşleme veya `(method, path)` alan bir işlev olabilir; çağrı başlıkları büyük/küçük harf duyarsız biçimde önceliklidir. Kimlik bilgisi yenileme gibi bir istekte kalıtılan başlıkları göndermemek için `inherit_headers=False` kullanın. İmzalı origin dışı yüklemeler, hesap başlıklarını taşımayan ayrı bir origin-sınırlı transport kullanır.
 
@@ -116,7 +123,7 @@ Mutasyonlar kendiliğinden yeniden gönderilmez. Bekleme süreleri transport/hes
 
 Frame çözümleme HTTP’den ayrıdır. `SSEFrameDecoder`, `data`, `event`, `id` ve sayısal `retry` alanlarını korur; parçalanmış UTF-8’i, CR/LF/CRLF satır sonlarını, çok satırlı veriyi, yorumları ve sınırlı satır sayılarını işler. Senkron ve asenkron bayt yineleyici yardımcıları da sunar. `JSPBFrameDecoder`, sınırlandırılmış uzunluk önekli JSON frame’lerini çözer; `prefix`, `max_frame_units` ve `length_includes_separator` seçeneklerini alır. Gemini anti-XSSI önekini ve ayırıcı ayarlarını sağlar. Her çıktı tam bir JSON frame’idir. Son parçada eksik frame’leri denetlemek için `final=True` verin; tamamlanmamış JSPB frame’i `FrameDecodeError` üretir. Çözümlenen frame’leri sağlayıcı kodu yorumlar ve tamamlanma davranışını yönetir.
 
-Kaynak ve dosya normalizasyonu `webaiprovider.normalizers` içindedir. Sağlayıcı geçmişi, RPC yükleri, devam kimlikleri ve yanıt yorumlama ise her sağlayıcının kendi paketinde kalır.
+Sağlayıcı geçmişi, RPC yükleri, devam kimlikleri ve yanıt yorumlama her sağlayıcının kendi paketinde kalır.
 
 Mesajları `chat.responses` üzerinden gönderin. Ağ isteklerini ve yeniden deneme davranışını sağlayıcı yönetir.
 
@@ -132,7 +139,7 @@ Mesajları `chat.responses` üzerinden gönderin. Ağ isteklerini ve yeniden den
 ```bash
 ruff check .
 ruff format --check .
-python -m unittest discover -s . -t . -q
+python run_tests.py
 python -m build --sdist --wheel
 twine check dist/*
 ```
@@ -144,7 +151,7 @@ twine check dist/*
 Gönderim ölçümü isteğe bağlıdır; mesaj ve kimlik bilgisi içeriklerini kaydetmeden adlandırılmış süreleri ve sayaçları tutar. Beklenen işlemin çevresinde etkinleştirin; kendiliğinden çalışmaz.
 
 ```python
-from webaiprovider.utils.timing import SendTiming, use_send_timing
+from webaiprovider.core.timing import SendTiming, use_send_timing
 
 timing = SendTiming(provider.id)
 with use_send_timing(timing):
@@ -162,3 +169,8 @@ durations_ms, counters = timing.snapshot()
 - [SiopeChat](https://github.com/TahsinCr/chatgpt-web)
 
 GPL-3.0-only lisanslıdır. Ayrıntılar için [LICENSE](LICENSE) ve [COPYRIGHT](COPYRIGHT) dosyalarına bakın.
+
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/TahsinCr/webai-provider/ci.yml?branch=main&event=push&label=CI&style=for-the-badge&logo=github&logoColor=white
+[pypi-shield]: https://img.shields.io/pypi/v/webai-provider?label=PyPI&style=for-the-badge&logo=pypi&logoColor=white
+[python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
+[license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge

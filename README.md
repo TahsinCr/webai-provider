@@ -1,6 +1,15 @@
+[![CI][ci-shield]](https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml)
+[![PyPI][pypi-shield]](https://pypi.org/project/webai-provider/)
+[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
+[![GPL-3.0-only][license-shield]](LICENSE)
+
+**English** | [Türkçe](README-TR.md) | [Русский](README-RU.md)
+
 # webai-provider
 
 Independent Python clients for ChatGPT, Gemini, Claude, and Grok web sessions. The v2 API provides matching asynchronous and blocking interfaces, typed model references, and streaming message operations.
+
+> [English documentation](docs/en/README.md) covers installation, chat streaming, model selection, project management, and the API reference.
 
 > **Beta:** Provider websites and private web protocols can change without notice. This project is independent and is not affiliated with the providers.
 
@@ -8,10 +17,8 @@ Independent Python clients for ChatGPT, Gemini, Claude, and Grok web sessions. T
 
 Requires Python 3.10 or newer.
 
-The v2 API documented here is still in development and is not part of the published `v1.3-beta` package. Install it from a checkout that contains this API:
-
 ```bash
-python -m pip install -e '.[dev]'
+pip install webai-provider
 ```
 
 ## Quick start
@@ -111,17 +118,17 @@ async with AsyncClaudeProvider(account, transport=transport) as provider:
 | `AsyncHttpSession` | Account cookie persistence over the shared async transport |
 | `HttpSession` | Account cookie persistence over blocking HTTP on the calling thread |
 
-Claude and Grok use `AsyncHttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` for their native web requests. The blocking API shares the asynchronous HTTP session and one event loop. Independent requests can overlap while one caller drives the loop. An operation can run on another caller’s thread, and the thread driving the loop can change while it is in progress. Conflicting chat and project mutations are serialized by resource locks. Synchronous events from each call are delivered in order on its caller’s thread. Callbacks from overlapping calls may be delivered out of sequence. The sequence number records emission order.
+Claude and Grok use `AsyncHttpSession` / `HttpSession`. Gemini and ChatGPT use `AsyncHTTPTransport` / `HTTPTransport` for their native web requests. The asynchronous and blocking APIs share the same origin, cookie, and security policies, while blocking providers run directly on the calling thread without starting a background event loop. Conflicting chat and project mutations are serialized by resource locks.
 
-A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
+A custom implementation can provide `send`, `stream`, and `close` on `AsyncTransport` or `Transport`, or configure a built-in implementation with `client_factory`. Standard HTTP options such as headers, params, JSON, and data pass through to the configured backend. Multipart formats and backend-specific options belong to that backend's extension API.
 
-`TransportConfig` sets timeouts and buffered/streaming response limits; the default buffered limit is 64 MiB. Set a streaming limit when needed. Endpoint calls can override the timeout and select `check_status=False` when advanced code needs to inspect an HTTP error response. Origin and redirect checks still apply. Paths are relative to a fixed origin. Absolute or protocol-relative URLs, traversal, conflicting `Host` headers, and redirects are rejected. Default headers can be a mapping or a `(method, path)` callable; per-call overrides are case-insensitive. Use `inherit_headers=False` when a request, such as credential refresh, must omit inherited headers. Signed cross-origin uploads use a separate origin-bound transport without account headers.
+`TransportConfig` sets timeouts and buffered/streaming response limits; the default buffered limit is 64 MiB. `max_stream_bytes` defaults to `None` (unbounded) so long streams are not truncated unexpectedly; set a streaming limit when needed. Endpoint calls can override the timeout and select `check_status=False` when advanced code needs to inspect an HTTP error response. Origin and redirect checks still apply. Paths are relative to a fixed origin. Absolute or protocol-relative URLs, traversal, conflicting `Host` headers, and redirects are rejected. Default headers can be a mapping or a `(method, path)` callable; per-call overrides are case-insensitive. Use `inherit_headers=False` when a request, such as credential refresh, must omit inherited headers. Signed cross-origin uploads use a separate origin-bound transport without account headers.
 
 Mutations are never replayed automatically. Cooldowns are scoped to the transport/account, so one account does not block other accounts using the same provider. A supplied transport must use the provider's exact origin and authenticate the same account; the provider closes it on shutdown. A borrowed `client_getter` client remains owned by its creator. Cookie persistence and connection pools are reused by high- and low-level operations.
 
 Frame decoding is separate from HTTP. `SSEFrameDecoder` preserves `data`, `event`, `id`, and numeric `retry` fields; it handles split UTF-8, CR, LF, CRLF, multiline data, comments, and bounded data-line counts. It also provides sync and async byte-iterator helpers. `JSPBFrameDecoder` decodes bounded length-prefixed JSON frames and accepts `prefix`, `max_frame_units`, and `length_includes_separator`; Gemini supplies its anti-XSSI prefix and separator settings. Each output is a complete JSON frame. Pass `final=True` on the last feed to detect incomplete frames; incomplete JSPB frames raise `FrameDecodeError`. Provider code interprets the decoded frames and owns completion semantics.
 
-Shared source and file normalization lives in `webaiprovider.normalizers`. Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
+Provider history, RPC payloads, continuation IDs, and response interpretation remain in each provider package.
 
 Send messages through `chat.responses`. The provider handles its own requests and retry semantics.
 
@@ -137,7 +144,7 @@ Send messages through `chat.responses`. The provider handles its own requests an
 ```bash
 ruff check .
 ruff format --check .
-python -m unittest discover -s . -t . -q
+python run_tests.py
 python -m build --sdist --wheel
 twine check dist/*
 ```
@@ -149,7 +156,7 @@ For offline performance measurements, see the [benchmark guide](benchmarks/READM
 Send timing is opt-in and records named durations and counters without message or credential contents. Activate it around an awaited operation; it does not run automatically.
 
 ```python
-from webaiprovider.utils.timing import SendTiming, use_send_timing
+from webaiprovider.core.timing import SendTiming, use_send_timing
 
 timing = SendTiming(provider.id)
 with use_send_timing(timing):
@@ -167,3 +174,8 @@ durations_ms, counters = timing.snapshot()
 - [SiopeChat](https://github.com/TahsinCr/chatgpt-web)
 
 Licensed under GPL-3.0-only. See [LICENSE](LICENSE) and [COPYRIGHT](COPYRIGHT).
+
+[ci-shield]: https://img.shields.io/github/actions/workflow/status/TahsinCr/webai-provider/ci.yml?branch=main&event=push&label=CI&style=for-the-badge&logo=github&logoColor=white
+[pypi-shield]: https://img.shields.io/pypi/v/webai-provider?label=PyPI&style=for-the-badge&logo=pypi&logoColor=white
+[python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
+[license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
