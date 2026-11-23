@@ -23,10 +23,10 @@ from ...core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
 from ...core.types import HookDispatchResult, OperationContext
 from ...errors import OperationCancelledError, ProviderError
 from ..message.message import AsyncMessage, Message
-from .artifact import Artifact
+from .artifact import Artifact, ArtifactsCollection
 from .parts import ResponsePart, TextPart, ThinkingPart
 from .response import Response, TimingMetrics
-from .source import Source
+from .source import Source, SourcesCollection
 
 if TYPE_CHECKING:
     from ..chat.chat import AsyncChat, Chat
@@ -240,9 +240,9 @@ class _StreamAccumulator:
         elif isinstance(event, ArtifactDiscovered):
             self.artifacts.append(event.artifact)
 
-    def build_response(self, operation: _BaseMessageOperation, session: Any) -> Response:
+    def _build_timing(self) -> TimingMetrics:
         completed_at = time.perf_counter()
-        timing = TimingMetrics(
+        return TimingMetrics(
             started_at=self.started_at,
             first_token_at=self.first_token_at,
             completed_at=completed_at,
@@ -253,6 +253,8 @@ class _StreamAccumulator:
             ),
             duration_ms=(completed_at - self.started_at) * 1000.0,
         )
+
+    def _build_parts(self) -> list[ResponsePart]:
         parts: list[ResponsePart] = []
         if not any(isinstance(part, TextPart) for part in self.resolved_parts):
             recovered = {part.id for part in self.resolved_parts}
@@ -264,17 +266,35 @@ class _StreamAccumulator:
                     parts.append(part_type(part_id or f"local:{index}", text))
         else:
             parts.extend(self.resolved_parts)
-        response = getattr(session, "_response_type", Response)(
-            parts=parts,
-            message=operation.message,
-            id=operation._assistant_message_id,
-            remote_id=operation._assistant_message_id,
-            model=operation.message.model,
-            sources=self.sources,
-            artifacts=self.artifacts,
-            timing=timing,
-            chat=operation.chat,
-        )
+        return parts
+
+    def build_response(self, operation: _BaseMessageOperation, session: Any) -> Response:
+        timing = self._build_timing()
+        parts = self._build_parts()
+        existing = operation._response
+        if existing is not None:
+            existing._set_parts(parts)
+            if operation._assistant_message_id:
+                existing.id = operation._assistant_message_id
+                existing.remote_id = operation._assistant_message_id
+            existing.model = operation.message.model
+            existing.sources = SourcesCollection(self.sources)
+            existing.artifacts = ArtifactsCollection(self.artifacts)
+            existing.timing = timing
+            existing.chat = operation.chat
+            response = existing
+        else:
+            response = getattr(session, "_response_type", Response)(
+                parts=parts,
+                message=operation.message,
+                id=operation._assistant_message_id,
+                remote_id=operation._assistant_message_id,
+                model=operation.message.model,
+                sources=self.sources,
+                artifacts=self.artifacts,
+                timing=timing,
+                chat=operation.chat,
+            )
         operation.message.response = response
         if operation.chat is not None and hasattr(operation.chat, "responses"):
             response = operation.chat.responses._reconcile_live_response(operation, response)
@@ -360,6 +380,13 @@ class _BaseMessageOperation:
             self.message.content = context.prompt
         if context.model is not None and context.model is not self.message.model:
             self.message.model = context.model
+
+    def _snapshot_generation_response(
+        self, accumulator: _StreamAccumulator, session: Any, event: StreamEvent
+    ) -> None:
+        """Materialize response.parts as soon as generation ends, before post-send checks."""
+        if isinstance(event, GenerationEnd) and self._response is None:
+            self._response = accumulator.build_response(self, session)
 
 
 class AsyncMessageOperation(_BaseMessageOperation):
@@ -529,6 +556,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
                         raise OperationCancelledError("Operation cancelled")
                     self._transition_to(OperationState.STREAMING)
                     accumulator.record(event)
+                    self._snapshot_generation_response(accumulator, session, event)
                     await self._publish(event)
             finally:
                 await _async_close_iterator(stream)
@@ -724,6 +752,7 @@ class MessageOperation(_BaseMessageOperation):
                         continue
                     self._transition_to(OperationState.STREAMING)
                     accumulator.record(event)
+                    self._snapshot_generation_response(accumulator, session, event)
                     self._publish(event)
                     yield event
                     if self._cancelled:

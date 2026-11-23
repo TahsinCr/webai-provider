@@ -687,3 +687,46 @@ class ProviderResourceFamilyTests(unittest.TestCase):
                     self.assertIs(type(standalone), type(response))
                     self.assertIs(type(standalone.chat), type(chat))
                     self.assertIs(type(standalone.message), type(response.message))
+
+    def test_sync_response_parts_are_populated_at_generation_end_for_all_providers(self) -> None:
+        from webaiprovider import (
+            Account,
+            GenerationEnd,
+            MemoryCredentialStore,
+            Provider,
+            ProviderType,
+        )
+
+        for ptype in ProviderType:
+            with self.subTest(provider=ptype.value):
+                account = Account(
+                    id="probe", provider=ptype.value, credentials=MemoryCredentialStore()
+                )
+                provider = Provider(account, type=ptype)
+                provider._opened = True
+
+                def _stream_sync(_request):
+                    yield ThoughtDelta("Plan", part_id="t1")
+                    yield TextDelta("Final answer", part_id="a1")
+                    yield ResponseComplete()
+                    yield ResponseVerifying()
+                    yield MessageMetadata(message_id="msg-final")
+
+                provider._stream_provider_events = _stream_sync
+                with provider:
+                    chat = provider.chats._new(id="chat-1", remote_id="chat-1")
+                    op = chat.responses.create("Prompt")
+                    seen_at_generation_end = None
+                    for event in op.stream():
+                        if isinstance(event, GenerationEnd):
+                            seen_at_generation_end = op.response
+                            self.assertIsNotNone(seen_at_generation_end)
+                            self.assertEqual(
+                                [(type(p), p.text) for p in seen_at_generation_end.parts],
+                                [(ThinkingPart, "Plan"), (TextPart, "Final answer")],
+                            )
+                            self.assertEqual(seen_at_generation_end.text, "Final answer")
+                            self.assertIn(seen_at_generation_end, chat.responses._turns)
+                    final = op.wait()
+                    self.assertIs(final, seen_at_generation_end)
+                    self.assertEqual(final.remote_id, "msg-final")
