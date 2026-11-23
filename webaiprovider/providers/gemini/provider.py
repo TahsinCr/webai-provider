@@ -269,6 +269,7 @@ class GeminiWebAIProvider(
             request_timeout=(15, self.stream_idle_timeout + 10),
             media=self._media,
             remember=self._remember_response,
+            total_timeout=self.stream_total_timeout,
         )
         try:
             for event in iterator:

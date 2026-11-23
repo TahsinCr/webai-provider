@@ -29,7 +29,7 @@ from ...resources.message.types import MessageAction
 from ...resources.response.artifact import files_from
 from ...resources.response.source import sources_from
 from ...transport.frames import JSPBFrameDecoder
-from ...transport.http import _message_stream, _wait_for_stream_head
+from ...transport.http import HTTPTransport, _message_stream, _wait_for_stream_head
 from .base import BASE, HEADERS
 from .errors import (
     GeminiCompatibilityError,
@@ -422,7 +422,14 @@ class _GeminiResponseProcessor:
 
 
 def generate(
-    client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
+    client,
+    request,
+    metadata,
+    notebook=None,
+    *,
+    files=None,
+    request_timeout=(15, 310),
+    total_timeout: float | None = None,
 ) -> Iterator[dict | _StreamPause]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
@@ -434,16 +441,21 @@ def generate(
     timing = current_send_timing()
     sse_connect_started = time.perf_counter_ns() if timing is not None else None
     processor = _GeminiFrameProcessor(request, metadata, timing)
+    stream_options: dict[str, Any] = {
+        "params": client.params(),
+        "headers": headers,
+        "data": data,
+        "allow_redirects": False,
+        "timeout": request_timeout,
+    }
+    if total_timeout is not None and isinstance(client.transport, HTTPTransport):
+        stream_options["total_timeout"] = total_timeout
     try:
         with _message_stream(
             client.transport,
             "POST",
             "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
-            params=client.params(),
-            headers=headers,
-            data=data,
-            allow_redirects=False,
-            timeout=request_timeout,
+            **stream_options,
         ) as response:
             yield from _wait_for_stream_head(response)
             processor.response_opened = time.perf_counter_ns() if timing is not None else None
@@ -471,7 +483,13 @@ def generate(
 
 
 def response_events(
-    request: ProviderRequest, *, prepare, request_timeout, media, remember
+    request: ProviderRequest,
+    *,
+    prepare,
+    request_timeout,
+    media,
+    remember,
+    total_timeout: float | None = None,
 ) -> Iterator[ProviderStreamEvent]:
     client, request, metadata, context, action_files = prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
@@ -482,6 +500,7 @@ def response_events(
         context,
         files=action_files,
         request_timeout=request_timeout,
+        total_timeout=total_timeout,
     ):
         if chunk is _STREAM_PAUSED:
             yield chunk

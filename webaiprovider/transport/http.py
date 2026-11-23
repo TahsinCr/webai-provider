@@ -248,6 +248,7 @@ class HTTPTransport(Transport):
                     )
                     is_curl = _is_curl_sync_session(client)
                     defer_head = _message and is_curl
+                    total_timeout = options.pop("total_timeout", None)
                     if is_curl:
                         from .curl_stream import open_blocking_curl_stream
 
@@ -261,6 +262,7 @@ class HTTPTransport(Transport):
                             defer_head=defer_head,
                             multi_pool=self._ensure_multi_pool(),
                             timing=timing,
+                            total_timeout=total_timeout,
                         )
                     else:
                         stream = client.stream(method, url, allow_redirects=False, **options)

@@ -1100,6 +1100,53 @@ class BlockingTransportTests(unittest.TestCase):
                 transport.send("POST", "/fixture")
             self.assertEqual(len(requests), 1)
 
+    def test_blocking_curl_stream_enforces_total_timeout_on_stalled_server(self):
+        import socket
+        from time import monotonic
+
+        from curl_cffi.const import CurlECode
+        from curl_cffi.requests import Session as CurlSession
+        from curl_cffi.requests.exceptions import Timeout
+
+        from webaiprovider.transport.curl_stream import open_blocking_curl_stream
+
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        release = threading.Event()
+
+        def stall():
+            conn, _ = server.accept()
+            try:
+                release.wait(5.0)
+            finally:
+                conn.close()
+
+        worker = threading.Thread(target=stall, daemon=True)
+        worker.start()
+        session = CurlSession(timeout=(10.0, 60.0), trust_env=False)
+        started = monotonic()
+        try:
+            with self.assertRaises(Timeout) as ctx:
+                with open_blocking_curl_stream(
+                    session,
+                    "POST",
+                    f"http://127.0.0.1:{port}/stream",
+                    {"timeout": (10.0, 60.0), "data": b"hi"},
+                    defer_head=True,
+                    total_timeout=0.3,
+                ) as response:
+                    for _ in response.wait_for_head():
+                        pass
+            self.assertEqual(ctx.exception.code, CurlECode.OPERATION_TIMEDOUT)
+            self.assertLess(monotonic() - started, 3.0)
+        finally:
+            release.set()
+            session.close()
+            server.close()
+            worker.join(timeout=2.0)
+
     def test_sync_http_transport_pins_dns_blocks_ssrf_and_retries_idempotent_get(self):
         import socket
 

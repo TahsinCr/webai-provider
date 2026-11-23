@@ -8,8 +8,9 @@ from time import monotonic
 
 from curl_cffi import CurlError, CurlOpt
 from curl_cffi._wrapper import ffi, lib
+from curl_cffi.const import CurlECode
 from curl_cffi.curl import CURL_WRITEFUNC_PAUSE
-from curl_cffi.requests.exceptions import code2error
+from curl_cffi.requests.exceptions import Timeout, code2error
 from curl_cffi.requests.utils import set_curl_options
 
 from ..core.timing import _STREAM_PAUSED, _stream_deadline
@@ -70,7 +71,7 @@ def _check_multi(code: int) -> None:
 
 
 class _CurlStream:
-    def __init__(self, curl, multi, *, pausable=False):
+    def __init__(self, curl, multi, *, pausable=False, total_deadline: float | None = None):
         self._curl = curl
         self._multi = multi
         self._running = ffi.new("int *")
@@ -81,6 +82,7 @@ class _CurlStream:
         self._error = 0
         self.response = None
         self._pausable = pausable
+        self._total_deadline = total_deadline
         self._parse_head = None
 
     @property
@@ -100,7 +102,14 @@ class _CurlStream:
 
     def advance(self, deadline: float | None = None) -> bool:
         while self._chunk is None and not self._done and not self._closed:
-            if deadline is not None and monotonic() >= deadline:
+            now = monotonic()
+            if self._total_deadline is not None and now >= self._total_deadline:
+                raise Timeout(
+                    "Stream exceeded the total time limit",
+                    CurlECode.OPERATION_TIMEDOUT,
+                    self.response,
+                )
+            if deadline is not None and now >= deadline:
                 return False
             if self._paused:
                 self._paused = False
@@ -117,11 +126,22 @@ class _CurlStream:
                     self._error = message.data.result
             elif self._chunk is None:
                 poll_ms = 1000
-                if deadline is not None:
-                    remaining = deadline - monotonic()
+                effective = deadline
+                if self._total_deadline is not None and (
+                    effective is None or self._total_deadline < effective
+                ):
+                    effective = self._total_deadline
+                if effective is not None:
+                    remaining = effective - monotonic()
                     if remaining <= 0:
+                        if self._total_deadline is not None and monotonic() >= self._total_deadline:
+                            raise Timeout(
+                                "Stream exceeded the total time limit",
+                                CurlECode.OPERATION_TIMEDOUT,
+                                self.response,
+                            )
                         return False
-                    poll_ms = ceil(min(remaining, 1) * 1000)
+                    poll_ms = max(1, ceil(min(remaining, 1) * 1000))
                 _check_multi(lib.curl_multi_poll(self._multi, ffi.NULL, 0, poll_ms, ffi.NULL))
         return True
 
@@ -161,7 +181,15 @@ class _CurlStream:
 
 @contextmanager
 def open_blocking_curl_stream(
-    session, method, url, options, *, defer_head=False, multi_pool=None, timing=None
+    session,
+    method,
+    url,
+    options,
+    *,
+    defer_head=False,
+    multi_pool=None,
+    timing=None,
+    total_timeout: float | None = None,
 ):
     """Use the same curl_cffi request options and response parser as blocking send."""
     session._check_session_closed()
@@ -169,13 +197,14 @@ def open_blocking_curl_stream(
     encoding = options.pop("default_encoding", "utf-8")
     discard_cookies = options.pop("discard_cookies", False)
     timeout = options.pop("timeout")
+    total_deadline = None if total_timeout is None else monotonic() + total_timeout
     multi = multi_pool.acquire() if multi_pool is not None else lib.curl_multi_init()
     if multi == ffi.NULL:
         raise CurlError("Could not initialize a curl stream")
     healthy = False
     try:
         with closing(session.curl.duphandle()) as curl:
-            stream = _CurlStream(curl, multi, pausable=defer_head)
+            stream = _CurlStream(curl, multi, pausable=defer_head, total_deadline=total_deadline)
             request, buffer, headers, *_ = set_curl_options(
                 curl,
                 method=method,
