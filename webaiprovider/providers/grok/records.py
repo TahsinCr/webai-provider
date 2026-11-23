@@ -8,7 +8,7 @@ from mimetypes import guess_type
 from typing import Any
 
 from ...core.timing import _STREAM_PAUSED
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.protocol import (
@@ -299,10 +299,10 @@ def _messages(rows, temporary=False):
 
 def conversation(value, history=None, *, active_rows=None):
     if not isinstance(value, dict):
-        raise ProviderError("Grok conversation response contract changed")
+        raise WebAIProviderError("Grok conversation response contract changed")
     identifier = value.get("conversationId") or value.get("id")
     if not isinstance(identifier, str) or not identifier:
-        raise ProviderError("Grok conversation response contract changed")
+        raise WebAIProviderError("Grok conversation response contract changed")
     workspaces = value.get("workspaces") or ()
     first_ws = workspaces[0] if workspaces and isinstance(workspaces[0], dict) else {}
     project_id = value.get("workspaceId") or first_ws.get("workspaceId") or first_ws.get("id")
@@ -325,10 +325,10 @@ def conversation(value, history=None, *, active_rows=None):
 
 def project(value, files=()):
     if not isinstance(value, dict):
-        raise ProviderError("Grok workspace response contract changed")
+        raise WebAIProviderError("Grok workspace response contract changed")
     identifier = value.get("workspaceId") or value.get("id")
     if not isinstance(identifier, str) or not identifier:
-        raise ProviderError("Grok workspace response contract changed")
+        raise WebAIProviderError("Grok workspace response contract changed")
     files = files or ()
     resources = tuple(
         Attachment(
@@ -503,9 +503,11 @@ class _GrokStreamProcessor:
     def finish(self):
         yield from self._finalize_turn()
         if not self.conversation_id:
-            raise ProviderError("Grok did not return a conversation ID")
+            raise WebAIProviderError("Grok did not return a conversation ID")
         if not self.complete:
-            raise ProviderError("Grok stream ended before response completion; it was not resent")
+            raise WebAIProviderError(
+                "Grok stream ended before response completion; it was not resent"
+            )
         if self.response_id:
             self._remember(self.conversation_id, self.response_id)
         if not self.bound and not self.existing_conversation_id:

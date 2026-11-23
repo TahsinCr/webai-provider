@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 
 if TYPE_CHECKING:
     from .types import ProjectData, ProjectOptions
@@ -48,7 +48,7 @@ def _finalize_add_resource(
     if isinstance(result, Attachment):
         self_mixin._invalidate_project_cache(project_id)
         if not result.id or result.id in ids:
-            raise ProviderError("Provider did not confirm a new project attachment")
+            raise WebAIProviderError("Provider did not confirm a new project attachment")
         return replace(before, resources=(*before.resources, result)), None
     expected_name = values.get("name") or Path(values["path"]).name
 
@@ -129,7 +129,7 @@ class AsyncProjectMutationsMixin:
             project = await (self._get_project_data(project_id) if read is None else read())
             if project.id == project_id and confirmed(project):
                 return project
-        raise ProviderError(
+        raise WebAIProviderError(
             "Project change could not be confirmed by the server; sync before retrying"
         )
 
@@ -226,7 +226,7 @@ class ProjectMutationsMixin:
             project = self._get_project_data(project_id) if read is None else read()
             if project.id == project_id and confirmed(project):
                 return project
-        raise ProviderError(
+        raise WebAIProviderError(
             "Project change could not be confirmed by the server; sync before retrying"
         )
 

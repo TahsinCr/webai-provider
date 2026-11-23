@@ -1,7 +1,13 @@
-from ...errors import AccountPaused, CompatibilityError, ProviderError, RemoteNotFound, StreamError
+from ...errors import (
+    AccountPaused,
+    CompatibilityError,
+    RemoteNotFound,
+    StreamError,
+    WebAIProviderError,
+)
 
 
-class GeminiError(ProviderError):
+class GeminiError(WebAIProviderError):
     code = "gemini_error"
 
 

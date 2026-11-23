@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from ...accounts.credentials import async_read_session
 from ...accounts.status import SessionState, SessionStatus
-from ...async_provider import AsyncProvider
-from ...base import ProviderType
+from ...async_provider import AsyncWebAIProvider
+from ...base import WebAIProviderType
 from ...collections import Page
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
@@ -19,7 +19,7 @@ from ...resources.project.mutations import AsyncProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import AsyncTransport
 from .async_client import AsyncClaudeClient, AsyncClaudeProjectEditor, stream_response
-from .base import BaseClaudeProvider, remote_id
+from .base import BaseClaudeWebAIProvider, remote_id
 from .records import conversation, conversation_attachment_count, project
 from .resources import (
     AsyncClaudeChat,
@@ -32,15 +32,15 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class AsyncClaudeProvider(
+class AsyncClaudeWebAIProvider(
     AsyncProjectMutationsMixin,
-    AsyncProvider[
+    AsyncWebAIProvider[
         AsyncChatsCollection[AsyncClaudeChat], AsyncProjectsCollection[AsyncClaudeProject]
     ],
-    BaseClaudeProvider,
+    BaseClaudeWebAIProvider,
 ):
     _message_type = AsyncClaudeMessage
     _response_type = ClaudeResponse
@@ -56,9 +56,9 @@ class AsyncClaudeProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         transport: AsyncTransport | None = None,
     ) -> None:
         super().__init__(account, type=type, transport=transport)

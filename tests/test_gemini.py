@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fixtures import notebook
 from tests.provider_fakes import provider_account
-from webaiprovider.errors import AccountPaused, ProviderError
-from webaiprovider.providers.gemini import AsyncGeminiProvider
+from webaiprovider.errors import AccountPaused, WebAIProviderError
+from webaiprovider.providers.gemini import AsyncGeminiWebAIProvider
 from webaiprovider.providers.gemini.async_client import (
     AsyncGeminiClient as GeminiSession,
 )
@@ -120,7 +120,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 models=(),
                 discover_models=AsyncMock(return_value=(Model("one", "One"),)),
             )
-            provider = AsyncGeminiProvider(
+            provider = AsyncGeminiWebAIProvider(
                 provider_account("gemini", credential), client_factory=lambda _path: client
             )
             opening = asyncio.create_task(provider._prepare_session())
@@ -138,7 +138,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 await provider._prepare_session()
 
     async def test_background_prepare_and_first_request_share_session_open(self):
-        provider = AsyncGeminiProvider(
+        provider = AsyncGeminiWebAIProvider(
             provider_account("gemini", Path("saved")), client_factory=lambda _path: client
         )
         first = Model("first", "First")
@@ -161,7 +161,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         await provider.close()
 
     async def test_web_activity_is_synced_immediately_before_generation(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         events = []
         client = SimpleNamespace(
             models=(Model("flash", "Flash"),),
@@ -188,7 +188,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["activity", "generation"])
 
     async def test_silent_generation_time_is_not_mistaken_for_network_idle(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         provider.stream_idle_timeout = 0.005
         provider.stream_total_timeout = 0.5
 
@@ -200,11 +200,11 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [TextReplacement("answer")])
 
     async def test_stream_still_enforces_the_total_request_deadline(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         provider.stream_total_timeout = 0.005
 
         provider._stream = delayed_response
-        with self.assertRaisesRegex(ProviderError, "10-minute time limit"):
+        with self.assertRaisesRegex(WebAIProviderError, "10-minute time limit"):
             _ = [
                 event
                 async for event in provider._stream_provider_events(ProviderRequest("question"))
@@ -225,7 +225,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_catalog_is_cached_but_expiry_and_force_refresh_entitlements(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         first, second = Model("first", "First"), Model("second", "Second")
         session = SimpleNamespace(
             models=(first,), discover_models=AsyncMock(return_value=(second,))
@@ -241,7 +241,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.discover_models.await_count, 2)
 
     async def test_delete_clears_cached_continuation_only_after_remote_confirmation(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider._client = SimpleNamespace()
         provider._chat_metadata.put("conversation", ["conversation", "rid", "rcid"])
         provider.rpc.call = AsyncMock(side_effect=[[], []])
@@ -400,7 +400,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
                 {"data": {"viewer": {"rpcs": {"getUserStatus": status}}}},
             ]
         )
-        with self.assertRaisesRegex(ProviderError, "available models"):
+        with self.assertRaisesRegex(WebAIProviderError, "available models"):
             await session.discover_models()
 
     def test_parse_model_catalog_normalizes_hydrogen_version_prefix(self):
@@ -526,7 +526,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await rpc.call("rpc", ["test"]), [[]])
         client.batch.assert_awaited_once()
         client.batch.return_value.text = "invalid"
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await rpc.call("rpc", [])
 
     def test_blocking_cookie_refresh_runs_only_when_due(self):
@@ -635,7 +635,7 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         session.http.post.assert_awaited_once()
 
     async def test_history_preserves_thoughts_and_stable_ids(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         candidate = [None] * 38
         candidate[0], candidate[1], candidate[37] = "rcid", ["Answer"], [["Thought"]]
         turn = [["cid", "rid"], None, [["Question"]], [[candidate]]]
@@ -820,7 +820,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
         response = self.response([b""])
         session = self.session(response)
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             _ = [c async for c in generate(session, ProviderRequest("question"), [])]
         self.assertTrue(response.closed)
         session.persist.assert_not_awaited()
@@ -993,7 +993,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.batch.await_count, 2)
 
     async def test_chat_metadata_caches_turn_ids_for_consecutive_stream_calls(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         client = SimpleNamespace(
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),
@@ -1038,7 +1038,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
         metadata = ["conversation", "request", "response"]
         with patch("webaiprovider.core.cache.time.monotonic", return_value=100.0) as clock:
-            provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+            provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
             provider._remember_chat_metadata("conversation", metadata)
             clock.return_value += _CHAT_METADATA_TTL_SECONDS - 1
             self.assertEqual(provider._take_chat_metadata("conversation"), metadata)
@@ -1111,7 +1111,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lite_model.metadata["number"], 42)
 
     async def test_retry_earlier_turn_uses_edit_controls_and_preserves_prompt_and_files(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused"), "test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
         client = SimpleNamespace(
             models=(Model("gemini-flash", "Flash"),),
             sync_activity=AsyncMock(),
@@ -1215,7 +1215,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             text=json.dumps([["wrb.fr", "MUAZcd", json.dumps([None, ["conv_1", "Wrong"]])]]),
             headers={},
         )
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await session.rename_conversation("conv_1", "Renamed")
 
     async def test_discover_models_refreshes_xsrf_token_on_400(self):
@@ -1409,7 +1409,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     ):
         from webaiprovider.resources.project.types import ProjectData
 
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         detail = [None] * 13
         detail[12] = [1, None, None, None, 0]
         provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
@@ -1447,7 +1447,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_chat_skips_redundant_readback_and_preserves_metadata_on_error(
         self,
     ):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider._connect = AsyncMock(return_value=SimpleNamespace(verified=True))
         provider._chat_metadata.put("cid-1", ["cid-1", "r1", "rc1"])
 
@@ -1461,8 +1461,8 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(provider._gate.locked())
 
             provider._chat_metadata.put("cid-2", ["cid-2", "r2", "rc2"])
-            provider.rpc.call = AsyncMock(side_effect=ProviderError("delete failed"))
-            with self.assertRaises(ProviderError):
+            provider.rpc.call = AsyncMock(side_effect=WebAIProviderError("delete failed"))
+            with self.assertRaises(WebAIProviderError):
                 await provider._delete_chat_data("cid-2")
             self.assertEqual(provider._chat_metadata.get("cid-2"), ["cid-2", "r2", "rc2"])
         finally:
@@ -1564,7 +1564,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((added.id, added.media_type), (source_id, "application/pdf"))
 
             detail[10][0].pop()
-            with self.assertRaisesRegex(ProviderError, "did not confirm the added file"):
+            with self.assertRaisesRegex(WebAIProviderError, "did not confirm the added file"):
                 await editor.add_source(
                     project_id, kind="file", path="paper.pdf", existing_resources=(old,)
                 )
@@ -1622,7 +1622,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_normalizes_deduplicated_sources_and_files_once_at_metadata(self):
         from webaiprovider.resources.message.protocol import MessageMetadata
 
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         client = SimpleNamespace()
         request = ProviderRequest("Q", conversation_id="cid-1")
         provider._prepare_send_context = AsyncMock(
@@ -1775,7 +1775,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             decode_rpc_response(bad_response, "CNgdBe", False)
 
     async def test_get_chat_warms_metadata_and_prepare_send_runs_rpcs_concurrently(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         turn = [["c_warm", "r_warm"], None, [["hi"]], [[["rc_warm", ["hello"]]]]]
         client = SimpleNamespace(models=(Model("m1", "Model 1"),), sync_activity=None)
         started = {
@@ -1842,7 +1842,7 @@ class GeminiOptimizationTests(unittest.IsolatedAsyncioTestCase):
             await notebooks.get("notebooks/abcdef")
 
     async def test_stream_emits_deltas_on_appends_and_replacement_on_rewrite(self):
-        provider = AsyncGeminiProvider(provider_account("gemini"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini"))
         client = SimpleNamespace(models=("gemini-2.5-flash",), sync_activity=AsyncMock())
 
         async def fake_prepare(req):
@@ -1906,7 +1906,7 @@ def message(role, text, **extra):
 
 class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_listing_reads_remote_pages_and_returns_real_pagination(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider._connect = AsyncMock()
         provider.rpc.call = AsyncMock(
             return_value=[[None, None, [["c_" + str(i), str(i)] for i in range(5)]]]
@@ -1919,7 +1919,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.rpc.call.await_count, 2)
 
     async def test_bounded_listing_uses_larger_followup_pages(self):
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider._prepare_session = AsyncMock()
         provider._connect = AsyncMock()
         rows = [[f"c_{index}", str(index)] for index in range(260)]
@@ -1952,7 +1952,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
             [["c_chat", rid], None, [[f"Prompt {rid}"]], [[[f"candidate-{rid}", ["Answer"]]]]]
             for rid in ("r_new", "r_target", "r_parent")
         ]
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider.rpc.call = AsyncMock(return_value=[[turns]])
         request = ProviderRequest(
             "",
@@ -1996,7 +1996,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
         def turn(rid):
             return [["c_abc", rid], None, [["question"]], [[["candidate", ["answer"]]]]]
 
-        provider = AsyncGeminiProvider(provider_account("gemini", Path("unused")))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", Path("unused")))
         provider.rpc.call = AsyncMock(return_value=[[[turn("r_stable")]]])
         first = await provider._get_chat_data("c_abc")
         provider.rpc.call.return_value = [[[turn("r_stable"), turn("r_old")]]]
@@ -2007,7 +2007,7 @@ class GeminiHistoryTests(unittest.IsolatedAsyncioTestCase):
 class NotebookDeleteVerificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_project_skips_redundant_readback_after_write(self):
         notebooks = SimpleNamespace(get=AsyncMock(), list=AsyncMock())
-        provider = AsyncGeminiProvider(
+        provider = AsyncGeminiWebAIProvider(
             provider_account("gemini", Path("unused")), notebooks=notebooks
         )
         with (
@@ -2043,9 +2043,9 @@ class NotebookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await service.get("notebooks/abcdef"), project)
 
     async def test_unknown_native_contract_fails_without_inventing_data(self):
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             project_from_native(["wrong-id", []], "account")
         service = Notebooks("account")
         service.read = AsyncMock(return_value=[[]])
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await service.get("notebooks/missing")

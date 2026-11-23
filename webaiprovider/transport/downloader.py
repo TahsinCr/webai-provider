@@ -139,7 +139,7 @@ class _NativeDownloadResponse:
 def download_source(
     source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
 ) -> bytes:
-    from ..errors import ProviderError, UnsupportedOperationError
+    from ..errors import UnsupportedOperationError, WebAIProviderError
 
     if not isinstance(source, DownloadSource):
         raise UnsupportedOperationError(
@@ -154,13 +154,13 @@ def download_source(
             else factory()
         )
         if not isinstance(client, NativeDownloadClient):
-            raise ProviderError("Provider returned an unsupported download transport")
+            raise WebAIProviderError("Provider returned an unsupported download transport")
         with (
             client,
             client.stream("GET", source.url, headers=dict(source.headers)) as response,
         ):
             if not 200 <= response.status_code < 300:
-                raise ProviderError(f"File transfer failed with HTTP {response.status_code}")
+                raise WebAIProviderError(f"File transfer failed with HTTP {response.status_code}")
             chunks: list[bytes] = []
             total = 0
             for chunk in response.iter_bytes():
@@ -168,13 +168,13 @@ def download_source(
                     continue
                 total += len(chunk)
                 if total > max_bytes:
-                    raise ProviderError("Downloaded file exceeds size limit")
+                    raise WebAIProviderError("Downloaded file exceeds size limit")
                 chunks.append(chunk)
             return b"".join(chunks)
-    except ProviderError:
+    except WebAIProviderError:
         raise
     except Exception:
-        raise ProviderError("File transfer failed") from None
+        raise WebAIProviderError("File transfer failed") from None
 
 
 async def async_download_source(

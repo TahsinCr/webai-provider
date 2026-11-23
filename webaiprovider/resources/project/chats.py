@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...collections import AsyncRemoteCollection, Page, RemoteCollection
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ..chat.chat import AsyncChat, Chat
 from ..chat.types import Conversation
 from .project import AsyncProject, Project
@@ -11,7 +11,7 @@ from .project import AsyncProject, Project
 
 def _build_project_chat_page(project: Any, provider: Any, page: Any) -> Page[Any]:
     if not isinstance(page, Page) or any(not isinstance(item, Conversation) for item in page.items):
-        raise ProviderError("Provider returned an invalid project conversation page")
+        raise WebAIProviderError("Provider returned an invalid project conversation page")
     project_map = {project.remote_id: project}
     chats = []
     for item in page.items:
@@ -47,7 +47,7 @@ class AsyncProjectChatsCollection(AsyncRemoteCollection[AsyncChat]):
         del options
         provider = self.project.provider
         if provider is None:
-            raise ProviderError("Project is not attached to an open provider")
+            raise WebAIProviderError("Project is not attached to an open provider")
         if not self.project.remote_id:
             return Page(())
         async with provider._activity():
@@ -83,7 +83,7 @@ class ProjectChatsCollection(RemoteCollection[Chat]):
         del options
         provider = self.project.provider
         if provider is None:
-            raise ProviderError("Project is not attached to an open provider")
+            raise WebAIProviderError("Project is not attached to an open provider")
         if not self.project.remote_id:
             return Page(())
         with provider._activity():

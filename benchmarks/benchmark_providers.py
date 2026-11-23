@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from webaiprovider import Account, AsyncProvider
+from webaiprovider import AsyncWebAIProvider, WebAIAccount
 from webaiprovider.resources.message.protocol import ProviderRequest
 from webaiprovider.resources.message.types import MessageAction
 
@@ -104,7 +104,7 @@ def _history_fixture(provider, *, rich: bool = False):
 
 def _case(provider_name: str, *, retry: bool = False, rich: bool = False) -> Case:
     async def measure(loops: int) -> float:
-        provider = AsyncProvider(Account.from_cookies(provider_name, {}))
+        provider = AsyncWebAIProvider(WebAIAccount.from_cookies(provider_name, {}))
         fixture = _history_fixture(provider_name, rich=rich)
         requests = 0
 

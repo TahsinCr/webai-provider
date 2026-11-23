@@ -6,14 +6,14 @@ from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
     from .async_client import AsyncClaudeClient as AsyncClaudeClient
-    from .async_provider import AsyncClaudeProvider as AsyncClaudeProvider
+    from .async_provider import AsyncClaudeWebAIProvider as AsyncClaudeWebAIProvider
     from .catalogs import ClaudeModels as ClaudeModels
     from .client import ClaudeClient as ClaudeClient
     from .errors import ClaudeCompatibilityError as ClaudeCompatibilityError
     from .errors import ClaudeError as ClaudeError
     from .errors import ClaudeRequestNotSent as ClaudeRequestNotSent
     from .errors import ClaudeStreamError as ClaudeStreamError
-    from .provider import ClaudeProvider as ClaudeProvider
+    from .provider import ClaudeWebAIProvider as ClaudeWebAIProvider
     from .resources import AsyncClaudeChat as AsyncClaudeChat
     from .resources import AsyncClaudeMessage as AsyncClaudeMessage
     from .resources import AsyncClaudeProject as AsyncClaudeProject
@@ -43,8 +43,8 @@ _EXPORTS = {
     "ClaudeArtifact": "resources",
     "ClaudeSource": "resources",
     "AsyncClaudeChat": "resources",
-    "ClaudeProvider": "provider",
-    "AsyncClaudeProvider": "async_provider",
+    "ClaudeWebAIProvider": "provider",
+    "AsyncClaudeWebAIProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

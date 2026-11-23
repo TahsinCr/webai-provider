@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from tests.fakes import FakeCookiesJar, FakeHTTPResponse, bind_stream
 from tests.provider_fakes import claude_model_catalog
 from webaiprovider.accounts.credentials import async_save_session, read_session, save_session
-from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from webaiprovider.errors import AccountPaused, RateLimited, RemoteNotFound, WebAIProviderError
 from webaiprovider.providers.claude.async_client import (
     AsyncClaudeClient as ClaudeClient,
 )
@@ -102,7 +102,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_remote_mutation_failure_is_not_replayed(self):
         self.client.request.return_value = FakeHTTPResponse(403, json={"error": "denied"})
-        with self.assertRaises(ProviderError) as error:
+        with self.assertRaises(WebAIProviderError) as error:
             await self.session.request("POST", "/api/project")
         self.assertNotIsInstance(error.exception, AccountPaused)
         self.client.request.assert_awaited_once()
@@ -145,7 +145,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
     def test_auth_access_missing_and_limit_are_different_failures(self):
         for status, kind in [
             (401, AccountPaused),
-            (403, ProviderError),
+            (403, WebAIProviderError),
             (404, RemoteNotFound),
             (429, RateLimited),
         ]:
@@ -192,7 +192,7 @@ class NotebookHTTPTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(
             batch=AsyncMock(return_value=SimpleNamespace(text='[["wrb.fr","HcT8bb",null]]'))
         )
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await GeminiRPC(AsyncMock(return_value=client)).call("HcT8bb", [])
 
     async def test_notebook_update_uses_write_settings_not_display_icon(self):
@@ -257,13 +257,13 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             path=Path("unused"),
             request=AsyncMock(return_value={"current_leaf_message_uuid": cid}),
             connect=Mock(return_value=SimpleNamespace(stream=stream)),
-            check=Mock(side_effect=ProviderError("denied")),
+            check=Mock(side_effect=WebAIProviderError("denied")),
             url=lambda value: value,
         )
         transport = ClaudeClient("unused", session=bind_stream(session))
         transport.base = AsyncMock(return_value="/api/organizations/account")
         transport.catalog = claude_model_catalog()
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             _ = [
                 event
                 async for event in transport.events(
@@ -301,7 +301,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
         }
         org = organization_from_bootstrap(data, "workspace")
         self.assertEqual(org, "workspace")
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             organization_from_bootstrap(data, "other")
 
     async def test_first_discovery_is_shared_with_requests_during_warmup(self):
@@ -450,7 +450,7 @@ class ClaudeHTTPTests(unittest.IsolatedAsyncioTestCase):
             )
             transport = ClaudeClient(path, session=bind_stream(session))
             self.addAsyncCleanup(transport.close)
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 await transport.prepare()
 
         self.assertEqual(calls, ["/api/bootstrap"])

@@ -13,15 +13,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from eventflow import EventBus, EventEnvelope, EventFilter
+from flowevent import EventBus, EventEnvelope, EventFilter
 
 import webaiprovider
 from webaiprovider import (
-    Account,
     AmbiguousMatchError,
     ArtifactsCollection,
     AsyncChat,
-    AsyncProvider,
+    AsyncWebAIProvider,
     Attachment,
     Capability,
     Chat,
@@ -29,13 +28,14 @@ from webaiprovider import (
     OperationHooks,
     OutputBegin,
     OutputDelta,
-    Provider,
-    ProviderError,
     RemoteNotFound,
     Response,
     SourcesCollection,
     TimingMetrics,
     UnsupportedOperationError,
+    WebAIAccount,
+    WebAIProvider,
+    WebAIProviderError,
 )
 from webaiprovider.collections import Page
 from webaiprovider.core.types import HookDispatchResult, OperationContext
@@ -55,11 +55,13 @@ from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
 from webaiprovider.resources.project.types import ProjectData
 
 
-def _account(name: str = "test") -> Account:
-    return Account(id="acc-test", provider="chatgpt", credentials={"cookie": "test"}, name=name)
+def _account(name: str = "test") -> WebAIAccount:
+    return WebAIAccount(
+        id="acc-test", provider="chatgpt", credentials={"cookie": "test"}, name=name
+    )
 
 
-class _ScriptedAsyncProvider(AsyncProvider):
+class _ScriptedAsyncProvider(AsyncWebAIProvider):
     capabilities = frozenset(
         {
             Capability.CHAT,
@@ -75,7 +77,7 @@ class _ScriptedAsyncProvider(AsyncProvider):
         }
     )
 
-    def __init__(self, account: Account, **options: object) -> None:
+    def __init__(self, account: WebAIAccount, **options: object) -> None:
         super().__init__(account, **options)  # type: ignore[arg-type]
         self.prepare_calls = 0
         self.close_calls = 0
@@ -127,7 +129,7 @@ class _ScriptedAsyncProvider(AsyncProvider):
         call_index = len(self.list_calls) + 1
         self.list_calls.append((cursor, limit))
         if self.page_error_at is not None and call_index == self.page_error_at:
-            raise ProviderError(f"Simulated pagination failure on call {call_index}")
+            raise WebAIProviderError(f"Simulated pagination failure on call {call_index}")
         start = int(cursor) if cursor is not None else 0
         if not self.pages:
             return Page((), None)
@@ -266,7 +268,7 @@ class _ScriptedAsyncProvider(AsyncProvider):
 class _PagedRecordsAsyncProvider(_ScriptedAsyncProvider):
     """Provider serving explicit discrete pages for early-stop query tests."""
 
-    def __init__(self, account: Account, **options: object) -> None:
+    def __init__(self, account: WebAIAccount, **options: object) -> None:
         super().__init__(account, **options)
         self._batches: list[list[Conversation]] = []
         self.fetch_calls: list[str | None] = []
@@ -285,10 +287,10 @@ class _PagedRecordsAsyncProvider(_ScriptedAsyncProvider):
         return Page(tuple(items), next_cursor)
 
 
-class _ScriptedSyncProvider(Provider):
+class _ScriptedSyncProvider(WebAIProvider):
     capabilities = _ScriptedAsyncProvider.capabilities
 
-    def __init__(self, account: Account, **options: object) -> None:
+    def __init__(self, account: WebAIAccount, **options: object) -> None:
         super().__init__(account, **options)  # type: ignore[arg-type]
         self.prepare_calls = 0
         self.close_calls = 0
@@ -338,7 +340,7 @@ class _ScriptedSyncProvider(Provider):
         call_index = len(self.list_calls) + 1
         self.list_calls.append((cursor, limit))
         if self.page_error_at is not None and call_index == self.page_error_at:
-            raise ProviderError(f"Simulated pagination failure on call {call_index}")
+            raise WebAIProviderError(f"Simulated pagination failure on call {call_index}")
         start = int(cursor) if cursor is not None else 0
         if not self.pages:
             return Page((), None)
@@ -420,7 +422,7 @@ class _ScriptedSyncProvider(Provider):
 
 
 class _PagedSyncProvider(_ScriptedSyncProvider):
-    def __init__(self, account: Account, **options: object) -> None:
+    def __init__(self, account: WebAIAccount, **options: object) -> None:
         super().__init__(account, **options)
         self._batches: list[list[Conversation]] = []
         self.fetch_calls: list[str | None] = []
@@ -448,7 +450,7 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
         for symbol in excluded:
             self.assertFalse(hasattr(webaiprovider, symbol), symbol)
         expected = {
-            "Account",
+            "WebAIAccount",
             "BaseCollection",
             "AsyncBaseCollection",
             "Collection",
@@ -462,10 +464,10 @@ class TestPublicSurfaceAndExports(unittest.TestCase):
             "EventBus",
             "EventEnvelope",
             "EventFilter",
-            "AsyncProvider",
+            "AsyncWebAIProvider",
             "LifecycleState",
             "AsyncOperationHooks",
-            "Provider",
+            "WebAIProvider",
             "Response",
             "Source",
             "SourcesCollection",
@@ -527,14 +529,14 @@ class TestCollectionContract(unittest.IsolatedAsyncioTestCase):
             # Failure on 1st page attaches partial_count == 0
             provider.list_calls.clear()
             provider.page_error_at = 1
-            with self.assertRaises(ProviderError) as err1:
+            with self.assertRaises(WebAIProviderError) as err1:
                 await provider.chats.list(limit=120)
             self.assertEqual(getattr(err1.exception, "partial_count", None), 0)
 
             # Failure on 2nd page attaches partial_count == 50
             provider.list_calls.clear()
             provider.page_error_at = 2
-            with self.assertRaises(ProviderError) as err2:
+            with self.assertRaises(WebAIProviderError) as err2:
                 await provider.chats.list(limit=120)
             self.assertEqual(getattr(err2.exception, "partial_count", None), 50)
         finally:
@@ -830,7 +832,7 @@ class TestMessagesResponsesSourcesArtifacts(unittest.IsolatedAsyncioTestCase):
             while not provider.closing:
                 await asyncio.sleep(0)
             self.assertEqual(provider.close_calls, 0)
-            with self.assertRaisesRegex(ProviderError, "closing"):
+            with self.assertRaisesRegex(WebAIProviderError, "closing"):
                 await chat.responses.list()
         finally:
             release.set()
@@ -1152,7 +1154,7 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_lifecycle_transitions_and_ordered_provider_events(self) -> None:
         provider = _ScriptedAsyncProvider(_account())
-        provider.fail_prepare = ProviderError("auth expired")
+        provider.fail_prepare = WebAIProviderError("auth expired")
         events: list[EventEnvelope[str]] = []
 
         async def record_event(event: EventEnvelope[str]) -> None:
@@ -1161,7 +1163,7 @@ class TestRuntimeHooksEventsAndLifecycle(unittest.IsolatedAsyncioTestCase):
         await provider.events.subscribe(record_event)
 
         self.assertEqual(provider.lifecycle_state, LifecycleState.CREATED)
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.open()
         self.assertEqual(provider.lifecycle_state, LifecycleState.OPEN_FAILED)
 
@@ -1213,9 +1215,9 @@ class TestSyncCallerAndConcurrency(unittest.TestCase):
             with self.assertRaises(Exception):
                 provider.close()
             self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSE_FAILED)
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 provider.open()
-            with self.assertRaisesRegex(ProviderError, "cleanup failed"):
+            with self.assertRaisesRegex(WebAIProviderError, "cleanup failed"):
                 transport.request("GET", "/fixture")
             provider._transport.request.assert_not_called()
         finally:
@@ -1500,7 +1502,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             for operation in (provider.open, provider.close):
                 try:
                     await operation()
-                except ProviderError as exc:
+                except WebAIProviderError as exc:
                     results[operation.__name__] = str(exc)
 
         async def on_opened(_event: EventEnvelope[str]) -> None:
@@ -1509,7 +1511,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
         async def on_closing(_event: EventEnvelope[str]) -> None:
             try:
                 await provider.close()
-            except ProviderError as exc:
+            except WebAIProviderError as exc:
                 results["closing_error"] = str(exc)
 
         await provider.events.subscribe(
@@ -1579,7 +1581,7 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
         self.assertEqual(provider.lifecycle_state, LifecycleState.CLOSE_FAILED)
 
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.open()
 
         await provider.close()
@@ -1720,8 +1722,8 @@ class TestAuditRegressions(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     def test_p2_06_provider_type_lives_in_base_without_provider_cycle(self) -> None:
-        from webaiprovider.base import ProviderType as BaseProviderType
-        from webaiprovider.provider import ProviderType as PublicProviderType
+        from webaiprovider.base import WebAIProviderType as BaseProviderType
+        from webaiprovider.provider import WebAIProviderType as PublicProviderType
 
         self.assertIs(BaseProviderType, PublicProviderType)
 
@@ -1742,7 +1744,7 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
                 Capability.MESSAGE_RETRY,
             }
 
-            def __init__(self, account: Account, **options: object) -> None:
+            def __init__(self, account: WebAIAccount, **options: object) -> None:
                 super().__init__(account, **options)
                 self.branch_calls: list[tuple[str, str]] = []
 
@@ -1792,7 +1794,7 @@ class TestChatConvenienceAndResponseActions(unittest.IsolatedAsyncioTestCase):
         class _BranchableSyncProvider(_ScriptedSyncProvider):
             capabilities = _BranchableAsyncProvider.capabilities
 
-            def __init__(self, account: Account, **options: object) -> None:
+            def __init__(self, account: WebAIAccount, **options: object) -> None:
                 super().__init__(account, **options)
                 self.branch_calls: list[tuple[str, str]] = []
 

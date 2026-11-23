@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 from ...accounts import delete_session, session_exists
 from ...accounts.credentials import async_read_session
 from ...accounts.status import SessionState, SessionStatus
-from ...async_provider import AsyncProvider
-from ...base import Capability, ProviderType
+from ...async_provider import AsyncWebAIProvider
+from ...base import Capability, WebAIProviderType
 from ...collections import Page
 from ...core.cache import BoundedCache, ContinuationCache
 from ...core.timing import current_send_timing
@@ -32,7 +32,7 @@ from .async_client import (
     AsyncGeminiRPC,
     async_response_events,
 )
-from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
+from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiWebAIProvider
 from .errors import GeminiCompatibilityError, GeminiStreamError
 from .generation import _gemini_upload_spec
 from .history import parse_chat_history, parse_chat_page
@@ -48,15 +48,15 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class AsyncGeminiProvider(
+class AsyncGeminiWebAIProvider(
     AsyncProjectMutationsMixin,
-    AsyncProvider[
+    AsyncWebAIProvider[
         AsyncChatsCollection[AsyncGeminiChat], AsyncProjectsCollection[AsyncGeminiProject]
     ],
-    BaseGeminiProvider,
+    BaseGeminiWebAIProvider,
 ):
     _message_type = AsyncGeminiMessage
     _response_type = GeminiResponse
@@ -73,9 +73,9 @@ class AsyncGeminiProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         client_factory: Any = None,
         notebooks: AsyncGeminiNotebooks | None = None,
         transport: AsyncTransport | None = None,

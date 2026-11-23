@@ -11,18 +11,17 @@ from unittest.mock import ANY, AsyncMock, Mock, patch
 import webaiprovider
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import (
-    Account,
     AmbiguousMatchError,
     Artifact,
-    AsyncChatGPTProvider,
-    AsyncGrokProvider,
+    AsyncChatGPTWebAIProvider,
+    AsyncGrokWebAIProvider,
     AsyncMessage,
     AsyncMessageOperation,
-    AsyncProvider,
+    AsyncWebAIProvider,
     Attachment,
     Attachments,
     ChatGPTModels,
-    ChatGPTProvider,
+    ChatGPTWebAIProvider,
     ClaudeModels,
     GeminiModels,
     GrokModels,
@@ -32,17 +31,18 @@ from webaiprovider import (
     OutputBegin,
     OutputDelta,
     OutputEnd,
-    Provider,
-    ProviderType,
     Response,
     SelectionResolver,
     Source,
     ThinkingBegin,
     ThinkingDelta,
     ThinkingEnd,
+    WebAIAccount,
+    WebAIProvider,
+    WebAIProviderType,
 )
 from webaiprovider.accounts.status import SessionState, SessionStatus
-from webaiprovider.errors import ProviderError, RemoteNotFound, UnsupportedOperationError
+from webaiprovider.errors import RemoteNotFound, UnsupportedOperationError, WebAIProviderError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model.model import (
@@ -55,10 +55,10 @@ from webaiprovider.resources.project.types import ProjectData
 class TestApi(unittest.IsolatedAsyncioTestCase):
     async def open_provider(
         self,
-        account: Account,
-        provider: AsyncProvider | None = None,
-    ) -> AsyncProvider:
-        provider = provider or AsyncProvider(account)
+        account: WebAIAccount,
+        provider: AsyncWebAIProvider | None = None,
+    ) -> AsyncWebAIProvider:
+        provider = provider or AsyncWebAIProvider(account)
         for name in (
             "_prepare_session",
             "_close_session",
@@ -97,14 +97,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         return provider
 
     def test_account_creation_and_session(self) -> None:
-        acc = Account.from_cookies("chatgpt", {"session_token": "mock-token-xyz"})
+        acc = WebAIAccount.from_cookies("chatgpt", {"session_token": "mock-token-xyz"})
         self.assertEqual(acc.provider, "chatgpt")
         self.assertTrue(acc.is_active)
         self.assertIn("session_token", acc.store().load())
         self.assertFalse(hasattr(acc, "connect"))
 
-        provider = AsyncProvider(acc, type=ProviderType.CHATGPT)
-        self.assertIsInstance(provider, AsyncProvider)
+        provider = AsyncWebAIProvider(acc, type=WebAIProviderType.CHATGPT)
+        self.assertIsInstance(provider, AsyncWebAIProvider)
         self.assertEqual(provider.provider, "chatgpt")
         self.assertIsNotNone(provider.chats)
         self.assertIsNotNone(provider.projects)
@@ -114,12 +114,12 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             "webaiprovider.accounts.importer.import_cookies",
             return_value=("chromium", {"session_token": "mock-token-xyz"}),
         ) as read_cookies:
-            Account.from_browser("ChatGPT", browser="brave")
+            WebAIAccount.from_browser("ChatGPT", browser="brave")
 
         read_cookies.assert_called_once_with("chatgpt", browser="brave")
 
     async def test_lazy_message_creation_and_hooks(self) -> None:
-        acc = Account.from_cookies("chatgpt", {"cookie": "val"})
+        acc = WebAIAccount.from_cookies("chatgpt", {"cookie": "val"})
         provider = await self.open_provider(acc)
         mock_provider = provider
         chat = await provider.chats.create(title="Test Chat")
@@ -179,7 +179,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asked.message.content, "Hello via ask")
 
     async def test_cancelling_one_waiter_does_not_cancel_shared_send(self) -> None:
-        provider = await self.open_provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
+        provider = await self.open_provider(WebAIAccount.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
         started = asyncio.Event()
         release = asyncio.Event()
@@ -221,7 +221,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         await emission
 
     async def test_operation_uses_one_send_across_entrypoints(self) -> None:
-        provider = await self.open_provider(Account.from_cookies("chatgpt", {"cookie": "val"}))
+        provider = await self.open_provider(WebAIAccount.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -276,14 +276,16 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_count, 1)
 
     async def test_message_send_requires_provider_session(self) -> None:
-        provider = AsyncProvider(Account.from_cookies("chatgpt", {"cookie": "val"}))
+        provider = AsyncWebAIProvider(WebAIAccount.from_cookies("chatgpt", {"cookie": "val"}))
         chat = await provider.chats.create()
 
-        with self.assertRaisesRegex(ProviderError, "Open the provider before using its resources"):
+        with self.assertRaisesRegex(
+            WebAIProviderError, "Open the provider before using its resources"
+        ):
             await chat.responses.create("must not be echoed as a response").wait()
 
     async def test_response_with_sources_and_artifacts(self) -> None:
-        acc = Account.from_cookies("gemini", {"cookie": "gemini-val"})
+        acc = WebAIAccount.from_cookies("gemini", {"cookie": "gemini-val"})
         provider = await self.open_provider(acc)
         mock_provider = provider
         chat = await provider.chats.create()
@@ -329,7 +331,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.message.types import Content
         from webaiprovider.resources.message.types import MessageData as NativeMessage
 
-        acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
+        acc = WebAIAccount.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
         state = {"title": "My Claude Chat", "messages": ()}
 
@@ -386,7 +388,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.message.attachment import Attachment
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        acc = Account.from_cookies("claude", {"sessionKey": "claude-key"})
+        acc = WebAIAccount.from_cookies("claude", {"sessionKey": "claude-key"})
         session = await self.open_provider(acc)
         remote = [
             NativeProject(
@@ -475,8 +477,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_message_branch_retry_edit(self) -> None:
         from webaiprovider.resources.chat.types import Conversation
 
-        acc = Account.from_cookies("chatgpt", {"session_token": "token"})
-        session = await self.open_provider(acc, AsyncChatGPTProvider(acc))
+        acc = WebAIAccount.from_cookies("chatgpt", {"session_token": "token"})
+        session = await self.open_provider(acc, AsyncChatGPTWebAIProvider(acc))
         chat = await session.chats.create()
         chat.remote_id = "remote-chat-id"
         msg = AsyncMessage(
@@ -514,9 +516,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         branched_chat.metadata["local_only"] = True
         self.assertNotIn("local_only", branch_meta)
 
-        from webaiprovider.providers.chatgpt import ChatGPTProvider
+        from webaiprovider.providers.chatgpt import ChatGPTWebAIProvider
 
-        sync_provider = ChatGPTProvider(acc)
+        sync_provider = ChatGPTWebAIProvider(acc)
         try:
             sync_chat = sync_provider.chats.create("Branch copy")
             sync_chat.metadata = dict(branch_meta)
@@ -533,24 +535,24 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             ("gemini", "Gemini", {"branch"}),
             ("grok", "Grok", {"move_to"}),
         ):
-            account = Account.from_cookies(kind, {})
+            account = WebAIAccount.from_cookies(kind, {})
             with self.subTest(provider=kind):
-                native_async = getattr(webaiprovider, f"Async{title}Provider")
-                native_sync = getattr(webaiprovider, f"{title}Provider")
+                native_async = getattr(webaiprovider, f"Async{title}WebAIProvider")
+                native_sync = getattr(webaiprovider, f"{title}WebAIProvider")
                 module = f"webaiprovider.providers.{kind}"
-                shared = getattr(import_module(f"{module}.base"), f"Base{title}Provider")
+                shared = getattr(import_module(f"{module}.base"), f"Base{title}WebAIProvider")
                 self.assertEqual(native_async.__module__, f"{module}.async_provider")
                 self.assertEqual(native_sync.__module__, f"{module}.provider")
                 self.assertTrue(issubclass(native_async, shared))
                 self.assertTrue(issubclass(native_sync, shared))
-                self.assertTrue(issubclass(shared, webaiprovider.BaseProvider))
-                asynchronous = AsyncProvider(account)
-                synchronous = Provider(account, type=ProviderType.parse(kind))
+                self.assertTrue(issubclass(shared, webaiprovider.BaseWebAIProvider))
+                asynchronous = AsyncWebAIProvider(account)
+                synchronous = WebAIProvider(account, type=WebAIProviderType.parse(kind))
                 try:
                     self.assertIs(type(asynchronous), native_async)
-                    self.assertIsInstance(asynchronous, AsyncProvider)
+                    self.assertIsInstance(asynchronous, AsyncWebAIProvider)
                     self.assertEqual(asynchronous.account_id, account.id)
-                    self.assertIs(asynchronous.type, ProviderType.parse(kind))
+                    self.assertIs(asynchronous.type, WebAIProviderType.parse(kind))
                     self.assertIs(type(synchronous), native_sync)
                     self.assertFalse(hasattr(synchronous, "_provider"))
                     self.assertFalse(hasattr(synchronous, "_loop"))
@@ -568,11 +570,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     await asynchronous.close()
                     synchronous.close()
         with self.assertRaisesRegex(ValueError, "must match"):
-            AsyncProvider(Account.from_cookies("chatgpt", {}), type=ProviderType.GROK)
+            AsyncWebAIProvider(
+                WebAIAccount.from_cookies("chatgpt", {}), type=WebAIProviderType.GROK
+            )
 
     async def test_provider_open_is_idempotent_and_closes_provider_resources(self) -> None:
-        account = Account.from_cookies("gemini", {"cookie": "test"})
-        provider = AsyncProvider(account, type=ProviderType.GEMINI)
+        account = WebAIAccount.from_cookies("gemini", {"cookie": "test"})
+        provider = AsyncWebAIProvider(account, type=WebAIProviderType.GEMINI)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         self.assertIs(await provider.open(), provider)
@@ -584,8 +588,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_chatgpt_project_creation_accepts_memory_share_flag(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
-        provider = AsyncChatGPTProvider(account)
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
+        provider = AsyncChatGPTWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         provider._create_project_data = AsyncMock(
@@ -607,14 +611,14 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             ("grok", GrokChat),
         ):
             with self.subTest(provider=provider_type):
-                provider = Provider(Account.from_cookies(provider_type, {}))
+                provider = WebAIProvider(WebAIAccount.from_cookies(provider_type, {}))
                 self.assertIsInstance(provider.chats.create(), chat_type)
         self.assertIsInstance(
-            Provider(Account.from_cookies("gemini", {})).notebooks, GeminiNotebooks
+            WebAIProvider(WebAIAccount.from_cookies("gemini", {})).notebooks, GeminiNotebooks
         )
 
     def test_sync_provider_has_no_loop_bridge_and_runs_on_caller_thread(self) -> None:
-        provider = Provider(Account.from_cookies("chatgpt", {"cookie": "test"}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("chatgpt", {"cookie": "test"}))
         self.assertFalse(hasattr(provider, "_loop"))
         self.assertFalse(hasattr(provider, "_provider"))
         self.assertFalse(hasattr(provider, "_call"))
@@ -678,7 +682,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_provider_stream_preserves_typed_errors(self) -> None:
         from webaiprovider.errors import RateLimited
 
-        provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
+        provider = AsyncGrokWebAIProvider(WebAIAccount.from_cookies("grok", {"sso": "grok-tok"}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
 
@@ -701,13 +705,13 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         provider._stream_provider_events = fail_validation
         with self.assertRaisesRegex(ValueError, "invalid effort level"):
             await chat.responses.create("Hello").start()
-        self.assertTrue(repr(provider).startswith("<AsyncGrokProvider "))
+        self.assertTrue(repr(provider).startswith("<AsyncGrokWebAIProvider "))
         await provider.close()
 
     async def test_prepare_operation_preserves_attachment_mime_type(self) -> None:
         from webaiprovider.resources.message.request import async_run_pipeline
 
-        provider = AsyncGrokProvider(Account.from_cookies("grok", {"sso": "grok-tok"}))
+        provider = AsyncGrokWebAIProvider(WebAIAccount.from_cookies("grok", {"sso": "grok-tok"}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         await provider.open()
@@ -733,7 +737,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
             await provider.close()
 
     async def test_provider_ask_convenience_method(self) -> None:
-        p = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {"session_token": "mock-tok"}))
+        p = AsyncChatGPTWebAIProvider(
+            WebAIAccount.from_cookies("chatgpt", {"session_token": "mock-tok"})
+        )
         p._prepare_session = AsyncMock()
         p._close_session = AsyncMock()
 
@@ -752,7 +758,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.model.model import EffortOption, ModelCatalog
         from webaiprovider.resources.model.model import Model as CatalogModel
 
-        account = Account.from_cookies("chatgpt", {"session_token": "tok"})
+        account = WebAIAccount.from_cookies("chatgpt", {"session_token": "tok"})
         provider = StreamTestProvider(account.provider, account.id, (TextDelta("hi"),))
         provider = await self.open_provider(account, provider)
         provider._load_catalog = AsyncMock(
@@ -824,8 +830,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class PaginatedProvider(AsyncChatGPTProvider):
-            def __init__(self, account: Account) -> None:
+        class PaginatedProvider(AsyncChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount) -> None:
                 super().__init__(account)
                 self.active_fetches = 0
                 self.max_active_fetches = 0
@@ -906,7 +912,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                         )
                 return Page((), None)
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         async with PaginatedProvider(account) as provider:
             chats = await asyncio.wait_for(
                 provider.chats.list(limit=None, include_projects=True), timeout=2
@@ -933,7 +939,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
         cancelled = asyncio.Event()
 
-        class RepeatingProvider(AsyncChatGPTProvider):
+        class RepeatingProvider(AsyncChatGPTWebAIProvider):
             async def _prepare_session(self) -> None:
                 return None
 
@@ -968,9 +974,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     return Page((), "repeat-cursor")
                 return Page((), None)
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         async with RepeatingProvider(account) as provider:
-            with self.assertRaisesRegex(ProviderError, "cursor"):
+            with self.assertRaisesRegex(WebAIProviderError, "cursor"):
                 await provider.chats.list(limit=None, include_projects=True)
             self.assertTrue(cancelled.is_set())
 
@@ -978,7 +984,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        class FailingProvider(AsyncChatGPTProvider):
+        class FailingProvider(AsyncChatGPTWebAIProvider):
             async def _prepare_session(self):
                 return None
 
@@ -987,7 +993,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
 
             async def _list_chats_data(self, **options):
                 await started.wait()
-                raise ProviderError("conversation listing failed")
+                raise WebAIProviderError("conversation listing failed")
 
             async def _list_projects_data(self, **options):
                 started.set()
@@ -996,9 +1002,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 finally:
                     cancelled.set()
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         async with FailingProvider(account) as provider:
-            with self.assertRaisesRegex(ProviderError, "conversation listing failed"):
+            with self.assertRaisesRegex(WebAIProviderError, "conversation listing failed"):
                 await asyncio.wait_for(provider.chats.list(include_projects=True), timeout=2)
             self.assertTrue(cancelled.is_set())
 
@@ -1007,8 +1013,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class BoundedProvider(AsyncChatGPTProvider):
-            def __init__(self, account: Account) -> None:
+        class BoundedProvider(AsyncChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount) -> None:
                 super().__init__(account)
                 self.chat_cursors: list[str | None] = []
                 self.project_chat_calls: list[tuple[str, str | None]] = []
@@ -1048,7 +1054,7 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                     "p1-page-2",
                 )
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         async with BoundedProvider(account) as provider:
             chats = await provider.chats.list(limit=2, include_projects=True)
         self.assertEqual([chat.remote_id for chat in chats], ["c-0", "c-1"])
@@ -1069,8 +1075,8 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
     async def test_project_refresh_rejects_repeated_cursor_cleanly(self) -> None:
         from webaiprovider.collections import Page
 
-        class RepeatingProjectProvider(AsyncChatGPTProvider):
-            def __init__(self, account: Account) -> None:
+        class RepeatingProjectProvider(AsyncChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount) -> None:
                 super().__init__(account)
                 self.project_cursors: list[str | None] = []
 
@@ -1084,9 +1090,9 @@ class TestApi(unittest.IsolatedAsyncioTestCase):
                 self.project_cursors.append(cursor)
                 return Page((), "same-page")
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         async with RepeatingProjectProvider(account) as provider:
-            with self.assertRaisesRegex(ProviderError, "cursor") as ctx:
+            with self.assertRaisesRegex(WebAIProviderError, "cursor") as ctx:
                 await provider.projects.list(limit=None)
             self.assertEqual(getattr(ctx.exception, "partial_count", None), 0)
             self.assertEqual(provider.project_cursors, [None, "same-page"])
@@ -1140,7 +1146,7 @@ class TestSyncApi(unittest.TestCase):
     def test_wait_for_can_resume_after_timing_out_on_the_conversation_lock(self):
         from webaiprovider import Chat, MessageOperation
 
-        provider = Provider(Account.from_cookies("grok", {}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("grok", {}))
         provider._prepare_session = lambda: None
         provider._close_session = lambda: None
         provider.open()
@@ -1211,7 +1217,7 @@ class TestSyncApi(unittest.TestCase):
             OutputDelta,
         )
 
-        provider = Provider(Account.from_cookies("grok", {"sso": "synthetic"}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("grok", {"sso": "synthetic"}))
         provider._prepare_session = lambda: None
         provider._close_session = lambda: None
         provider.open()
@@ -1225,7 +1231,7 @@ class TestSyncApi(unittest.TestCase):
         operation = MessageOperation(chat, Message("prompt"), executor=provider._execute_stream)
         self.assertEqual(operation.wait_for(OperationEvent.OUTPUT_DELTA).delta, "first")
         second = MessageOperation(chat, Message("second"), executor=provider._execute_stream)
-        with self.assertRaisesRegex(ProviderError, "paused send"):
+        with self.assertRaisesRegex(WebAIProviderError, "paused send"):
             second.start()
         provider.close()
         self.assertTrue(provider.closed)
@@ -1235,7 +1241,7 @@ class TestSyncApi(unittest.TestCase):
     def test_sync_delete_observes_completed_response_before_remote_mutation(self):
         from webaiprovider import Chat, Message, MessageOperation, OutputDelta
 
-        provider = Provider(Account.from_cookies("grok", {}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("grok", {}))
         provider._prepare_session = Mock()
         provider._close_session = Mock()
         delete_started = threading.Event()
@@ -1271,8 +1277,8 @@ class TestSyncApi(unittest.TestCase):
     def test_sync_chat_project_and_stream_run_on_the_caller(self) -> None:
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class RecordingChatGPTProvider(ChatGPTProvider):
-            def __init__(self, account: Account, **options) -> None:
+        class RecordingChatGPTProvider(ChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount, **options) -> None:
                 self.thread_ids: list[int] = []
                 self.memory_share = None
                 super().__init__(account, **options)
@@ -1292,7 +1298,7 @@ class TestSyncApi(unittest.TestCase):
                 self.thread_ids.append(threading.get_ident())
                 yield TextDelta("done")
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         with RecordingChatGPTProvider(account) as provider:
             project = provider.projects.create("Notes", memory_share=False)
             chat = provider.chats.create("Draft", project=project)
@@ -1325,8 +1331,8 @@ class TestSyncApi(unittest.TestCase):
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class RecordingChatGPTProvider(ChatGPTProvider):
-            def __init__(self, account: Account, **options) -> None:
+        class RecordingChatGPTProvider(ChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount, **options) -> None:
                 self.moved: list[tuple[str, str | None]] = []
                 super().__init__(account, **options)
 
@@ -1389,7 +1395,7 @@ class TestSyncApi(unittest.TestCase):
                 del source_project_id
                 self.moved.append((conversation_id, project_id))
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         with RecordingChatGPTProvider(account) as provider:
             self.assertEqual(provider.chats.search("Proj Chat"), [])
             found = provider.chats.search("Proj Chat", include_projects=True)
@@ -1424,10 +1430,10 @@ class TestSyncApi(unittest.TestCase):
 
 class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
     async def test_reauthentication_invalidates_loaded_models_on_both_auth_paths(self) -> None:
-        for provider_type in (AsyncChatGPTProvider, AsyncGrokProvider):
+        for provider_type in (AsyncChatGPTWebAIProvider, AsyncGrokWebAIProvider):
             with self.subTest(provider=provider_type.__name__):
-                name = "chatgpt" if provider_type is AsyncChatGPTProvider else "grok"
-                provider = provider_type(Account.from_cookies(name, {}))
+                name = "chatgpt" if provider_type is AsyncChatGPTWebAIProvider else "grok"
+                provider = provider_type(WebAIAccount.from_cookies(name, {}))
                 provider._prepare_session = AsyncMock()
                 provider._close_session = AsyncMock()
                 provider._authenticate = AsyncMock(
@@ -1445,7 +1451,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(load.await_count, 2)
 
     async def test_project_deletion_uses_the_collection_project_lock(self) -> None:
-        provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
+        provider = AsyncGrokWebAIProvider(WebAIAccount.from_cookies("grok", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         provider._delete_project_data = AsyncMock()
@@ -1462,8 +1468,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         provider._delete_project_data.assert_awaited_once_with("project")
 
     async def test_chatgpt_move_serializes_with_sends_and_applies_the_hook_target(self) -> None:
-        account = Account.from_cookies("chatgpt", {})
-        provider = AsyncChatGPTProvider(account)
+        account = WebAIAccount.from_cookies("chatgpt", {})
+        provider = AsyncChatGPTWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         provider._get_chat_metadata = AsyncMock(
@@ -1508,8 +1514,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConfirmingProvider(AsyncProjectMutationsMixin, AsyncProvider):
-            def __init__(self, account: Account) -> None:
+        class ConfirmingProvider(AsyncProjectMutationsMixin, AsyncWebAIProvider):
+            def __init__(self, account: WebAIAccount) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()
                 self.project = NativeProject(
@@ -1551,7 +1557,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                     )
                 return None
 
-        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
+        account = WebAIAccount.from_cookies("claude", {"sessionKey": "fixture"})
         async with ConfirmingProvider(account) as provider:
             updated = await provider.update_project(
                 replace(provider.project, name="Updated", instructions="New instructions")
@@ -1573,8 +1579,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.project.mutations import AsyncProjectMutationsMixin
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        class ConcurrentProvider(AsyncProjectMutationsMixin, AsyncProvider):
-            def __init__(self, account: Account) -> None:
+        class ConcurrentProvider(AsyncProjectMutationsMixin, AsyncWebAIProvider):
+            def __init__(self, account: WebAIAccount) -> None:
                 super().__init__(account)
                 self._gate = asyncio.Lock()
                 self.remote = NativeProject("project-1", "Research", "Instructions")
@@ -1600,7 +1606,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 self.active_writes -= 1
                 return result
 
-        account = Account.from_cookies("claude", {"sessionKey": "fixture"})
+        account = WebAIAccount.from_cookies("claude", {"sessionKey": "fixture"})
         async with ConcurrentProvider(account) as provider:
             project = provider.projects._new(
                 title=provider.remote.name, remote_id=provider.remote.id
@@ -1632,8 +1638,8 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
 
         deltas = [TextDelta(f"t{i}") for i in range(12)]
 
-        class BufferedStreamProvider(ChatGPTProvider):
-            def __init__(self, account: Account, **options) -> None:
+        class BufferedStreamProvider(ChatGPTWebAIProvider):
+            def __init__(self, account: WebAIAccount, **options) -> None:
                 self.stream_threads: list[int] = []
                 super().__init__(account, **options)
 
@@ -1650,7 +1656,7 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                     yield d
                 yield ResponseComplete()
 
-        account = Account.from_cookies("chatgpt", {"cookie": "test"})
+        account = WebAIAccount.from_cookies("chatgpt", {"cookie": "test"})
         caller = threading.get_ident()
         with BufferedStreamProvider(account) as provider:
             chat = provider.chats.create()
@@ -1670,12 +1676,12 @@ class TestApiOptimizationContracts(unittest.IsolatedAsyncioTestCase):
                 yield TextDelta("d0")
                 yield TextDelta("d1")
                 yield TextDelta("d2")
-                raise ProviderError("stream aborted")
+                raise WebAIProviderError("stream aborted")
 
         with FailingBufferedProvider(account) as provider:
             chat = provider.chats.create()
             collected = []
-            with self.assertRaisesRegex(ProviderError, "stream aborted"):
+            with self.assertRaisesRegex(WebAIProviderError, "stream aborted"):
                 for event in chat.responses.create("hello").stream():
                     collected.append(event)
             self.assertEqual(

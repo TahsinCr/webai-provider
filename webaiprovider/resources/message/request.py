@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from eventflow import AsyncPipeline, Pipeline, PipelineExecutionError
+from flowpipeline import AsyncPipeline, Pipeline, PipelineExecutionError
 
 from ...core.types import OperationContext
 from ...errors import RemoteNotFound, UnsupportedOperationError

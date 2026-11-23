@@ -14,12 +14,12 @@ from ...accounts import delete_session, session_exists
 from ...accounts.credentials import async_read_session
 from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
-from ...async_provider import AsyncProvider
-from ...base import Capability, ProviderType
+from ...async_provider import AsyncWebAIProvider
+from ...base import Capability, WebAIProviderType
 from ...collections import Page
 from ...core.concurrency import maybe_await
 from ...core.timing import current_send_timing
-from ...errors import FeatureUnavailable, ProviderError, RateLimited, RemoteNotFound
+from ...errors import FeatureUnavailable, RateLimited, RemoteNotFound, WebAIProviderError
 from ...resources.chat.collections import AsyncChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
@@ -35,7 +35,7 @@ from .async_client import (
     async_prepare_chatgpt_attachments,
 )
 from .auth import BrowserSession
-from .base import BaseChatGPTClient, BaseChatGPTProvider
+from .base import BaseChatGPTClient, BaseChatGPTWebAIProvider
 from .collections import AsyncChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
 from .errors import ChatGPTAuthenticationError, ChatGPTError
@@ -51,11 +51,11 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
 async def async_confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
-    """Poll a remote resource until removal is confirmed or raise ProviderError."""
+    """Poll a remote resource until removal is confirmed or raise WebAIProviderError."""
     for delay in (0, 0.2, 0.5, 1):
         if delay:
             await asyncio.sleep(delay)
@@ -65,15 +65,15 @@ async def async_confirm_deleted(read: Any, missing: Any = lambda value: False) -
             return
         if missing(value):
             return
-    raise ProviderError(
+    raise WebAIProviderError(
         "Deletion could not be confirmed by the server; the local record was preserved. Sync before retrying."
     )
 
 
-class AsyncChatGPTProvider(
+class AsyncChatGPTWebAIProvider(
     AsyncProjectMutationsMixin,
-    AsyncProvider[AsyncChatsCollection[AsyncChatGPTChat], AsyncChatGPTProjectsCollection],
-    BaseChatGPTProvider,
+    AsyncWebAIProvider[AsyncChatsCollection[AsyncChatGPTChat], AsyncChatGPTProjectsCollection],
+    BaseChatGPTWebAIProvider,
 ):
     _chat_page_size = DEFAULT_PAGE_SIZE
     _chat_initial_page_floor = 100
@@ -91,9 +91,9 @@ class AsyncChatGPTProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         session: BrowserSession | None = None,
         client_factory: Callable[..., Any] | None = None,
         transport: AsyncTransport | None = None,
@@ -493,7 +493,7 @@ class AsyncChatGPTProvider(
                     )
             except asyncio.CancelledError:
                 raise
-            except ProviderError as error:
+            except WebAIProviderError as error:
                 publish(("error", error))
             except Exception:
                 publish(

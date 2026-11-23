@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import ClassVar
 
-from ...errors import AccountPaused, ProviderError
+from ...errors import AccountPaused, WebAIProviderError
 from ...resources.model.model import (
     EffortOption,
     EffortRef,
@@ -85,7 +85,7 @@ class GeminiModels(StaticModelCatalog):
 
 def parse_model_catalog(status, rpc_response) -> tuple[Model, ...]:
     if not isinstance(status, dict):
-        raise ProviderError("Gemini model policy could not be retrieved")
+        raise WebAIProviderError("Gemini model policy could not be retrieved")
     parts = list(rpc_parts(rpc_response, "otAQ7b"))
     if len(parts) != 1 or rpc_value(parts[0], 14) == 1016:
         raise AccountPaused("Gemini account could not be verified; guest mode was not used")

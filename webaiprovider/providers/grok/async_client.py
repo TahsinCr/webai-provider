@@ -7,7 +7,7 @@ import mimetypes
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ...errors import AccountPaused, ProviderError
+from ...errors import AccountPaused, WebAIProviderError
 from ...resources.project.types import ProjectData
 from ...transport import AsyncHttpSession
 from ...transport.frames import SSEFrameDecoder, aiter_bounded_lines
@@ -170,7 +170,7 @@ class AsyncGrokProjectEditor(BaseGrokProjectEditor):
                             "/rest/workspaces/" + remote_id(project_id) + conversation_path,
                         )
                     except Exception:
-                        raise ProviderError(
+                        raise WebAIProviderError(
                             "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
                         ) from None
                 raise
@@ -179,7 +179,7 @@ class AsyncGrokProjectEditor(BaseGrokProjectEditor):
             if (updated.project.id if updated.project is not None else None) == project_id:
                 return
             await asyncio.sleep(0.1)
-        raise ProviderError(
+        raise WebAIProviderError(
             "Grok conversation project membership could not be confirmed by the server"
         )
 

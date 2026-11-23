@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 
 from ...core.json import json_loads
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from .errors import GeminiCompatibilityError
 from .notebooks import notebook_id
 
@@ -57,7 +57,9 @@ def decode_rpc_response(response, rpc, allow_empty):
                 if row[2] is None:
                     if allow_empty:
                         return []
-                    raise ProviderError("Gemini denied permission or the RPC contract changed.")
+                    raise WebAIProviderError(
+                        "Gemini denied permission or the RPC contract changed."
+                    )
                 try:
                     parts.append(json_loads(row[2]))
                 except (ValueError, TypeError) as error:
@@ -65,7 +67,7 @@ def decode_rpc_response(response, rpc, allow_empty):
                         "Gemini notebook RPC response changed"
                     ) from error
     if not parts:
-        raise ProviderError("Gemini notebook RPC response changed")
+        raise WebAIProviderError("Gemini notebook RPC response changed")
     return parts
 
 

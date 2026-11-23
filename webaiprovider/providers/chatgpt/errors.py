@@ -1,7 +1,7 @@
-from ...errors import AuthenticationError, ProviderError
+from ...errors import AuthenticationError, WebAIProviderError
 
 
-class ChatGPTError(ProviderError):
+class ChatGPTError(WebAIProviderError):
     code = "chatgpt_error"
 
 

@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 from ...accounts import read_session
 from ...accounts.status import SessionState, SessionStatus
-from ...base import ProviderType
+from ...base import WebAIProviderType
 from ...collections import Page
-from ...provider import Provider
+from ...provider import WebAIProvider
 from ...resources.chat.collections import ChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
@@ -18,7 +18,7 @@ from ...resources.project.collections import ProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import Transport
-from .base import BaseClaudeProvider, remote_id
+from .base import BaseClaudeWebAIProvider, remote_id
 from .client import ClaudeClient, ClaudeProjectEditor, iter_stream_response
 from .records import conversation, conversation_attachment_count, project
 from .resources import (
@@ -32,13 +32,13 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class ClaudeProvider(
+class ClaudeWebAIProvider(
     ProjectMutationsMixin,
-    Provider[ChatsCollection[ClaudeChat], ProjectsCollection[ClaudeProject]],
-    BaseClaudeProvider,
+    WebAIProvider[ChatsCollection[ClaudeChat], ProjectsCollection[ClaudeProject]],
+    BaseClaudeWebAIProvider,
 ):
     _message_type = ClaudeMessage
     _response_type = ClaudeResponse
@@ -54,9 +54,9 @@ class ClaudeProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         transport: Transport | None = None,
     ) -> None:
         super().__init__(account, type=type, transport=transport)

@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from ...collections import BaseCollection
-from ...errors import ProviderError, RemoteNotFound
+from ...errors import RemoteNotFound, WebAIProviderError
 
 if TYPE_CHECKING:
     from .model import EffortRef, ModelCatalog, ModelRef, ModelSelection
@@ -51,7 +51,7 @@ def _model_refs_from_catalog(provider: str, catalog: ModelCatalog) -> list[Model
     from .model import EffortRef, EffortSet, ModelCatalog, ModelRef
 
     if not isinstance(catalog, ModelCatalog):
-        raise ProviderError("Provider returned an invalid model catalog")
+        raise WebAIProviderError("Provider returned an invalid model catalog")
     default_model = catalog.default_chat_model
     result: list[ModelRef] = []
     for rank, model in enumerate(catalog.chat_models):

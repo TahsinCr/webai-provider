@@ -2,7 +2,7 @@
 
 import re
 
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
@@ -285,7 +285,7 @@ def action_target(history: dict, message_id: str, action: MessageAction) -> Mess
     role = "user" if action == MessageAction.EDIT else "assistant"
     try:
         return target_message(messages, message_id, role)[1]
-    except ProviderError:
+    except WebAIProviderError:
         if any(item.id == message_id for item in messages):
             raise
         if native_id is not None:

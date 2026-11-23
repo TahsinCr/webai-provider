@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager, contextmanager
 from functools import partial
 from types import SimpleNamespace
 
-from webaiprovider import Account, Provider
+from webaiprovider import WebAIAccount, WebAIProvider
 from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport
 from webaiprovider.transport.frames import JSPBFrameDecoder, SSEFrameDecoder
 
@@ -80,7 +80,7 @@ def _provider_stream(loops: int) -> float:
     def offline_session():
         pass
 
-    provider = Provider(Account.from_cookies("claude", {}), transport=transport)
+    provider = WebAIProvider(WebAIAccount.from_cookies("claude", {}), transport=transport)
     provider._prepare_session = offline_session
     provider._close_session = offline_session
 

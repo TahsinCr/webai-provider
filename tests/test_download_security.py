@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import Mock, patch
 
-from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.errors import UnsupportedOperationError, WebAIProviderError
 from webaiprovider.transport.downloader import (
     DownloadSource,
     NativeDownloadClient,
@@ -96,13 +96,13 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await async_download_source(success), b"ab")
 
         failure = DownloadSource("https://files.example/test", client_factory=lambda: Client(403))
-        with self.assertRaisesRegex(ProviderError, "HTTP 403"):
+        with self.assertRaisesRegex(WebAIProviderError, "HTTP 403"):
             await async_download_source(failure)
 
     async def test_download_rejects_custom_transport_outside_native_boundary(self):
         source = DownloadSource("https://files.example/test", client_factory=object)
 
-        with self.assertRaisesRegex(ProviderError, "unsupported download transport"):
+        with self.assertRaisesRegex(WebAIProviderError, "unsupported download transport"):
             await async_download_source(source)
 
     def test_sensitive_cookie_values_are_validated(self):
@@ -171,7 +171,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.transport.downloader._has_ipv6_connectivity", return_value=False),
         ):
             oversized = DownloadSource("https://files.example/huge.bin?sig=secret")
-            with self.assertRaisesRegex(ProviderError, "exceeds size limit") as ctx:
+            with self.assertRaisesRegex(WebAIProviderError, "exceeds size limit") as ctx:
                 await async_download_source(oversized, max_bytes=8)
             self.assertNotIn("secret", str(ctx.exception))
 
@@ -187,7 +187,7 @@ class DownloadSourceTests(unittest.IsolatedAsyncioTestCase):
             patch("webaiprovider.transport.downloader._has_ipv6_connectivity", return_value=False),
         ):
             failing = DownloadSource("https://files.example/blob?sig=topsecret")
-            with self.assertRaisesRegex(ProviderError, "File transfer failed") as ctx:
+            with self.assertRaisesRegex(WebAIProviderError, "File transfer failed") as ctx:
                 await async_download_source(failing)
             self.assertNotIn("topsecret", str(ctx.exception))
 

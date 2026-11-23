@@ -21,7 +21,7 @@ _CLEANUP_RATE_LIMIT = "The provider rate limited cleanup; the journal was retain
 
 
 def _provider_http_status(exc: Exception) -> str | None:
-    if type(exc).__name__ == "ProviderError":
+    if type(exc).__name__ == "WebAIProviderError":
         match = re.fullmatch(
             r"Provider request failed \(HTTP ([0-9]{3})\)|"
             r"Provider denied access \(HTTP (403)\); the request was not retried",
@@ -46,7 +46,7 @@ def _safe_error_label(exc: Exception) -> str:
     if status := _provider_http_status(exc):
         return f"{kind} (HTTP {status})"
     if (
-        kind == "ProviderError"
+        kind == "WebAIProviderError"
         and str(exc) == "Claude workspace selection is invalid; reverify the account"
     ):
         return "Claude workspace selection could not be verified"
@@ -305,7 +305,7 @@ class LiveContext:
             raise error
 
     def _cleanup_one_steps(self, entry: dict[str, Any], call_fn) -> Iterator[Any]:
-        from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
+        from webaiprovider.errors import RateLimited, RemoteNotFound, WebAIProviderError
 
         kind = entry["kind"]
         if kind not in {"chat", "project"}:
@@ -357,14 +357,14 @@ class LiveContext:
             remote = yield call_fn(
                 f"cleanup.get_{kind}",
                 lambda: get_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
+                expected_errors=(WebAIProviderError,),
             )
         except RemoteNotFound:
             self._remove_entry(entry)
             return
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
+        except WebAIProviderError:
             remote = yield from listed_remote_steps()
         if remote is None:
             self._remove_entry(entry)
@@ -390,11 +390,11 @@ class LiveContext:
             yield call_fn(
                 f"cleanup.delete_{kind}",
                 lambda: delete_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
+                expected_errors=(WebAIProviderError,),
             )
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
+        except WebAIProviderError:
             delete_uncertain = True
         if not delete_uncertain:
             self._remove_entry(entry)
@@ -403,13 +403,13 @@ class LiveContext:
             remaining = yield call_fn(
                 f"cleanup.verify_{kind}_deleted",
                 lambda: get_remote(str(remote_id)),
-                expected_errors=(ProviderError,),
+                expected_errors=(WebAIProviderError,),
             )
         except RemoteNotFound:
             remaining = None
         except RateLimited:
             raise CleanupError(_CLEANUP_RATE_LIMIT) from None
-        except ProviderError:
+        except WebAIProviderError:
             remaining = yield from listed_remote_steps()
         if remaining is not None:
             raise CleanupError("The provider did not confirm deletion of a temporary object")

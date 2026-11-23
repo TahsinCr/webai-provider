@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..core.json import json_loads
 from ..core.timing import _STREAM_PAUSED
-from ..errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
+from ..errors import AccountPaused, RateLimited, RemoteNotFound, WebAIProviderError
 from .retry import parse_retry_after
 
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -130,7 +130,7 @@ class _AsyncStreamResponse:
             async for chunk in self._chunks:
                 self._total_bytes += len(chunk)
                 if self._limit is not None and self._total_bytes > self._limit:
-                    raise ProviderError("Transport stream exceeds the size limit")
+                    raise WebAIProviderError("Transport stream exceeds the size limit")
                 yield chunk
         finally:
             self._reading = False
@@ -170,7 +170,7 @@ class _StreamResponse:
                     continue
                 self._total_bytes += len(chunk)
                 if self._limit is not None and self._total_bytes > self._limit:
-                    raise ProviderError("Transport stream exceeds the size limit")
+                    raise WebAIProviderError("Transport stream exceeds the size limit")
                 yield chunk
         finally:
             self._reading = False
@@ -260,7 +260,9 @@ class _TransportPolicy:
         if code == 401 or code in (301, 302, 303, 307, 308):
             raise AccountPaused("Provider session expired or redirected; verify the account")
         if code == 403:
-            raise ProviderError("Provider denied access (HTTP 403); the request was not retried")
+            raise WebAIProviderError(
+                "Provider denied access (HTTP 403); the request was not retried"
+            )
         if code == 404:
             raise RemoteNotFound("Remote record was not found")
         if code == 429:
@@ -269,7 +271,7 @@ class _TransportPolicy:
                 message_submitted=False,
             )
         if not 200 <= code < 300:
-            raise ProviderError(f"Provider request failed (HTTP {code})")
+            raise WebAIProviderError(f"Provider request failed (HTTP {code})")
 
     def record_rate_limit(self, retry_after: float | None) -> None:
         """Record a positive finite rate-limit deadline on this transport."""
@@ -293,7 +295,7 @@ class _TransportPolicy:
 
     def _check_size(self, response):
         if len(response.content) > self.config.max_response_bytes:
-            raise ProviderError("Provider response exceeds the size limit")
+            raise WebAIProviderError("Provider response exceeds the size limit")
 
     @staticmethod
     def _header(headers, name: str):
@@ -314,7 +316,7 @@ class _TransportPolicy:
         except (TypeError, ValueError):
             return
         if length > self.config.max_response_bytes:
-            raise ProviderError("Provider response exceeds the size limit")
+            raise WebAIProviderError("Provider response exceeds the size limit")
 
 
 class AsyncTransport(_TransportPolicy, ABC):
@@ -337,7 +339,7 @@ class AsyncTransport(_TransportPolicy, ABC):
                 return await asyncio.to_thread(response.json)
             return response.json()
         except ValueError:
-            raise ProviderError("Provider response format has changed") from None
+            raise WebAIProviderError("Provider response format has changed") from None
 
     @abstractmethod
     async def close(self): ...
@@ -361,7 +363,7 @@ class Transport(_TransportPolicy, ABC):
         try:
             return response.json()
         except ValueError:
-            raise ProviderError("Provider response format has changed") from None
+            raise WebAIProviderError("Provider response format has changed") from None
 
     @abstractmethod
     def close(self): ...

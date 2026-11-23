@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 
-from eventflow import EventEnvelope, EventFilter
+from flowevent import EventEnvelope, EventFilter
 
-from webaiprovider import Account, AsyncProvider, Capability, ProviderType
+from webaiprovider import AsyncWebAIProvider, Capability, WebAIAccount, WebAIProviderType
 from webaiprovider.collections import Page
 from webaiprovider.core.concurrency import gather_bounded
 from webaiprovider.resources.chat.types import Conversation
@@ -16,11 +16,11 @@ from webaiprovider.resources.project.types import ProjectData
 from ._runner import Case, async_case, time_async
 
 
-class _PagedProvider(AsyncProvider):
+class _PagedProvider(AsyncWebAIProvider):
     capabilities = frozenset({Capability.CHAT, Capability.PROJECTS})
 
     def __init__(self, count: int) -> None:
-        super().__init__(Account.from_cookies(ProviderType.CHATGPT, {}))
+        super().__init__(WebAIAccount.from_cookies(WebAIProviderType.CHATGPT, {}))
         self.records = tuple(Conversation(str(index), f"Chat {index}") for index in range(count))
         self.project_records = tuple(ProjectData(f"p{index}", "Project") for index in range(8))
 

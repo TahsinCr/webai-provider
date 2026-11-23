@@ -16,20 +16,20 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from tests.fakes import FakeHTTPClient, FakeHTTPResponse
 from webaiprovider import (
-    Account,
-    AsyncProvider,
+    AsyncWebAIProvider,
     OperationEvent,
-    Provider,
-    ProviderType,
+    WebAIAccount,
+    WebAIProvider,
+    WebAIProviderType,
 )
 from webaiprovider.accounts import save_session
 from webaiprovider.core.timing import SendTiming
-from webaiprovider.errors import AccountPaused, ProviderError, RateLimited, RemoteNotFound
-from webaiprovider.providers.chatgpt import AsyncChatGPTProvider, BrowserSession
+from webaiprovider.errors import AccountPaused, RateLimited, RemoteNotFound, WebAIProviderError
+from webaiprovider.providers.chatgpt import AsyncChatGPTWebAIProvider, BrowserSession
 from webaiprovider.providers.chatgpt.async_client import AsyncChatGPTClient as ChatGPTClient
-from webaiprovider.providers.claude import AsyncClaudeProvider
-from webaiprovider.providers.gemini import AsyncGeminiProvider
-from webaiprovider.providers.grok import AsyncGrokProvider
+from webaiprovider.providers.claude import AsyncClaudeWebAIProvider
+from webaiprovider.providers.gemini import AsyncGeminiWebAIProvider
+from webaiprovider.providers.grok import AsyncGrokWebAIProvider
 from webaiprovider.resources.message.protocol import (
     ProviderRequest,
     ProviderStreamEvent,
@@ -101,7 +101,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with transport.stream("GET", "/fixture") as stream:
                 for delegate in (False, True):
-                    with self.assertRaisesRegex(ProviderError, "active HTTP call"):
+                    with self.assertRaisesRegex(WebAIProviderError, "active HTTP call"):
                         if delegate:
                             await asyncio.wait_for(
                                 asyncio.create_task(transport.close()), timeout=1
@@ -203,8 +203,8 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         await transport.close()
 
     async def test_custom_implementation_uses_public_events_and_the_shared_operation_pipeline(self):
-        class CustomProvider(AsyncProvider):
-            provider_type = ProviderType.GROK
+        class CustomProvider(AsyncWebAIProvider):
+            provider_type = WebAIProviderType.GROK
 
             async def _stream_provider_events(self, request: ProviderRequest):
                 payload = await self.transport.request(
@@ -219,7 +219,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         )
         transport = AsyncHTTPTransport("https://grok.com", client_factory=lambda **_: client)
         async with CustomProvider(
-            Account.from_cookies("grok", {}), transport=transport
+            WebAIAccount.from_cookies("grok", {}), transport=transport
         ) as provider:
             chat = await provider.chats.create()
             operation = chat.responses.create("question")
@@ -319,7 +319,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 loop_getter.return_value.getaddrinfo = AsyncMock(
                     side_effect=socket.gaierror("offline")
                 )
-                with self.assertRaisesRegex(ProviderError, "Provider host resolution failed"):
+                with self.assertRaisesRegex(WebAIProviderError, "Provider host resolution failed"):
                     await short_transport.send("GET", "/fixture")
         finally:
             await session.close()
@@ -422,7 +422,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.kwargs["headers"]["authorization"], "fixture")
         self.assertFalse(call.kwargs["allow_redirects"])
         client.request.return_value = FakeHTTPResponse(503)
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await transport.send("POST", "/api/test")
         self.assertEqual(client.request.await_count, 2)
 
@@ -477,7 +477,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(entered.wait(), 1)
                 if not oversized:
                     task.cancel()
-                with self.assertRaises(ProviderError if oversized else asyncio.CancelledError):
+                with self.assertRaises(WebAIProviderError if oversized else asyncio.CancelledError):
                     await asyncio.wait_for(task, 1)
                 self.assertTrue(released.is_set())
 
@@ -515,7 +515,7 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                     client_getter=lambda: SimpleNamespace(stream=stream),
                     config=TransportConfig(max_response_bytes=5),
                 )
-                with self.assertRaisesRegex(ProviderError, "size limit"):
+                with self.assertRaisesRegex(WebAIProviderError, "size limit"):
                     await transport.send("POST", "/fixture")
                 self.assertEqual(reads, expected_reads)
                 self.assertEqual(opens, 1)
@@ -523,14 +523,14 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_specific_facades_track_requests_on_the_injected_transport(self):
         for provider_type, origin, cls in (
-            ("chatgpt", "https://chatgpt.com", AsyncChatGPTProvider),
-            ("claude", "https://claude.ai", AsyncClaudeProvider),
-            ("gemini", "https://gemini.google.com", AsyncGeminiProvider),
-            ("grok", "https://grok.com", AsyncGrokProvider),
+            ("chatgpt", "https://chatgpt.com", AsyncChatGPTWebAIProvider),
+            ("claude", "https://claude.ai", AsyncClaudeWebAIProvider),
+            ("gemini", "https://gemini.google.com", AsyncGeminiWebAIProvider),
+            ("grok", "https://grok.com", AsyncGrokWebAIProvider),
         ):
             with self.subTest(provider=provider_type):
                 transport, client = self.transport(origin)
-                provider = cls(Account.from_cookies(provider_type, {}), transport=transport)
+                provider = cls(WebAIAccount.from_cookies(provider_type, {}), transport=transport)
                 provider._prepare_session = AsyncMock()
                 provider._close_session = AsyncMock(side_effect=[RuntimeError("cleanup"), None])
                 await provider.open()
@@ -540,20 +540,20 @@ class AsyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 await view.request("GET", "/fixture")
                 with self.assertRaisesRegex(RuntimeError, "cleanup"):
                     await provider.close()
-                with self.assertRaisesRegex(ProviderError, "cleanup failed"):
+                with self.assertRaisesRegex(WebAIProviderError, "cleanup failed"):
                     await view.request("GET", "/fixture")
                 client.request.assert_awaited_once()
 
     async def test_provider_transport_injection_rejects_a_foreign_origin(self):
         transport, client = self.transport("https://other.test")
         for provider_id, cls in (
-            ("chatgpt", AsyncChatGPTProvider),
-            ("claude", AsyncClaudeProvider),
-            ("gemini", AsyncGeminiProvider),
-            ("grok", AsyncGrokProvider),
+            ("chatgpt", AsyncChatGPTWebAIProvider),
+            ("claude", AsyncClaudeWebAIProvider),
+            ("gemini", AsyncGeminiWebAIProvider),
+            ("grok", AsyncGrokWebAIProvider),
         ):
             with self.subTest(provider=provider_id), self.assertRaises(ValueError):
-                cls(Account.from_cookies(provider_id, {}), transport=transport)
+                cls(WebAIAccount.from_cookies(provider_id, {}), transport=transport)
         client.request.assert_not_awaited()
 
 
@@ -613,7 +613,7 @@ class BlockingTransportTests(unittest.TestCase):
 
         def read():
             with transport.stream("GET", "/fixture") as stream:
-                with self.assertRaisesRegex(ProviderError, "active HTTP call"):
+                with self.assertRaisesRegex(WebAIProviderError, "active HTTP call"):
                     transport.close()
                 active.set()
                 self.assertTrue(release.wait(2))
@@ -637,7 +637,7 @@ class BlockingTransportTests(unittest.TestCase):
         self.assertEqual(order, ["stream", "client"])
 
     def test_provider_shutdown_waits_for_raw_transport_calls(self):
-        class FixtureProvider(Provider):
+        class FixtureProvider(WebAIProvider):
             pass
 
         for operation in ("send", "request", "stream"):
@@ -661,7 +661,7 @@ class BlockingTransportTests(unittest.TestCase):
 
                 transport = HTTPTransport("https://claude.ai", client_factory=lambda **_: Client())
                 provider = FixtureProvider(
-                    Account.from_cookies("claude", {}), transport=transport
+                    WebAIAccount.from_cookies("claude", {}), transport=transport
                 ).open()
                 self.addCleanup(provider.close)
 
@@ -727,7 +727,7 @@ class BlockingTransportTests(unittest.TestCase):
         transport = HTTPTransport(
             "https://chatgpt.com", client_getter=lambda: SimpleNamespace(stream=open_stream)
         )
-        provider = Provider(Account.from_cookies("chatgpt", {}), transport=transport)
+        provider = WebAIProvider(WebAIAccount.from_cookies("chatgpt", {}), transport=transport)
         provider._prepare_session = Mock()
         provider._close_session = Mock()
         provider.open()
@@ -809,7 +809,7 @@ class BlockingTransportTests(unittest.TestCase):
                     ) as transport,
                 ):
                     self.assertEqual(transport.send("GET", "/ok").content, b"ok")
-                    with self.assertRaisesRegex(ProviderError, "size limit"):
+                    with self.assertRaisesRegex(WebAIProviderError, "size limit"):
                         transport.send("GET", "/large")
                     with self.assertRaises(Timeout):
                         transport.send("GET", "/stall", timeout=0.1)
@@ -972,7 +972,7 @@ class BlockingTransportTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 204)
                         self.assertEqual(list(response.iter_bytes()), [])
                     with transport.stream("GET", "/overflow") as response:
-                        with self.assertRaisesRegex(ProviderError, "size limit"):
+                        with self.assertRaisesRegex(WebAIProviderError, "size limit"):
                             list(response.iter_bytes())
                     with self.assertRaises(AccountPaused), transport.stream("GET", "/redirect"):
                         self.fail("Redirect was exposed to the consumer")
@@ -996,7 +996,9 @@ class BlockingTransportTests(unittest.TestCase):
                 transport = HTTPTransport(
                     origin, client_getter=lambda: SimpleNamespace(request=request)
                 )
-                provider = Provider(Account.from_cookies(provider_type, {}), transport=transport)
+                provider = WebAIProvider(
+                    WebAIAccount.from_cookies(provider_type, {}), transport=transport
+                )
                 provider._prepare_session = Mock()
                 provider._close_session = Mock()
                 with provider:
@@ -1064,7 +1066,7 @@ class BlockingTransportTests(unittest.TestCase):
             "https://claude.ai",
             client_getter=lambda: SimpleNamespace(stream=stream),
         )
-        provider = Provider(Account.from_cookies("claude", {}), transport=transport)
+        provider = WebAIProvider(WebAIAccount.from_cookies("claude", {}), transport=transport)
         provider._prepare_session = Mock()
         provider._close_session = Mock()
         with provider:
@@ -1094,7 +1096,7 @@ class BlockingTransportTests(unittest.TestCase):
                 client_getter=lambda: client,
                 config=TransportConfig(max_response_bytes=3),
             )
-            with self.assertRaisesRegex(ProviderError, "size limit"):
+            with self.assertRaisesRegex(WebAIProviderError, "size limit"):
                 transport.send("POST", "/fixture")
             self.assertEqual(len(requests), 1)
 
@@ -1474,7 +1476,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(AccountPaused):
                 session.check(FakeHTTPResponse(302))
 
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 session.check(FakeHTTPResponse(403))
 
             with self.assertRaises(RemoteNotFound):

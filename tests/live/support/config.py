@@ -339,10 +339,10 @@ def load_or_import_account(
 
         account_alias = alias or "default-browser"
         try:
-            from webaiprovider.accounts.account import Account
+            from webaiprovider.accounts.account import WebAIAccount
             from webaiprovider.accounts.filters import ProviderCookieFilter
 
-            account = Account.from_browser(
+            account = WebAIAccount.from_browser(
                 provider,
                 browser=browser,
                 id=account_alias,

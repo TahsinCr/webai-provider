@@ -18,9 +18,9 @@ from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
 from ...errors import (
     FeatureUnavailable,
-    ProviderError,
     RemoteNotFound,
     UnsupportedOperationError,
+    WebAIProviderError,
 )
 from ...transport.downloader import DownloadSource, async_download_source, download_source
 from ..message.attachment import Attachment
@@ -29,8 +29,8 @@ from .project import AsyncProject, Project, _is_project_attachment
 from .types import ProjectData as ProviderProject
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
+    from ...async_provider import AsyncWebAIProvider
+    from ...provider import WebAIProvider
 
 
 _ProjectT = TypeVar("_ProjectT", bound=Project, covariant=True)
@@ -60,7 +60,7 @@ class _BaseProjectsCollection:
         if not isinstance(page, Page) or any(
             not isinstance(item, ProviderProject) for item in page.items
         ):
-            raise ProviderError("Provider returned an invalid project page")
+            raise WebAIProviderError("Provider returned an invalid project page")
         return Page(tuple(self._from_data(item) for item in page.items), page.next_cursor)
 
     def _check_owned_project(self, project: Any) -> Any:
@@ -86,7 +86,7 @@ class _BaseProjectsCollection:
 
 class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_AsyncProjectT]):
     def __init__(
-        self, provider: AsyncProvider[Any, Any], build: Callable[..., _AsyncProjectT]
+        self, provider: AsyncWebAIProvider[Any, Any], build: Callable[..., _AsyncProjectT]
     ) -> None:
         self.provider = provider
         self._build = build
@@ -269,7 +269,7 @@ class AsyncProjectsCollection(_BaseProjectsCollection, AsyncRemoteCollection[_As
 
 
 class ProjectsCollection(_BaseProjectsCollection, RemoteCollection[_ProjectT]):
-    def __init__(self, provider: Provider[Any, Any], build: Callable[..., _ProjectT]) -> None:
+    def __init__(self, provider: WebAIProvider[Any, Any], build: Callable[..., _ProjectT]) -> None:
         self.provider = provider
         self._build = build
         self.hooks = OperationHooks()
@@ -507,7 +507,7 @@ class _BaseProjectAttachments:
 
     def _apply_loaded_project(self, remote: Any) -> None:
         if not isinstance(remote, ProviderProject):
-            raise ProviderError("Provider returned an invalid project")
+            raise WebAIProviderError("Provider returned an invalid project")
         self.project._apply_provider_project(remote, replace_resources=True)
 
     def _coerce_add_input(
@@ -610,13 +610,13 @@ class _BaseProjectAttachments:
         send_options: dict[str, Any],
     ) -> Attachment:
         if not isinstance(updated, ProviderProject):
-            raise ProviderError("Provider returned an invalid project")
+            raise WebAIProviderError("Provider returned an invalid project")
         added = [r for r in updated.resources if r.id not in known_ids]
         expected_name = send_options.get("name") or os.path.basename(send_options.get("path", ""))
         matching = [r for r in added if r.name == expected_name]
         resource = matching[-1] if matching else added[0] if len(added) == 1 else None
         if resource is None:
-            raise ProviderError("Provider did not confirm the created project attachment")
+            raise WebAIProviderError("Provider did not confirm the created project attachment")
         result = _merge_attachment(self._attachment_type, local, resource)
         result.metadata.setdefault("kind", kind)
         self.project._apply_provider_project(updated, replace_resources=True)
@@ -638,7 +638,7 @@ class _BaseProjectAttachments:
         created: Any,
     ) -> list[Attachment]:
         if not isinstance(created, list) or len(created) != len(coerced):
-            raise ProviderError("Provider did not confirm all created project attachments")
+            raise WebAIProviderError("Provider did not confirm all created project attachments")
         results: list[Attachment] = []
         for (kind, local, _send_options), resource in zip(coerced, created, strict=True):
             merged = _merge_attachment(self._attachment_type, local, resource)
@@ -772,7 +772,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
                 self._items.append(local)
                 return local
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             async with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
                 known_ids = self._known_resource_ids()
@@ -855,7 +855,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         async def perform_remove() -> None:
             if self.project.remote_id:
                 if provider is None:
-                    raise ProviderError("Project is not attached to an open provider")
+                    raise WebAIProviderError("Project is not attached to an open provider")
                 async with provider._activity(), provider._project_lock(self.project.remote_id):
                     provider._require_provider()
                     if not any(item.id == file_id for item in self._items):
@@ -957,7 +957,7 @@ class AsyncProjectAttachments(_BaseProjectAttachments, AsyncRemoteCollection[Att
         provider = self.project.provider
         if item.remote_url and self.project.remote_id:
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             async with provider._activity():
                 provider._require_provider()
                 source: DownloadSource | None = await provider._resolve_download_data(
@@ -1032,7 +1032,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
                 self._items.append(local)
                 return local
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             with provider._activity(), provider._project_lock(self.project.remote_id):
                 provider._require_provider()
                 known_ids = self._known_resource_ids()
@@ -1115,7 +1115,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         def perform_remove() -> None:
             if self.project.remote_id:
                 if provider is None:
-                    raise ProviderError("Project is not attached to an open provider")
+                    raise WebAIProviderError("Project is not attached to an open provider")
                 with provider._activity(), provider._project_lock(self.project.remote_id):
                     provider._require_provider()
                     if not any(item.id == file_id for item in self._items):
@@ -1217,7 +1217,7 @@ class ProjectAttachments(_BaseProjectAttachments, RemoteCollection[Attachment]):
         provider = self.project.provider
         if item.remote_url and self.project.remote_id:
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             with provider._activity():
                 provider._require_provider()
                 source: DownloadSource | None = provider._resolve_download_data(item.remote_url)

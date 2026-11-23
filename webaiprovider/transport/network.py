@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 from ..core.cache import BoundedCache
-from ..errors import ProviderError
+from ..errors import WebAIProviderError
 
 
 def curl_cookie_jar(cookies: Mapping[str, str]):
@@ -163,7 +163,7 @@ def _validate_ip_literal(hostname: str) -> None:
 def _extract_and_validate_ips(hostname: str, records) -> tuple[str, ...]:
     addresses = list(dict.fromkeys(record[4][0].split("%", 1)[0] for record in records))
     if not addresses:
-        raise ProviderError("Provider host resolution failed")
+        raise WebAIProviderError("Provider host resolution failed")
     addresses.sort(key=lambda addr: ":" in addr)
     return _validate_resolved_ips(hostname, addresses)
 
@@ -177,7 +177,7 @@ def _resolve_host_ips(hostname: str, port: int, *, use_ipv6: bool) -> tuple[str,
     try:
         records = socket.getaddrinfo(hostname, port, family=family, type=socket.SOCK_STREAM)
     except OSError:
-        raise ProviderError("Provider host resolution failed") from None
+        raise WebAIProviderError("Provider host resolution failed") from None
     validated = _extract_and_validate_ips(hostname, records)
     _DNS_CACHE.put(key, validated)
     return validated

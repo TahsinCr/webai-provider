@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from io import BytesIO
 
 from ..core.timing import current_send_timing
-from ..errors import ProviderError
+from ..errors import WebAIProviderError
 from . import network
 from .base import AsyncTransport, _AsyncStreamResponse, _BufferedResponse
 from .network import (
@@ -59,7 +59,7 @@ async def _async_resolve_host_ips(
 
         raise CurlTimeout(f"Resolving timed out after {int(timeout * 1000)} ms") from None
     except OSError:
-        raise ProviderError("Provider host resolution failed") from None
+        raise WebAIProviderError("Provider host resolution failed") from None
     validated = _extract_and_validate_ips(hostname, records)
     network._DNS_CACHE.put(key, validated)
     return validated
@@ -234,7 +234,7 @@ class AsyncHTTPTransport(AsyncTransport):
             response, "aiter_bytes", None
         )
         if not callable(iterator):
-            raise ProviderError("Provider response cannot be streamed")
+            raise WebAIProviderError("Provider response cannot be streamed")
         first = b""
         buffer = None
         limit = self.config.max_response_bytes
@@ -242,7 +242,7 @@ class AsyncHTTPTransport(AsyncTransport):
         async for chunk in iterator():
             total += len(chunk)
             if total > limit:
-                raise ProviderError("Provider response exceeds the size limit")
+                raise WebAIProviderError("Provider response exceeds the size limit")
             if chunk:
                 if not first:
                     first = bytes(chunk)
@@ -311,7 +311,7 @@ class AsyncHTTPTransport(AsyncTransport):
                         await stack.aclose()
                     finally:
                         await self._release_client(client)
-            raise ProviderError("Provider request could not be completed")
+            raise WebAIProviderError("Provider request could not be completed")
         finally:
             await self._after()
 
@@ -398,7 +398,7 @@ class AsyncHTTPTransport(AsyncTransport):
 
     async def close(self):
         if self._request_context.get() in self._active_requests:
-            raise ProviderError("Cannot close the transport from an active HTTP call")
+            raise WebAIProviderError("Cannot close the transport from an active HTTP call")
         async with self._close_lock:
             await self._idle.wait()
             cleanup = asyncio.create_task(self._close_clients())

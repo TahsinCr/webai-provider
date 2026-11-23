@@ -18,8 +18,8 @@ from .resolver import SelectionResolver
 from .types import Models
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
+    from ...async_provider import AsyncWebAIProvider
+    from ...provider import WebAIProvider
 
 MODEL_CATALOG_TTL = 300.0
 
@@ -57,7 +57,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         self,
         loader: Callable[[bool], Awaitable[list[ModelRef]]],
         *,
-        provider: AsyncProvider[Any, Any] | None = None,
+        provider: AsyncWebAIProvider[Any, Any] | None = None,
         ttl: float | None = MODEL_CATALOG_TTL,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -151,7 +151,7 @@ class ModelsCollection(RemoteCollection[ModelRef]):
         self,
         loader: Callable[[bool], list[ModelRef]],
         *,
-        provider: Provider[Any, Any] | None = None,
+        provider: WebAIProvider[Any, Any] | None = None,
         ttl: float | None = MODEL_CATALOG_TTL,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:

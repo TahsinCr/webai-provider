@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from ...core.timing import _STREAM_PAUSED, _StreamPause
-from ...errors import AccountPaused, ProviderError
+from ...errors import AccountPaused, WebAIProviderError
 from ...resources.project.types import ProjectData
 from ...transport import HttpSession
 from ...transport.frames import SSEFrameDecoder, iter_bounded_lines
@@ -170,7 +170,7 @@ class GrokProjectEditor(BaseGrokProjectEditor):
                             "/rest/workspaces/" + remote_id(project_id) + conversation_path,
                         )
                     except Exception:
-                        raise ProviderError(
+                        raise WebAIProviderError(
                             "The Grok conversation move did not complete; the conversation may remain in multiple workspaces."
                         ) from None
                 raise
@@ -179,7 +179,7 @@ class GrokProjectEditor(BaseGrokProjectEditor):
             if (updated.project.id if updated.project is not None else None) == project_id:
                 return
             time.sleep(0.1)
-        raise ProviderError(
+        raise WebAIProviderError(
             "Grok conversation project membership could not be confirmed by the server"
         )
 

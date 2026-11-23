@@ -3,7 +3,7 @@
 import re
 from itertools import islice
 
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.types import (
@@ -249,11 +249,13 @@ def action_turn_index(data, message_id: str, role: str, action: str) -> int:
                 )
             selected = index
     if selected is None:
-        raise ProviderError("The selected message is no longer on the active conversation path")
+        raise WebAIProviderError(
+            "The selected message is no longer on the active conversation path"
+        )
     messages = tuple(_turn_messages(turns[selected], wanted))
     _, target = target_message(messages, message_id, role)
     if action not in target.actions:
-        raise ProviderError("This Gemini message action is not available")
+        raise WebAIProviderError("This Gemini message action is not available")
     return selected
 
 

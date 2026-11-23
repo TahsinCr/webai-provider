@@ -6,14 +6,14 @@ from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
     from .async_client import AsyncGeminiClient as AsyncGeminiClient
-    from .async_provider import AsyncGeminiProvider as AsyncGeminiProvider
+    from .async_provider import AsyncGeminiWebAIProvider as AsyncGeminiWebAIProvider
     from .catalogs import GeminiModels as GeminiModels
     from .client import GeminiClient as GeminiClient
     from .errors import GeminiCompatibilityError as GeminiCompatibilityError
     from .errors import GeminiError as GeminiError
     from .errors import GeminiStreamError as GeminiStreamError
     from .notebooks import GeminiNotebooks as GeminiNotebooks
-    from .provider import GeminiProvider as GeminiProvider
+    from .provider import GeminiWebAIProvider as GeminiWebAIProvider
     from .resources import AsyncGeminiChat as AsyncGeminiChat
     from .resources import AsyncGeminiMessage as AsyncGeminiMessage
     from .resources import AsyncGeminiProject as AsyncGeminiProject
@@ -42,8 +42,8 @@ _EXPORTS = {
     "GeminiArtifact": "resources",
     "GeminiSource": "resources",
     "AsyncGeminiChat": "resources",
-    "GeminiProvider": "provider",
-    "AsyncGeminiProvider": "async_provider",
+    "GeminiWebAIProvider": "provider",
+    "AsyncGeminiWebAIProvider": "async_provider",
     "GeminiNotebooks": "notebooks",
 }
 __all__ = list(_EXPORTS)

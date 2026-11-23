@@ -11,10 +11,10 @@ from urllib.parse import quote
 
 from ...accounts import session_exists
 from ...accounts.status import SessionState, SessionStatus
-from ...base import BaseProvider, Capability, ProviderType
+from ...base import BaseWebAIProvider, Capability, WebAIProviderType
 from ...collections import Page
 from ...core.json import json_loads
-from ...errors import AccountPaused, FeatureUnavailable, ProviderError, RateLimited
+from ...errors import AccountPaused, FeatureUnavailable, RateLimited, WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import GROK_ATTACHMENTS, Attachment
 from ...resources.message.protocol import ProviderRequest
@@ -255,7 +255,7 @@ class BaseGrokClient:
             or not isinstance(asset_id, str)
             or not asset_id
         ):
-            raise ProviderError("Grok chat file upload failed")
+            raise WebAIProviderError("Grok chat file upload failed")
         return {
             "id": asset_id,
             "name": metadata.get("name") or metadata.get("fileName") or filename,
@@ -269,9 +269,9 @@ class BaseGrokClient:
         try:
             event = json_loads(raw)
         except ValueError:
-            raise ProviderError("Grok stream response format has changed") from None
+            raise WebAIProviderError("Grok stream response format has changed") from None
         if not isinstance(event, dict):
-            raise ProviderError("Grok stream response format has changed")
+            raise WebAIProviderError("Grok stream response format has changed")
         return event
 
 
@@ -386,7 +386,7 @@ class BaseGrokProjectEditor:
         cls, project_id: str, current: ProjectData, data: Any
     ) -> ProjectData:
         if not isinstance(data, dict) or (data.get("workspaceId") or data.get("id")) != project_id:
-            raise ProviderError("Grok workspace response contract changed")
+            raise WebAIProviderError("Grok workspace response contract changed")
         return cls._apply_metadata(current, data)
 
     @staticmethod
@@ -418,10 +418,10 @@ class BaseGrokProjectEditor:
         raise ValueError("Grok project resource was not found")
 
 
-class BaseGrokProvider(BaseProvider):
+class BaseGrokWebAIProvider(BaseWebAIProvider):
     """Provider identity and protocol rules shared by both execution modes."""
 
-    provider_type = ProviderType.GROK
+    provider_type = WebAIProviderType.GROK
     client: Any
     _continuations: Any
 
@@ -465,10 +465,10 @@ class BaseGrokProvider(BaseProvider):
 
     def _parse_chats_page(self, data: Any) -> Page[Conversation]:
         if not isinstance(data, dict):
-            raise ProviderError("Grok conversation list response contract changed")
+            raise WebAIProviderError("Grok conversation list response contract changed")
         conversations = data.get("conversations")
         if conversations is not None and not isinstance(conversations, list):
-            raise ProviderError("Grok conversation list response contract changed")
+            raise WebAIProviderError("Grok conversation list response contract changed")
         return Page(
             tuple(conversation(item) for item in (conversations or ())),
             data.get("nextPageToken"),
@@ -494,10 +494,10 @@ class BaseGrokProvider(BaseProvider):
 
     def _parse_projects_page(self, data: Any) -> Page[ProjectData]:
         if not isinstance(data, dict):
-            raise ProviderError("Grok workspace list response contract changed")
+            raise WebAIProviderError("Grok workspace list response contract changed")
         workspaces = data.get("workspaces")
         if workspaces is not None and not isinstance(workspaces, list):
-            raise ProviderError("Grok workspace list response contract changed")
+            raise WebAIProviderError("Grok workspace list response contract changed")
         return Page(
             tuple(project(item) for item in (workspaces or ())),
             data.get("nextPageToken"),
@@ -505,18 +505,18 @@ class BaseGrokProvider(BaseProvider):
 
     def _parse_project_detail(self, workspace: Any, listing: Any) -> ProjectData:
         if not isinstance(listing, dict):
-            raise ProviderError("Grok workspace file response contract changed")
+            raise WebAIProviderError("Grok workspace file response contract changed")
         files = listing.get("files")
         if files is not None and not isinstance(files, list):
-            raise ProviderError("Grok workspace file response contract changed")
+            raise WebAIProviderError("Grok workspace file response contract changed")
         return project(workspace, files)
 
     def _parse_project_chats_page(self, project_id: str, data: Any) -> Page[Conversation]:
         if not isinstance(data, dict):
-            raise ProviderError("Grok project conversation response contract changed")
+            raise WebAIProviderError("Grok project conversation response contract changed")
         conversations = data.get("conversations")
         if conversations is not None and not isinstance(conversations, list):
-            raise ProviderError("Grok project conversation response contract changed")
+            raise WebAIProviderError("Grok project conversation response contract changed")
         return Page(
             tuple(
                 conversation({**item, "workspaceId": item.get("workspaceId") or project_id})
@@ -545,11 +545,11 @@ class BaseGrokProvider(BaseProvider):
         is_retry = request.action == MessageAction.RETRY
         is_edit = request.action == MessageAction.EDIT
         if not isinstance(history, dict):
-            raise ProviderError("Grok conversation history response contract changed")
+            raise WebAIProviderError("Grok conversation history response contract changed")
         if not is_retry and not is_edit and not isinstance(history.get("responseNodes"), list):
-            raise ProviderError("Grok conversation node response contract changed")
+            raise WebAIProviderError("Grok conversation node response contract changed")
         if history.get("inflightResponses"):
-            raise ProviderError("Grok conversation already has a response in progress")
+            raise WebAIProviderError("Grok conversation already has a response in progress")
         active = active_responses(history)
         if not (is_retry or is_edit):
             return (active[-1].get("responseId") or "") if active else ""
@@ -560,7 +560,9 @@ class BaseGrokProvider(BaseProvider):
         expected_senders = ("assistant", "model", "grok") if is_retry else ("human", "user")
         if target is None or str(target.get("sender", "")).lower() not in expected_senders:
             label = "retry" if is_retry else "edit"
-            raise ProviderError(f"Grok {label} target is no longer on the active conversation path")
+            raise WebAIProviderError(
+                f"Grok {label} target is no longer on the active conversation path"
+            )
         if is_edit:
             _inherit_grok_edit_attachments(target, file_attachments, image_attachments)
         return target.get("parentResponseId") or ""
@@ -618,7 +620,7 @@ class BaseGrokProvider(BaseProvider):
             except (ValueError, TypeError):
                 delay = None
             raise RateLimited(delay)
-        raise ProviderError("Grok stream reported an error; the request was not resent")
+        raise WebAIProviderError("Grok stream reported an error; the request was not resent")
 
     def _active_transport(self) -> Any:
         return self.client.http
@@ -680,7 +682,7 @@ class BaseGrokProvider(BaseProvider):
             else catalog.chat_model(catalog.default_model)
         )
         if selected is None:
-            raise ProviderError("Selected Grok model is unavailable for this account")
+            raise WebAIProviderError("Selected Grok model is unavailable for this account")
         model = selected.metadata.get("modelName")
         model_mode = selected.metadata.get("modelMode")
         if not isinstance(model_mode, str) or not model_mode:

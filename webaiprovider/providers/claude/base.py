@@ -12,12 +12,12 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from ...accounts import delete_session, session_exists
 from ...accounts.status import SessionState, SessionStatus
-from ...base import BaseProvider, Capability, ProviderType
+from ...base import BaseWebAIProvider, Capability, WebAIProviderType
 from ...collections import Page
 from ...core.cache import ContinuationCache
 from ...core.json import json_loads
 from ...core.timing import SendTiming
-from ...errors import AccountPaused, FeatureUnavailable, ProviderError
+from ...errors import AccountPaused, FeatureUnavailable, WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import CLAUDE_ATTACHMENTS, Attachment
 from ...resources.message.protocol import (
@@ -90,7 +90,7 @@ def organization_from_bootstrap(data: Any, selected: Any) -> str:
         if not selected and len(available) == 1:
             org = available[0]
         else:
-            raise ProviderError("Claude workspace selection is invalid; reverify the account")
+            raise WebAIProviderError("Claude workspace selection is invalid; reverify the account")
     return org["uuid"]
 
 
@@ -328,7 +328,7 @@ class BaseClaudeClient:
             organization = organization_from_bootstrap(data, last_org)
         except AccountPaused:
             raise
-        except ProviderError:
+        except WebAIProviderError:
             organization = organization_from_bootstrap(data, None)
         return remote_id(organization)
 
@@ -372,7 +372,7 @@ class BaseClaudeClient:
     def _apply_history_action(history: dict[str, Any], v: dict[str, Any]):
         target = action_target(history, v["message_id"], v["action"])
         if v["action"].value not in target.actions:
-            raise ProviderError("This Claude message action is unavailable")
+            raise WebAIProviderError("This Claude message action is unavailable")
         original = target.metadata["native_message"]
         parent = original.get("parent_message_uuid")
         updated_v = dict(
@@ -578,7 +578,7 @@ class BaseClaudeClient:
             return result
         if mode == "rename_chat":
             if isinstance(result, dict) and "name" in result and result.get("name") != v["title"]:
-                raise ProviderError("Claude rename readback failed")
+                raise WebAIProviderError("Claude rename readback failed")
             return None
         if mode == "move_chat":
             return None
@@ -705,7 +705,7 @@ class BaseClaudeProjectEditor:
     @staticmethod
     def _read_metadata_result(project_id: str, current: ProjectData, data: Any) -> ProjectData:
         if not isinstance(data, dict) or (data.get("uuid") or data.get("id")) != project_id:
-            raise ProviderError("Claude project response contract changed")
+            raise WebAIProviderError("Claude project response contract changed")
         return replace(
             current,
             name=data.get("name", current.name),
@@ -814,10 +814,10 @@ class BaseClaudeProjectEditor:
         return fallback
 
 
-class BaseClaudeProvider(BaseProvider):
+class BaseClaudeWebAIProvider(BaseWebAIProvider):
     """Provider identity and protocol rules shared by both execution modes."""
 
-    provider_type = ProviderType.CLAUDE
+    provider_type = WebAIProviderType.CLAUDE
 
     _capabilities = frozenset(
         {

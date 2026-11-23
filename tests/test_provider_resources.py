@@ -9,16 +9,16 @@ from unittest.mock import ANY, AsyncMock, Mock
 
 from tests.streaming_support import StreamTestProvider
 from webaiprovider import (
-    Account,
     AsyncMessageOperation,
-    AsyncProvider,
+    AsyncWebAIProvider,
     OperationEvent,
     OperationState,
-    Provider,
+    WebAIAccount,
+    WebAIProvider,
 )
 from webaiprovider.collections import Page
 from webaiprovider.core.concurrency import maybe_await
-from webaiprovider.errors import ProviderError, UnsupportedOperationError
+from webaiprovider.errors import UnsupportedOperationError, WebAIProviderError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.attachment import Attachment
 from webaiprovider.resources.message.protocol import (
@@ -50,10 +50,10 @@ from webaiprovider.resources.response.parts import TextPart, ThinkingPart
 
 class ChatPreparationTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_reuses_context_in_the_next_send_for_each_mode(self) -> None:
-        for provider_type, mock in ((Provider, Mock), (AsyncProvider, AsyncMock)):
+        for provider_type, mock in ((WebAIProvider, Mock), (AsyncWebAIProvider, AsyncMock)):
             for name in ("claude", "gemini", "grok"):
                 with self.subTest(mode=provider_type.__name__, provider=name):
-                    provider = provider_type(Account.from_cookies(name, {}))
+                    provider = provider_type(WebAIAccount.from_cookies(name, {}))
                     provider._prepare_session = mock()
                     provider._close_session = mock()
                     await maybe_await(provider.open())
@@ -123,8 +123,8 @@ class ChatPreparationTests(unittest.IsolatedAsyncioTestCase):
 
 class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.account = Account.from_cookies("claude", {"sessionKey": "session"})
-        self.provider = AsyncProvider(self.account)
+        self.account = WebAIAccount.from_cookies("claude", {"sessionKey": "session"})
+        self.provider = AsyncWebAIProvider(self.account)
         for name in ("_prepare_session", "_close_session"):
             setattr(self.provider, name, AsyncMock())
         for name in (
@@ -254,8 +254,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.providers.grok import AsyncGrokChat
         from webaiprovider.resources.project.project import AsyncProject
 
-        account = Account.from_cookies("grok", {"sso": "session"})
-        provider = AsyncProvider(account)
+        account = WebAIAccount.from_cookies("grok", {"sso": "session"})
+        provider = AsyncWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         chat1 = Conversation(
@@ -466,7 +466,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
             yield TextDelta("Answer")
             yield ResponseComplete()
             yield ResponseVerifying()
-            raise ProviderError("Revision could not be confirmed")
+            raise WebAIProviderError("Revision could not be confirmed")
 
         self.provider._stream_provider_events = generate
         chat = await self.provider.chats.create()
@@ -475,7 +475,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(generated)
         terminal = await op.wait_for(OperationEvent.STATUS_TERMINAL, after=generated, timeout=1)
         self.assertEqual(terminal.status, "failed")
-        with self.assertRaisesRegex(ProviderError, "could not be confirmed"):
+        with self.assertRaisesRegex(WebAIProviderError, "could not be confirmed"):
             await op.wait()
 
     async def test_chat_messages_refresh_loads_remote_history(self) -> None:
@@ -504,8 +504,8 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(responses[0].timing)
 
     async def test_chats_include_projects_and_temporary_flag(self) -> None:
-        account = Account.from_cookies("chatgpt", {"session_token": "tok"})
-        provider = AsyncProvider(account)
+        account = WebAIAccount.from_cookies("chatgpt", {"session_token": "tok"})
+        provider = AsyncWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         project_alpha = NativeProject("proj-1", "Alpha")
@@ -580,7 +580,7 @@ class ProviderResourceTests(unittest.IsolatedAsyncioTestCase):
 
 class ProviderResourceFamilyTests(unittest.TestCase):
     def test_sync_prepare_runs_on_caller_and_can_follow_repeated_events(self) -> None:
-        provider = Provider(Account.from_cookies("claude", {}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = Mock()
         provider._close_session = Mock()
         thread_ids = []
@@ -601,7 +601,7 @@ class ProviderResourceFamilyTests(unittest.TestCase):
             first = op.wait_for(OperationEvent.THINKING_BEGIN)
             second = op.wait_for(OperationEvent.THINKING_BEGIN, after=first)
             self.assertNotEqual(first.part_id, second.part_id)
-            with self.assertRaisesRegex(ProviderError, "paused send"):
+            with self.assertRaisesRegex(WebAIProviderError, "paused send"):
                 chat.prepare()
             response = op.wait()
             chat.prepare()
@@ -622,7 +622,7 @@ class ProviderResourceFamilyTests(unittest.TestCase):
         ):
             with self.subTest(provider=provider_id):
                 module = import_module(f"webaiprovider.providers.{provider_id}.resources")
-                provider = Provider(Account.from_cookies(provider_id, {}))
+                provider = WebAIProvider(WebAIAccount.from_cookies(provider_id, {}))
                 provider._prepare_session = Mock()
                 provider._close_session = Mock()
                 provider._get_chat_data = Mock(
@@ -690,19 +690,19 @@ class ProviderResourceFamilyTests(unittest.TestCase):
 
     def test_sync_response_parts_are_populated_at_generation_end_for_all_providers(self) -> None:
         from webaiprovider import (
-            Account,
             GenerationEnd,
             MemoryCredentialStore,
-            Provider,
-            ProviderType,
+            WebAIAccount,
+            WebAIProvider,
+            WebAIProviderType,
         )
 
-        for ptype in ProviderType:
+        for ptype in WebAIProviderType:
             with self.subTest(provider=ptype.value):
-                account = Account(
+                account = WebAIAccount(
                     id="probe", provider=ptype.value, credentials=MemoryCredentialStore()
                 )
-                provider = Provider(account, type=ptype)
+                provider = WebAIProvider(account, type=ptype)
                 provider._opened = True
 
                 def _stream_sync(_request):

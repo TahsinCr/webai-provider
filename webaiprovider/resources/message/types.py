@@ -45,9 +45,9 @@ def target_message(
             if message.role != role or message.channel == "analysis":
                 break
             return index, message
-    from ...errors import ProviderError
+    from ...errors import WebAIProviderError
 
-    raise ProviderError("The selected message is no longer on the active conversation path")
+    raise WebAIProviderError("The selected message is no longer on the active conversation path")
 
 
 @dataclass(frozen=True)

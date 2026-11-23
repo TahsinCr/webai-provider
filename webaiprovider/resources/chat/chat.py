@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from ...collections import _async_publish_collection_change, _publish_collection_change
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
-from ...errors import ProviderError, UnsupportedOperationError
+from ...errors import UnsupportedOperationError, WebAIProviderError
 from ...transport.downloader import DownloadSource, async_download_source, download_source
 from ..operations import async_execute_with_hooks, execute_with_hooks
 from ..project.types import ProjectData
@@ -15,8 +15,8 @@ from ..response.artifact import Artifact
 from .types import Conversation
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
+    from ...async_provider import AsyncWebAIProvider
+    from ...provider import WebAIProvider
     from ..message.attachment import Attachment, Attachments
     from ..message.message import AsyncMessage, Message
     from ..model.model import EffortRef, ModelRef, ModelSelection
@@ -92,7 +92,7 @@ class _BaseChat:
         if not self.remote_id:
             raise UnsupportedOperationError("Cannot download from an unpersisted chat")
         if self.provider is None:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
         url = target.download_url if isinstance(target, Artifact) else target
         if not url:
             raise ValueError("Artifact has no download URL")
@@ -104,7 +104,7 @@ class _BaseChat:
                 "Cannot branch a conversation that has not been persisted remotely"
             )
         if self.provider is None:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
         provider = self.provider
         context = provider._new_context(
             "chat.branch",
@@ -115,7 +115,7 @@ class _BaseChat:
 
     def _build_branched_chat(self, provider: Any, branched: Any, title: str | None) -> Any:
         if not isinstance(branched, Conversation):
-            raise ProviderError("Provider returned an invalid branched conversation")
+            raise WebAIProviderError("Provider returned an invalid branched conversation")
         project = (
             _project_from_data(provider, branched.project)
             if branched.project is not None
@@ -132,7 +132,7 @@ class _BaseChat:
     def _prepare_move(self, project: Any) -> tuple[Any, Any, str | None, Any]:
         provider = self.provider
         if provider is None:
-            raise ProviderError("Chat is not attached to a provider session")
+            raise WebAIProviderError("Chat is not attached to a provider session")
         target = _resolve_project_arg(provider, project)
         target_id = (target.remote_id or target.id) if target is not None else None
         context = provider._new_context(
@@ -192,7 +192,7 @@ class AsyncChat(_BaseChat):
         id: str | None = None,
         title: str = "",
         *,
-        provider: AsyncProvider[Any, Any] | None = None,
+        provider: AsyncWebAIProvider[Any, Any] | None = None,
         remote_id: str | None = None,
         project: AsyncProject | None = None,
         temporary: bool = False,
@@ -215,7 +215,7 @@ class AsyncChat(_BaseChat):
     async def prepare(self) -> None:
         """Warm the reusable context for the next send."""
         if self.provider is None:
-            raise ProviderError("Cannot prepare a chat without a provider")
+            raise WebAIProviderError("Cannot prepare a chat without a provider")
         await self.provider._prepare_chat(self)
 
     async def get(self, item_id: str) -> Response:
@@ -271,7 +271,7 @@ class AsyncChat(_BaseChat):
         if self.provider is not None:
             await self.provider.chats.delete(self)
         elif self.remote_id:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
 
 
 class AsyncBranchableChat(AsyncChat):
@@ -372,7 +372,7 @@ class Chat(_BaseChat):
         id: str | None = None,
         title: str = "",
         *,
-        provider: Provider[Any, Any] | None = None,
+        provider: WebAIProvider[Any, Any] | None = None,
         remote_id: str | None = None,
         project: Project | None = None,
         temporary: bool = False,
@@ -395,7 +395,7 @@ class Chat(_BaseChat):
     def prepare(self) -> None:
         """Warm the reusable context for the next send."""
         if self.provider is None:
-            raise ProviderError("Cannot prepare a chat without a provider")
+            raise WebAIProviderError("Cannot prepare a chat without a provider")
         self.provider._prepare_chat(self)
 
     def get(self, item_id: str) -> Response:
@@ -450,7 +450,7 @@ class Chat(_BaseChat):
         if self.provider is not None:
             self.provider.chats.delete(self)
         elif self.remote_id:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
 
 
 class BranchableChat(Chat):

@@ -13,11 +13,11 @@ from urllib.parse import quote, urlsplit
 from ...accounts import delete_session, read_session, session_exists
 from ...accounts.filters import ProviderCookieFilter
 from ...accounts.status import SessionState, SessionStatus
-from ...base import Capability, ProviderType
+from ...base import Capability, WebAIProviderType
 from ...collections import Page
 from ...core.timing import current_send_timing
-from ...errors import FeatureUnavailable, ProviderError, RateLimited, RemoteNotFound
-from ...provider import Provider
+from ...errors import FeatureUnavailable, RateLimited, RemoteNotFound, WebAIProviderError
+from ...provider import WebAIProvider
 from ...resources.chat.collections import ChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
@@ -28,7 +28,7 @@ from ...resources.project.types import ProjectData, ProjectOptions
 from ...transport import HTTPTransport, Transport, TransportConfig
 from ...transport.downloader import DownloadSource
 from .auth import BrowserSession
-from .base import BaseChatGPTClient, BaseChatGPTProvider
+from .base import BaseChatGPTClient, BaseChatGPTWebAIProvider
 from .client import ChatGPTClient, ChatGPTProjectEditor, prepare_chatgpt_attachments
 from .collections import ChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
@@ -45,11 +45,11 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
 def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
-    """Poll a remote resource until removal is confirmed or raise ProviderError."""
+    """Poll a remote resource until removal is confirmed or raise WebAIProviderError."""
     for delay in (0, 0.2, 0.5, 1):
         if delay:
             time.sleep(delay)
@@ -59,15 +59,15 @@ def confirm_deleted(read: Any, missing: Any = lambda value: False) -> None:
             return
         if missing(value):
             return
-    raise ProviderError(
+    raise WebAIProviderError(
         "Deletion could not be confirmed by the server; the local record was preserved. Sync before retrying."
     )
 
 
-class ChatGPTProvider(
+class ChatGPTWebAIProvider(
     ProjectMutationsMixin,
-    Provider[ChatsCollection[ChatGPTChat], ChatGPTProjectsCollection],
-    BaseChatGPTProvider,
+    WebAIProvider[ChatsCollection[ChatGPTChat], ChatGPTProjectsCollection],
+    BaseChatGPTWebAIProvider,
 ):
     _chat_page_size = DEFAULT_PAGE_SIZE
     _chat_initial_page_floor = 100
@@ -85,9 +85,9 @@ class ChatGPTProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         session: BrowserSession | None = None,
         client_factory: Callable[..., Any] | None = None,
         transport: Transport | None = None,
@@ -419,7 +419,7 @@ class ChatGPTProvider(
                     )
                     yield from post_events
                 stream_finished = True
-        except ProviderError:
+        except WebAIProviderError:
             raise
         except Exception as exc:
             raise ChatGPTError(

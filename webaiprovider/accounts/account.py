@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..base import Capability, ProviderType
+from ..base import Capability, WebAIProviderType
 from .credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
 
 
@@ -25,7 +25,7 @@ def credential_fingerprint(data: Any) -> str | None:
 
 
 @dataclass(frozen=True)
-class Account:
+class WebAIAccount:
     id: str
     provider: str
     credentials: CredentialStore | Path | str | dict[str, Any]
@@ -42,7 +42,7 @@ class Account:
     )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "provider", ProviderType.parse(self.provider).value)
+        object.__setattr__(self, "provider", WebAIProviderType.parse(self.provider).value)
         object.__setattr__(self, "_session_lock", threading.Lock())
         if isinstance(self.credentials, dict):
             object.__setattr__(self, "_memory_store", MemoryCredentialStore(self.credentials))
@@ -80,16 +80,16 @@ class Account:
     @classmethod
     def from_cookies(
         cls,
-        provider: ProviderType | str,
+        provider: WebAIProviderType | str,
         cookies: dict[str, Any] | Path | str,
         *,
         id: str | None = None,
         name: str | None = None,
-    ) -> Account:
+    ) -> WebAIAccount:
         import uuid
 
         account_id = id or str(uuid.uuid4())
-        provider_type = ProviderType.parse(provider)
+        provider_type = WebAIProviderType.parse(provider)
         return cls(
             id=account_id,
             provider=provider_type.value,
@@ -100,14 +100,14 @@ class Account:
     @classmethod
     def from_browser(
         cls,
-        provider: ProviderType | str,
+        provider: WebAIProviderType | str,
         *,
         browser: str | None = None,
         id: str | None = None,
         name: str | None = None,
-    ) -> Account:
+    ) -> WebAIAccount:
         from .importer import import_cookies
 
-        provider_type = ProviderType.parse(provider)
+        provider_type = WebAIProviderType.parse(provider)
         _, cookies = import_cookies(provider_type.value, browser=browser)
         return cls.from_cookies(provider, cookies, id=id, name=name)

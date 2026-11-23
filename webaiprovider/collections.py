@@ -9,11 +9,11 @@ from threading import Lock
 from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, cast
 
-from .errors import AmbiguousMatchError, ProviderError, RemoteNotFound
+from .errors import AmbiguousMatchError, RemoteNotFound, WebAIProviderError
 
 if TYPE_CHECKING:
-    from .async_provider import AsyncProvider
-    from .provider import Provider
+    from .async_provider import AsyncWebAIProvider
+    from .provider import WebAIProvider
 
 T = TypeVar("T", covariant=True)
 _ItemT = TypeVar("_ItemT")
@@ -422,7 +422,7 @@ class AsyncBaseCollection(_QueryRules[T], ABC):
 
     _collection_name = ""
 
-    def _read_context(self) -> tuple[AsyncProvider[Any, Any] | None, str | None]:
+    def _read_context(self) -> tuple[AsyncWebAIProvider[Any, Any] | None, str | None]:
         return None, None
 
     def _mark_remote_read(self, started_ns: int | None = None) -> None:
@@ -688,7 +688,7 @@ class _PageState(Generic[T]):
 
     def consume(self, page: Any) -> tuple[list[T], bool]:
         if not isinstance(page, Page):
-            raise ProviderError("Provider returned an invalid pagination page")
+            raise WebAIProviderError("Provider returned an invalid pagination page")
         unique_batch: list[T] = []
         for item in page.items:
             key = self.collection._item_key(item)
@@ -708,7 +708,7 @@ class _PageState(Generic[T]):
                 read.exhausted = True
             return unique_batch, True
         if not isinstance(next_cursor, str) or not next_cursor or next_cursor in self.seen_cursors:
-            raise ProviderError("Provider pagination returned an invalid or repeating cursor")
+            raise WebAIProviderError("Provider pagination returned an invalid or repeating cursor")
         self.seen_cursors.add(next_cursor)
         self.cursor = next_cursor
         return unique_batch, False
@@ -728,7 +728,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
         return self._read_provider, self._scope_id
 
     @property
-    def _read_provider(self) -> AsyncProvider[Any, Any] | None:
+    def _read_provider(self) -> AsyncWebAIProvider[Any, Any] | None:
         return None
 
     @property
@@ -769,7 +769,7 @@ class AsyncRemoteCollection(AsyncBaseCollection[T]):
                     yield batch
                 if done:
                     return
-            raise ProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
+            raise WebAIProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
         except Exception as error:
             state.attach_partial_count(error)
             raise
@@ -783,11 +783,11 @@ class RemoteCollection(BaseCollection[T]):
     _default_page_size = 50
     _followup_page_size: int | None = None
 
-    def _read_context(self) -> tuple[Provider[Any, Any] | None, str | None]:
+    def _read_context(self) -> tuple[WebAIProvider[Any, Any] | None, str | None]:
         return self._read_provider, self._scope_id
 
     @property
-    def _read_provider(self) -> Provider[Any, Any] | None:
+    def _read_provider(self) -> WebAIProvider[Any, Any] | None:
         return None
 
     @property
@@ -832,7 +832,7 @@ class RemoteCollection(BaseCollection[T]):
                     yield batch
                 if done:
                     return
-            raise ProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
+            raise WebAIProviderError(f"Provider pagination exceeded {self._max_remote_pages} pages")
         except Exception as error:
             state.attach_partial_count(error)
             raise

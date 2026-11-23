@@ -11,9 +11,9 @@ from urllib.parse import urlsplit
 
 from ...accounts import session_exists
 from ...accounts.status import SessionState, SessionStatus
-from ...base import BaseProvider, Capability, ProviderType
+from ...base import BaseWebAIProvider, Capability, WebAIProviderType
 from ...core.json import json_dumps, json_loads
-from ...errors import AccountPaused, ProviderError
+from ...errors import AccountPaused, WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.types import MessageAction
@@ -207,7 +207,7 @@ class BaseGeminiClient:
         prefix = self.rpc_path_prefix
         marker = GRAPHQL_PATH
         if not prefix.startswith("/") or marker not in prefix:
-            raise ProviderError("Gemini web query endpoint is unavailable")
+            raise WebAIProviderError("Gemini web query endpoint is unavailable")
         base = ORIGIN + prefix[: prefix.index(marker)] + marker + "graphql"
         return (
             f"{base}/schemas/{GRAPHQL_SCHEMA}/executeQuery",
@@ -242,15 +242,15 @@ class BaseGeminiClient:
         try:
             results = json_loads(payload)
         except (ValueError, TypeError) as error:
-            raise ProviderError("Gemini web query response could not be parsed") from error
+            raise WebAIProviderError("Gemini web query response could not be parsed") from error
         if not isinstance(results, list):
-            raise ProviderError("Gemini web query response format has changed")
+            raise WebAIProviderError("Gemini web query response format has changed")
         for result in results:
             if isinstance(result, dict) and isinstance(result.get("data"), dict):
                 return result
             if isinstance(result, dict) and result.get("errors"):
                 return result
-        raise ProviderError("Gemini web query response is incomplete")
+        raise WebAIProviderError("Gemini web query response is incomplete")
 
     def _validate_rename(self, conversation_id: Any, title: Any) -> tuple[str, RPCPayload, str]:
         if not isinstance(title, str):
@@ -275,7 +275,9 @@ class BaseGeminiClient:
         parts = list(rpc_parts(response_text, "MUAZcd"))
         row = rpc_value(parts[0], 1) if parts else None
         if rpc_value(row, 0) != conversation_id or rpc_value(row, 1) != title:
-            raise ProviderError("Gemini conversation rename could not be confirmed by the server")
+            raise WebAIProviderError(
+                "Gemini conversation rename could not be confirmed by the server"
+            )
 
     def _resolve_request_transport(self, url: str) -> tuple[Any, str]:
         target = urlsplit(url)
@@ -458,7 +460,7 @@ class BaseGeminiProjectEditor:
 
         collect(parts)
         if len(set(matches)) != 1:
-            raise ProviderError(
+            raise WebAIProviderError(
                 "Notebook creation could not be confirmed; the operation was not retried"
             )
         return matches[0]
@@ -467,7 +469,7 @@ class BaseGeminiProjectEditor:
     def _update_detail(current: ProjectData, values: dict[str, Any]) -> list[Any]:
         native = current.metadata["native"][1]
         if len(native) < 13 or not isinstance(native[12], list):
-            raise ProviderError("Gemini notebook settings contract changed")
+            raise WebAIProviderError("Gemini notebook settings contract changed")
         return [
             values.get("name", current.name),
             current.metadata.get("description") or "",
@@ -529,14 +531,14 @@ class BaseGeminiProjectEditor:
                 metadata={"kind": kind, "native": source, "source_type": field(source, 1)},
             )
         if kind == "file":
-            raise ProviderError("Gemini did not confirm the added file; sync before retrying")
+            raise WebAIProviderError("Gemini did not confirm the added file; sync before retrying")
         return result
 
 
-class BaseGeminiProvider(BaseProvider):
+class BaseGeminiWebAIProvider(BaseWebAIProvider):
     """Provider identity and protocol rules shared by both execution modes."""
 
-    provider_type = ProviderType.GEMINI
+    provider_type = WebAIProviderType.GEMINI
     stream_idle_timeout = 300
     stream_total_timeout = 600
 
@@ -603,7 +605,7 @@ class BaseGeminiProvider(BaseProvider):
             original = turns[selected_index]
             action_files = rpc_value(original, 2, 0, 3) or []
             if not isinstance(action_files, list):
-                raise ProviderError("Gemini message attachments cannot be preserved")
+                raise WebAIProviderError("Gemini message attachments cannot be preserved")
             if request.action == MessageAction.RETRY:
                 request = replace(
                     request,
@@ -694,7 +696,7 @@ class BaseGeminiProvider(BaseProvider):
     def _parse_branch_result(result: Any, conversation_id: str) -> tuple[str, Any]:
         remote = rpc_value(result, 0, 0, 0)
         if not isinstance(remote, str) or not remote.startswith("c_") or remote == conversation_id:
-            raise ProviderError("Gemini did not confirm a new conversation")
+            raise WebAIProviderError("Gemini did not confirm a new conversation")
         return remote, rpc_value(result, 0, 0, 1)
 
     @staticmethod
@@ -722,7 +724,7 @@ class BaseGeminiProvider(BaseProvider):
     def _cache_notebook_context(self, project: str, notebook: ProjectData) -> tuple[str, list[Any]]:
         value = field(field(notebook.metadata.get("native"), 1), 12)
         if not isinstance(value, list) or not value or value[0] not in (1, 2):
-            raise ProviderError("Gemini notebook context could not be read")
+            raise WebAIProviderError("Gemini notebook context could not be read")
         self._project_contexts.put(project, list(value))
         return project, value
 
@@ -731,7 +733,7 @@ class BaseGeminiProvider(BaseProvider):
     ) -> tuple[bool, list[Any], Any, bool]:
         metadata = self._temporary.get(request.conversation_id) if request.temporary else None
         if request.temporary and request.conversation_id and metadata is None:
-            raise ProviderError("Temporary Gemini context is no longer in memory")
+            raise WebAIProviderError("Temporary Gemini context is no longer in memory")
         if metadata is not None:
             return True, metadata, None, False
 

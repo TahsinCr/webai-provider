@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from eventflow import AsyncEventBus, EventBus, EventEnvelope, EventFilter
+from flowevent import AsyncEventBus, EventBus, EventEnvelope, EventFilter
 
-from .accounts.account import Account
+from .accounts.account import WebAIAccount
 from .accounts.credentials import CredentialStore, FileCredentialStore, MemoryCredentialStore
-from .base import BaseProvider, Capability
+from .base import BaseWebAIProvider, Capability
 from .collections import (
     AsyncBaseCollection,
     AsyncCollection,
@@ -26,29 +26,29 @@ from .errors import (
     FeatureUnavailable,
     OperationCancelledError,
     ProfileError,
-    ProviderError,
     RateLimited,
     RemoteNotFound,
     UnsupportedOperationError,
+    WebAIProviderError,
 )
-from .provider import Provider, ProviderType
+from .provider import WebAIProvider, WebAIProviderType
 from .providers import resolve_lazy_export as _resolve_lazy_export
 from .providers.chatgpt.catalogs import ChatGPTModels
 from .providers.chatgpt.collections import AsyncChatGPTProjectsCollection, ChatGPTProjectsCollection
 from .providers.chatgpt.errors import ChatGPTError, SentinelCompatibilityError
 from .providers.chatgpt.provider import (
     ChatGPTChat,
-    ChatGPTProvider,
+    ChatGPTWebAIProvider,
 )
 from .providers.chatgpt.resources import AsyncChatGPTChat
 from .providers.claude.catalogs import ClaudeModels
-from .providers.claude.provider import ClaudeProvider
+from .providers.claude.provider import ClaudeWebAIProvider
 from .providers.claude.resources import AsyncClaudeChat, ClaudeChat
 from .providers.gemini.catalogs import GeminiModels
-from .providers.gemini.provider import GeminiProvider
+from .providers.gemini.provider import GeminiWebAIProvider
 from .providers.gemini.resources import AsyncGeminiChat, GeminiChat
 from .providers.grok.catalogs import GrokModels
-from .providers.grok.provider import GrokProvider
+from .providers.grok.provider import GrokWebAIProvider
 from .providers.grok.resources import AsyncGrokChat, GrokChat
 from .resources.chat.chat import (
     AsyncBranchableChat,
@@ -111,18 +111,18 @@ from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
 
 if TYPE_CHECKING:
-    from .async_provider import AsyncProvider
-    from .providers.chatgpt.async_provider import AsyncChatGPTProvider
-    from .providers.claude.async_provider import AsyncClaudeProvider
-    from .providers.gemini.async_provider import AsyncGeminiProvider
-    from .providers.grok.async_provider import AsyncGrokProvider
+    from .async_provider import AsyncWebAIProvider
+    from .providers.chatgpt.async_provider import AsyncChatGPTWebAIProvider
+    from .providers.claude.async_provider import AsyncClaudeWebAIProvider
+    from .providers.gemini.async_provider import AsyncGeminiWebAIProvider
+    from .providers.grok.async_provider import AsyncGrokWebAIProvider
 
 _ASYNC_EXPORTS = {
-    "AsyncProvider": "async_provider",
-    "AsyncChatGPTProvider": "providers.chatgpt.async_provider",
-    "AsyncClaudeProvider": "providers.claude.async_provider",
-    "AsyncGeminiProvider": "providers.gemini.async_provider",
-    "AsyncGrokProvider": "providers.grok.async_provider",
+    "AsyncWebAIProvider": "async_provider",
+    "AsyncChatGPTWebAIProvider": "providers.chatgpt.async_provider",
+    "AsyncClaudeWebAIProvider": "providers.claude.async_provider",
+    "AsyncGeminiWebAIProvider": "providers.gemini.async_provider",
+    "AsyncGrokWebAIProvider": "providers.grok.async_provider",
 }
 
 
@@ -138,22 +138,22 @@ __version__ = "1.3.0b0"
 
 __all__ = [
     "__version__",
-    "Account",
+    "WebAIAccount",
     "CredentialStore",
     "FileCredentialStore",
     "MemoryCredentialStore",
-    "BaseProvider",
-    "Provider",
-    "AsyncProvider",
-    "ProviderType",
-    "ChatGPTProvider",
-    "AsyncChatGPTProvider",
-    "ClaudeProvider",
-    "AsyncClaudeProvider",
-    "GeminiProvider",
-    "AsyncGeminiProvider",
-    "GrokProvider",
-    "AsyncGrokProvider",
+    "BaseWebAIProvider",
+    "WebAIProvider",
+    "AsyncWebAIProvider",
+    "WebAIProviderType",
+    "ChatGPTWebAIProvider",
+    "AsyncChatGPTWebAIProvider",
+    "ClaudeWebAIProvider",
+    "AsyncClaudeWebAIProvider",
+    "GeminiWebAIProvider",
+    "AsyncGeminiWebAIProvider",
+    "GrokWebAIProvider",
+    "AsyncGrokWebAIProvider",
     "Capability",
     "ChatGPTModels",
     "ClaudeModels",
@@ -223,7 +223,7 @@ __all__ = [
     "FeatureUnavailable",
     "OperationCancelledError",
     "ProfileError",
-    "ProviderError",
+    "WebAIProviderError",
     "RateLimited",
     "RemoteNotFound",
     "SentinelCompatibilityError",

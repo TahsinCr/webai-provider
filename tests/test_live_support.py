@@ -28,7 +28,7 @@ from tests.live.support.errors import CleanupError, SafetyError
 from tests.live.support.journal import write_private_json
 from webaiprovider import Artifact, Source
 from webaiprovider.collections import Page
-from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
+from webaiprovider.errors import RateLimited, RemoteNotFound, WebAIProviderError
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.types import Content, MessageData
 from webaiprovider.resources.project.types import ProjectData
@@ -75,7 +75,7 @@ class LiveCredentialTests(unittest.TestCase):
 
     def test_imports_missing_provider_from_browser_and_preserves_other_accounts(self) -> None:
         from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
-        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.account import WebAIAccount
 
         self._write(
             json.dumps(
@@ -96,9 +96,11 @@ class LiveCredentialTests(unittest.TestCase):
             f"{chatgpt_auth_cookie}.0": "browser-secret-0",
             f"{chatgpt_auth_cookie}.1": "browser-secret-1",
         }
-        browser_account = Account.from_cookies("chatgpt", browser_cookies, id="default-browser")
+        browser_account = WebAIAccount.from_cookies(
+            "chatgpt", browser_cookies, id="default-browser"
+        )
         with patch(
-            "webaiprovider.accounts.account.Account.from_browser",
+            "webaiprovider.accounts.account.WebAIAccount.from_browser",
             return_value=browser_account,
         ) as from_browser:
             account = load_or_import_account("chatgpt", path=self.path, require_ignored=False)
@@ -133,7 +135,7 @@ class LiveCredentialTests(unittest.TestCase):
             )
         )
         original = self.path.read_bytes()
-        with patch("webaiprovider.accounts.account.Account.from_browser") as from_browser:
+        with patch("webaiprovider.accounts.account.WebAIAccount.from_browser") as from_browser:
             account = load_or_import_account(
                 "grok", "personal", path=self.path, require_ignored=False
             )
@@ -144,7 +146,7 @@ class LiveCredentialTests(unittest.TestCase):
     def test_refreshes_invalid_browser_cookies_without_replacing_other_accounts(self) -> None:
         from tests.live.support.config import save_verified_browser_refresh
         from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
-        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.account import WebAIAccount
 
         self._write(
             json.dumps(
@@ -166,11 +168,11 @@ class LiveCredentialTests(unittest.TestCase):
             )
         )
         auth_cookie = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
-        browser_account = Account.from_cookies(
+        browser_account = WebAIAccount.from_cookies(
             "chatgpt", {auth_cookie: "fresh"}, id="default-browser"
         )
         with patch(
-            "webaiprovider.accounts.account.Account.from_browser",
+            "webaiprovider.accounts.account.WebAIAccount.from_browser",
             return_value=browser_account,
         ) as from_browser:
             account = load_or_import_account(
@@ -214,7 +216,7 @@ class LiveCredentialTests(unittest.TestCase):
             )
         )
         with (
-            patch("webaiprovider.accounts.account.Account.from_browser") as from_browser,
+            patch("webaiprovider.accounts.account.WebAIAccount.from_browser") as from_browser,
             self.assertRaisesRegex(SafetyError, "default-browser"),
         ):
             load_or_import_account(
@@ -224,14 +226,14 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(load_accounts(self.path, require_ignored=False)[0].alias, "personal")
 
     def test_browser_import_without_required_auth_cookie_is_not_saved(self) -> None:
-        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.account import WebAIAccount
 
-        browser_account = Account.from_cookies(
+        browser_account = WebAIAccount.from_cookies(
             "chatgpt", {"non_auth_cookie": "must-not-be-saved"}, id="default-browser"
         )
         with (
             patch(
-                "webaiprovider.accounts.account.Account.from_browser",
+                "webaiprovider.accounts.account.WebAIAccount.from_browser",
                 return_value=browser_account,
             ),
             self.assertRaises(SafetyError) as caught,
@@ -410,13 +412,13 @@ class LiveContextErrorTests(unittest.TestCase):
         from tests.live.support.context import _safe_error_label
 
         cases = {
-            "Provider denied access (HTTP 403); the request was not retried": "ProviderError (HTTP 403)",
-            "Provider request failed (HTTP 503)": "ProviderError (HTTP 503)",
+            "Provider denied access (HTTP 403); the request was not retried": "WebAIProviderError (HTTP 403)",
+            "Provider request failed (HTTP 503)": "WebAIProviderError (HTTP 503)",
             "Claude workspace selection is invalid; reverify the account": "Claude workspace selection could not be verified",
-            "Provider request failed (HTTP 503) private route": "ProviderError",
+            "Provider request failed (HTTP 503) private route": "WebAIProviderError",
         }
         for message, expected in cases.items():
-            self.assertEqual(_safe_error_label(ProviderError(message)), expected)
+            self.assertEqual(_safe_error_label(WebAIProviderError(message)), expected)
 
     def test_chat_id_is_persisted_only_when_it_changes(self) -> None:
         context = LiveContext.__new__(LiveContext)
@@ -513,8 +515,8 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_uncertain_delete_is_confirmed_without_replaying_the_mutation(self) -> None:
         entry, remote = self.track()
-        self.provider.get_project = AsyncMock(side_effect=(remote, ProviderError("uncertain")))
-        self.provider.delete_project = AsyncMock(side_effect=ProviderError("uncertain"))
+        self.provider.get_project = AsyncMock(side_effect=(remote, WebAIProviderError("uncertain")))
+        self.provider.delete_project = AsyncMock(side_effect=WebAIProviderError("uncertain"))
         self.provider.list_projects = AsyncMock(return_value=Page(()))
         await self.context.cleanup_entry_async(entry)
         self.provider.delete_project.assert_awaited_once_with(self.remote_id)
@@ -541,12 +543,12 @@ class CleanupSafetyTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(kind=kind):
                 self.context.state["resources"].clear()
                 entry, remote = self.track(kind)
-                delete = AsyncMock(side_effect=ProviderError("uncertain"))
+                delete = AsyncMock(side_effect=WebAIProviderError("uncertain"))
                 listing = AsyncMock(side_effect=(Page((), "next-page"), Page((remote,))))
                 setattr(
                     self.provider,
                     f"get_{kind}",
-                    AsyncMock(side_effect=(remote, ProviderError("uncertain"))),
+                    AsyncMock(side_effect=(remote, WebAIProviderError("uncertain"))),
                 )
                 setattr(self.provider, f"delete_{kind}", delete)
                 setattr(self.provider, "list_chats" if kind == "chat" else "list_projects", listing)
@@ -747,7 +749,7 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_async_retries_only_transient_provider_open_errors(self) -> None:
         from tests.live.support.errors import LiveApiError
-        from webaiprovider.errors import ProviderError, RateLimited
+        from webaiprovider.errors import RateLimited, WebAIProviderError
 
         def wrapped(exc: Exception) -> LiveApiError:
             try:
@@ -760,7 +762,7 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         live = LiveSession()
         context = object()
-        transient = wrapped(ProviderError("Provider request failed (HTTP 502)"))
+        transient = wrapped(WebAIProviderError("Provider request failed (HTTP 502)"))
         with (
             patch.object(
                 live, "_open_async_once", AsyncMock(side_effect=[transient, context])
@@ -772,11 +774,13 @@ class LiveSessionTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         for non_retryable in (
             wrapped(
-                ProviderError("Provider denied access (HTTP 403); the request was not retried")
+                WebAIProviderError("Provider denied access (HTTP 403); the request was not retried")
             ),
             wrapped(RateLimited(5)),
-            wrapped(ProviderError("Provider request failed (HTTP 400)")),
-            wrapped(ProviderError("Claude workspace selection is invalid; reverify the account")),
+            wrapped(WebAIProviderError("Provider request failed (HTTP 400)")),
+            wrapped(
+                WebAIProviderError("Claude workspace selection is invalid; reverify the account")
+            ),
         ):
             with patch.object(
                 live, "_open_async_once", AsyncMock(side_effect=non_retryable)
@@ -1270,7 +1274,7 @@ class CredentialLockAndConcurrencyTests(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
 
         from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
-        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.account import WebAIAccount
 
         with tempfile.TemporaryDirectory() as directory:
             cfg = Path(directory) / ".config"
@@ -1285,12 +1289,12 @@ class CredentialLockAndConcurrencyTests(unittest.TestCase):
                     "grok": "https://grok.com",
                 }[provider]
                 cookie_name = REQUIRED_PROVIDER_COOKIES[origin_url]
-                return Account.from_cookies(
+                return WebAIAccount.from_cookies(
                     provider, {cookie_name: f"secret-{provider}"}, id=id, name=name
                 )
 
             with patch(
-                "webaiprovider.accounts.account.Account.from_browser",
+                "webaiprovider.accounts.account.WebAIAccount.from_browser",
                 side_effect=fake_from_browser,
             ):
                 providers = ("chatgpt", "claude", "gemini", "grok")
@@ -1709,10 +1713,12 @@ class ChatGPTBranchLiveFlowTests(unittest.IsolatedAsyncioTestCase):
                         chat_obj.rename = AsyncMock(side_effect=rename_hook)
                     return chat_obj
 
-                from webaiprovider import Account, AsyncChatGPTProvider
+                from webaiprovider import AsyncChatGPTWebAIProvider, WebAIAccount
                 from webaiprovider.core.async_hooks import AsyncOperationHooks
 
-                backing = AsyncChatGPTProvider(Account.from_cookies("chatgpt", {}, id="personal"))
+                backing = AsyncChatGPTWebAIProvider(
+                    WebAIAccount.from_cookies("chatgpt", {}, id="personal")
+                )
                 session = SimpleNamespace(
                     capabilities={
                         Capability.MODELS,

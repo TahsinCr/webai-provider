@@ -129,6 +129,72 @@ class CoreCacheTests(unittest.TestCase):
         cache.clear()
         self.assertEqual(cache.stats().entries, 0)
 
+    def test_cache_rejects_oversized_entries_without_evicting_existing(self) -> None:
+        cache: BoundedCache[str, str] = BoundedCache(
+            max_entries=5,
+            max_bytes=20,
+            getsizeof=lambda _key, value: len(value),
+        )
+        self.assertTrue(cache.put("small", "a" * 10))
+        self.assertFalse(cache.put("huge", "b" * 25))
+        self.assertEqual(cache.get("small"), "a" * 10)
+        self.assertIsNone(cache.get("huge"))
+        self.assertEqual(cache.stats().entries, 1)
+        self.assertEqual(cache.stats().bytes, 10)
+
+    def test_cache_ttl_expiration_and_proactive_cleanup(self) -> None:
+        now = 100.0
+        cache: BoundedCache[str, str] = BoundedCache(
+            max_entries=2,
+            max_bytes=100,
+            ttl=10.0,
+            getsizeof=lambda _key, value: len(value),
+            clock=lambda: now,
+        )
+        cache.put("k1", "v1")
+        now = 105.0
+        cache.put("k2", "v2")
+        now = 111.0
+        self.assertIsNone(cache.get("k1"))
+        self.assertEqual(cache.get("k2"), "v2")
+        cache.put("k3", "v3")
+        self.assertEqual(cache.get("k2"), "v2")
+        self.assertEqual(cache.get("k3"), "v3")
+        self.assertEqual(cache.stats().entries, 2)
+
+
+class CoreStateMachineTests(unittest.TestCase):
+    def test_valid_invalid_and_terminal_transitions(self) -> None:
+        from webaiprovider.core.state import (
+            _LIFECYCLE_TERMINAL_STATES,
+            _LIFECYCLE_TRANSITIONS,
+            InvalidTransitionError,
+            LifecycleState,
+            StateMachine,
+        )
+
+        sm = StateMachine(
+            initial=LifecycleState.CREATED,
+            transitions=_LIFECYCLE_TRANSITIONS,
+            terminal=_LIFECYCLE_TERMINAL_STATES,
+        )
+        self.assertEqual(sm.state, LifecycleState.CREATED)
+        self.assertFalse(sm.is_terminal)
+        self.assertTrue(sm.can_transition(LifecycleState.OPENING))
+        self.assertFalse(sm.can_transition(LifecycleState.OPEN))
+
+        with self.assertRaises(InvalidTransitionError):
+            sm.transition(LifecycleState.OPEN)
+
+        self.assertEqual(sm.transition(LifecycleState.OPENING), LifecycleState.OPENING)
+        self.assertEqual(sm.transition(LifecycleState.OPEN), LifecycleState.OPEN)
+        self.assertEqual(sm.transition(LifecycleState.CLOSING), LifecycleState.CLOSING)
+        self.assertEqual(sm.transition(LifecycleState.CLOSED), LifecycleState.CLOSED)
+        self.assertTrue(sm.is_terminal)
+        self.assertFalse(sm.can_transition(LifecycleState.CLOSING))
+        with self.assertRaises(InvalidTransitionError):
+            sm.transition(LifecycleState.OPENING)
+
 
 class NativeSyncFoundationTests(unittest.TestCase):
     def test_native_sync_modules_do_not_import_asyncio(self) -> None:
@@ -193,9 +259,9 @@ class NativeSyncFoundationTests(unittest.TestCase):
                 self.assertTrue(issubclass(sync_editor, base_editor))
                 self.assertTrue(issubclass(async_editor, base_editor))
 
-                base_provider = getattr(base_mod, f"Base{title}Provider")
-                sync_provider = getattr(provider_mod, f"{title}Provider")
-                async_provider = getattr(async_provider_mod, f"Async{title}Provider")
+                base_provider = getattr(base_mod, f"Base{title}WebAIProvider")
+                sync_provider = getattr(provider_mod, f"{title}WebAIProvider")
+                async_provider = getattr(async_provider_mod, f"Async{title}WebAIProvider")
                 self.assertTrue(issubclass(sync_provider, base_provider))
                 self.assertTrue(issubclass(async_provider, base_provider))
 
@@ -285,7 +351,7 @@ class NativeSyncFoundationTests(unittest.TestCase):
             client.close()
 
     def test_all_four_sync_providers_instantiate_natively_on_caller_thread(self) -> None:
-        from webaiprovider import Account, Provider
+        from webaiprovider import WebAIAccount, WebAIProvider
         from webaiprovider.transport import HTTPTransport
 
         for kind, origin in (
@@ -296,7 +362,7 @@ class NativeSyncFoundationTests(unittest.TestCase):
         ):
             with self.subTest(provider=kind):
                 transport = HTTPTransport(origin, client_getter=lambda: SimpleNamespace())
-                provider = Provider(Account.from_cookies(kind, {}), transport=transport)
+                provider = WebAIProvider(WebAIAccount.from_cookies(kind, {}), transport=transport)
                 try:
                     self.assertFalse(hasattr(provider, "_loop"))
                     self.assertFalse(hasattr(provider, "_provider"))

@@ -1,6 +1,6 @@
 """Live checks for provider session setup and advertised capabilities."""
 
-from eventflow import AsyncEventBus, EventBus
+from flowevent import AsyncEventBus, EventBus
 
 from webaiprovider import (
     AsyncOperationHooks,

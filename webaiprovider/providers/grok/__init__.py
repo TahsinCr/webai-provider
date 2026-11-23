@@ -6,10 +6,10 @@ from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
     from .async_client import AsyncGrokClient as AsyncGrokClient
-    from .async_provider import AsyncGrokProvider as AsyncGrokProvider
+    from .async_provider import AsyncGrokWebAIProvider as AsyncGrokWebAIProvider
     from .catalogs import GrokModels as GrokModels
     from .client import GrokClient as GrokClient
-    from .provider import GrokProvider as GrokProvider
+    from .provider import GrokWebAIProvider as GrokWebAIProvider
     from .resources import AsyncGrokChat as AsyncGrokChat
     from .resources import AsyncGrokMessage as AsyncGrokMessage
     from .resources import AsyncGrokProject as AsyncGrokProject
@@ -35,8 +35,8 @@ _EXPORTS = {
     "GrokArtifact": "resources",
     "GrokSource": "resources",
     "AsyncGrokChat": "resources",
-    "GrokProvider": "provider",
-    "AsyncGrokProvider": "async_provider",
+    "GrokWebAIProvider": "provider",
+    "AsyncGrokWebAIProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

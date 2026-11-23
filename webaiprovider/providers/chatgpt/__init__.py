@@ -6,7 +6,7 @@ from .. import resolve_lazy_export
 
 if TYPE_CHECKING:
     from .async_client import AsyncChatGPTClient as AsyncChatGPTClient
-    from .async_provider import AsyncChatGPTProvider as AsyncChatGPTProvider
+    from .async_provider import AsyncChatGPTWebAIProvider as AsyncChatGPTWebAIProvider
     from .auth import BrowserSession as BrowserSession
     from .catalogs import ChatGPTModels as ChatGPTModels
     from .client import ChatGPTClient as ChatGPTClient
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .collections import ChatGPTProjectsCollection as ChatGPTProjectsCollection
     from .errors import ChatGPTError as ChatGPTError
     from .errors import SentinelCompatibilityError as SentinelCompatibilityError
-    from .provider import ChatGPTProvider as ChatGPTProvider
+    from .provider import ChatGPTWebAIProvider as ChatGPTWebAIProvider
     from .resources import AsyncChatGPTChat as AsyncChatGPTChat
     from .resources import AsyncChatGPTMessage as AsyncChatGPTMessage
     from .resources import AsyncChatGPTProject as AsyncChatGPTProject
@@ -45,8 +45,8 @@ _EXPORTS = {
     "AsyncChatGPTChat": "resources",
     "ChatGPTProjectsCollection": "collections",
     "AsyncChatGPTProjectsCollection": "collections",
-    "ChatGPTProvider": "provider",
-    "AsyncChatGPTProvider": "async_provider",
+    "ChatGPTWebAIProvider": "provider",
+    "AsyncChatGPTWebAIProvider": "async_provider",
 }
 __all__ = list(_EXPORTS)
 

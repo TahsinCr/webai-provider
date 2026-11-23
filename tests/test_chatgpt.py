@@ -22,9 +22,9 @@ from tests.provider_fakes import provider_account
 from webaiprovider.accounts.status import SessionState
 from webaiprovider.base import Capability
 from webaiprovider.core.timing import SendTiming, use_send_timing
-from webaiprovider.errors import ProviderError, RateLimited, RemoteNotFound
+from webaiprovider.errors import RateLimited, RemoteNotFound, WebAIProviderError
 from webaiprovider.providers.chatgpt import (
-    AsyncChatGPTProvider,
+    AsyncChatGPTWebAIProvider,
     BrowserSession,
 )
 from webaiprovider.providers.chatgpt.async_client import (
@@ -92,7 +92,7 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient", PersistentClient
         ):
-            provider = AsyncChatGPTProvider(
+            provider = AsyncChatGPTWebAIProvider(
                 provider_account("chatgpt"), session=object(), client_factory=PersistentClient
             )
 
@@ -137,7 +137,7 @@ class ChatGPTConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
                 await super().close()
 
         client = BlockingCloseClient(object())
-        provider = AsyncChatGPTProvider(
+        provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt"),
             session=object(),
             client_factory=lambda _session, **_kwargs: client,
@@ -329,7 +329,7 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_common_provider_exposes_the_same_real_catalog_and_project_records(self):
         transport = AsyncHTTPTransport("https://chatgpt.com", client_getter=lambda: self.http)
-        provider = AsyncChatGPTProvider(
+        provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt"),
             session=self.session,
             client_factory=lambda _session, **kwargs: ChatGPTClient(
@@ -699,11 +699,11 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_open_prepares_cookie_credentials_before_catalog(self):
         from webaiprovider.accounts import REQUIRED_PROVIDER_COOKIES
-        from webaiprovider.accounts.account import Account
+        from webaiprovider.accounts.account import WebAIAccount
 
         cookie_name = REQUIRED_PROVIDER_COOKIES["https://chatgpt.com"]
         cookies = {f"{cookie_name}.0": "part-zero", f"{cookie_name}.1": "part-one"}
-        provider = AsyncChatGPTProvider(Account.from_cookies("chatgpt", cookies))
+        provider = AsyncChatGPTWebAIProvider(WebAIAccount.from_cookies("chatgpt", cookies))
 
         try:
             with (
@@ -737,7 +737,10 @@ class ChatGPTProfileBootstrapTests(unittest.IsolatedAsyncioTestCase):
             http.get.return_value.status_code = 302
             factory = MagicMock()
             factory.return_value.__enter__.return_value = http
-            with patch("curl_cffi.requests.Session", factory), self.assertRaises(ProviderError):
+            with (
+                patch("curl_cffi.requests.Session", factory),
+                self.assertRaises(WebAIProviderError),
+            ):
                 session.import_cookies({"__Secure-next-auth.session-token": "login"})
             self.assertEqual(session.session_file.read_bytes(), before)
             http.get.assert_called_once()
@@ -775,7 +778,7 @@ class _ChatGPTProviderFixture:
         root = Path(self.directory.name)
         self.session = BrowserSession(root / "session.json")
         self.client = FakeClient(self.session)
-        self.provider = AsyncChatGPTProvider(
+        self.provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt"), session=self.session, client_factory=lambda _: self.client
         )
 
@@ -982,7 +985,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
                 return_value={"metadata": {}},
             ),
         ):
-            provider = AsyncChatGPTProvider(provider_account("chatgpt"), session=self.session)
+            provider = AsyncChatGPTWebAIProvider(provider_account("chatgpt"), session=self.session)
             try:
                 await provider._prepare_session()
                 prewarm.assert_called_once_with()
@@ -1166,7 +1169,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
                     raise
 
         client = UploadClient()
-        provider = AsyncChatGPTProvider(
+        provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt"),
             session=self.session,
             client_factory=lambda _session: client,
@@ -1191,7 +1194,7 @@ class ChatGPTProviderTests(_ChatGPTProviderFixture, unittest.IsolatedAsyncioTest
         self.client.closed.set()
         self.client.failure = ValueError("secret transport detail")
 
-        with self.assertRaises(ProviderError) as raised:
+        with self.assertRaises(WebAIProviderError) as raised:
             async for _ in self.provider._stream_provider_events(ProviderRequest("hello")):
                 pass
 
@@ -1362,7 +1365,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
                         self.assertEqual([att.id for att in created], ["file-1", "file-2"])
                         self.assertEqual([att.name for att in created], ["first.txt", "second.txt"])
                     else:
-                        with self.assertRaisesRegex(ProviderError, "did not confirm all"):
+                        with self.assertRaisesRegex(WebAIProviderError, "did not confirm all"):
                             await project.attachments.create_many(*sources)
                         self.assertEqual(project.attachments._items, [])
                     self.assertEqual(self.client.get_project.await_count, int(readback is not None))
@@ -1380,7 +1383,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         async def upload(name, *_args, **_kwargs):
             if name == "fail.txt":
                 await started.wait()
-                raise ProviderError("upload failed")
+                raise WebAIProviderError("upload failed")
             self.assertEqual(name, "pending.txt")
             started.set()
             try:
@@ -1394,7 +1397,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         items = [
             {"kind": "text", "name": name, "text": "test"} for name in ("fail", "pending", "queued")
         ]
-        with self.assertRaisesRegex(ProviderError, "upload failed"):
+        with self.assertRaisesRegex(WebAIProviderError, "upload failed"):
             await asyncio.wait_for(editor.add_sources("g-p-work", items), 1)
         self.assertEqual(stopped, ["pending.txt"])
         self.client.request.assert_not_awaited()
@@ -1622,7 +1625,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient",
             PersistentNativeClient,
         ):
-            provider = AsyncChatGPTProvider(
+            provider = AsyncChatGPTWebAIProvider(
                 provider_account("chatgpt"),
                 session=self.session,
                 client_factory=PersistentNativeClient,
@@ -1656,7 +1659,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
         with patch(
             "webaiprovider.providers.chatgpt.async_provider.AsyncChatGPTClient", InspectableClient
         ):
-            provider = AsyncChatGPTProvider(
+            provider = AsyncChatGPTWebAIProvider(
                 provider_account("chatgpt"),
                 session=self.session,
             )
@@ -1883,7 +1886,7 @@ class ChatGPTProviderOptimizationTests(_ChatGPTProviderFixture, unittest.Isolate
             client._conversation_endpoint_verified = True
             return client
 
-        provider = AsyncChatGPTProvider(
+        provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt"),
             session=self.session,
             client_factory=make_client,

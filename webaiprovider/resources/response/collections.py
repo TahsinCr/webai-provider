@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from time import monotonic_ns
 from typing import TYPE_CHECKING, Any
 
-from eventflow import SingleFlight
+from flowcoord import AsyncSingleFlight
 
 from ...collections import (
     AsyncRemoteCollection,
@@ -18,7 +18,7 @@ from ...collections import (
     validate_limit,
     validate_predicate,
 )
-from ...errors import ProviderError, RemoteNotFound, UnsupportedOperationError
+from ...errors import RemoteNotFound, UnsupportedOperationError, WebAIProviderError
 from ..chat.chat import AsyncChat, _project_from_data
 from ..chat.types import Conversation
 from ..message.attachment import Attachment, Attachments
@@ -170,7 +170,7 @@ class _BaseResponsesCollection:
     def _execute_send(self, operation: AsyncMessageOperation | MessageOperation) -> Any:
         provider = self.chat.provider
         if provider is None:
-            raise ProviderError("No provider session is attached to this chat")
+            raise WebAIProviderError("No provider session is attached to this chat")
         return provider._require_provider()._execute_stream(operation)
 
     @property
@@ -321,7 +321,7 @@ class _BaseResponsesCollection:
         limit: int | None = None,
     ) -> list[Response]:
         if not isinstance(conversation, Conversation):
-            raise ProviderError("Provider returned an invalid conversation")
+            raise WebAIProviderError("Provider returned an invalid conversation")
         if conversation.title and not self.chat.title:
             self.chat.title = conversation.title
         self.chat.metadata = dict(conversation.metadata)
@@ -654,7 +654,7 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
 
     def __init__(self, chat: AsyncChat) -> None:
         self._init_responses_state(chat)
-        self._history_flight: SingleFlight[str] | None = None
+        self._history_flight: AsyncSingleFlight[str] | None = None
 
     async def _load_history(self, *, fresh: bool = False) -> list[Response]:
         remote_id = self.chat.remote_id
@@ -662,7 +662,7 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
             return list(self._turns)
         provider = self.chat.provider
         if provider is None:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
         provider._require_provider()
 
         async def read() -> _HistoryRead:
@@ -684,9 +684,9 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
             result = await read()
         else:
             if provider.closing and not provider._has_active_operation():
-                raise ProviderError("Provider is closing or is closed")
+                raise WebAIProviderError("Provider is closing or is closed")
             if self._history_flight is None:
-                self._history_flight = SingleFlight()
+                self._history_flight = AsyncSingleFlight()
             result = await self._history_flight.run(remote_id, read)
         if not result.reported:
             self._mark_remote_read(result.started_ns)
@@ -791,7 +791,7 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
                 return list(self._turns)
         provider = self.chat.provider
         if provider is None:
-            raise ProviderError("Chat is not attached to an open provider")
+            raise WebAIProviderError("Chat is not attached to an open provider")
         provider._require_provider()
         with provider._activity():
             provider._require_provider()

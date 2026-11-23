@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session
 from ...accounts.status import SessionState, SessionStatus
-from ...async_provider import AsyncProvider
-from ...base import ProviderType
+from ...async_provider import AsyncWebAIProvider
+from ...base import WebAIProviderType
 from ...collections import Page
 from ...core.cache import ContinuationCache
 from ...core.concurrency import gather_bounded
@@ -24,7 +24,7 @@ from .async_client import AsyncGrokClient, AsyncGrokProjectEditor
 from .base import (
     _CATALOG_TTL,
     _CONTINUATION_TTL,
-    BaseGrokProvider,
+    BaseGrokWebAIProvider,
     _validate_grok_request,
     remote_id,
 )
@@ -41,13 +41,15 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class AsyncGrokProvider(
+class AsyncGrokWebAIProvider(
     AsyncProjectMutationsMixin,
-    AsyncProvider[AsyncChatsCollection[AsyncGrokChat], AsyncProjectsCollection[AsyncGrokProject]],
-    BaseGrokProvider,
+    AsyncWebAIProvider[
+        AsyncChatsCollection[AsyncGrokChat], AsyncProjectsCollection[AsyncGrokProject]
+    ],
+    BaseGrokWebAIProvider,
 ):
     _message_type = AsyncGrokMessage
     _response_type = GrokResponse
@@ -64,9 +66,9 @@ class AsyncGrokProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         client_factory: Any = None,
         transport: AsyncTransport | None = None,
     ) -> None:

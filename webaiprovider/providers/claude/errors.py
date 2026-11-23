@@ -1,7 +1,7 @@
-from ...errors import CompatibilityError, ProviderError, RequestNotSentError, StreamError
+from ...errors import CompatibilityError, RequestNotSentError, StreamError, WebAIProviderError
 
 
-class ClaudeError(ProviderError):
+class ClaudeError(WebAIProviderError):
     code = "claude_error"
 
 

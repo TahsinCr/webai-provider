@@ -15,7 +15,7 @@ from ...accounts.credentials import CredentialStore
 from ...core.concurrency import gather_bounded
 from ...core.file_stat import same_file_version
 from ...core.timing import current_send_timing
-from ...errors import AccountPaused, ProviderError, RateLimited
+from ...errors import AccountPaused, RateLimited, WebAIProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.frames import JSPBFrameDecoder
@@ -161,7 +161,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             AsyncTransport.check(token_response)
             token = token_response.text.strip()
             if not token:
-                raise ProviderError("Gemini session validation token could not be refreshed")
+                raise WebAIProviderError("Gemini session validation token could not be refreshed")
             self.token = token
             refreshed_token = True
             request_options["headers"] = {**headers, "X-Framework-XSRF-Token": token}
@@ -224,7 +224,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             except OSError:
                 failures += 1
                 interval = min(15 * (2 ** min(failures - 1, 6)), 900)
-            except ProviderError:
+            except WebAIProviderError:
                 return
             except Exception:
                 return
@@ -390,7 +390,7 @@ class AsyncGeminiProjectEditor(BaseGeminiProjectEditor):
                 await self.rpc.connect(), [values["path"]]
             )
             if not reference.startswith("/"):
-                raise ProviderError("Gemini returned an invalid file upload reference")
+                raise WebAIProviderError("Gemini returned an invalid file upload reference")
             uploaded, text = [reference, mime_type], None
         else:
             raise ValueError("Unsupported notebook source type")

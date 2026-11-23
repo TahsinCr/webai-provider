@@ -18,15 +18,15 @@ from ...collections import (
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.concurrency import gather_bounded
 from ...core.hooks import OperationHooks
-from ...errors import FeatureUnavailable, ProviderError, RemoteNotFound
+from ...errors import FeatureUnavailable, RemoteNotFound, WebAIProviderError
 from ..operations import async_execute_with_hooks, execute_with_hooks
 from ..project.project import AsyncProject, Project
 from .chat import AsyncChat, Chat, _project_from_data, _resolve_project_arg
 from .types import DEFAULT_CHAT_TITLE, Conversation
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
+    from ...async_provider import AsyncWebAIProvider
+    from ...provider import WebAIProvider
     from ..response.response import Response
 
 _ChatT = TypeVar("_ChatT", bound=Chat, covariant=True)
@@ -38,7 +38,7 @@ _MAX_PROJECT_CHAT_PAGES = 500
 
 def _require_conversation_page(page: Any, *, label: str = "conversation") -> Page[Conversation]:
     if not isinstance(page, Page) or any(not isinstance(item, Conversation) for item in page.items):
-        raise ProviderError(f"Provider returned an invalid {label} page")
+        raise WebAIProviderError(f"Provider returned an invalid {label} page")
     return page
 
 
@@ -98,7 +98,7 @@ class _ProjectChatPageState:
         if next_cursor is None:
             return True
         if not isinstance(next_cursor, str) or not next_cursor or next_cursor in self.seen_cursors:
-            raise ProviderError(
+            raise WebAIProviderError(
                 "Provider project chat pagination returned an invalid or repeating cursor"
             )
         self.seen_cursors.add(next_cursor)
@@ -174,7 +174,7 @@ class _BaseChatsCollection:
         include_projects: bool,
     ) -> tuple[Any, list[Response]]:
         if not isinstance(conversation, Conversation):
-            raise ProviderError("Provider returned an invalid conversation")
+            raise WebAIProviderError("Provider returned an invalid conversation")
         if not include_projects and conversation.project is not None:
             raise RemoteNotFound(f"Record was not found: {item_id}")
         chat = self._from_data(conversation)
@@ -207,7 +207,7 @@ class _BaseChatsCollection:
 
 class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncChatT]):
     def __init__(
-        self, provider: AsyncProvider[Any, Any], build: Callable[..., _AsyncChatT]
+        self, provider: AsyncWebAIProvider[Any, Any], build: Callable[..., _AsyncChatT]
     ) -> None:
         self._init_chats_collection(provider, build)
         self.hooks = AsyncOperationHooks()
@@ -248,7 +248,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
                     )
                     if state.consume(raw_page):
                         return state.chats
-                raise ProviderError(
+                raise WebAIProviderError(
                     f"Provider project chat pagination exceeded {_MAX_PROJECT_CHAT_PAGES} pages"
                 )
 
@@ -465,7 +465,7 @@ class AsyncChatsCollection(_BaseChatsCollection, AsyncRemoteCollection[_AsyncCha
 
 
 class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
-    def __init__(self, provider: Provider[Any, Any], build: Callable[..., _ChatT]) -> None:
+    def __init__(self, provider: WebAIProvider[Any, Any], build: Callable[..., _ChatT]) -> None:
         self._init_chats_collection(provider, build)
         self.hooks = OperationHooks()
 
@@ -504,7 +504,7 @@ class ChatsCollection(_BaseChatsCollection, RemoteCollection[_ChatT]):
                 if state.consume(raw_page):
                     break
             else:
-                raise ProviderError(
+                raise WebAIProviderError(
                     f"Provider project chat pagination exceeded {_MAX_PROJECT_CHAT_PAGES} pages"
                 )
             all_chats.extend(state.chats)

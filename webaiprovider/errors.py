@@ -6,17 +6,17 @@ if TYPE_CHECKING:
     from .base import Capability
 
 
-class ProviderError(RuntimeError):
+class WebAIProviderError(RuntimeError):
     code = "provider_error"
     message_submitted: bool | None = None
 
 
-class RequestNotSentError(ProviderError):
+class RequestNotSentError(WebAIProviderError):
     code = "request_not_sent"
     message_submitted = False
 
 
-class StreamError(ProviderError):
+class StreamError(WebAIProviderError):
     code = "stream_error"
 
 
@@ -24,7 +24,7 @@ class FrameDecodeError(StreamError):
     code = "frame_decode_error"
 
 
-class AuthenticationError(ProviderError):
+class AuthenticationError(WebAIProviderError):
     code = "authentication_error"
 
 
@@ -32,7 +32,7 @@ class AccountPaused(AuthenticationError):
     code = "account_paused"
 
 
-class FeatureUnavailable(ProviderError):
+class FeatureUnavailable(WebAIProviderError):
     code = "feature_unavailable"
 
     def __init__(self, capability: Capability, reason: str = "unsupported"):
@@ -41,7 +41,7 @@ class FeatureUnavailable(ProviderError):
         self.reason = reason
 
 
-class RateLimited(ProviderError):
+class RateLimited(WebAIProviderError):
     code = "rate_limited"
 
     def __init__(
@@ -60,18 +60,18 @@ class RateLimited(ProviderError):
         self.message_submitted = message_submitted
 
 
-class CompatibilityError(ProviderError):
+class CompatibilityError(WebAIProviderError):
     code = "compatibility_error"
 
     def __init__(self, message: str = "provider capability changed") -> None:
         super().__init__(message)
 
 
-class RemoteNotFound(ProviderError):
+class RemoteNotFound(WebAIProviderError):
     code = "remote_not_found"
 
 
-class ProfileError(ProviderError):
+class ProfileError(WebAIProviderError):
     code = "profile_error"
     default_message = "Could not read the browser profile (unexpected error); check Python dependencies and profile access."
 
@@ -126,21 +126,21 @@ class ProfileInvalidResultError(ProfileError):
     default_message = "The profile reader returned an invalid result."
 
 
-class AmbiguousMatchError(ProviderError):
+class AmbiguousMatchError(WebAIProviderError):
     code = "ambiguous_match"
 
 
-class UnsupportedOperationError(ProviderError):
+class UnsupportedOperationError(WebAIProviderError):
     code = "unsupported_operation"
 
 
-class OperationCancelledError(ProviderError):
+class OperationCancelledError(WebAIProviderError):
     code = "operation_cancelled"
 
 
-class ConfigurationError(ProviderError):
+class ConfigurationError(WebAIProviderError):
     code = "configuration_error"
 
 
-class ContentError(ProviderError):
+class ContentError(WebAIProviderError):
     code = "content_error"

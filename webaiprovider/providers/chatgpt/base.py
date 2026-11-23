@@ -18,12 +18,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ...accounts import session_exists
 from ...accounts.status import SessionState, SessionStatus
-from ...base import BaseProvider, Capability, ProviderType
+from ...base import BaseWebAIProvider, Capability, WebAIProviderType
 from ...collections import Page
 from ...core.cache import ContinuationCache
 from ...core.json import json_dumps, json_loads
 from ...core.timing import SendTiming
-from ...errors import ProviderError, RateLimited, RemoteNotFound
+from ...errors import RateLimited, RemoteNotFound, WebAIProviderError
 from ...resources.chat.types import Conversation
 from ...resources.message.attachment import Attachment
 from ...resources.message.protocol import (
@@ -1384,7 +1384,7 @@ class BaseChatGPTProjectEditor:
     def _validate_upload_ids(uploads: list[dict[str, Any]]) -> set[str]:
         ids = {item["file_id"] for item in uploads}
         if len(ids) != len(uploads):
-            raise ProviderError("ChatGPT returned duplicate project upload IDs")
+            raise WebAIProviderError("ChatGPT returned duplicate project upload IDs")
         return ids
 
     @staticmethod
@@ -1401,7 +1401,7 @@ class BaseChatGPTProjectEditor:
         ids: set[str],
     ) -> list[Attachment]:
         if confirmed.keys() != ids:
-            raise ProviderError(
+            raise WebAIProviderError(
                 "ChatGPT did not confirm all project attachments; reload the project before retrying"
             )
         return cls._build_attached_results(uploads, confirmed)
@@ -1416,10 +1416,10 @@ class BaseChatGPTProjectEditor:
         return None
 
 
-class BaseChatGPTProvider(BaseProvider):
+class BaseChatGPTWebAIProvider(BaseWebAIProvider):
     """Provider identity and protocol rules shared by both execution modes."""
 
-    provider_type = ProviderType.CHATGPT
+    provider_type = WebAIProviderType.CHATGPT
 
     _capabilities = frozenset(
         {

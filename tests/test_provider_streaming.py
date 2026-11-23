@@ -7,23 +7,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from tests.provider_fakes import provider_account
 from tests.streaming_support import StreamTestProvider, collect_provider_stream
 from webaiprovider import (
-    Account,
     AsyncChat,
     AsyncMessage,
     AsyncMessageOperation,
-    AsyncProvider,
+    AsyncWebAIProvider,
+    WebAIAccount,
 )
 from webaiprovider.collections import Page
 from webaiprovider.errors import (
     AccountPaused,
     OperationCancelledError,
-    ProviderError,
     RateLimited,
+    WebAIProviderError,
 )
-from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
-from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
-from webaiprovider.providers.gemini.async_provider import AsyncGeminiProvider
-from webaiprovider.providers.grok.async_provider import AsyncGrokProvider
+from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTWebAIProvider
+from webaiprovider.providers.claude.async_provider import AsyncClaudeWebAIProvider
+from webaiprovider.providers.gemini.async_provider import AsyncGeminiWebAIProvider
+from webaiprovider.providers.grok.async_provider import AsyncGrokWebAIProvider
 from webaiprovider.resources.message.protocol import TextDelta
 from webaiprovider.resources.model import ModelCatalogState
 from webaiprovider.resources.model.model import EffortOption, ModelCatalog
@@ -40,9 +40,9 @@ from webaiprovider.resources.response.operation import (
 )
 
 
-def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncProvider:
-    account = Account.from_cookies(provider_name, {"session": "token"}, id=account_id)
-    session = AsyncProvider(account)
+def _create_mock_session(provider_name: str, account_id: str = "acc-test") -> AsyncWebAIProvider:
+    account = WebAIAccount.from_cookies(provider_name, {"session": "token"}, id=account_id)
+    session = AsyncWebAIProvider(account)
     models_catalog = [
         CatalogModel(
             "default-model",
@@ -66,7 +66,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         close_started = asyncio.Event()
         provider_closed = asyncio.Event()
 
-        class SlowProvider(AsyncProvider):
+        class SlowProvider(AsyncWebAIProvider):
             async def _close_session(self) -> None:
                 provider_closed.set()
 
@@ -94,8 +94,8 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
                 )
                 return ModelCatalog(ModelCatalogState.AVAILABLE, (model,), model.id)
 
-        def make_provider() -> AsyncProvider:
-            account = Account.from_cookies("chatgpt", {"session": "token"})
+        def make_provider() -> AsyncWebAIProvider:
+            account = WebAIAccount.from_cookies("chatgpt", {"session": "token"})
             provider = SlowProvider(account)
             orig_finish = provider._finish_close
 
@@ -137,12 +137,12 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         await provider.open()
         chat = await provider.chats.create(title="Reentrant send")
         operation = chat.responses.create("first")
-        nested_errors: list[ProviderError] = []
+        nested_errors: list[WebAIProviderError] = []
 
         async def send_from_hook(_event) -> None:
             try:
                 await chat.responses.create("nested").start()
-            except ProviderError as error:
+            except WebAIProviderError as error:
                 nested_errors.append(error)
 
         operation.chat.hooks.add("output.delta", send_from_hook)
@@ -190,7 +190,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
         stream_closed = asyncio.Event()
         provider_closed = asyncio.Event()
 
-        class CleanupProvider(AsyncProvider):
+        class CleanupProvider(AsyncWebAIProvider):
             async def _close_session(self) -> None:
                 provider_closed.set()
 
@@ -201,7 +201,7 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     stream_closed.set()
 
-        account = Account.from_cookies("chatgpt", {"session": "token"})
+        account = WebAIAccount.from_cookies("chatgpt", {"session": "token"})
         provider = CleanupProvider(account)
         await provider.open()
         chat = await provider.chats.create(title="Cancellation")
@@ -230,12 +230,12 @@ class AsyncProviderCancellationCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_double_cancel_shields_terminal_cleanup_and_releases_send_lock(self) -> None:
         from webaiprovider import OperationEvent
 
-        class HangingProvider(AsyncProvider):
+        class HangingProvider(AsyncWebAIProvider):
             async def _stream_provider_events(self, _request):
                 yield TextDelta("partial")
                 await asyncio.Event().wait()
 
-        provider = HangingProvider(Account.from_cookies("chatgpt", {"session": "token"}))
+        provider = HangingProvider(WebAIAccount.from_cookies("chatgpt", {"session": "token"}))
         await provider.open()
         self.addAsyncCleanup(provider.close)
         chat = await provider.chats.create(title="Double Cancel")
@@ -277,7 +277,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMessage("Hello Claude", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
-        provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
+        provider = AsyncClaudeWebAIProvider(provider_account("claude", "cred_file", "acc-test"))
         provider.client.authenticated = True
 
         async def fake_events(*args, **kwargs):
@@ -328,7 +328,7 @@ class AsyncClaudeProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMessage("Hello Claude", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
-        provider = AsyncClaudeProvider(provider_account("claude", "cred_file", "acc-test"))
+        provider = AsyncClaudeWebAIProvider(provider_account("claude", "cred_file", "acc-test"))
         provider.client.authenticated = False
 
         with (
@@ -345,7 +345,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMessage("Hello Grok", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
-        provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
+        provider = AsyncGrokWebAIProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
             ModelCatalogState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
@@ -392,7 +392,7 @@ class AsyncGrokProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMessage("Hello Grok", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
-        provider = AsyncGrokProvider(provider_account("grok", "cred_file", "acc-test"))
+        provider = AsyncGrokWebAIProvider(provider_account("grok", "cred_file", "acc-test"))
         catalog = ModelCatalog(
             ModelCatalogState.AVAILABLE,
             (CatalogModel("grok-3", "Grok 3", metadata={"modelName": "grok-3"}),),
@@ -423,7 +423,7 @@ class AsyncGeminiProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMessage("Hello Gemini", chat=chat)
         operation = AsyncMessageOperation(chat, message)
 
-        provider = AsyncGeminiProvider(provider_account("gemini", "cookie_file", "acc-test"))
+        provider = AsyncGeminiWebAIProvider(provider_account("gemini", "cookie_file", "acc-test"))
         provider._connect = AsyncMock()
 
         mock_client = MagicMock()
@@ -514,7 +514,7 @@ class AsyncChatGPTProviderStreamingTests(unittest.IsolatedAsyncioTestCase):
             def load(self):
                 pass
 
-        provider = AsyncChatGPTProvider(
+        provider = AsyncChatGPTWebAIProvider(
             provider_account("chatgpt", "cred_file", "acc-test"),
             session=DummyBrowserSession(),
             client_factory=lambda _: mock_client,

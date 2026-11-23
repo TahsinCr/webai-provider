@@ -6,10 +6,10 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, call
 
-from webaiprovider.accounts import Account
-from webaiprovider.async_provider import AsyncProvider
-from webaiprovider.errors import AmbiguousMatchError, ProviderError, RemoteNotFound
-from webaiprovider.provider import Provider
+from webaiprovider.accounts import WebAIAccount
+from webaiprovider.async_provider import AsyncWebAIProvider
+from webaiprovider.errors import AmbiguousMatchError, RemoteNotFound, WebAIProviderError
+from webaiprovider.provider import WebAIProvider
 from webaiprovider.providers.chatgpt.catalogs import ChatGPTModels, parse_model_catalog
 from webaiprovider.providers.claude.catalogs import (
     ClaudeModels,
@@ -231,12 +231,12 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
             ModelCatalog,
         )
 
-        account = Account("account-1", "chatgpt", {"session_token": "test"})
+        account = WebAIAccount("account-1", "chatgpt", {"session_token": "test"})
         catalog = ModelCatalog(
             ModelCatalogState.AVAILABLE,
             (Model("gpt-6-pro", "GPT-6 Pro"),),
         )
-        provider = AsyncProvider(account)
+        provider = AsyncWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._load_catalog = AsyncMock(return_value=catalog)
         await provider.open()
@@ -255,13 +255,13 @@ class DynamicCatalogTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.model import ModelCatalogState
         from webaiprovider.resources.model.model import ModelCatalog
 
-        account = Account("account-1", "chatgpt", {"session_token": "test"})
-        provider = AsyncProvider(account)
+        account = WebAIAccount("account-1", "chatgpt", {"session_token": "test"})
+        provider = AsyncWebAIProvider(account)
         provider._prepare_session = AsyncMock()
         provider._load_catalog = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         async with provider:
             self.assertEqual(await provider.models.list(), [])
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.models.list()
         provider._load_catalog.assert_awaited_once()
 
@@ -387,7 +387,7 @@ class BlockingCatalogTests(unittest.TestCase):
         self.assertEqual(catalog.list(), [])
 
     def test_loaded_catalog_lists_gets_and_resolves_on_caller_without_starting_loop(self):
-        provider = Provider(Account.from_cookies("grok", {}))
+        provider = WebAIProvider(WebAIAccount.from_cookies("grok", {}))
         self.addCleanup(provider.close)
         model = ModelRef("grok", "fast", "Grok 3")
         caller = threading.get_ident()
@@ -445,7 +445,7 @@ class EntitlementTests(unittest.TestCase):
         self,
     ) -> None:
         for data in [{}, {"model_selector_config": [{"id": "chat", "models": []}]}]:
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 parse_claude_catalog(data)
 
     def test_gpt_disabled_or_account_inaccessible_models_are_filtered(self) -> None:

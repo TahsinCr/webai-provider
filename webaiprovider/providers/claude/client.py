@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from ...accounts import read_session
 from ...core.file_stat import same_file_version
 from ...core.timing import _STREAM_PAUSED, current_send_timing
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import MessageAction
 from ...resources.project.types import source_file
@@ -106,7 +106,7 @@ class ClaudeClient(BaseClaudeClient):
             body.close()
         if local_path is not None and before is not None:
             if not same_file_version(before, os.stat(local_path)):
-                raise ProviderError("File changed while it was being uploaded")
+                raise WebAIProviderError("File changed while it was being uploaded")
         return self._parse_upload_result(result, filename, mime, size)
 
     def request(self, mode: str, **v):

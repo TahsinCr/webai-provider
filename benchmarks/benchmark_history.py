@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 
-from webaiprovider import Account, AsyncProvider, Provider, ProviderType
+from webaiprovider import AsyncWebAIProvider, WebAIAccount, WebAIProvider, WebAIProviderType
 from webaiprovider.resources.chat.types import Conversation
 from webaiprovider.resources.message.types import Content, MessageData
 
@@ -27,10 +27,10 @@ def _history(messages: int) -> Conversation:
     )
 
 
-class _AsyncHistoryProvider(AsyncProvider):
+class _AsyncHistoryProvider(AsyncWebAIProvider):
     """Use the real public collections and replace the remote read boundary."""
 
-    def __init__(self, account: Account, **options) -> None:
+    def __init__(self, account: WebAIAccount, **options) -> None:
         super().__init__(account, **options)
         self.snapshot: Conversation
 
@@ -41,8 +41,8 @@ class _AsyncHistoryProvider(AsyncProvider):
         return self.snapshot
 
 
-class _HistoryProvider(Provider):
-    def __init__(self, account: Account, **options) -> None:
+class _HistoryProvider(WebAIProvider):
+    def __init__(self, account: WebAIAccount, **options) -> None:
         super().__init__(account, **options)
         self.snapshot: Conversation
 
@@ -52,8 +52,8 @@ class _HistoryProvider(Provider):
         return self.snapshot
 
 
-def _account() -> Account:
-    return Account.from_cookies(ProviderType.CHATGPT, {})
+def _account() -> WebAIAccount:
+    return WebAIAccount.from_cookies(WebAIProviderType.CHATGPT, {})
 
 
 @asynccontextmanager

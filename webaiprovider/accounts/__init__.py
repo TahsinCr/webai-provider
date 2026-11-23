@@ -1,4 +1,4 @@
-from .account import Account
+from .account import WebAIAccount
 from .cookie_policy import ALLOWED_PROVIDER_ORIGINS, REQUIRED_PROVIDER_COOKIES
 from .cookies import (
     import_cookies,
@@ -33,7 +33,7 @@ from .profiles import (
 from .status import SessionState, SessionStatus
 
 __all__ = [
-    "Account",
+    "WebAIAccount",
     "CredentialStore",
     "FileCredentialStore",
     "MemoryCredentialStore",

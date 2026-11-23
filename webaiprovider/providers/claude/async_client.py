@@ -8,13 +8,13 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 
-from eventflow import SingleFlight
+from flowcoord import AsyncSingleFlight
 
 from ...accounts import async_read_session
 from ...core.concurrency import gather_bounded
 from ...core.file_stat import same_file_version
 from ...core.timing import current_send_timing
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
 from ...resources.message.types import MessageAction
 from ...resources.project.types import source_file
@@ -45,7 +45,7 @@ class AsyncClaudeClient(BaseClaudeClient):
         self._init_client_state(
             session or AsyncHttpSession(ORIGIN, credential_file, "sessionKey"), transport
         )
-        self._discovery = SingleFlight()
+        self._discovery = AsyncSingleFlight()
 
     async def _discover(self):
         data, values = await asyncio.gather(
@@ -124,7 +124,7 @@ class AsyncClaudeClient(BaseClaudeClient):
         if local_path is not None and before is not None:
             after = await asyncio.to_thread(os.stat, local_path)
             if not same_file_version(before, after):
-                raise ProviderError("File changed while it was being uploaded")
+                raise WebAIProviderError("File changed while it was being uploaded")
         return self._parse_upload_result(result, filename, mime, size)
 
     async def request(self, mode: str, **v):

@@ -9,22 +9,27 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
-from eventflow import ErrorPolicy, EventBus, EventEnvelope, StateMachine
+from flowevent import ErrorPolicy, EventBus, EventEnvelope
 
 from .accounts.status import SessionStatus
 from .base import (
     _OPENING_PROVIDERS,
-    BaseProvider,
+    BaseWebAIProvider,
     Capability,
-    ProviderType,
+    WebAIProviderType,
     _construct_provider,
     _StreamEventTranslator,
 )
 from .collections import _publish_collection_change
 from .core.hooks import OperationHooks
-from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
+from .core.state import (
+    _LIFECYCLE_TERMINAL_STATES,
+    _LIFECYCLE_TRANSITIONS,
+    LifecycleState,
+    StateMachine,
+)
 from .core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
-from .errors import AccountPaused, FeatureUnavailable, ProviderError
+from .errors import AccountPaused, FeatureUnavailable, WebAIProviderError
 from .resources.chat.chat import Chat
 from .resources.chat.collections import ChatsCollection
 from .resources.chat.types import Conversation
@@ -47,7 +52,7 @@ from .transport import StreamResponse, Transport, TransportConfig, TransportResp
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
 
-    from .accounts.account import Account
+    from .accounts.account import WebAIAccount
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
     from .resources.response.operation import MessageOperation
@@ -68,7 +73,7 @@ else:
     _ProjectsT = TypeVar("_ProjectsT", covariant=True)
 
 
-_ProviderT = TypeVar("_ProviderT", bound="Provider[Any, Any]")
+_ProviderT = TypeVar("_ProviderT", bound="WebAIProvider[Any, Any]")
 
 
 _CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -80,7 +85,7 @@ _log = logging.getLogger(__name__)
 class _TrackedTransport(Transport):
     """Lifecycle-tracked view of a sync Provider's active transport."""
 
-    def __init__(self, provider: Provider[Any, Any], transport: Transport) -> None:
+    def __init__(self, provider: WebAIProvider[Any, Any], transport: Transport) -> None:
         self._provider = provider
         self._transport = transport
 
@@ -112,11 +117,11 @@ class _TrackedTransport(Transport):
         self._provider.close()
 
 
-class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
+class WebAIProvider(BaseWebAIProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     """Native blocking provider session running all operations on the caller thread."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
-        return _construct_provider(cls, Provider, args, options, asynchronous=False)
+        return _construct_provider(cls, WebAIProvider, args, options, asynchronous=False)
 
     _chat_page_size = 50
     _chat_initial_page_floor = 1
@@ -129,9 +134,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         transport: Transport | None = None,
     ) -> None:
         super().__init__(account, type=type)
@@ -175,7 +180,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         if active is None:
             active = self._transport
         if active is None:
-            raise ProviderError("This provider has no configured transport")
+            raise WebAIProviderError("This provider has no configured transport")
         return _TrackedTransport(self, active)
 
     def _lock(self, kind: str, remote_id: str) -> threading.Lock:
@@ -201,7 +206,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     @contextlib.contextmanager
     def _activity(self, *, send_lock_id: int | None = None):
         if send_lock_id is not None and self._has_active_operation(send_lock_id=send_lock_id):
-            raise ProviderError("A send hook cannot start another send in the same conversation")
+            raise WebAIProviderError(
+                "A send hook cannot start another send in the same conversation"
+            )
         nested = self._has_active_operation()
         with self._operation_marker(send_lock_id=send_lock_id):
             self._begin_activity(nested=nested)
@@ -228,9 +235,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             if self.lifecycle_state == LifecycleState.OPENING:
                 self._wait_for_opening()
             if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
-                raise ProviderError("Provider cleanup failed; call close() again")
+                raise WebAIProviderError("Provider cleanup failed; call close() again")
             if self.closed or (self.closing and not nested):
-                raise ProviderError("Provider is closing or is closed")
+                raise WebAIProviderError("Provider is closing or is closed")
             self._active_operations += 1
 
     def _end_activity(self) -> None:
@@ -286,7 +293,7 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
     def _wait_for_opening(self) -> None:
         if self.lifecycle_state == LifecycleState.OPENING:
             if id(self) in _OPENING_PROVIDERS.get():
-                raise ProviderError(
+                raise WebAIProviderError(
                     "Cannot perform this operation from a provider opening callback"
                 )
             self._lifecycle_condition.wait_for(
@@ -299,9 +306,11 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
             if reuse_open and self._opened:
                 return False
             if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
-                raise ProviderError("Provider cleanup failed; call close() again before reopening")
+                raise WebAIProviderError(
+                    "Provider cleanup failed; call close() again before reopening"
+                )
             if self.closed or self.closing:
-                raise ProviderError("A closed provider cannot be reopened")
+                raise WebAIProviderError("A closed provider cannot be reopened")
             if self._opened:
                 return False
             self.lifecycle.transition(LifecycleState.OPENING)
@@ -339,14 +348,19 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
         try:
             self._close_session()
         finally:
-            if type(self)._close_session is Provider._close_session and self._transport is not None:
+            if (
+                type(self)._close_session is WebAIProvider._close_session
+                and self._transport is not None
+            ):
                 self._transport.close()
 
     def close(self) -> None:
         if _CLOSING_PROVIDER.get() == id(self):
-            raise ProviderError("close() cannot be called from a provider closing event callback")
+            raise WebAIProviderError(
+                "close() cannot be called from a provider closing event callback"
+            )
         if self._has_active_operation():
-            raise ProviderError("Cannot close a provider from one of its active operations")
+            raise WebAIProviderError("Cannot close a provider from one of its active operations")
         with self._lifecycle_condition:
             self._wait_for_opening()
             if self.closed:
@@ -397,7 +411,9 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 owner == caller and (pending.chat.remote_id or pending.chat.id) == conversation_id
                 for pending, owner in self._parked_sends.items()
             ):
-                raise ProviderError("Resume or cancel the paused send before reusing this chat")
+                raise WebAIProviderError(
+                    "Resume or cancel the paused send before reusing this chat"
+                )
 
     def _prepare_chat(self, chat: Any) -> None:
         conversation_id = chat.remote_id or chat.id
@@ -485,10 +501,10 @@ class Provider(BaseProvider[_ChatsT, _ProjectsT, ModelsCollection]):
                 else:
                     yield from translator.feed(event)
             yield from translator.finish()
-        except (ProviderError, ValueError):
+        except (WebAIProviderError, ValueError):
             raise
         except Exception as exc:
-            raise ProviderError("Provider request failed") from exc
+            raise WebAIProviderError("Provider request failed") from exc
         finally:
             _close_iterator(stream)
 

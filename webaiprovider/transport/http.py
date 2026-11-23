@@ -10,7 +10,7 @@ from io import BytesIO
 from threading import Condition, RLock, get_ident
 
 from ..core.timing import current_send_timing
-from ..errors import ProviderError
+from ..errors import WebAIProviderError
 from .base import (
     Transport,
     _BufferedResponse,
@@ -111,7 +111,7 @@ class HTTPTransport(Transport):
         self._check_declared_size(response)
         iterator = getattr(response, "iter_content", None) or getattr(response, "iter_bytes", None)
         if not callable(iterator):
-            raise ProviderError("Provider response cannot be streamed")
+            raise WebAIProviderError("Provider response cannot be streamed")
         first = b""
         buffer = None
         limit = self.config.max_response_bytes
@@ -119,7 +119,7 @@ class HTTPTransport(Transport):
         for chunk in iterator():
             total += len(chunk)
             if total > limit:
-                raise ProviderError("Provider response exceeds the size limit")
+                raise WebAIProviderError("Provider response exceeds the size limit")
             if chunk:
                 if not first:
                     first = bytes(chunk)
@@ -160,7 +160,7 @@ class HTTPTransport(Transport):
                 if received_headers:
                     self._check_response(response, check_status)
                 if overflow:
-                    raise ProviderError("Provider response exceeds the size limit") from None
+                    raise WebAIProviderError("Provider response exceeds the size limit") from None
                 if not received_headers and not buffer.tell() and _is_curl_timeout(error):
                     self._invalidate_dns(current)
                     if attempt == 0 and method.upper() in _IDEMPOTENT_METHODS:
@@ -174,7 +174,7 @@ class HTTPTransport(Transport):
                 self._check_size(response)
                 return response
             return _BufferedResponse(response, body)
-        raise ProviderError("Provider request could not be completed")
+        raise WebAIProviderError("Provider request could not be completed")
 
     def send(self, method, path, *, check_status=True, **options):
         with self._activity():
@@ -218,7 +218,7 @@ class HTTPTransport(Transport):
                             continue
                     raise
                 return self._buffer_response(response)
-        raise ProviderError("Provider request could not be completed")
+        raise WebAIProviderError("Provider request could not be completed")
 
     @contextmanager
     def stream(self, method, path, *, check_status=True, _message=False, **options):
@@ -289,7 +289,7 @@ class HTTPTransport(Transport):
     def close(self):
         with self._idle:
             if self._callers[get_ident()]:
-                raise ProviderError("Cannot close the transport from an active HTTP call")
+                raise WebAIProviderError("Cannot close the transport from an active HTTP call")
             self._idle.wait_for(lambda: not self._closing)
             self._closing = True
             try:

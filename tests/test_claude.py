@@ -13,8 +13,8 @@ from tests.provider_fakes import claude_model_catalog, provider_account
 from webaiprovider.base import (
     Capability,
 )
-from webaiprovider.errors import ProviderError, RateLimited
-from webaiprovider.providers.claude import AsyncClaudeProvider
+from webaiprovider.errors import RateLimited, WebAIProviderError
+from webaiprovider.providers.claude import AsyncClaudeWebAIProvider
 from webaiprovider.providers.claude.async_client import (
     AsyncClaudeClient as ClaudeClient,
 )
@@ -120,7 +120,7 @@ class ClaudeRecordsTests(unittest.TestCase):
                 _find_streamed_turn("claude", Response(text, remote_id=remote_id), [saved])
             )
         for remote_id in ("other:4", "native-turn:0"):
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 action_target(native, remote_id, MessageAction.RETRY)
 
     def test_history_separates_public_thinking_and_retains_resources(self):
@@ -339,7 +339,9 @@ class ClaudeRecordsTests(unittest.TestCase):
 
 class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.provider = AsyncClaudeProvider(provider_account("claude", Path("unused"), "account"))
+        self.provider = AsyncClaudeWebAIProvider(
+            provider_account("claude", Path("unused"), "account")
+        )
         self.provider.client.authenticated = True
         self.provider.client.request = AsyncMock()
 
@@ -399,8 +401,8 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.provider._delete_chat_data(CHAT)
         self.provider.client.request.assert_awaited_once_with("delete_chat", conversation_id=CHAT)
         self.provider.client.request.reset_mock()
-        self.provider.client.request.side_effect = ProviderError("network")
-        with self.assertRaises(ProviderError):
+        self.provider.client.request.side_effect = WebAIProviderError("network")
+        with self.assertRaises(WebAIProviderError):
             await self.provider._move_chat_data(CHAT, PROJECT, source_project_id=None)
         self.provider.client.request.assert_awaited_once()
 
@@ -410,7 +412,7 @@ class AsyncClaudeProviderTests(unittest.IsolatedAsyncioTestCase):
             yield {"type": "replace", "text": "Partial", "channel": "final"}
 
         self.provider.client.events = events
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             _ = [
                 x async for x in self.provider._stream_provider_events(ProviderRequest("Question"))
             ]
@@ -709,7 +711,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.collections import Page
         from webaiprovider.resources.project.types import ProjectData as NativeProject
 
-        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        provider = AsyncClaudeWebAIProvider(provider_account("claude", Path("unused")))
         initial = NativeProject(PROJECT, "Old Name", "Keep brief", metadata={"native": {}})
         provider._prepare_session = AsyncMock()
         provider._list_projects_data = AsyncMock(return_value=Page((initial,), None))
@@ -1002,7 +1004,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_request_uploads_multiple_attachments_bounded_to_two_in_order(self):
         import asyncio
 
-        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        provider = AsyncClaudeWebAIProvider(provider_account("claude", Path("unused")))
         active = 0
         max_active = 0
         captured_attachments = []
@@ -1180,7 +1182,7 @@ class ClaudeOptimizationTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        provider = AsyncClaudeProvider(provider_account("claude", Path("unused")))
+        provider = AsyncClaudeWebAIProvider(provider_account("claude", Path("unused")))
         stream_entered = asyncio.Event()
         release_stream = asyncio.Event()
 

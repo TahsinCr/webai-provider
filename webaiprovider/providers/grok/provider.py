@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session
 from ...accounts.status import SessionState, SessionStatus
-from ...base import ProviderType
+from ...base import WebAIProviderType
 from ...collections import Page
 from ...core.cache import ContinuationCache
-from ...provider import Provider
+from ...provider import WebAIProvider
 from ...resources.chat.collections import ChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
@@ -22,7 +22,7 @@ from ...transport import Transport
 from .base import (
     _CATALOG_TTL,
     _CONTINUATION_TTL,
-    BaseGrokProvider,
+    BaseGrokWebAIProvider,
     _validate_grok_request,
     remote_id,
 )
@@ -40,13 +40,13 @@ from .resources import (
 )
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class GrokProvider(
+class GrokWebAIProvider(
     ProjectMutationsMixin,
-    Provider[ChatsCollection[GrokChat], ProjectsCollection[GrokProject]],
-    BaseGrokProvider,
+    WebAIProvider[ChatsCollection[GrokChat], ProjectsCollection[GrokProject]],
+    BaseGrokWebAIProvider,
 ):
     _message_type = GrokMessage
     _response_type = GrokResponse
@@ -63,9 +63,9 @@ class GrokProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         client_factory: Any = None,
         transport: Transport | None = None,
     ) -> None:

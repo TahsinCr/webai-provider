@@ -14,14 +14,13 @@ from enum import Enum
 from math import inf, isnan
 from typing import TYPE_CHECKING, Any
 
-from eventflow import StateMachine
-
 from ...collections import _async_publish_collection_change, _publish_collection_change
 from ...core.async_hooks import AsyncOperationHooks
 from ...core.hooks import OperationHooks
+from ...core.state import StateMachine
 from ...core.timing import _STREAM_PAUSED, _stream_deadline, _StreamPause
 from ...core.types import HookDispatchResult, OperationContext
-from ...errors import OperationCancelledError, ProviderError
+from ...errors import OperationCancelledError, WebAIProviderError
 from ..message.message import AsyncMessage, Message
 from .artifact import Artifact, ArtifactsCollection
 from .parts import ResponsePart, TextPart, ThinkingPart
@@ -441,7 +440,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
             raise OperationCancelledError("Operation cancelled")
         if self._stream_task is None:
             if self._executor is None:
-                raise ProviderError("No executor is configured for this operation")
+                raise WebAIProviderError("No executor is configured for this operation")
             self._loop = asyncio.get_running_loop()
             self._transition_to(OperationState.PREPARING)
             self._stream_task = self._loop.create_task(self._run_internal())
@@ -655,7 +654,7 @@ class AsyncMessageOperation(_BaseMessageOperation):
         if task is asyncio.current_task():
             if self._response is not None:
                 return self._response
-            raise ProviderError("Cannot wait for a message operation from its callback")
+            raise WebAIProviderError("Cannot wait for a message operation from its callback")
         return await asyncio.shield(task)
 
     async def wait(self) -> Response:
@@ -851,12 +850,12 @@ class MessageOperation(_BaseMessageOperation):
             return False
         caller = threading.get_ident()
         if self._driver_thread == caller:
-            raise ProviderError("Cannot drive a message operation from its callback")
+            raise WebAIProviderError("Cannot drive a message operation from its callback")
         if self._driver_thread is not None:
             return False
         if self._iterator is None:
             if self._executor is None:
-                raise ProviderError("No executor is configured for this operation")
+                raise WebAIProviderError("No executor is configured for this operation")
             self._transition_to(OperationState.PREPARING)
             self._context = copy_context()
             self._context.run(_stream_deadline.set, None)

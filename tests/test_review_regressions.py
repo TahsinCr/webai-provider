@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock
 
 from tests.streaming_support import collect_provider_stream
 from webaiprovider import (
-    Account,
     AsyncChat,
     AsyncMessage,
     AsyncMessageOperation,
     Attachment,
     OutputDelta,
-    ProviderError,
+    WebAIAccount,
+    WebAIProviderError,
 )
-from webaiprovider.providers.claude.async_provider import AsyncClaudeProvider
+from webaiprovider.providers.claude.async_provider import AsyncClaudeWebAIProvider
 from webaiprovider.resources.message.protocol import TextDelta, TextReplacement, ThoughtDelta
 from webaiprovider.resources.model import ModelCatalog, ModelCatalogState
 from webaiprovider.resources.project.types import ProjectData
@@ -26,7 +26,7 @@ from webaiprovider.resources.response.operation import ThinkingEnd, ThinkingRepl
 class IsolationTests(unittest.TestCase):
     def test_account_retains_updates_and_isolates_nested_values(self):
         original = {"cookies": {"session": "old"}}
-        account = Account.from_cookies("gemini", original)
+        account = WebAIAccount.from_cookies("gemini", original)
         store = account.store()
         self.assertIs(store, account.store())
         original["cookies"]["session"] = "outside"
@@ -70,7 +70,7 @@ class StreamCompletionTests(unittest.IsolatedAsyncioTestCase):
 
 class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def provider(self):
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         return provider
@@ -96,7 +96,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.gather(provider.close(), provider.close())
         provider._close_session.assert_awaited_once_with()
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.open()
 
     async def test_close_finishes_active_stream_even_when_waiter_is_cancelled(self):
@@ -124,7 +124,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await consumer
 
         provider._close_session.assert_awaited_once_with()
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.open()
 
     async def test_concurrent_ask_calls_keep_one_open_session_until_both_finish(self):
@@ -201,7 +201,7 @@ class ProviderLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
     async def test_analysis_replacement_and_new_segment_reset_have_replace_semantics(self):
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._close_session = AsyncMock()
 
         async def stream(_request):
@@ -228,8 +228,8 @@ class ThinkingReplacementTests(unittest.IsolatedAsyncioTestCase):
 
 class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_and_resource_mutations_keep_session_ownership(self):
-        first = AsyncClaudeProvider(Account.from_cookies("claude", {}))
-        second = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        first = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
+        second = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         first._close_session = AsyncMock()
         second._close_session = AsyncMock()
         try:
@@ -263,7 +263,7 @@ class ResourceOwnershipTests(unittest.IsolatedAsyncioTestCase):
             await second.close()
 
     async def test_parallel_project_field_updates_preserve_each_others_changes(self):
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         await provider.open()
@@ -328,7 +328,7 @@ class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "Concurrent"):
             next(sync.iter_bytes())
         reader.close()
-        with self.assertRaisesRegex(ProviderError, "size limit"):
+        with self.assertRaisesRegex(WebAIProviderError, "size limit"):
             next(sync.iter_bytes())
 
         async def produce():
@@ -341,7 +341,7 @@ class ReportTransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "Concurrent"):
             await anext(stream.aiter_bytes())
         await reader.aclose()
-        with self.assertRaisesRegex(ProviderError, "size limit"):
+        with self.assertRaisesRegex(WebAIProviderError, "size limit"):
             await anext(stream.aiter_bytes())
 
     def test_byte_limits_require_positive_integers(self):
@@ -377,7 +377,7 @@ class RefreshIdentityTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.resources.chat.types import Conversation
         from webaiprovider.resources.message.types import Content, MessageData
 
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         remote = Conversation(
@@ -440,7 +440,7 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.state.value, "CANCELLED")
 
     async def test_repeated_upload_cancellation_waits_for_blocking_close(self):
-        from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTProvider
+        from webaiprovider.providers.chatgpt.async_provider import AsyncChatGPTWebAIProvider
 
         started = asyncio.Event()
         closing = asyncio.Event()
@@ -456,8 +456,8 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
                 closing.set()
                 await asyncio.wait_for(release.wait(), 3)
 
-        provider = AsyncChatGPTProvider(
-            Account.from_cookies("chatgpt", {}), client_factory=lambda _session: Client()
+        provider = AsyncChatGPTWebAIProvider(
+            WebAIAccount.from_cookies("chatgpt", {}), client_factory=lambda _session: Client()
         )
         task = asyncio.create_task(provider.upload_file("fixture.txt"))
         try:
@@ -475,9 +475,9 @@ class CancellationOwnershipTests(unittest.IsolatedAsyncioTestCase):
 
 class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
     async def test_grok_real_open_is_idempotent_and_does_not_reenter_activity(self):
-        from webaiprovider.providers.grok import AsyncGrokProvider
+        from webaiprovider.providers.grok import AsyncGrokWebAIProvider
 
-        provider = AsyncGrokProvider(Account.from_cookies("grok", {}))
+        provider = AsyncGrokWebAIProvider(WebAIAccount.from_cookies("grok", {}))
         provider.client.authenticate = AsyncMock()
         provider.client.close = AsyncMock()
         provider._load_catalog = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
@@ -491,7 +491,9 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         provider.client.close.assert_awaited_once_with()
 
     async def test_claude_forget_waits_for_activity_and_deletes_credentials(self):
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {"sessionKey": "fixture"}))
+        provider = AsyncClaudeWebAIProvider(
+            WebAIAccount.from_cookies("claude", {"sessionKey": "fixture"})
+        )
         provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()
@@ -515,14 +517,14 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session_exists(provider.credential_file))
         self.assertTrue(provider.closed)
         provider.client.close.assert_awaited_once_with()
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(WebAIProviderError):
             await provider.authenticate()
 
     async def test_remote_chats_listing_stateless_in_both_listing_modes(self):
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
 
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         remote = Conversation("remote-1", "Remote")
@@ -560,13 +562,13 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
     async def test_iterator_cleanup_preserves_primary_failure_and_chains_cleanup(self):
         from webaiprovider.resources.response.operation import _async_close_iterator
 
-        primary = ProviderError("stream failed")
+        primary = WebAIProviderError("stream failed")
         cleanup = RuntimeError("cleanup failed")
         stream = SimpleNamespace(aclose=AsyncMock(side_effect=cleanup))
         try:
             raise primary
-        except ProviderError:
-            with self.assertRaises(ProviderError) as caught:
+        except WebAIProviderError:
+            with self.assertRaises(WebAIProviderError) as caught:
                 await _async_close_iterator(stream)
         self.assertIs(caught.exception, primary)
         self.assertIs(caught.exception.__cause__, cleanup)
@@ -581,7 +583,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_direct_patch_drains_on_close_and_rejects_new_operations(self):
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider.client.prepare = AsyncMock(return_value=ModelCatalog(ModelCatalogState.AVAILABLE))
         provider.client.close = AsyncMock()
         remote = ProjectData("project", "Before", "Keep")
@@ -602,7 +604,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         while not provider.closing:
             await asyncio.sleep(0)
         try:
-            with self.assertRaises(ProviderError):
+            with self.assertRaises(WebAIProviderError):
                 await provider.projects.update(proj, instruction="Rejected")
             self.assertFalse(closing.done())
         finally:
@@ -616,7 +618,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
         from webaiprovider.collections import Page
         from webaiprovider.resources.chat.types import Conversation
 
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         remote = Conversation("chat", "Title")
@@ -631,7 +633,7 @@ class NovemberAuditTests(unittest.IsolatedAsyncioTestCase):
     async def test_local_chat_retains_bound_remote_id_during_concurrent_listing(self):
         from webaiprovider.collections import Page
 
-        provider = AsyncClaudeProvider(Account.from_cookies("claude", {}))
+        provider = AsyncClaudeWebAIProvider(WebAIAccount.from_cookies("claude", {}))
         provider._prepare_session = AsyncMock()
         provider._close_session = AsyncMock()
         entered, release = asyncio.Event(), asyncio.Event()

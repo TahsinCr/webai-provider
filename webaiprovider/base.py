@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 from .accounts.status import SessionState, SessionStatus
 from .core.state import LifecycleState
 from .core.types import OperationContext
-from .errors import ProviderError
+from .errors import WebAIProviderError
 
 if TYPE_CHECKING:
-    from .accounts.account import Account
+    from .accounts.account import WebAIAccount
     from .resources.model.model import ModelCatalog
     from .resources.response.operation import StreamEvent
 
@@ -35,14 +35,14 @@ _ACTIVE_OPERATIONS: ContextVar[tuple[_ActiveOperation, ...]] = ContextVar(
 _OPENING_PROVIDERS: ContextVar[tuple[int, ...]] = ContextVar("webai_opening_providers", default=())
 
 
-class ProviderType(str, Enum):
+class WebAIProviderType(str, Enum):
     CHATGPT = "chatgpt"
     CLAUDE = "claude"
     GEMINI = "gemini"
     GROK = "grok"
 
     @classmethod
-    def parse(cls, value: ProviderType | str) -> ProviderType:
+    def parse(cls, value: WebAIProviderType | str) -> WebAIProviderType:
         try:
             return value if isinstance(value, cls) else cls(value.casefold())
         except (AttributeError, ValueError):
@@ -76,10 +76,10 @@ _ProjectsT = TypeVar("_ProjectsT", covariant=True)
 _ModelsT = TypeVar("_ModelsT")
 
 
-class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
+class BaseWebAIProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
     """Account identity and typed resource collections common to both provider APIs."""
 
-    provider_type: ClassVar[ProviderType | None] = None
+    provider_type: ClassVar[WebAIProviderType | None] = None
     _capabilities: ClassVar[frozenset[Capability]] = frozenset()
     _chats: _ChatsT
     _projects: _ProjectsT
@@ -104,13 +104,13 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
     ) -> None:
-        account_type = ProviderType.parse(account.provider)
+        account_type = WebAIProviderType.parse(account.provider)
         expected_type = self.provider_type
-        requested_type = ProviderType.parse(type) if type is not None else expected_type
+        requested_type = WebAIProviderType.parse(type) if type is not None else expected_type
         selected_type = requested_type or account_type
         if expected_type is not None and selected_type is not expected_type:
             raise ValueError(
@@ -212,7 +212,7 @@ class BaseProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
     def _require_provider(self) -> Any:
         if not self._opened:
-            raise ProviderError("Open the provider before using its resources")
+            raise WebAIProviderError("Open the provider before using its resources")
         return self
 
     def _prime_models(self, catalog: ModelCatalog) -> None:
@@ -283,7 +283,7 @@ class _StreamEventTranslator:
         emitted: list[StreamEvent] = []
         if isinstance(event, (TextDelta, TextReplacement, ThoughtDelta)):
             if self._generated:
-                raise ProviderError("Provider sent content after generation ended")
+                raise WebAIProviderError("Provider sent content after generation ended")
             thinking = isinstance(event, ThoughtDelta) or event.channel == "analysis"
             replacement = isinstance(event, TextReplacement)
             if (
@@ -361,16 +361,18 @@ class _StreamEventTranslator:
         return emitted
 
 
-def _provider_class(provider_type: ProviderType, *, asynchronous: bool):
+def _provider_class(provider_type: WebAIProviderType, *, asynchronous: bool):
     names = {
-        ProviderType.CHATGPT: "ChatGPT",
-        ProviderType.CLAUDE: "Claude",
-        ProviderType.GEMINI: "Gemini",
-        ProviderType.GROK: "Grok",
+        WebAIProviderType.CHATGPT: "ChatGPT",
+        WebAIProviderType.CLAUDE: "Claude",
+        WebAIProviderType.GEMINI: "Gemini",
+        WebAIProviderType.GROK: "Grok",
     }
     module_name = "async_provider" if asynchronous else "provider"
     module = import_module(f".providers.{provider_type.value}.{module_name}", __package__)
-    return getattr(module, ("Async" if asynchronous else "") + names[provider_type] + "Provider")
+    return getattr(
+        module, ("Async" if asynchronous else "") + names[provider_type] + "WebAIProvider"
+    )
 
 
 def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
@@ -379,6 +381,6 @@ def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
             raise TypeError("A provider account is required")
         account = args[0] if args else options["account"]
         requested = options.get("type")
-        selected = ProviderType.parse(account.provider if requested is None else requested)
+        selected = WebAIProviderType.parse(account.provider if requested is None else requested)
         return object.__new__(_provider_class(selected, asynchronous=asynchronous))
     return object.__new__(cls)

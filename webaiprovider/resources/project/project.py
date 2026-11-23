@@ -4,12 +4,12 @@ import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from .types import ProjectData as ProviderProject
 
 if TYPE_CHECKING:
-    from ...async_provider import AsyncProvider
-    from ...provider import Provider
+    from ...async_provider import AsyncWebAIProvider
+    from ...provider import WebAIProvider
     from ..message.attachment import Attachment
 
 
@@ -34,7 +34,7 @@ class _BaseProject:
         replace_resources: bool = True,
     ) -> None:
         if not isinstance(project, ProviderProject):
-            raise ProviderError("Provider returned an invalid project")
+            raise WebAIProviderError("Provider returned an invalid project")
         if replace_resources or self._provider_project is None:
             self._provider_project = project
         else:
@@ -67,7 +67,7 @@ class AsyncProjectInstruction:
         provider = self.project.provider
         if self.project.remote_id:
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             await provider.projects.update(self.project, instruction=text)
         else:
             self._text = text
@@ -83,7 +83,7 @@ class AsyncProject(_BaseProject):
         id: str | None = None,
         title: str = "",
         *,
-        provider: AsyncProvider[Any, Any] | None = None,
+        provider: AsyncWebAIProvider[Any, Any] | None = None,
         remote_id: str | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
@@ -101,7 +101,7 @@ class AsyncProject(_BaseProject):
     async def rename(self, title: str) -> None:
         if self.remote_id:
             if self.provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             await self.provider.projects.update(self, title=title)
         else:
             self.title = title
@@ -111,7 +111,7 @@ class AsyncProject(_BaseProject):
         if provider is not None:
             await provider.projects.delete(self)
         elif self.remote_id:
-            raise ProviderError("Project is not attached to an open provider")
+            raise WebAIProviderError("Project is not attached to an open provider")
 
 
 class ProjectInstruction:
@@ -130,7 +130,7 @@ class ProjectInstruction:
         provider = self.project.provider
         if self.project.remote_id:
             if provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             provider.projects.update(self.project, instruction=text)
         else:
             self._text = text
@@ -146,7 +146,7 @@ class Project(_BaseProject):
         id: str | None = None,
         title: str = "",
         *,
-        provider: Provider[Any, Any] | None = None,
+        provider: WebAIProvider[Any, Any] | None = None,
         remote_id: str | None = None,
     ) -> None:
         self.id = id or str(uuid.uuid4())
@@ -164,7 +164,7 @@ class Project(_BaseProject):
     def rename(self, title: str) -> None:
         if self.remote_id:
             if self.provider is None:
-                raise ProviderError("Project is not attached to an open provider")
+                raise WebAIProviderError("Project is not attached to an open provider")
             self.provider.projects.update(self, title=title)
         else:
             self.title = title
@@ -174,4 +174,4 @@ class Project(_BaseProject):
         if provider is not None:
             provider.projects.delete(self)
         elif self.remote_id:
-            raise ProviderError("Project is not attached to an open provider")
+            raise WebAIProviderError("Project is not attached to an open provider")

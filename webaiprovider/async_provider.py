@@ -8,21 +8,26 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakValueDictionary
 
-from eventflow import AsyncEventBus, ErrorPolicy, EventEnvelope, StateMachine
+from flowevent import AsyncEventBus, ErrorPolicy, EventEnvelope
 
 from .accounts.status import SessionStatus
 from .base import (
     _OPENING_PROVIDERS,
-    BaseProvider,
+    BaseWebAIProvider,
     Capability,
-    ProviderType,
+    WebAIProviderType,
     _construct_provider,
     _StreamEventTranslator,
 )
 from .collections import _async_publish_collection_change
 from .core.async_hooks import AsyncOperationHooks
-from .core.state import _LIFECYCLE_TERMINAL_STATES, _LIFECYCLE_TRANSITIONS, LifecycleState
-from .errors import AccountPaused, FeatureUnavailable, ProviderError
+from .core.state import (
+    _LIFECYCLE_TERMINAL_STATES,
+    _LIFECYCLE_TRANSITIONS,
+    LifecycleState,
+    StateMachine,
+)
+from .errors import AccountPaused, FeatureUnavailable, WebAIProviderError
 from .resources.chat.chat import AsyncChat
 from .resources.chat.collections import AsyncChatsCollection
 from .resources.chat.types import Conversation
@@ -45,7 +50,7 @@ from .transport import AsyncStreamResponse, AsyncTransport, TransportConfig, Tra
 if TYPE_CHECKING:
     from typing_extensions import TypeVar as DefaultTypeVar
 
-    from .accounts.account import Account
+    from .accounts.account import WebAIAccount
     from .resources.message.protocol import ProviderRequest, ProviderStreamEvent
     from .resources.model.model import ModelCatalog
     from .resources.response.operation import AsyncMessageOperation
@@ -69,7 +74,7 @@ else:
     _ProjectsT = TypeVar("_ProjectsT", covariant=True)
 
 
-_ProviderT = TypeVar("_ProviderT", bound="AsyncProvider[Any, Any]")
+_ProviderT = TypeVar("_ProviderT", bound="AsyncWebAIProvider[Any, Any]")
 
 
 _CLOSING_PROVIDER: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -81,7 +86,7 @@ _log = logging.getLogger(__name__)
 class _AsyncTrackedTransport(AsyncTransport):
     """Lifecycle-tracked view of an async provider's active transport."""
 
-    def __init__(self, provider: AsyncProvider[Any, Any], transport: AsyncTransport) -> None:
+    def __init__(self, provider: AsyncWebAIProvider[Any, Any], transport: AsyncTransport) -> None:
         self._provider = provider
         self._transport = transport
 
@@ -118,11 +123,11 @@ class _AsyncTrackedTransport(AsyncTransport):
         await self._provider.close()
 
 
-class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
+class AsyncWebAIProvider(BaseWebAIProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     """Asynchronous provider session owning its lifecycle, locks, hooks, and events."""
 
     def __new__(cls: type[_ProviderT], *args: Any, **options: Any) -> _ProviderT:
-        return _construct_provider(cls, AsyncProvider, args, options, asynchronous=True)
+        return _construct_provider(cls, AsyncWebAIProvider, args, options, asynchronous=True)
 
     _chat_page_size = 50
     _chat_initial_page_floor = 1
@@ -135,9 +140,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         transport: AsyncTransport | None = None,
     ) -> None:
         super().__init__(account, type=type)
@@ -179,7 +184,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
         if active is None:
             active = self._transport
         if active is None:
-            raise ProviderError("This provider has no configured transport")
+            raise WebAIProviderError("This provider has no configured transport")
         return _AsyncTrackedTransport(self, active)
 
     def _lock(self, kind: str, remote_id: str) -> asyncio.Lock:
@@ -202,7 +207,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     @contextlib.asynccontextmanager
     async def _activity(self, *, send_lock_id: int | None = None):
         if send_lock_id is not None and self._has_active_operation(send_lock_id=send_lock_id):
-            raise ProviderError("A send hook cannot await another send in the same conversation")
+            raise WebAIProviderError(
+                "A send hook cannot await another send in the same conversation"
+            )
         nested = self._has_active_operation()
         with self._operation_marker(send_lock_id=send_lock_id):
             await self._begin_activity(nested=nested)
@@ -219,9 +226,9 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             if self.lifecycle_state == LifecycleState.OPENING:
                 await self._wait_for_opening()
             if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
-                raise ProviderError("Provider cleanup failed; call close() again")
+                raise WebAIProviderError("Provider cleanup failed; call close() again")
             if self.closed or (self.closing and not nested):
-                raise ProviderError("Provider is closing or is closed")
+                raise WebAIProviderError("Provider is closing or is closed")
             self._active_operations += 1
 
     async def _end_activity(self) -> None:
@@ -278,7 +285,7 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
     async def _wait_for_opening(self) -> None:
         if self.lifecycle_state == LifecycleState.OPENING:
             if id(self) in _OPENING_PROVIDERS.get():
-                raise ProviderError(
+                raise WebAIProviderError(
                     "Cannot perform this operation from a provider opening callback"
                 )
             await self._lifecycle_condition.wait_for(
@@ -291,9 +298,11 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             if reuse_open and self._opened:
                 return False
             if self.lifecycle_state == LifecycleState.CLOSE_FAILED:
-                raise ProviderError("Provider cleanup failed; call close() again before reopening")
+                raise WebAIProviderError(
+                    "Provider cleanup failed; call close() again before reopening"
+                )
             if self.closed or self.closing:
-                raise ProviderError("A closed provider cannot be reopened")
+                raise WebAIProviderError("A closed provider cannot be reopened")
             if self._opened:
                 return False
             self.lifecycle.transition(LifecycleState.OPENING)
@@ -334,16 +343,18 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
             await self._close_session()
         finally:
             if (
-                type(self)._close_session is AsyncProvider._close_session
+                type(self)._close_session is AsyncWebAIProvider._close_session
                 and self._transport is not None
             ):
                 await self._transport.close()
 
     async def close(self) -> None:
         if _CLOSING_PROVIDER.get() == id(self):
-            raise ProviderError("close() cannot be awaited from a provider closing event callback")
+            raise WebAIProviderError(
+                "close() cannot be awaited from a provider closing event callback"
+            )
         if self._has_active_operation():
-            raise ProviderError("Cannot close a provider from one of its active operations")
+            raise WebAIProviderError("Cannot close a provider from one of its active operations")
         async with self._lifecycle_condition:
             await self._wait_for_opening()
             if self.closed:
@@ -464,10 +475,10 @@ class AsyncProvider(BaseProvider[_ChatsT, _ProjectsT, AsyncModelsCollection]):
                         yield item
             for item in translator.finish():
                 yield item
-        except (ProviderError, ValueError):
+        except (WebAIProviderError, ValueError):
             raise
         except Exception as exc:
-            raise ProviderError("Provider request failed") from exc
+            raise WebAIProviderError("Provider request failed") from exc
         finally:
             await _async_close_iterator(stream)
 

@@ -210,17 +210,17 @@ class LiveSession:
         return self.context
 
     def _create_provider_session(self, account: LiveAccount) -> Any:
-        from webaiprovider.accounts.account import Account
-        from webaiprovider.async_provider import AsyncProvider
-        from webaiprovider.provider import Provider
+        from webaiprovider.accounts.account import WebAIAccount
+        from webaiprovider.async_provider import AsyncWebAIProvider
+        from webaiprovider.provider import WebAIProvider
 
-        account_object = Account(
+        account_object = WebAIAccount(
             id=account.alias,
             provider=account.provider,
             credentials=account.credentials,
             name="Live API test",
         )
-        cls = Provider if self.api == "sync" else AsyncProvider
+        cls = WebAIProvider if self.api == "sync" else AsyncWebAIProvider
         return cls(account_object)
 
     def open(self) -> LiveContext:

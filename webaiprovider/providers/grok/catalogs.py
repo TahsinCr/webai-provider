@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from ...errors import ProviderError
+from ...errors import WebAIProviderError
 from ...resources.model.model import (
     EffortSet,
     Model,
@@ -56,7 +56,7 @@ def parse_model_catalog(data, details) -> ModelCatalog:
         or not isinstance(details, dict)
         or not isinstance(details.get("models"), list)
     ):
-        raise ProviderError("Grok model catalog response contract changed")
+        raise WebAIProviderError("Grok model catalog response contract changed")
 
     by_mode, by_id = {}, {}
     for item in details["models"]:

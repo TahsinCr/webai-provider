@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session, read_session, session_exists
 from ...accounts.status import SessionState, SessionStatus
-from ...base import Capability, ProviderType
+from ...base import Capability, WebAIProviderType
 from ...collections import Page
 from ...core.cache import BoundedCache, ContinuationCache
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, FeatureUnavailable
-from ...provider import Provider
+from ...provider import WebAIProvider
 from ...resources.chat.collections import ChatsCollection
 from ...resources.chat.types import Conversation
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
@@ -24,7 +24,7 @@ from ...resources.project.collections import ProjectsCollection
 from ...resources.project.mutations import ProjectMutationsMixin
 from ...resources.project.types import ProjectData
 from ...transport import Transport
-from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiProvider
+from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiWebAIProvider
 from .client import GeminiClient, GeminiProjectEditor
 from .errors import GeminiStreamError
 from .generation import _gemini_upload_spec, response_events
@@ -42,13 +42,13 @@ from .resources import (
 from .rpc import GeminiRPC
 
 if TYPE_CHECKING:
-    from ...accounts.account import Account
+    from ...accounts.account import WebAIAccount
 
 
-class GeminiProvider(
+class GeminiWebAIProvider(
     ProjectMutationsMixin,
-    Provider[ChatsCollection[GeminiChat], ProjectsCollection[GeminiProject]],
-    BaseGeminiProvider,
+    WebAIProvider[ChatsCollection[GeminiChat], ProjectsCollection[GeminiProject]],
+    BaseGeminiWebAIProvider,
 ):
     _message_type = GeminiMessage
     _response_type = GeminiResponse
@@ -65,9 +65,9 @@ class GeminiProvider(
 
     def __init__(
         self,
-        account: Account,
+        account: WebAIAccount,
         *,
-        type: ProviderType | str | None = None,
+        type: WebAIProviderType | str | None = None,
         client_factory: Any = None,
         notebooks: GeminiNotebooks | None = None,
         transport: Transport | None = None,

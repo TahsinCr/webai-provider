@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ...accounts import read_session, save_session
 from ...accounts.credentials import CredentialStore
-from ...errors import ProviderError, RateLimited
+from ...errors import RateLimited, WebAIProviderError
 from ...transport import HTTPTransport, Transport, TransportConfig
 from .base import (
     BASE,
@@ -117,7 +117,7 @@ class GeminiClient(BaseGeminiClient):
                 delay = min(max(error.retry_after or 15, 1), 900)
             except (OSError, RequestException):
                 delay = 30
-            except ProviderError:
+            except WebAIProviderError:
                 # Let the requested Gemini operation report its own authentication status.
                 delay = 30 if response is None or response.status_code >= 500 else float("inf")
             self._refresh_at = time.monotonic() + delay
@@ -160,7 +160,7 @@ class GeminiClient(BaseGeminiClient):
             Transport.check(token_response)
             token = token_response.text.strip()
             if not token:
-                raise ProviderError("Gemini session validation token could not be refreshed")
+                raise WebAIProviderError("Gemini session validation token could not be refreshed")
             self.token = token
             refreshed_token = True
             request_options["headers"] = {**headers, "X-Framework-XSRF-Token": token}
@@ -249,7 +249,7 @@ class GeminiProjectEditor(BaseGeminiProjectEditor):
                 self.rpc.connect(), [values["path"]]
             )
             if not reference.startswith("/"):
-                raise ProviderError("Gemini returned an invalid file upload reference")
+                raise WebAIProviderError("Gemini returned an invalid file upload reference")
             uploaded, text = [reference, mime_type], None
         else:
             raise ValueError("Unsupported notebook source type")

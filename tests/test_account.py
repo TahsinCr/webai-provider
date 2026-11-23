@@ -8,13 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from webaiprovider import Provider
+from webaiprovider import WebAIProvider
 from webaiprovider.accounts import (
-    Account,
     FileCredentialStore,
     MemoryCredentialStore,
     SessionState,
     SessionStatus,
+    WebAIAccount,
     read_session,
     session_exists,
 )
@@ -29,12 +29,12 @@ from webaiprovider.accounts.importer import (
     import_browser_session,
 )
 from webaiprovider.base import Capability
-from webaiprovider.errors import AccountPaused, ProviderError
+from webaiprovider.errors import AccountPaused, WebAIProviderError
 
 
 class AccountsTests(unittest.TestCase):
     def test_account_creation_and_store_resolution(self):
-        mem_acc = Account(
+        mem_acc = WebAIAccount(
             id="acc-1",
             provider="chatgpt",
             credentials={"session": "token123"},
@@ -51,7 +51,7 @@ class AccountsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "creds.json"
-            file_acc = Account(
+            file_acc = WebAIAccount(
                 id="acc-2",
                 provider="claude",
                 credentials=path,
@@ -129,7 +129,7 @@ class AccountsTests(unittest.TestCase):
         with patch.object(MemoryCredentialStore, "exists", exists):
             for kind in ("chatgpt", "claude", "gemini", "grok"):
                 with self.subTest(provider=kind):
-                    provider = Provider(Account.from_cookies(kind, {"fixture": "saved"}))
+                    provider = WebAIProvider(WebAIAccount.from_cookies(kind, {"fixture": "saved"}))
                     try:
                         self.assertFalse(hasattr(provider, "_loop"))
                         self.assertFalse(hasattr(provider, "_provider"))
@@ -138,7 +138,7 @@ class AccountsTests(unittest.TestCase):
                         self.assertTrue(status.saved_snapshot)
                     finally:
                         provider.close()
-                    with self.assertRaisesRegex(ProviderError, "closing or is closed"):
+                    with self.assertRaisesRegex(WebAIProviderError, "closing or is closed"):
                         provider.session_status()
         self.assertEqual(threads, [caller] * 4)
 
@@ -158,10 +158,10 @@ class AccountsTests(unittest.TestCase):
 
         from webaiprovider.resources.model import Model, ModelCatalog, ModelCatalogState
 
-        account = Account.from_cookies("grok", {"sso": "token-1"})
+        account = WebAIAccount.from_cookies("grok", {"sso": "token-1"})
         catalog = ModelCatalog(ModelCatalogState.AVAILABLE, (Model("fast", "Grok"),))
 
-        first = Provider(account)
+        first = WebAIProvider(account)
         first.client.authenticate = Mock()
         first._load_catalog = Mock(return_value=catalog)
         first.open()
@@ -169,7 +169,7 @@ class AccountsTests(unittest.TestCase):
         first.client.authenticate.assert_called_once()
         first._load_catalog.assert_called_once()
 
-        second = Provider(account)
+        second = WebAIProvider(account)
         second.client.authenticate = Mock()
         second._load_catalog = Mock(side_effect=AssertionError("expected cached catalog"))
         second.open()
@@ -178,7 +178,7 @@ class AccountsTests(unittest.TestCase):
 
         # Credential change invalidates the verified snapshot automatically.
         account.store().save({"sso": "token-2"})
-        third = Provider(account)
+        third = WebAIProvider(account)
         third.client.authenticate = Mock()
         third._load_catalog = Mock(return_value=catalog)
         third.open()
@@ -195,7 +195,7 @@ class AccountsTests(unittest.TestCase):
         from webaiprovider.providers.gemini.client import GeminiClient
         from webaiprovider.resources.model import Model, ModelCatalog, ModelCatalogState
 
-        account = Account.from_cookies(
+        account = WebAIAccount.from_cookies(
             "gemini", {"__Secure-1PSID": "sid-1", "OSID": "o-1", "__Secure-OSID": "so-1"}
         )
         catalog = ModelCatalog(ModelCatalogState.AVAILABLE, (Model("gemini-hydrogen", "Hydrogen"),))
@@ -215,11 +215,11 @@ class AccountsTests(unittest.TestCase):
             patch.object(GeminiClient, "open", fake_open),
             patch.object(GeminiClient, "discover_models", return_value=catalog.models) as discover,
         ):
-            first = Provider(account)
+            first = WebAIProvider(account)
             first.open()
             first.close()
 
-            second = Provider(account)
+            second = WebAIProvider(account)
             second.open()
             self.assertEqual([item.id for item in second.models.list()], ["gemini-hydrogen"])
             self.assertEqual(second._client.token, "tok-1")
