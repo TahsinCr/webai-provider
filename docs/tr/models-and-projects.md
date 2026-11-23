@@ -25,10 +25,10 @@ Bu bölümde hesaptaki modelleri listelemeyi, akıl yürütme eforu (`effort`) s
 ## Hızlı Örnek
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, Models, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, Models, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-with ChatGPTProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+with ChatGPTWebAIProvider(account) as provider:
     thinking = provider.models.find("thinking")
     selection = thinking if thinking else Models.AUTO
 
@@ -134,7 +134,7 @@ Projeler (ChatGPT Projects, Claude Projects, Gemini Notebooks, Grok Workspaces),
 - `project.chats`: Yalnızca o projenin içindeki sohbetleri listeleyen ve arayan tam `RemoteCollection` arayüzüdür (`project.chats.list()`, `find()`, `search()`).
 
 ```python
-with ClaudeProvider(account) as provider:
+with ClaudeWebAIProvider(account) as provider:
     proje = provider.projects.create("Backend", instruction="Python 3.10+ tipleri kullan.")
     chat = provider.chats.create("Modül Bölme", project=proje)
     chat.ask("auth.py dosyasını böl.")
@@ -161,10 +161,10 @@ Projeye yerel dosya veya doğrudan metin içeriği eklemek için `project.attach
 | `update` | `(attachment, **options)` | Yalnız henüz uzakta oluşturulmamış yerel proje taslaklarında çalışır. |
 
 ```python
-from webaiprovider import Account, Attachment, GeminiProvider, ProviderType
+from webaiprovider import WebAIAccount, Attachment, GeminiWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.GEMINI)
-with GeminiProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.GEMINI)
+with GeminiWebAIProvider(account) as provider:
     nb = provider.projects.create("Araştırma")
     ek1 = nb.attachments.create("Deney sonucu: %35 hızlanma.", "text", name="sonuc.txt")
     ek2 = nb.attachments.create(Attachment.from_path("rapor.pdf"))

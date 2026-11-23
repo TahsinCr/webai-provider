@@ -48,7 +48,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Keep browser authentication in ChatGPT's auth module. Construct `BrowserSession` directly with a credential store or path.
 - Preserve concrete provider and resource types in IDEs, including collection queries and context managers. Construct chat and project resources through their typed collections.
 - Use curl_cffi for local browser debugging WebSockets and remove the separate websocket-client dependency. Require curl_cffi 0.17 or later for blocking WebSocket timeouts and message limits.
-- Define the shared `BaseProvider` as an abstract class with typed chat, project, and model collections.
+- Define the shared `BaseWebAIProvider` as an abstract class with typed chat, project, and model collections.
 - Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.
 - Preserve explicit Claude draft titles when the remote chat is created, so an interrupted first send leaves an identifiable chat.
 - Reduce project rename and instruction readbacks on Claude and Grok by validating changed fields independently of source lists.
@@ -68,7 +68,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Define browser-cookie selection, validation, and persistence rules once per provider, including known alternate session cookies.
 - Share local file version checks during upload, keep provider file preflight off the event loop, and simplify Gemini session and RPC parsing.
 - Rename the Python import package from `webai_provider` to `webaiprovider`. The PyPI distribution remains `webai-provider`. Ship inline typing metadata and use `webaiprovider.__version__` as the package version source.
-- Replace the v1.3 `ProviderClient` API with account-scoped `Provider(account)` and `AsyncProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `ProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTProvider` or `AsyncChatGPTProvider`. Blocking calls run natively on the calling thread without starting a background event loop.
+- Replace the v1.3 `ProviderClient` API with account-scoped `WebAIProvider(account)` and `AsyncWebAIProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `WebAIProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTWebAIProvider` or `AsyncChatGPTWebAIProvider`. Blocking calls run natively on the calling thread without starting a background event loop.
 - Send and read through `chat.responses`. Create a chat with `provider.chats.create()` or find an existing one with `provider.chats.get(id)`. Then `chat.responses.create(prompt)` prepares an operation, `operation.stream()` yields events, and `operation.wait()` returns the completed response. Both API variants also offer `chat.ask()` and `chat.stream()` shortcuts.
 - Read previous prompts and answers together with `chat.responses.list()`. A `Response` exposes the associated user `message` when available, along with answer text, sources, artifacts, and timing for live sends. Use `response.message.edit()` or `response.retry()` where supported. Both return an operation with the same streaming and waiting interface as a new send.
 - Manage project files and text sources with `project.attachments.create()`, `list()`, and `delete()`. Message attachments use a local `Attachments` collection with `create()`, metadata-only `update()`, and `delete()`. ChatGPT project creation accepts `memory_share=False` for project-only memory. Chat moves and branches remain available on the provider-specific chat types that support them.
@@ -135,7 +135,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Wait for active raw HTTP requests and streams before closing a synchronous provider. Closing its shared transport uses the same shutdown path.
 - Allow independent synchronous calls to return while another caller is delivering an event.
 
-- Return synchronous chat and message resources from `Provider.ask()` across all four providers.
+- Return synchronous chat and message resources from `WebAIProvider.ask()` across all four providers.
 
 - Keep synchronous providers available for a cleanup retry after a failed close. Resolve races between the first open and close.
 - Require project mutation confirmations to match the target project and requested change.
@@ -173,7 +173,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Hardened `NativeDownloadClient` with SSRF and link-local/cloud metadata IP protection (`169.254.169.254`).
 - Sensitive URL query parameter and userinfo credential redaction with `redact_sensitive_url`.
 - Implement Stage 3 identity, cookie, and networking layer across `webai_provider.accounts`, `webai_provider.auth`, and `webai_provider.transport`:
-  - `accounts`: typed `Account` entity, `CredentialStore` protocol, `FileCredentialStore` with atomic replace, fsync, and 0o600 file permissions, and thread-safe `MemoryCredentialStore`.
+  - `accounts`: typed `WebAIAccount` entity, `CredentialStore` protocol, `FileCredentialStore` with atomic replace, fsync, and 0o600 file permissions, and thread-safe `MemoryCredentialStore`.
   - `auth`: `ProviderCookieFilter` with origin enforcement and character sanitation, `CookieReader` profile discovery, and unified `import_browser_session`.
   - `transport`: origin-scoped `HttpSession` (with `WebSession` alias), RFC HTTP-Date and delta-seconds `parse_retry_after`, `calculate_backoff`, `RetryPolicy`, and `BoundedWorkPool` offloading payloads >= 256KB from the event loop.
 - Add modular streaming framers in `webai_provider.framers`: `SSEFramer` for RFC-compliant Server-Sent Events with keep-alive skipping, and `JSPBFramer` for Gemini batchexecute Protobuf-over-JSON length-prefixed stream decoding.
@@ -195,7 +195,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Accelerate Gemini model discovery by parallelizing GraphQL catalog queries and batchexecute `otAQ7b` RPC via `asyncio.gather`, reducing catalog turnaround by ~400–600 ms.
 - Accelerate UTF-16 payload buffer scanning in Gemini `Frames` with a C-speed BMP fast path slice, speeding up per-chunk processing up to 26x over character-by-character scans.
 - Retain candidate response IDs (`rcid`) across trailing chunk frames in Gemini `generate()`, allowing continuation metadata caching to succeed and completely eliminating redundant `hNvQHb` RPC round-trips (saving 500–1,500 ms on every continuation turn).
-- Prevent premature cache invalidation in `GeminiProvider._take_chat_metadata()` and add `prepare_next_turn()` for LRU ordering.
+- Prevent premature cache invalidation in `GeminiWebAIProvider._take_chat_metadata()` and add `prepare_next_turn()` for LRU ordering.
 - Mark session activity fresh upon initialization, avoiding blocking `sync_activity()` network calls on initial user turns.
 - Optimize Sentinel Proof-of-Work solver by pre-encoding JSON buffer segments and amortizing timing measurements to once per 128 iterations.
 - Reuse persistent `json.JSONDecoder` instance across frames in `JSPBFramer`.

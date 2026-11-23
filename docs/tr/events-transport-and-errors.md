@@ -25,19 +25,19 @@ Bu bölüm, doğrudan `EventBus` olaylarına abone olmak, `provider.transport` �
 
 ```python
 from webaiprovider import (
-    Account,
+    WebAIAccount,
     AccountPaused,
-    ClaudeProvider,
+    ClaudeWebAIProvider,
     EventEnvelope,
     EventFilter,
-    ProviderError,
-    ProviderType,
+    WebAIProviderError,
+    WebAIProviderType,
     RateLimited,
 )
 from webaiprovider.core.timing import SendTiming, use_send_timing
 from webaiprovider.transport import HttpSession, TransportConfig
 
-account = Account.from_browser(ProviderType.CLAUDE)
+account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
 transport = HttpSession(
     origin="https://claude.ai",
     credential_file=account.store(),
@@ -46,7 +46,7 @@ transport = HttpSession(
 )
 
 try:
-    with ClaudeProvider(account, transport=transport) as provider:
+    with ClaudeWebAIProvider(account, transport=transport) as provider:
         provider.events.subscribe(
             lambda env: print("Olay:", env.event, env.metadata.get("payload")),
             event_filter=EventFilter(
@@ -64,7 +64,7 @@ except RateLimited as err:
     print(f"Hız sınırı (bekleme={err.retry_after}s, ulaştı={err.message_submitted})")
 except AccountPaused:
     print("Oturum geçersiz; yeniden giriş gerekiyor.")
-except ProviderError as err:
+except WebAIProviderError as err:
     print(f"Hata [{err.code}]: {err}")
 ```
 
@@ -179,10 +179,10 @@ with provider.transport.stream("POST", "/backend-api/conversation", json=body) a
 
 ## Hata Hiyerarşisi ve Güvenli Kurtarma
 
-Aşağıdaki kütüphane istisnaları `ProviderError` hiyerarşisindedir ve programatik kararlar için `err.code` alanını sunar. Hata mesajını kullanıcıya gösterebilir, uygulama davranışını istisna türü ve alanlarına göre belirleyebilirsin.
+Aşağıdaki kütüphane istisnaları `WebAIProviderError` hiyerarşisindedir ve programatik kararlar için `err.code` alanını sunar. Hata mesajını kullanıcıya gösterebilir, uygulama davranışını istisna türü ve alanlarına göre belirleyebilirsin.
 
 ```text
-ProviderError ("provider_error")
+WebAIProviderError ("provider_error")
 ├── RequestNotSentError ("request_not_sent", message_submitted=False)
 ├── StreamError ("stream_error") -> FrameDecodeError ("frame_decode_error")
 ├── AuthenticationError ("authentication_error") -> AccountPaused ("account_paused")
@@ -234,7 +234,7 @@ with use_send_timing(timing):
 durations_ms, counters = timing.snapshot()
 ```
 
-- **Oturum yeniden kullanımı:** Aynı `Account` nesnesini bellekte tutup kısa aralıklarla tekrar `Provider(account)` açtığında, ilk açılışta doğrulanan oturum ve model kataloğu 300 saniye boyunca yeniden kullanılır; kimlik değişirse veya `AccountPaused` / `forget_session()` / `authenticate()` olursa otomatik temizlenir.
+- **Oturum yeniden kullanımı:** Aynı `WebAIAccount` nesnesini bellekte tutup kısa aralıklarla tekrar `WebAIProvider(account)` açtığında, ilk açılışta doğrulanan oturum ve model kataloğu 300 saniye boyunca yeniden kullanılır; kimlik değişirse veya `AccountPaused` / `forget_session()` / `authenticate()` olursa otomatik temizlenir.
 - **Pratik performans kuralları:** Sohbeti yanıtlarıyla açarken `chats.get_with_responses()` kullan; büyük hesaplarda `chats.list(limit=None)` yerine gereken `limit` değerini ver; uzun ömürlü süreçlerde tamamlanmış `MessageOperation` nesnelerini serbest bırak. Offline benchmark paketini çalıştırmak için [benchmarks/README.md](../../benchmarks/README.md) kılavuzuna bakabilirsin.
 
 [Yukarı dön](#konu-dizini)

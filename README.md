@@ -28,13 +28,13 @@ You can import credentials from the operating system's default browser or name a
 ```python
 import asyncio
 
-from webaiprovider import Account, AsyncChatGPTProvider, OutputDelta, ProviderType
+from webaiprovider import WebAIAccount, AsyncChatGPTWebAIProvider, OutputDelta, WebAIProviderType
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
+    account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT, browser="firefox")
 
-    async with AsyncChatGPTProvider(account) as provider:
+    async with AsyncChatGPTWebAIProvider(account) as provider:
         models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
@@ -50,23 +50,23 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`Account.from_browser()` uses the default browser when `browser` is omitted. Browser-cookie access may require the browser to be closed or the operating system keyring to be unlocked. To supply credentials directly, use `Account.from_cookies(provider, cookies)` and keep the cookie values in your own secure store.
+`WebAIAccount.from_browser()` uses the default browser when `browser` is omitted. Browser-cookie access may require the browser to be closed or the operating system keyring to be unlocked. To supply credentials directly, use `WebAIAccount.from_cookies(provider, cookies)` and keep the cookie values in your own secure store.
 
 For blocking code, use the provider-specific sync class. Blocking providers run directly on the calling thread:
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-with ChatGPTProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+with ChatGPTWebAIProvider(account) as provider:
     chat = provider.chats.create("Quick start")
     response = chat.responses.create("Hello!").start()
 ```
 
 ## Core API
 
-- `BaseProvider` provides account and provider identity. Use `AsyncProvider` for async work and `Provider` for blocking calls. Use a provider-specific class such as `AsyncChatGPTProvider` for additional features.
-- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, and `GrokProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory. For ChatGPT chats, use `chat.move_to(project)` to assign or transfer a chat and `chat.move_to(None)` to detach it.
+- `BaseWebAIProvider` provides account and provider identity. Use `AsyncWebAIProvider` for async work and `WebAIProvider` for blocking calls. Use a provider-specific class such as `AsyncChatGPTWebAIProvider` for additional features.
+- `ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider`, and `GrokWebAIProvider` provide provider-specific extensions. ChatGPT projects use the default/global memory scope unless `memory_share=False` selects project-only memory. For ChatGPT chats, use `chat.move_to(project)` to assign or transfer a chat and `chat.move_to(None)` to detach it.
 - Remote collections read provider data on demand. `list(limit=50)` hides pagination, `limit=0` skips remote work, and `limit=None` reads all available pages. Collections share `get()`, `search()`, `find()`, `first()`, `last()`, and `single()`. `find(single=True)` raises `AmbiguousMatchError` if more than one item matches.
 - Model queries reuse the account catalog loaded when the provider session opens, including an empty catalog. Call `provider.models.refresh()` to reload it.
 - Overlapping calls to `chat.responses.list()` share a history request. Use `chat.responses.list(fresh=True)` for a separate request.
@@ -78,9 +78,9 @@ with ChatGPTProvider(account) as provider:
 
 - To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.
 - Use `project.attachments.create()` to add a file or text, `list()` to inspect project attachments, and `delete()` to remove one.
-- Providers manage lifecycle, locks, hooks, and events directly on `Provider` and `AsyncProvider`, backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
+- Providers manage lifecycle, locks, hooks, and events directly on `WebAIProvider` and `AsyncWebAIProvider`, backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Subscribe to `collection.read.completed` for one batch of item identities per successful remote read and to `collection.changed` for confirmed creates, updates, and deletes. Both events put an `items` list in `event.metadata["payload"]`. The envelope carries the account and, for nested collections, the parent resource ID. Message revisions use the chat scope. Payloads omit message text, file bodies, and credentials. Local collections use stable snapshots without publishing provider events.
-- Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `ProviderError` such as `FeatureUnavailable`.
+- Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `WebAIProviderError` such as `FeatureUnavailable`.
 
 The package exports model references and effort choices for typed use. Account-discovered models remain authoritative for the account and may differ by subscription or provider changes.
 
@@ -89,10 +89,10 @@ The package exports model references and effort choices for typed use. Account-d
 Every provider exposes `provider.transport` for origin-scoped `send`, JSON `request`, and incremental `stream` operations. The provider owns the transport lifecycle; blocking and async calls reuse the provider's existing connection rather than opening a new pool or event loop per request.
 
 ```python
-from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider import WebAIAccount, AsyncClaudeWebAIProvider, WebAIProviderType
 from webaiprovider.transport import AsyncHttpSession, TransportConfig
 
-account = Account.from_browser(ProviderType.CLAUDE)
+account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
 transport = AsyncHttpSession(
     "https://claude.ai",
     account.store(),
@@ -100,7 +100,7 @@ transport = AsyncHttpSession(
     config=TransportConfig(timeout=30, max_stream_bytes=64 * 1024 * 1024),
 )
 
-async with AsyncClaudeProvider(account, transport=transport) as provider:
+async with AsyncClaudeWebAIProvider(account, transport=transport) as provider:
     response = await provider.transport.send("GET", "/api/bootstrap")
     endpoint, payload = "/api/path", {}  # Use an endpoint supported by this provider.
     async with provider.transport.stream("POST", endpoint, json=payload) as stream:

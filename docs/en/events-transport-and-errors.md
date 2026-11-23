@@ -25,19 +25,19 @@ This guide is for developers subscribing directly to `EventBus` records, issuing
 
 ```python
 from webaiprovider import (
-    Account,
+    WebAIAccount,
     AccountPaused,
-    ClaudeProvider,
+    ClaudeWebAIProvider,
     EventEnvelope,
     EventFilter,
-    ProviderError,
-    ProviderType,
+    WebAIProviderError,
+    WebAIProviderType,
     RateLimited,
 )
 from webaiprovider.core.timing import SendTiming, use_send_timing
 from webaiprovider.transport import HttpSession, TransportConfig
 
-account = Account.from_browser(ProviderType.CLAUDE)
+account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
 transport = HttpSession(
     origin="https://claude.ai",
     credential_file=account.store(),
@@ -46,7 +46,7 @@ transport = HttpSession(
 )
 
 try:
-    with ClaudeProvider(account, transport=transport) as provider:
+    with ClaudeWebAIProvider(account, transport=transport) as provider:
         provider.events.subscribe(
             lambda env: print("Event:", env.event, env.metadata.get("payload")),
             event_filter=EventFilter(
@@ -64,7 +64,7 @@ except RateLimited as err:
     print(f"Rate limited (retry_after={err.retry_after}s, submitted={err.message_submitted})")
 except AccountPaused:
     print("Session expired; sign in again.")
-except ProviderError as err:
+except WebAIProviderError as err:
     print(f"Error [{err.code}]: {err}")
 ```
 
@@ -179,10 +179,10 @@ with provider.transport.stream("POST", "/backend-api/conversation", json=body) a
 
 ## Error Hierarchy and Safe Recovery
 
-Library exceptions inherit from `ProviderError` and carry a machine-readable `err.code` field for programmatic handling:
+Library exceptions inherit from `WebAIProviderError` and carry a machine-readable `err.code` field for programmatic handling:
 
 ```text
-ProviderError ("provider_error")
+WebAIProviderError ("provider_error")
 ├── RequestNotSentError ("request_not_sent", message_submitted=False)
 ├── StreamError ("stream_error") -> FrameDecodeError ("frame_decode_error")
 ├── AuthenticationError ("authentication_error") -> AccountPaused ("account_paused")
@@ -234,7 +234,7 @@ with use_send_timing(timing):
 durations_ms, counters = timing.snapshot()
 ```
 
-- **Session reuse:** Keeping the same `Account` instance in memory across short-lived `Provider(account)` opens reuses the verified session and model catalog for 300 seconds, automatically invalidating if credentials change or `AccountPaused` / `forget_session()` / `authenticate()` runs.
+- **Session reuse:** Keeping the same `WebAIAccount` instance in memory across short-lived `WebAIProvider(account)` opens reuses the verified session and model catalog for 300 seconds, automatically invalidating if credentials change or `AccountPaused` / `forget_session()` / `authenticate()` runs.
 - **Practical performance tips:** Use `chats.get_with_responses()` when loading both a chat and its history; pass an explicit `limit` instead of `limit=None` on large accounts; release completed `MessageOperation` objects in long-running processes so event histories are freed. For the offline benchmark suite, see [benchmarks/README.md](../../benchmarks/README.md).
 
 [Back to top](#contents)

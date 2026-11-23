@@ -29,7 +29,7 @@
 
 | Doküman | İçerik |
 | --- | --- |
-| **[01 · Başlangıç ve Hesaplar](getting-started.md)** | Kurulum, tarayıcıdan veya çerezden `Account` oluşturma, `FileCredentialStore` / `MemoryCredentialStore`, `Provider` yaşam döngüsü ve `provider.ask()`. |
+| **[01 · Başlangıç ve Hesaplar](getting-started.md)** | Kurulum, tarayıcıdan veya çerezden `WebAIAccount` oluşturma, `FileCredentialStore` / `MemoryCredentialStore`, `WebAIProvider` yaşam döngüsü ve `provider.ask()`. |
 | **[02 · Sohbetler, Yanıtlar ve Akış](chats-and-streaming.md)** | Sohbet oluşturma/arama, mesaj ve dosya ekleri, `Response.parts` (`ThinkingPart`, `TextPart`), canlı akış (`stream`), `edit` / `retry` / `branch`, `wait_for()`, iptal ve `chat.hooks`. |
 | **[03 · Modeller ve Projeler](models-and-projects.md)** | Model kataloğu (`300 sn` TTL), `Models` katmanları, düşünme eforu seçimi, statik kataloglar, projeler, proje talimatları ve proje dosya/metin ekleri. |
 | **[04 · Sağlayıcı Rehberleri](provider-guides.md)** | ChatGPT (`memory_share`, `move_to(None)`, `BrowserSession`), Claude (organizasyon keşfi, web search), Gemini (`OSID` çerezleri, `GeminiNotebooks`, yükleme izolasyonu) ve Grok (`assets.grok.com`, `RateLimited`). |
@@ -64,9 +64,9 @@
 
 Çağrının bulunduğu ortamı esas al. Olay döngüsü içinde asenkron arayüzü, bloklayan kodda senkron arayüzü kullan:
 
-- **Senkron (`Provider`, `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, `GrokProvider`):**
+- **Senkron (`WebAIProvider`, `ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider`, `GrokWebAIProvider`):**
   Arka planda gizli bir `asyncio` olay döngüsü açmaz. Her çağrı doğrudan çağıran thread üzerinde bloklayan `curl_cffi` ile yürür. Komut satırı araçları, klasik web çatıları (Flask, Django) ve düz Python script'leri için en sade seçenektir.
-- **Asenkron (`AsyncProvider`, `AsyncChatGPTProvider`, `AsyncClaudeProvider`, `AsyncGeminiProvider`, `AsyncGrokProvider`):**
+- **Asenkron (`AsyncWebAIProvider`, `AsyncChatGPTWebAIProvider`, `AsyncClaudeWebAIProvider`, `AsyncGeminiWebAIProvider`, `AsyncGrokWebAIProvider`):**
   `async` / `await` ile çalışır. FastAPI, aiohttp, botlar veya aynı anda birden fazla sohbet akışını paralel yöneten uygulamalar için uygundur. Ayrıca aynı sohbetteki örtüşen `chat.responses.list()` çağrılarını tek ağ isteğinde birleştirir.
 
 [Yukarı dön](#konu-dizini)

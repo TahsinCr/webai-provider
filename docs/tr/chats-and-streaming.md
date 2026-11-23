@@ -35,21 +35,21 @@ Bu bölümde sohbet oluşturmayı ve aramayı, dosya eklemeyi, düşünme blokla
 ```python
 import asyncio
 from webaiprovider import (
-    Account,
-    AsyncChatGPTProvider,
+    WebAIAccount,
+    AsyncChatGPTWebAIProvider,
     Attachment,
     GenerationEnd,
     OperationEvent,
     OutputDelta,
-    ProviderType,
+    WebAIProviderType,
     ThinkingDelta,
     ThinkingPart,
 )
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CHATGPT)
-    async with AsyncChatGPTProvider(account) as provider:
+    account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+    async with AsyncChatGPTWebAIProvider(account) as provider:
         chat = await provider.chats.create("Kod İncelemesi")
         chat.hooks.on(OperationEvent.SOURCE_DISCOVERED, lambda ev: print("Kaynak:", ev.source.url))
 
@@ -112,7 +112,7 @@ Tüm uzak koleksiyonlar (`chats`, `projects`, `responses`, `project.chats`, `pro
   `find()` ile aynı kurallarla eşleşen tüm sohbetleri liste olarak döndürür.
 
 ```python
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     son_sohbetler = provider.chats.list(limit=20, include_projects=True)
     rapor = provider.chats.find("Haftalık Rapor", exact=True, single=True, include_projects=True)
     python_sohbetleri = provider.chats.search("Python", limit=5)
@@ -310,7 +310,7 @@ if isinstance(thinking, ThinkingEnd):
 final_response = op.wait()
 ```
 
-> **Senkron Kilit Kuralı:** Senkron modda `wait_for(..., timeout=...)` nedeniyle bir gönderim duraklatılmış durumdaysa, aynı thread üzerinde onu tamamlamadan (`wait()` / `stream()`) veya `cancel()` etmeden aynı sohbette yeni bir işlem başlatamazsın (`ProviderError`).
+> **Senkron Kilit Kuralı:** Senkron modda `wait_for(..., timeout=...)` nedeniyle bir gönderim duraklatılmış durumdaysa, aynı thread üzerinde onu tamamlamadan (`wait()` / `stream()`) veya `cancel()` etmeden aynı sohbette yeni bir işlem başlatamazsın (`WebAIProviderError`).
 
 ### Kalıcı Kancalar (`chat.hooks`)
 

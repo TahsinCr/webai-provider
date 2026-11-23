@@ -25,10 +25,10 @@ This guide explains how to discover models for an account, choose reasoning effo
 ## Quick Example
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, Models, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, Models, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-with ChatGPTProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+with ChatGPTWebAIProvider(account) as provider:
     thinking = provider.models.find("thinking")
     selection = thinking if thinking else Models.AUTO
 
@@ -136,7 +136,7 @@ Projects (ChatGPT Projects, Claude Projects, Gemini Notebooks, and Grok Workspac
 - `project.chats`: A full `RemoteCollection` scoped to chats inside that project (`project.chats.list()`, `find()`, `search()`).
 
 ```python
-with ClaudeProvider(account) as provider:
+with ClaudeWebAIProvider(account) as provider:
     project = provider.projects.create("Backend", instruction="Use Python 3.10+ type hints.")
     chat = provider.chats.create("Split module", project=project)
     chat.ask("Split auth.py into focused helpers.")
@@ -163,10 +163,10 @@ Use `project.attachments` to attach local files or inline text sources to a proj
 | `update` | `(attachment, **options)` | Works on unsent local project drafts only. |
 
 ```python
-from webaiprovider import Account, Attachment, GeminiProvider, ProviderType
+from webaiprovider import WebAIAccount, Attachment, GeminiWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.GEMINI)
-with GeminiProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.GEMINI)
+with GeminiWebAIProvider(account) as provider:
     nb = provider.projects.create("Research")
     r1 = nb.attachments.create("Benchmark result: 35% faster.", "text", name="result.txt")
     r2 = nb.attachments.create(Attachment.from_path("report.pdf"))

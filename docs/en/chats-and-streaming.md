@@ -35,21 +35,21 @@ This guide covers creating and searching chats, attaching files, reading reasoni
 ```python
 import asyncio
 from webaiprovider import (
-    Account,
-    AsyncChatGPTProvider,
+    WebAIAccount,
+    AsyncChatGPTWebAIProvider,
     Attachment,
     GenerationEnd,
     OperationEvent,
     OutputDelta,
-    ProviderType,
+    WebAIProviderType,
     ThinkingDelta,
     ThinkingPart,
 )
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CHATGPT)
-    async with AsyncChatGPTProvider(account) as provider:
+    account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+    async with AsyncChatGPTWebAIProvider(account) as provider:
         chat = await provider.chats.create("Code Review")
         chat.hooks.on(OperationEvent.SOURCE_DISCOVERED, lambda ev: print("Source:", ev.source.url))
 
@@ -110,7 +110,7 @@ All remote collections (`chats`, `projects`, `responses`, `project.chats`, `proj
   Returns a list of all matches using the same matching rules as `find()`.
 
 ```python
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     recent = provider.chats.list(limit=20, include_projects=True)
     report = provider.chats.find("Weekly Report", exact=True, single=True, include_projects=True)
     python_chats = provider.chats.search("Python", limit=5)
@@ -308,7 +308,7 @@ if isinstance(thinking, ThinkingEnd):
 final_response = op.wait()
 ```
 
-> **Synchronous Lock Rule:** When a synchronous send is parked via `wait_for(..., timeout=...)`, starting a new operation on the same chat from that thread before completing (`wait()` / `stream()`) or `cancel()`-ing the parked operation raises `ProviderError`.
+> **Synchronous Lock Rule:** When a synchronous send is parked via `wait_for(..., timeout=...)`, starting a new operation on the same chat from that thread before completing (`wait()` / `stream()`) or `cancel()`-ing the parked operation raises `WebAIProviderError`.
 
 ### Persistent Hooks (`chat.hooks`)
 

@@ -28,13 +28,13 @@ Kimlik bilgilerini işletim sisteminin varsayılan tarayıcısından alabilir ve
 ```python
 import asyncio
 
-from webaiprovider import Account, AsyncChatGPTProvider, OutputDelta, ProviderType
+from webaiprovider import WebAIAccount, AsyncChatGPTWebAIProvider, OutputDelta, WebAIProviderType
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
+    account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT, browser="firefox")
 
-    async with AsyncChatGPTProvider(account) as provider:
+    async with AsyncChatGPTWebAIProvider(account) as provider:
         models = await provider.models.list()
         if not models:
             raise RuntimeError("No models are available for this account")
@@ -50,32 +50,32 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`browser` verilmezse `Account.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `Account.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
+`browser` verilmezse `WebAIAccount.from_browser()` varsayılan tarayıcıyı kullanır. Tarayıcı çerezlerine erişmek için tarayıcının kapatılması veya işletim sistemi anahtarlığının kilidinin açılması gerekebilir. Kimlik bilgilerini doğrudan vermek için `WebAIAccount.from_cookies(provider, cookies)` kullanın ve çerezleri kendi güvenli deponuzda saklayın.
 
 Bloklayan kodlarda sağlayıcıya özel senkron sınıfı kullanabilirsiniz. Senkron sınıflar arka planda olay döngüsü başlatmadan doğrudan çağıran thread üzerinde bloklayan (`curl_cffi`) G/Ç ile çalışır:
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-with ChatGPTProvider(account) as provider:
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+with ChatGPTWebAIProvider(account) as provider:
     chat = provider.chats.create("Hızlı başlangıç")
     response = chat.responses.create("Merhaba!").start()
 ```
 
 ## Temel API
 
-- `BaseProvider`, hesap ve sağlayıcı kimliğini taşır. Asenkron işlemler için `AsyncProvider`, bloklayan çağrılar için `Provider` kullanın. Sağlayıcıya özgü özellikler için `AsyncChatGPTProvider` gibi ilgili sınıfı seçin.
-- `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider` ve `GrokProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir. Bir ChatGPT sohbetini projeye eklemek veya taşımak için `chat.move_to(project)`, projeden çıkarmak için `chat.move_to(None)` kullanın.
+- `BaseWebAIProvider`, hesap ve sağlayıcı kimliğini taşır. Asenkron işlemler için `AsyncWebAIProvider`, bloklayan çağrılar için `WebAIProvider` kullanın. Sağlayıcıya özgü özellikler için `AsyncChatGPTWebAIProvider` gibi ilgili sınıfı seçin.
+- `ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider` ve `GrokWebAIProvider` sağlayıcıya özel özellikler sunar. ChatGPT projeleri varsayılan/genel bellek kapsamını kullanır; yalnızca proje belleği için `memory_share=False` verilir. Bir ChatGPT sohbetini projeye eklemek veya taşımak için `chat.move_to(project)`, projeden çıkarmak için `chat.move_to(None)` kullanın.
 - Uzak koleksiyonlar sağlayıcı verisini istek üzerine okur. `list(limit=50)` sayfalamayı yönetir, `limit=0` uzak istek yapmaz, `limit=None` ulaşılabilen tüm sayfaları okur. Koleksiyonlar `get()`, `search()`, `find()`, `first()`, `last()` ve `single()` metotlarını paylaşır. `find(single=True)`, birden fazla eşleşmede `AmbiguousMatchError` yükseltir.
 - Model sorguları, sağlayıcı oturumu açılırken yüklenen hesap kataloğunu kullanır. Boş katalog da oturum boyunca saklanır. Kataloğu yeniden yüklemek için `provider.models.refresh()` çağırın.
 - Örtüşen `chat.responses.list()` çağrıları aynı geçmiş isteğini paylaşır. Bağımsız bir istek için `chat.responses.list(fresh=True)` kullanın.
 - `chat.responses.create()`, `edit()` ve `retry()` mesaj işlemlerini hazırlar. Akış olayları için `operation.stream()`, tamamlanmış `Response` için `operation.wait()` kullanın. Yanıt; ilişkili kullanıcı mesajını, kaynakları, çıktıları ve canlı gönderim için süre bilgilerini içerir.
 - Bir sohbeti son yanıtlarıyla birlikte tek geçmiş okumasında açmak için `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)` kullanın. Senkron sağlayıcıda `await` kaldırılır. Limit, dönen yanıt sayısını belirler.
 - Projeye dosya veya metin eklemek için `project.attachments.create()`, ekleri görmek için `list()`, bir eki silmek için `delete()` kullanın.
-- Sağlayıcılar yaşam döngüsü, kaynak kilitleri, kancalar ve olayları doğrudan `Provider` ve `AsyncProvider` üzerinde `flowevent` altyapısıyla yönetir. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
+- Sağlayıcılar yaşam döngüsü, kaynak kilitleri, kancalar ve olayları doğrudan `WebAIProvider` ve `AsyncWebAIProvider` üzerinde `flowevent` altyapısıyla yönetir. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Her başarılı uzak okumada kayıt kimliklerini topluca almak için `collection.read.completed` olayına abone olun. `collection.changed`, doğrulanan ekleme, güncelleme ve silmeleri bildirir. İki olayın da `event.metadata["payload"]` alanında bir `items` listesi bulunur. Olay zarfı hesabı ve iç içe koleksiyonlarda üst kaydın kimliğini taşır. Mesaj düzenlemeleri ve yeniden denemeler sohbet kapsamında bildirilir. Olay verisi mesaj metni, dosya içeriği veya oturum bilgisi içermez.
-- Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `ProviderError` alt sınıflarıyla bildirilir.
+- Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `WebAIProviderError` alt sınıflarıyla bildirilir.
 
 Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri sunar. Hesaptan keşfedilen modeller, o hesap için yetkili kaynaktır; aboneliğe ve sağlayıcı değişikliklerine göre farklılık gösterebilir.
 
@@ -84,10 +84,10 @@ Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri su
 Tüm sağlayıcılar, kendi origin’iyle sınırlı `send`, JSON `request` ve parçalı `stream` işlemleri için `provider.transport` sunar. Transport’un yaşam döngüsünü sağlayıcı yönetir; senkron ve asenkron çağrılar her istekte yeni bir bağlantı havuzu veya olay döngüsü açmaz.
 
 ```python
-from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider import WebAIAccount, AsyncClaudeWebAIProvider, WebAIProviderType
 from webaiprovider.transport import AsyncHttpSession, TransportConfig
 
-account = Account.from_browser(ProviderType.CLAUDE)
+account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
 transport = AsyncHttpSession(
     "https://claude.ai",
     account.store(),
@@ -95,7 +95,7 @@ transport = AsyncHttpSession(
     config=TransportConfig(timeout=30, max_stream_bytes=64 * 1024 * 1024),
 )
 
-async with AsyncClaudeProvider(account, transport=transport) as provider:
+async with AsyncClaudeWebAIProvider(account, transport=transport) as provider:
     response = await provider.transport.send("GET", "/api/bootstrap")
     endpoint, payload = "/api/path", {}  # Sağlayıcının desteklediği bir uç nokta kullanın.
     async with provider.transport.stream("POST", endpoint, json=payload) as stream:

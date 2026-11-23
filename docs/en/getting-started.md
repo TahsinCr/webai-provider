@@ -11,8 +11,8 @@ This guide covers installing the library, connecting an account from a browser p
 - [Quick Example](#quick-example)
 - [Installation and System Notes](#installation-and-system-notes)
 - [Core Concepts](#core-concepts)
-- [Creating an Account (`Account`)](#creating-an-account-account)
-  - [`Account` Fields](#account-fields)
+- [Creating an Account (`WebAIAccount`)](#creating-an-account-webaiaccount)
+  - [`WebAIAccount` Fields](#webaiaccount-fields)
   - [Reading Cookies from a Browser (`from_browser`)](#reading-cookies-from-a-browser-from_browser)
   - [Connecting with a Dictionary or File (`from_cookies`)](#connecting-with-a-dictionary-or-file-from_cookies)
 - [Credential Stores (`CredentialStore`)](#credential-stores-credentialstore)
@@ -28,11 +28,11 @@ This guide covers installing the library, connecting an account from a browser p
 Reading your active browser session and getting your first reply takes just a few lines:
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT, browser="firefox")
 
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     response = provider.ask("Hello! Briefly introduce yourself.")
     print(response.text)
 ```
@@ -41,12 +41,12 @@ In asynchronous projects, use the `Async*` classes with `async with`:
 
 ```python
 import asyncio
-from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider import WebAIAccount, AsyncClaudeWebAIProvider, WebAIProviderType
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CLAUDE)
-    async with AsyncClaudeProvider(account) as provider:
+    account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
+    async with AsyncClaudeWebAIProvider(account) as provider:
         response = await provider.ask("Hello Claude!")
         print(response.text)
 
@@ -79,10 +79,10 @@ python -m pip install -e '.[benchmark]'
 These guides document the v2 API in this repository. If an example class or method is missing in a published release, check your installed version with `python -m pip show webai-provider` and use an editable checkout of this repository to try the v2 API.
 
 **Practical notes on browser cookie import:**
-When calling `Account.from_browser()`, keep OS-level browser storage rules in mind:
+When calling `WebAIAccount.from_browser()`, keep OS-level browser storage rules in mind:
 - **Linux:** GNOME Keyring or KWallet must be unlocked.
 - **macOS:** You may be prompted for Keychain access on the first read.
-- **Windows / Chromium:** Recent Chrome or Edge versions may lock their cookie SQLite database or use additional encryption. If reading fails, close the browser and retry, or export your cookies to a JSON file and pass it to `Account.from_cookies()`.
+- **Windows / Chromium:** Recent Chrome or Edge versions may lock their cookie SQLite database or use additional encryption. If reading fails, close the browser and retry, or export your cookies to a JSON file and pass it to `WebAIAccount.from_cookies()`.
 
 [Back to top](#contents)
 
@@ -92,8 +92,8 @@ When calling `Account.from_browser()`, keep OS-level browser storage rules in mi
 
 Every connection is built from two pieces:
 
-1. **`Account`:** Identity and credential holder specifying which platform (`chatgpt`, `claude`, `gemini`, `grok`) and which cookies to use. Account attributes cannot be reassigned, while the underlying credential store contents and `metadata` dictionary can be updated. The same `Account` can back multiple provider sessions over time.
-2. **`Provider` (or `AsyncProvider`):** The live session object that connects to the platform, discovers models, and manages chats and projects.
+1. **`WebAIAccount`:** Identity and credential holder specifying which platform (`chatgpt`, `claude`, `gemini`, `grok`) and which cookies to use. Account attributes cannot be reassigned, while the underlying credential store contents and `metadata` dictionary can be updated. The same `WebAIAccount` can back multiple provider sessions over time.
+2. **`WebAIProvider` (or `AsyncWebAIProvider`):** The live session object that connects to the platform, discovers models, and manages chats and projects.
 
 Opening a provider allocates an HTTP connection pool and session state that should be released cleanly when finished. Always prefer `with` (or `async with`), which guarantees `close()` runs on exit even if an exception is raised.
 
@@ -101,11 +101,11 @@ Opening a provider allocates an HTTP connection pool and session state that shou
 
 ---
 
-## Creating an Account (`Account`)
+## Creating an Account (`WebAIAccount`)
 
-Most workflows only need `Account.from_browser()` or `Account.from_cookies()`. If you are plugging in a custom credential store, instantiate `Account(...)` directly.
+Most workflows only need `WebAIAccount.from_browser()` or `WebAIAccount.from_cookies()`. If you are plugging in a custom credential store, instantiate `WebAIAccount(...)` directly.
 
-### `Account` Fields
+### `WebAIAccount` Fields
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -117,12 +117,12 @@ Most workflows only need `Account.from_browser()` or `Account.from_cookies()`. I
 | `name` | `str \| None` | `None` | Human-readable account display name. |
 | `is_active` | `bool` | `True` | Application-level enabled state for the account. |
 
-After a successful open, an `Account` caches its verified session status alongside a credential fingerprint for 300 seconds. Opening another `Provider(account)` within that window skips redundant startup checks. The cache is automatically invalidated whenever credentials change, expire, or fail verification.
+After a successful open, an `WebAIAccount` caches its verified session status alongside a credential fingerprint for 300 seconds. Opening another `WebAIProvider(account)` within that window skips redundant startup checks. The cache is automatically invalidated whenever credentials change, expire, or fail verification.
 
 ### Reading Cookies from a Browser (`from_browser`)
 
 ```python
-from webaiprovider import Account, ProviderType
+from webaiprovider import WebAIAccount, WebAIProviderType
 from webaiprovider.errors import (
     ProfileDatabaseError,
     ProfileKeyringError,
@@ -130,8 +130,8 @@ from webaiprovider.errors import (
 )
 
 try:
-    account = Account.from_browser(
-        ProviderType.GEMINI,
+    account = WebAIAccount.from_browser(
+        WebAIProviderType.GEMINI,
         browser="chrome",
         id="personal-gemini",
         name="Chrome Gemini",
@@ -144,7 +144,7 @@ except ProfileKeyringError:
     print("System keyring is locked.")
 ```
 
-- **`provider` (`ProviderType | str`):** Target platform (`ProviderType.CHATGPT`, `"claude"`, etc.).
+- **`provider` (`WebAIProviderType | str`):** Target platform (`WebAIProviderType.CHATGPT`, `"claude"`, etc.).
 - **`browser` (`str | None = None`):** Browser to read cookies from. Leave as `None` to use the OS default browser. Supported values: `"chrome"`, `"chromium"`, `"brave"`, `"brave-origin"`, `"edge"` (`"msedge"`), `"vivaldi"`, `"firefox"`, `"zen"`, `"safari"` *(macOS)*.
 - **`id` and `name` (`str | None = None`):** Optional identifier and display name; generated automatically if omitted.
 
@@ -156,18 +156,18 @@ You can bypass browser reading altogether by passing a cookie dictionary or a JS
 
 ```python
 from pathlib import Path
-from webaiprovider import Account, ProviderType
+from webaiprovider import WebAIAccount, WebAIProviderType
 
 # 1) In-memory dictionary (great for tests or one-off scripts)
-acc_mem = Account.from_cookies(
-    ProviderType.CLAUDE,
+acc_mem = WebAIAccount.from_cookies(
+    WebAIProviderType.CLAUDE,
     {"sessionKey": "sk-ant-sid01-..."},
     name="Temp Claude",
 )
 
 # 2) Persistent JSON file (recommended for long-lived apps)
-acc_file = Account.from_cookies(
-    ProviderType.GROK,
+acc_file = WebAIAccount.from_cookies(
+    WebAIProviderType.GROK,
     Path("secrets/grok.json"),
     id="grok-main",
 )
@@ -203,17 +203,17 @@ To import from a browser on first run and persist to disk for subsequent runs:
 
 ```python
 from pathlib import Path
-from webaiprovider import Account, FileCredentialStore, ProviderType
+from webaiprovider import WebAIAccount, FileCredentialStore, WebAIProviderType
 
 store = FileCredentialStore(Path.home() / ".config" / "myapp" / "gemini.json")
 if not store.exists():
-    browser_acc = Account.from_browser(ProviderType.GEMINI)
+    browser_acc = WebAIAccount.from_browser(WebAIProviderType.GEMINI)
     store.save(browser_acc.store().load())
 
-account = Account.from_cookies(ProviderType.GEMINI, store, id="gemini-local")
+account = WebAIAccount.from_cookies(WebAIProviderType.GEMINI, store, id="gemini-local")
 ```
 
-If you store credentials in SQLite or an encrypted vault, implement the `CredentialStore` protocol (`load`, `save`, `exists`, `delete`) and pass your instance directly to `Account(..., credentials=...)`.
+If you store credentials in SQLite or an encrypted vault, implement the `CredentialStore` protocol (`load`, `save`, `exists`, `delete`) and pass your instance directly to `WebAIAccount(..., credentials=...)`.
 
 [Back to top](#contents)
 
@@ -223,12 +223,12 @@ If you store credentials in SQLite or an encrypted vault, implement the `Credent
 
 ### Constructor Parameters
 
-The generic `Provider(account)` and `AsyncProvider(account)` constructors inspect `account.provider` and return the matching concrete class (`ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, or `GrokProvider`).
+The generic `WebAIProvider(account)` and `AsyncWebAIProvider(account)` constructors inspect `account.provider` and return the matching concrete class (`ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider`, or `GrokWebAIProvider`).
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `account` | `Account` | Required | Account to connect with. |
-| `type` | `ProviderType \| str \| None` | `None` | Explicitly verify the provider type; raises `ValueError` if it conflicts with `account.provider`. |
+| `account` | `WebAIAccount` | Required | Account to connect with. |
+| `type` | `WebAIProviderType \| str \| None` | `None` | Explicitly verify the provider type; raises `ValueError` if it conflicts with `account.provider`. |
 | `transport` | `Transport \| AsyncTransport \| None` | `None` | Custom transport for timeouts, headers, or HTTP client injection (must match the provider's origin). |
 
 *(Provider-specific parameters such as ChatGPT's `session` or Gemini's `notebooks` are covered in [04 · Provider Guides](provider-guides.md).)*
@@ -240,7 +240,7 @@ Once instantiated, a provider exposes: `id`, `type`, `account_id`, `capabilities
 When you cannot use a `with` / `async with` block, pair `open()` and `close()` inside a `try / finally`:
 
 ```python
-provider = AsyncProvider(account)
+provider = AsyncWebAIProvider(account)
 await provider.open()
 try:
     models = await provider.models.list()
@@ -249,15 +249,15 @@ finally:
     await provider.close()
 ```
 
-A provider in the `CLOSED` state cannot be reopened; create a new `Provider(account)` instance for a fresh session.
+A provider in the `CLOSED` state cannot be reopened; create a new `WebAIProvider(account)` instance for a fresh session.
 
 `provider.ask()` creates a new conversation with default settings on each call, which may remain in the provider's chat history. To continue an existing conversation, call `provider.chats.create()` once and send follow-ups through that `chat` object. If `provider.ask()` is called on an unopened provider, it opens the session for that single call and closes it immediately afterward—wrap multiple operations in `with` / `async with` to reuse connections.
 
 ```python
-from webaiprovider import Account, Attachment, Models, Provider, ProviderType
+from webaiprovider import WebAIAccount, Attachment, Models, WebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-provider = Provider(account)
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+provider = WebAIProvider(account)
 
 reply = provider.ask(
     "Summarize this document in three bullet points.",

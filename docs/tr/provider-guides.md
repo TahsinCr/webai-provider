@@ -2,17 +2,17 @@
 
 # 04 · Sağlayıcıya Özel Rehberler
 
-Ortak `Provider` / `AsyncProvider` sınıfı dört platformu tek arayüzde birleştirir. Ancak platformların kendi web protokollerinden gelen önemli farkları (proje belleği, sohbet taşıma, çerez kuralları, dosya limitleri ve özel hatalar) bu bölümde ayrıntılı olarak bulabilirsin.
+Ortak `WebAIProvider` / `AsyncWebAIProvider` sınıfı dört platformu tek arayüzde birleştirir. Ancak platformların kendi web protokollerinden gelen önemli farkları (proje belleği, sohbet taşıma, çerez kuralları, dosya limitleri ve özel hatalar) bu bölümde ayrıntılı olarak bulabilirsin.
 
 ---
 
 ## Konu Dizini
 
 - [Özet Karşılaştırma](#özet-karşılaştırma)
-- [ChatGPT (`ChatGPTProvider` / `AsyncChatGPTProvider`)](#chatgpt-chatgptprovider--asyncchatgptprovider)
-- [Claude (`ClaudeProvider` / `AsyncClaudeProvider`)](#claude-claudeprovider--asyncclaudeprovider)
-- [Gemini (`GeminiProvider` / `AsyncGeminiProvider`)](#gemini-geminiprovider--asyncgeminiprovider)
-- [Grok (`GrokProvider` / `AsyncGrokProvider`)](#grok-grokprovider--asyncgrokprovider)
+- [ChatGPT (`ChatGPTWebAIProvider` / `AsyncChatGPTWebAIProvider`)](#chatgpt-chatgptwebaiprovider--asyncchatgptwebaiprovider)
+- [Claude (`ClaudeWebAIProvider` / `AsyncClaudeWebAIProvider`)](#claude-claudewebaiprovider--asyncclaudewebaiprovider)
+- [Gemini (`GeminiWebAIProvider` / `AsyncGeminiWebAIProvider`)](#gemini-geminiwebaiprovider--asyncgeminiwebaiprovider)
+- [Grok (`GrokWebAIProvider` / `AsyncGrokWebAIProvider`)](#grok-grokwebaiprovider--asyncgrokwebaiprovider)
 
 ---
 
@@ -25,13 +25,13 @@ Ortak `Provider` / `AsyncProvider` sınıfı dört platformu tek arayüzde birle
 | **Gemini** | `https://gemini.google.com` | `branch()`, `GeminiNotebooks` | `move_to()` yok; `OSID` + `__Secure-OSID` + `__Secure-1PSID` gerekir; login yönlendirmesini takip etmez (`GeminiSignInRequired`). |
 | **Grok** | `https://grok.com` | `move_to(project)` *(çıkarma yok)*, `assets.grok.com` | `branch()` yok; sohbet dosyası sınırı katı (3 MiB, toplam 10 MiB); kota aşımında `RateLimited`. |
 
-Uygulaman birden fazla sağlayıcıya bağlanıyorsa `Provider(account)` kullanman yeterlidir. Yalnızca tek bir platformun özel parametrelerini (ör. ChatGPT'de `memory_share=False`) IDE tip denetimiyle kullanmak istediğinde somut sınıfı doğrudan içe aktarabilirsin.
+Uygulaman birden fazla sağlayıcıya bağlanıyorsa `WebAIProvider(account)` kullanman yeterlidir. Yalnızca tek bir platformun özel parametrelerini (ör. ChatGPT'de `memory_share=False`) IDE tip denetimiyle kullanmak istediğinde somut sınıfı doğrudan içe aktarabilirsin.
 
 [Yukarı dön](#konu-dizini)
 
 ---
 
-## ChatGPT (`ChatGPTProvider` / `AsyncChatGPTProvider`)
+## ChatGPT (`ChatGPTWebAIProvider` / `AsyncChatGPTWebAIProvider`)
 
 **Ek kurucu parametreleri:**
 Ortak `(account, *, type=None, transport=None)` parametrelerine ek olarak:
@@ -46,7 +46,7 @@ Ortak `(account, *, type=None, transport=None)` parametrelerine ek olarak:
 - **Özel Hatalar:** `ChatGPTError`, `ChatGPTAuthenticationError`, `SentinelCompatibilityError`.
 
 ```python
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     proje_a = provider.projects.create("Müşteri A", memory_share=False)
     proje_b = provider.projects.create("Müşteri B", memory_share=False)
 
@@ -62,7 +62,7 @@ with ChatGPTProvider(account) as provider:
 
 ---
 
-## Claude (`ClaudeProvider` / `AsyncClaudeProvider`)
+## Claude (`ClaudeWebAIProvider` / `AsyncClaudeWebAIProvider`)
 
 **Kurucu parametreleri:** Ortak `(account, *, type=None, transport=None)`.
 
@@ -78,7 +78,7 @@ with ChatGPTProvider(account) as provider:
 
 ---
 
-## Gemini (`GeminiProvider` / `AsyncGeminiProvider`)
+## Gemini (`GeminiWebAIProvider` / `AsyncGeminiWebAIProvider`)
 
 **Ek kurucu parametreleri:**
 Ortak `(account, *, type=None, transport=None)` parametrelerine ek olarak:
@@ -96,7 +96,7 @@ Ortak `(account, *, type=None, transport=None)` parametrelerine ek olarak:
 
 ---
 
-## Grok (`GrokProvider` / `AsyncGrokProvider`)
+## Grok (`GrokWebAIProvider` / `AsyncGrokWebAIProvider`)
 
 **Ek kurucu parametreleri:** Ortak `(account, *, type=None, transport=None)` + `client_factory: Any = None`.
 
@@ -105,7 +105,7 @@ Ortak `(account, *, type=None, transport=None)` parametrelerine ek olarak:
 - **Görseller ve Çıktılar:** `assets.grok.com` bağlantıları, `generatedImageUrls`, ek dosya metadataları ve yanıt içi Markdown bağlantıları `response.artifacts` olarak çıkarılır ve `chat.download(artifact)` ile indirilebilir.
 - **Dosya Limitleri:** Sohbet eklerinde en fazla 10 dosya, **dosya başına en fazla 3 MiB** ve **toplam 10 MiB** sınırı vardır (Workspace proje ekleri 20 MiB'a kadar çıkabilir). Yalnızca belge ve veri uzantıları (`.pdf`, `.txt`, `.md`, `.csv`, `.json`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.xlsm`, `.odt`, `.ods`, `.odp`, `.rtf`) kabul edilir.
 - **Model ve Efor:** `GrokModels` ile model seçimi desteklenir ancak akıl yürütme eforu seçimi (`Capability.EFFORT`) bulunmaz (`efforts` boştur).
-- **Kota ve Hatalar:** Grok ayrı bir hata alt sınıfı tanımlamaz; doğrudan ortak `ProviderError`, `RateLimited` (`err.retry_after` ve `err.message_submitted`) ve `AccountPaused` istisnalarını yükseltir.
+- **Kota ve Hatalar:** Grok ayrı bir hata alt sınıfı tanımlamaz; doğrudan ortak `WebAIProviderError`, `RateLimited` (`err.retry_after` ve `err.message_submitted`) ve `AccountPaused` istisnalarını yükseltir.
 
 [Yukarı dön](#konu-dizini)
 

@@ -24,18 +24,18 @@ Günlük kullanımda başvurulan kurucular, koleksiyon işlemleri, akış olayla
 
 ```python
 from webaiprovider import (
-    Account,
+    WebAIAccount,
     CredentialStore,
     FileCredentialStore,
     MemoryCredentialStore,
-    ProviderType,
+    WebAIProviderType,
 )
 ```
 
-- `ProviderType`: `CHATGPT = "chatgpt"`, `CLAUDE = "claude"`, `GEMINI = "gemini"`, `GROK = "grok"` (`ProviderType.parse(value)`).
-- `Account(id, provider, credentials, capabilities=(), metadata={}, name=None, is_active=True)`
-  - `Account.from_browser(provider, *, browser=None, id=None, name=None) -> Account`
-  - `Account.from_cookies(provider, cookies, *, id=None, name=None) -> Account`
+- `WebAIProviderType`: `CHATGPT = "chatgpt"`, `CLAUDE = "claude"`, `GEMINI = "gemini"`, `GROK = "grok"` (`WebAIProviderType.parse(value)`).
+- `WebAIAccount(id, provider, credentials, capabilities=(), metadata={}, name=None, is_active=True)`
+  - `WebAIAccount.from_browser(provider, *, browser=None, id=None, name=None) -> WebAIAccount`
+  - `WebAIAccount.from_cookies(provider, cookies, *, id=None, name=None) -> WebAIAccount`
   - `account.store() -> CredentialStore`
 - `CredentialStore` *(Protocol)*: `load() -> dict`, `save(value: dict) -> None`, `exists() -> bool`, `delete() -> None`
 - `FileCredentialStore(path)`: `save(value, *, ensure_ascii=False, newline=False)` *(maks. 1 MiB, atomik, `0o600`)*
@@ -49,14 +49,14 @@ from webaiprovider import (
 
 | Sınıf | Kurucu İmzası |
 | --- | --- |
-| `Provider` / `AsyncProvider` | `(account, *, type=None, transport=None)` |
-| `ChatGPTProvider` / `AsyncChatGPTProvider` | `(account, *, type=None, session: BrowserSession \| None = None, client_factory=None, transport=None)` |
-| `ClaudeProvider` / `AsyncClaudeProvider` | `(account, *, type=None, transport=None)` |
-| `GeminiProvider` | `(account, *, type=None, client_factory=None, notebooks: GeminiNotebooks \| None = None, transport=None)` |
-| `AsyncGeminiProvider` | `(account, *, type=None, client_factory=None, notebooks: AsyncGeminiNotebooks \| None = None, transport=None)` |
-| `GrokProvider` / `AsyncGrokProvider` | `(account, *, type=None, client_factory=None, transport=None)` |
+| `WebAIProvider` / `AsyncWebAIProvider` | `(account, *, type=None, transport=None)` |
+| `ChatGPTWebAIProvider` / `AsyncChatGPTWebAIProvider` | `(account, *, type=None, session: BrowserSession \| None = None, client_factory=None, transport=None)` |
+| `ClaudeWebAIProvider` / `AsyncClaudeWebAIProvider` | `(account, *, type=None, transport=None)` |
+| `GeminiWebAIProvider` | `(account, *, type=None, client_factory=None, notebooks: GeminiNotebooks \| None = None, transport=None)` |
+| `AsyncGeminiWebAIProvider` | `(account, *, type=None, client_factory=None, notebooks: AsyncGeminiNotebooks \| None = None, transport=None)` |
+| `GrokWebAIProvider` / `AsyncGrokWebAIProvider` | `(account, *, type=None, client_factory=None, transport=None)` |
 
-`Provider(account)` ve `AsyncProvider(account)` hesap türüne göre somut sağlayıcıyı seçer. Sağlayıcıya özel tipleri ve seçenekleri IDE’de görmek için ilgili somut sınıfı doğrudan kullan. Örneğin `ChatGPTProvider` üzerinden açılan projelerde `memory_share` ayarlanabilir. Ayrıntılar [sağlayıcı rehberinde](provider-guides.md).
+`WebAIProvider(account)` ve `AsyncWebAIProvider(account)` hesap türüne göre somut sağlayıcıyı seçer. Sağlayıcıya özel tipleri ve seçenekleri IDE’de görmek için ilgili somut sınıfı doğrudan kullan. Örneğin `ChatGPTWebAIProvider` üzerinden açılan projelerde `memory_share` ayarlanabilir. Ayrıntılar [sağlayıcı rehberinde](provider-guides.md).
 
 **Ortak Özellikler ve Metotlar (Async'te G/Ç çağrıları `await` edilir):**
 - Özellikler: `id`, `type`, `account_id`, `provider`, `account`, `capabilities`, `opened`, `closing`, `closed`, `lifecycle_state`, `chats`, `projects`, `models`, `events`, `hooks`, `transport`
@@ -181,14 +181,14 @@ Uzak koleksiyonlar sağlayıcıdan kayıt getirir. Yanıtın `parts`, `sources` 
 ## İstisnalar
 
 - **`from webaiprovider import ...`:**
-  `ProviderError`, `AccountPaused`, `AmbiguousMatchError`, `ConfigurationError`, `ContentError`, `FeatureUnavailable`, `OperationCancelledError`, `ProfileError`, `RateLimited`, `RemoteNotFound`, `UnsupportedOperationError`
+  `WebAIProviderError`, `AccountPaused`, `AmbiguousMatchError`, `ConfigurationError`, `ContentError`, `FeatureUnavailable`, `OperationCancelledError`, `ProfileError`, `RateLimited`, `RemoteNotFound`, `UnsupportedOperationError`
 - **`from webaiprovider.errors import ...`:**
   Yukarıdakilere ek olarak `RequestNotSentError`, `StreamError`, `FrameDecodeError`, `AuthenticationError`, `CompatibilityError` ve tüm `Profile*` alt sınıfları (`ProfileNotFoundError`, `ProfileSessionNotFoundError`, `ProfileDependencyError`, `ProfilePermissionError`, `ProfileDatabaseError`, `ProfileKeyringError`, `ProfileDecryptionError`, `ProfileTimeoutError`, `ProfileInvalidResultError`).
 - **Sağlayıcı modülleri:**
   - `webaiprovider` / `providers.chatgpt.errors`: `ChatGPTError`, `ChatGPTAuthenticationError`, `SentinelCompatibilityError`
   - `providers.claude.errors`: `ClaudeError`, `ClaudeCompatibilityError`, `ClaudeRequestNotSent`, `ClaudeStreamError`
   - `providers.gemini.errors`: `GeminiError`, `GeminiSignInRequired`, `GeminiGenerationRejected`, `GeminiNotFoundError`, `GeminiCompatibilityError`, `GeminiStreamError`
-  - **Grok:** Özel bir alt sınıf tanımlamaz; ortak `ProviderError`, `RateLimited` ve `AccountPaused` sınıflarını kullanır.
+  - **Grok:** Özel bir alt sınıf tanımlamaz; ortak `WebAIProviderError`, `RateLimited` ve `AccountPaused` sınıflarını kullanır.
 
 [Yukarı dön](#konu-dizini)
 

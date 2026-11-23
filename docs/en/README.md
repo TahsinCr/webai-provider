@@ -29,7 +29,7 @@
 
 | Guide | What It Covers |
 | --- | --- |
-| **[01 · Getting Started and Accounts](getting-started.md)** | Installation, creating an `Account` from a browser or cookies, `FileCredentialStore` / `MemoryCredentialStore`, `Provider` lifecycle, and `provider.ask()`. |
+| **[01 · Getting Started and Accounts](getting-started.md)** | Installation, creating an `WebAIAccount` from a browser or cookies, `FileCredentialStore` / `MemoryCredentialStore`, `WebAIProvider` lifecycle, and `provider.ask()`. |
 | **[02 · Chats, Responses, and Streaming](chats-and-streaming.md)** | Creating and searching chats, messages and attachments, `Response.parts` (`ThinkingPart`, `TextPart`), live `stream()`, `edit` / `retry` / `branch`, `wait_for()`, cancellation, and `chat.hooks`. |
 | **[03 · Models and Projects](models-and-projects.md)** | Model catalog discovery (`300 s` TTL), `Models` tiers, reasoning effort selection, static catalogs, projects, project instructions, and project file/text attachments. |
 | **[04 · Provider Guides](provider-guides.md)** | ChatGPT (`memory_share`, `move_to(None)`, `BrowserSession`), Claude (organization discovery, web search), Gemini (`OSID` cookies, `GeminiNotebooks`, upload isolation), and Grok (`assets.grok.com`, `RateLimited`). |
@@ -64,9 +64,9 @@ At runtime, you can inspect supported capabilities on an open or closed provider
 
 Choose based on your caller context—use the async interface inside an event loop, and the blocking interface in synchronous code:
 
-- **Synchronous (`Provider`, `ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, `GrokProvider`):**
+- **Synchronous (`WebAIProvider`, `ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider`, `GrokWebAIProvider`):**
   Runs blocking `curl_cffi` calls directly on the calling thread without spawning a hidden `asyncio` event loop. Best suited for CLI tools, traditional web frameworks (Flask, Django), and plain Python scripts.
-- **Asynchronous (`AsyncProvider`, `AsyncChatGPTProvider`, `AsyncClaudeProvider`, `AsyncGeminiProvider`, `AsyncGrokProvider`):**
+- **Asynchronous (`AsyncWebAIProvider`, `AsyncChatGPTWebAIProvider`, `AsyncClaudeWebAIProvider`, `AsyncGeminiWebAIProvider`, `AsyncGrokWebAIProvider`):**
   Built for `async` / `await`. Ideal for FastAPI, `aiohttp`, bots, or applications juggling multiple concurrent chat streams. Overlapping `chat.responses.list()` calls on the same conversation are automatically coalesced into a single network request.
 
 [Back to top](#contents)

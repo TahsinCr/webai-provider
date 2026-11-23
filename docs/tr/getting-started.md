@@ -11,8 +11,8 @@ Bu rehber kütüphaneyi kurmayı, tarayıcıdan veya çerez dosyasından hesap b
 - [Hızlı Örnek](#hızlı-örnek)
 - [Kurulum ve Sistem Notları](#kurulum-ve-sistem-notları)
 - [Temel Kavramlar](#temel-kavramlar)
-- [Hesap Oluşturma (`Account`)](#hesap-oluşturma-account)
-  - [`Account` Alanları](#account-alanları)
+- [Hesap Oluşturma (`WebAIAccount`)](#hesap-oluşturma-webaiaccount)
+  - [`WebAIAccount` Alanları](#webaiaccount-alanları)
   - [Tarayıcıdan Çerez Alma (`from_browser`)](#tarayıcıdan-çerez-alma-from_browser)
   - [Sözlük veya Dosyadan Bağlanma (`from_cookies`)](#sözlük-veya-dosyadan-bağlanma-from_cookies)
 - [Kimlik Depoları (`CredentialStore`)](#kimlik-depoları-credentialstore)
@@ -28,11 +28,11 @@ Bu rehber kütüphaneyi kurmayı, tarayıcıdan veya çerez dosyasından hesap b
 Tarayıcıdaki aktif oturumunu okuyup ilk cevabı almak yalnızca birkaç satır sürer:
 
 ```python
-from webaiprovider import Account, ChatGPTProvider, ProviderType
+from webaiprovider import WebAIAccount, ChatGPTWebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT, browser="firefox")
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT, browser="firefox")
 
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     response = provider.ask("Merhaba! Kısaca kendini tanıt.")
     print(response.text)
 ```
@@ -41,12 +41,12 @@ Asenkron projelerde `Async*` sınıflarını ve `async with` yapısını kullan�
 
 ```python
 import asyncio
-from webaiprovider import Account, AsyncClaudeProvider, ProviderType
+from webaiprovider import WebAIAccount, AsyncClaudeWebAIProvider, WebAIProviderType
 
 
 async def main() -> None:
-    account = Account.from_browser(ProviderType.CLAUDE)
-    async with AsyncClaudeProvider(account) as provider:
+    account = WebAIAccount.from_browser(WebAIProviderType.CLAUDE)
+    async with AsyncClaudeWebAIProvider(account) as provider:
         response = await provider.ask("Merhaba Claude!")
         print(response.text)
 
@@ -79,10 +79,10 @@ python -m pip install -e '.[benchmark]'
 Rehberlerdeki örnekler bu deponun API’sini anlatır. Yayımlanmış pakette bir sınıf veya metot yoksa kurulu sürümü `python -m pip show webai-provider` ile kontrol et. Bu depodaki API’yi denemek için geliştirme kurulumunu kullan.
 
 **Tarayıcı çerezleri hakkında pratik notlar:**
-`Account.from_browser()` kullanırken işletim sistemine bağlı bazı kısıtlarla karşılaşabilirsin:
+`WebAIAccount.from_browser()` kullanırken işletim sistemine bağlı bazı kısıtlarla karşılaşabilirsin:
 - **Linux:** GNOME Keyring veya KWallet kilidinin açık olması gerekir.
 - **macOS:** İlk okumada Keychain erişim onayı istenebilir.
-- **Windows / Chromium:** Güncel Chrome veya Edge sürümleri çerez veritabanını kilitleyebilir ya da ek şifreleme uygulayabilir. Sorun yaşarsan tarayıcıyı kapatıp tekrar deneyebilir veya çerezleri bir JSON dosyasına kaydedip `Account.from_cookies()` ile verebilirsin.
+- **Windows / Chromium:** Güncel Chrome veya Edge sürümleri çerez veritabanını kilitleyebilir ya da ek şifreleme uygulayabilir. Sorun yaşarsan tarayıcıyı kapatıp tekrar deneyebilir veya çerezleri bir JSON dosyasına kaydedip `WebAIAccount.from_cookies()` ile verebilirsin.
 
 [Yukarı dön](#konu-dizini)
 
@@ -92,8 +92,8 @@ Rehberlerdeki örnekler bu deponun API’sini anlatır. Yayımlanmış pakette b
 
 Bağlantının iki parçası vardır:
 
-1. **`Account`:** Hangi platforma (`chatgpt`, `claude`, `gemini`, `grok`) hangi çerezlerle bağlanacağını tutan kimlik nesnesidir. Hesap alanları yeniden atanamaz. Kimlik deposunun içeriği ve `metadata` sözlüğü ise değişebilir. Aynı hesabı kullanarak yeni sağlayıcı oturumları oluşturabilirsin.
-2. **`Provider` (veya `AsyncProvider`):** Bu hesabı kullanarak siteyle bağlantıyı kuran, modelleri okuyan ve sohbetleri yöneten oturum nesnesidir.
+1. **`WebAIAccount`:** Hangi platforma (`chatgpt`, `claude`, `gemini`, `grok`) hangi çerezlerle bağlanacağını tutan kimlik nesnesidir. Hesap alanları yeniden atanamaz. Kimlik deposunun içeriği ve `metadata` sözlüğü ise değişebilir. Aynı hesabı kullanarak yeni sağlayıcı oturumları oluşturabilirsin.
+2. **`WebAIProvider` (veya `AsyncWebAIProvider`):** Bu hesabı kullanarak siteyle bağlantıyı kuran, modelleri okuyan ve sohbetleri yöneten oturum nesnesidir.
 
 Bir sağlayıcı açıldığında ağ bağlantı havuzu ve oturum kaynakları oluşturur. İşin bittiğinde bunların serbest bırakılması gerekir. Bu yüzden sağlayıcıyı her zaman `with` (asenkron kodda `async with`) bloğu içinde açman önerilir; bloktan çıkıldığında — arada hata oluşsa bile — `close()` otomatik çağrılır.
 
@@ -101,11 +101,11 @@ Bir sağlayıcı açıldığında ağ bağlantı havuzu ve oturum kaynakları ol
 
 ---
 
-## Hesap Oluşturma (`Account`)
+## Hesap Oluşturma (`WebAIAccount`)
 
-Çoğu senaryoda `Account.from_browser()` veya `Account.from_cookies()` kullanmak yeterlidir; özel bir kimlik deposu bağlayacaksan doğrudan `Account(...)` de oluşturabilirsin.
+Çoğu senaryoda `WebAIAccount.from_browser()` veya `WebAIAccount.from_cookies()` kullanmak yeterlidir; özel bir kimlik deposu bağlayacaksan doğrudan `WebAIAccount(...)` de oluşturabilirsin.
 
-### `Account` Alanları
+### `WebAIAccount` Alanları
 
 | Parametre | Tip | Varsayılan | Açıklama |
 | --- | --- | --- | --- |
@@ -117,12 +117,12 @@ Bir sağlayıcı açıldığında ağ bağlantı havuzu ve oturum kaynakları ol
 | `name` | `str \| None` | `None` | Okunabilir hesap adı. |
 | `is_active` | `bool` | `True` | Uygulama tarafında hesabın aktiflik durumu. |
 
-Aynı `Account` nesnesi başarılı bir açılıştan sonra oturum doğrulama bilgisini kimlik parmak iziyle birlikte kısa süreli (300 saniye) önbellekte tutar. Böylece kısa aralıklarla tekrar `Provider(account)` açtığında gereksiz açılış istekleri atlanır. Çerezler değiştiğinde, süre dolduğunda veya oturum geçersiz kaldığında önbellek otomatik temizlenir.
+Aynı `WebAIAccount` nesnesi başarılı bir açılıştan sonra oturum doğrulama bilgisini kimlik parmak iziyle birlikte kısa süreli (300 saniye) önbellekte tutar. Böylece kısa aralıklarla tekrar `WebAIProvider(account)` açtığında gereksiz açılış istekleri atlanır. Çerezler değiştiğinde, süre dolduğunda veya oturum geçersiz kaldığında önbellek otomatik temizlenir.
 
 ### Tarayıcıdan Çerez Alma (`from_browser`)
 
 ```python
-from webaiprovider import Account, ProviderType
+from webaiprovider import WebAIAccount, WebAIProviderType
 from webaiprovider.errors import (
     ProfileDatabaseError,
     ProfileKeyringError,
@@ -130,8 +130,8 @@ from webaiprovider.errors import (
 )
 
 try:
-    account = Account.from_browser(
-        ProviderType.GEMINI,
+    account = WebAIAccount.from_browser(
+        WebAIProviderType.GEMINI,
         browser="chrome",
         id="kisisel-gemini",
         name="Chrome Gemini",
@@ -144,7 +144,7 @@ except ProfileKeyringError:
     print("Sistem anahtarlığı kilitli.")
 ```
 
-- **`provider` (`ProviderType | str`):** Hedef platform (`ProviderType.CHATGPT`, `"claude"` vb.).
+- **`provider` (`WebAIProviderType | str`):** Hedef platform (`WebAIProviderType.CHATGPT`, `"claude"` vb.).
 - **`browser` (`str | None = None`):** Çerezlerin okunacağı tarayıcı. `None` bırakılırsa işletim sisteminin varsayılan tarayıcısı kullanılır. Desteklenen değerler: `"chrome"`, `"chromium"`, `"brave"`, `"brave-origin"`, `"edge"` (`"msedge"`), `"vivaldi"`, `"firefox"`, `"zen"`, `"safari"` *(macOS)*.
 - **`id` ve `name` (`str | None = None`):** İsteğe bağlı kimlik ve görünen ad; verilmezse otomatik oluşturulur.
 
@@ -156,18 +156,18 @@ Tarayıcıya bağımlı kalmadan kendi çerez sözlüğünle veya kalıcı bir J
 
 ```python
 from pathlib import Path
-from webaiprovider import Account, ProviderType
+from webaiprovider import WebAIAccount, WebAIProviderType
 
 # 1) Bellek içi sözlük ile (test veya tek seferlik script için)
-acc_mem = Account.from_cookies(
-    ProviderType.CLAUDE,
+acc_mem = WebAIAccount.from_cookies(
+    WebAIProviderType.CLAUDE,
     {"sessionKey": "sk-ant-sid01-..."},
     name="Geçici Claude",
 )
 
 # 2) Kalıcı JSON dosyası ile (üretim uygulamaları için önerilir)
-acc_file = Account.from_cookies(
-    ProviderType.GROK,
+acc_file = WebAIAccount.from_cookies(
+    WebAIProviderType.GROK,
     Path("secrets/grok.json"),
     id="grok-ana",
 )
@@ -203,17 +203,17 @@ Tarayıcıdan aldığın çerezleri ilk seferde kalıcı dosyaya kaydetmek için
 
 ```python
 from pathlib import Path
-from webaiprovider import Account, FileCredentialStore, ProviderType
+from webaiprovider import WebAIAccount, FileCredentialStore, WebAIProviderType
 
 store = FileCredentialStore(Path.home() / ".config" / "myapp" / "gemini.json")
 if not store.exists():
-    browser_acc = Account.from_browser(ProviderType.GEMINI)
+    browser_acc = WebAIAccount.from_browser(WebAIProviderType.GEMINI)
     store.save(browser_acc.store().load())
 
-account = Account.from_cookies(ProviderType.GEMINI, store, id="gemini-local")
+account = WebAIAccount.from_cookies(WebAIProviderType.GEMINI, store, id="gemini-local")
 ```
 
-Veritabanı veya şifreli bir kasa kullanacaksan `CredentialStore` protokolünü (`load`, `save`, `exists`, `delete`) uygulayan kendi sınıfını doğrudan `Account(..., credentials=...)` parametresine verebilirsin.
+Veritabanı veya şifreli bir kasa kullanacaksan `CredentialStore` protokolünü (`load`, `save`, `exists`, `delete`) uygulayan kendi sınıfını doğrudan `WebAIAccount(..., credentials=...)` parametresine verebilirsin.
 
 [Yukarı dön](#konu-dizini)
 
@@ -223,12 +223,12 @@ Veritabanı veya şifreli bir kasa kullanacaksan `CredentialStore` protokolünü
 
 ### Kurucu Parametreleri
 
-Genel `Provider(account)` ve `AsyncProvider(account)` sınıfları, verdiğin `Account` nesnesinin sağlayıcısına bakarak otomatik olarak uygun alt sınıfı (`ChatGPTProvider`, `ClaudeProvider`, `GeminiProvider`, `GrokProvider`) döndürür.
+Genel `WebAIProvider(account)` ve `AsyncWebAIProvider(account)` sınıfları, verdiğin `WebAIAccount` nesnesinin sağlayıcısına bakarak otomatik olarak uygun alt sınıfı (`ChatGPTWebAIProvider`, `ClaudeWebAIProvider`, `GeminiWebAIProvider`, `GrokWebAIProvider`) döndürür.
 
 | Parametre | Tip | Varsayılan | Açıklama |
 | --- | --- | --- | --- |
-| `account` | `Account` | Zorunlu | Bağlanılacak hesap. |
-| `type` | `ProviderType \| str \| None` | `None` | Sağlayıcı türünü açıkça doğrulamak için; `account.provider` ile çelişirse `ValueError` verir. |
+| `account` | `WebAIAccount` | Zorunlu | Bağlanılacak hesap. |
+| `type` | `WebAIProviderType \| str \| None` | `None` | Sağlayıcı türünü açıkça doğrulamak için; `account.provider` ile çelişirse `ValueError` verir. |
 | `transport` | `Transport \| AsyncTransport \| None` | `None` | Özel zaman aşımı, başlık veya HTTP istemcisi vermek için (origin eşleşmelidir). |
 
 *(ChatGPT'nin `session` veya Gemini'nin `notebooks` gibi sağlayıcıya özel parametreleri [04 · Sağlayıcı Rehberleri](provider-guides.md) sayfasındadır.)*
@@ -240,7 +240,7 @@ Açık bir sağlayıcı üzerinde şu özellikler her zaman hazırdır: `id`, `t
 Context manager kullanamadığın durumlarda `open()` ve `close()` çağrılarını `try / finally` ile eşleştir:
 
 ```python
-provider = AsyncProvider(account)
+provider = AsyncWebAIProvider(account)
 await provider.open()
 try:
     models = await provider.models.list()
@@ -249,15 +249,15 @@ finally:
     await provider.close()
 ```
 
-Kapanmış (`CLOSED`) bir sağlayıcı nesnesi tekrar `open()` edilemez; yeni bir oturum için aynı `account` ile yeni bir `Provider(account)` örneği açılır.
+Kapanmış (`CLOSED`) bir sağlayıcı nesnesi tekrar `open()` edilemez; yeni bir oturum için aynı `account` ile yeni bir `WebAIProvider(account)` örneği açılır.
 
 `provider.ask()` her çağrıda varsayılan ayarlarla yeni bir sohbet oluşturur. Sohbet sağlayıcının geçmişinde kalabilir. Aynı konuşmayı sürdürmek için bir kez `provider.chats.create()` çağır ve takip mesajlarını aynı `chat` üzerinden gönder. Sağlayıcı henüz açılmamışsa `provider.ask()` oturumu açıp işlem sonunda kapatır. Art arda çağrılarda bağlantıyı yeniden kullanmak için işlemleri aynı `with` veya `async with` bloğunda yap.
 
 ```python
-from webaiprovider import Account, Attachment, Models, Provider, ProviderType
+from webaiprovider import WebAIAccount, Attachment, Models, WebAIProvider, WebAIProviderType
 
-account = Account.from_browser(ProviderType.CHATGPT)
-provider = Provider(account)
+account = WebAIAccount.from_browser(WebAIProviderType.CHATGPT)
+provider = WebAIProvider(account)
 
 cevap = provider.ask(
     "Bu belgenin üç maddelik özetini çıkar.",

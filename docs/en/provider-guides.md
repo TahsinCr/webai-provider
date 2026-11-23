@@ -2,17 +2,17 @@
 
 # 04 · Provider-Specific Guides
 
-`Provider` and `AsyncProvider` unify all four platforms under a single interface, but each site's web protocol introduces specific differences in project memory, chat moving, cookie rules, attachment limits, and typed errors.
+`WebAIProvider` and `AsyncWebAIProvider` unify all four platforms under a single interface, but each site's web protocol introduces specific differences in project memory, chat moving, cookie rules, attachment limits, and typed errors.
 
 ---
 
 ## Contents
 
 - [Summary Comparison](#summary-comparison)
-- [ChatGPT (`ChatGPTProvider` / `AsyncChatGPTProvider`)](#chatgpt-chatgptprovider--asyncchatgptprovider)
-- [Claude (`ClaudeProvider` / `AsyncClaudeProvider`)](#claude-claudeprovider--asyncclaudeprovider)
-- [Gemini (`GeminiProvider` / `AsyncGeminiProvider`)](#gemini-geminiprovider--asyncgeminiprovider)
-- [Grok (`GrokProvider` / `AsyncGrokProvider`)](#grok-grokprovider--asyncgrokprovider)
+- [ChatGPT (`ChatGPTWebAIProvider` / `AsyncChatGPTWebAIProvider`)](#chatgpt-chatgptwebaiprovider--asyncchatgptwebaiprovider)
+- [Claude (`ClaudeWebAIProvider` / `AsyncClaudeWebAIProvider`)](#claude-claudewebaiprovider--asyncclaudewebaiprovider)
+- [Gemini (`GeminiWebAIProvider` / `AsyncGeminiWebAIProvider`)](#gemini-geminiwebaiprovider--asyncgeminiwebaiprovider)
+- [Grok (`GrokWebAIProvider` / `AsyncGrokWebAIProvider`)](#grok-grokwebaiprovider--asyncgrokwebaiprovider)
 
 ---
 
@@ -25,13 +25,13 @@
 | **Gemini** | `https://gemini.google.com` | `branch()`, `GeminiNotebooks` | No `move_to()`; requires `OSID` + `__Secure-OSID` + `__Secure-1PSID`; never follows login redirects (`GeminiSignInRequired`). |
 | **Grok** | `https://grok.com` | `move_to(project)` *(no unassign)*, `assets.grok.com` | No `branch()`; strict chat limits (3 MiB per file, 10 MiB total); raises `RateLimited` on quota exhaustion. |
 
-If your application connects to multiple providers, `Provider(account)` is all you need. Import a concrete class directly when you want IDE type checking for platform-specific options such as ChatGPT's `memory_share=False`.
+If your application connects to multiple providers, `WebAIProvider(account)` is all you need. Import a concrete class directly when you want IDE type checking for platform-specific options such as ChatGPT's `memory_share=False`.
 
 [Back to top](#contents)
 
 ---
 
-## ChatGPT (`ChatGPTProvider` / `AsyncChatGPTProvider`)
+## ChatGPT (`ChatGPTWebAIProvider` / `AsyncChatGPTWebAIProvider`)
 
 **Additional constructor parameters:**
 In addition to `(account, *, type=None, transport=None)`:
@@ -46,7 +46,7 @@ In addition to `(account, *, type=None, transport=None)`:
 - **Typed Exceptions:** `ChatGPTError`, `ChatGPTAuthenticationError`, `SentinelCompatibilityError`.
 
 ```python
-with ChatGPTProvider(account) as provider:
+with ChatGPTWebAIProvider(account) as provider:
     proj_a = provider.projects.create("Client A", memory_share=False)
     proj_b = provider.projects.create("Client B", memory_share=False)
 
@@ -62,7 +62,7 @@ with ChatGPTProvider(account) as provider:
 
 ---
 
-## Claude (`ClaudeProvider` / `AsyncClaudeProvider`)
+## Claude (`ClaudeWebAIProvider` / `AsyncClaudeWebAIProvider`)
 
 **Constructor parameters:** Standard `(account, *, type=None, transport=None)`.
 
@@ -78,12 +78,12 @@ with ChatGPTProvider(account) as provider:
 
 ---
 
-## Gemini (`GeminiProvider` / `AsyncGeminiProvider`)
+## Gemini (`GeminiWebAIProvider` / `AsyncGeminiWebAIProvider`)
 
 **Additional constructor parameters:**
 In addition to `(account, *, type=None, transport=None)`:
 - `client_factory` (`Any = None`): Custom client hook for testing or instrumentation.
-- `notebooks`: Blocking `GeminiProvider` takes `webaiprovider.providers.gemini.GeminiNotebooks`, while `AsyncGeminiProvider` takes `webaiprovider.providers.gemini.async_client.AsyncGeminiNotebooks`. Automatically initialized from the account credentials by default.
+- `notebooks`: Blocking `GeminiWebAIProvider` takes `webaiprovider.providers.gemini.GeminiNotebooks`, while `AsyncGeminiWebAIProvider` takes `webaiprovider.providers.gemini.async_client.AsyncGeminiNotebooks`. Automatically initialized from the account credentials by default.
 
 **Highlights and rules:**
 - **Required Cookies and Rotation:** Along with `__Secure-1PSID`, Gemini requires `OSID` and `__Secure-OSID` for `gemini.google.com`. If expired cookies trigger a Google sign-in redirect, the client refuses redirects and raises `GeminiSignInRequired` (`AccountPaused` subclass). Cookies refreshed via `RotateCookies` during an open session are persisted back to `CredentialStore`.
@@ -96,7 +96,7 @@ In addition to `(account, *, type=None, transport=None)`:
 
 ---
 
-## Grok (`GrokProvider` / `AsyncGrokProvider`)
+## Grok (`GrokWebAIProvider` / `AsyncGrokWebAIProvider`)
 
 **Additional constructor parameters:** Standard `(account, *, type=None, transport=None)` + `client_factory: Any = None`.
 
@@ -105,7 +105,7 @@ In addition to `(account, *, type=None, transport=None)`:
 - **Images and Artifacts:** Links on `assets.grok.com`, `generatedImageUrls`, attachment metadata, and inline Markdown asset links are extracted into `response.artifacts` and downloadable via `chat.download(artifact)`.
 - **File Limits:** Up to 10 chat attachments, **3 MiB max per file** and **10 MiB total** (Workspace attachments allow up to 20 MiB). Only document and data extensions are allowed: `.pdf`, `.txt`, `.md`, `.csv`, `.json`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.xlsm`, `.odt`, `.ods`, `.odp`, `.rtf`.
 - **Models and Effort:** Model discovery via `GrokModels` is supported, but reasoning effort selection (`Capability.EFFORT`) is not offered (`efforts` is empty).
-- **Quotas and Errors:** Grok defines no provider-specific exception subclasses; it raises shared `ProviderError`, `RateLimited` (`err.retry_after` and `err.message_submitted`), and `AccountPaused` exceptions.
+- **Quotas and Errors:** Grok defines no provider-specific exception subclasses; it raises shared `WebAIProviderError`, `RateLimited` (`err.retry_after` and `err.message_submitted`), and `AccountPaused` exceptions.
 
 [Back to top](#contents)
 
