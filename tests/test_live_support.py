@@ -368,6 +368,16 @@ class ActionGateTests(unittest.TestCase):
             [item.id for item in _select_live_models("chatgpt", chatgpt_models)],
             ["gpt-6-instant", "gpt-6-thinking"],
         )
+        chatgpt_62_models = [
+            *chatgpt_models,
+            Model("gpt-6-2", "GPT-6.2 Auto"),
+            Model("gpt-6-2-instant", "GPT-6.2 Instant"),
+            Model("gpt-6-2-thinking", "GPT-6.2 Thinking"),
+        ]
+        self.assertEqual(
+            [item.id for item in _select_live_models("chatgpt", chatgpt_62_models)],
+            ["gpt-6-2-instant", "gpt-6-2-thinking"],
+        )
 
         gemini_models = [
             Model("gemini-otomatik", "Otomatik"),

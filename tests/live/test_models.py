@@ -17,7 +17,9 @@ def _select_live_models(provider: str, models):
     if os.environ.get("WEBAI_LIVE_ALL_MODELS") == "1":
         return models
     if provider == "chatgpt":
-        preferred = [item for item in models if item.id in {"gpt-6-instant", "gpt-6-thinking"}]
+        preferred = [item for item in models if item.id in {"gpt-6-2-instant", "gpt-6-2-thinking"}]
+        if not preferred:
+            preferred = [item for item in models if item.id in {"gpt-6-instant", "gpt-6-thinking"}]
         if preferred:
             return preferred
         gpt6 = [item for item in models if item.id == "gpt-6" or item.id.startswith("gpt-6-")]

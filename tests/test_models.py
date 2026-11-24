@@ -144,25 +144,29 @@ class CatalogTests(unittest.TestCase):
 
     def test_static_catalogs_have_subscription_neutral_chat_models(self) -> None:
         chatgpt_ids = {model.id for model in ChatGPTModels.list()}
-        self.assertTrue(
+        self.assertEqual(
+            chatgpt_ids,
             {
                 "gpt-5-6-instant",
                 "gpt-5-6-thinking",
-                "gpt-6",
+                "gpt-5-6-t-mini",
                 "gpt-6-instant",
                 "gpt-6-thinking",
-                "gpt-6-mini",
                 "gpt-6-t-mini",
-            }.issubset(chatgpt_ids)
+                "gpt-6-2",
+                "gpt-6-2-instant",
+                "gpt-6-2-thinking",
+            },
         )
         self.assertNotIn("gpt-5-6-mini", chatgpt_ids)
-        self.assertNotIn("gpt-5-6-t-mini", chatgpt_ids)
         self.assertNotIn("gpt-5-6", chatgpt_ids)
+        self.assertNotIn("gpt-6", chatgpt_ids)
+        self.assertNotIn("gpt-6-mini", chatgpt_ids)
         self.assertNotIn("gpt-6-astra", chatgpt_ids)
-        medium = ChatGPTModels.GPT_6_THINKING.efforts.MEDIUM
+        medium = ChatGPTModels.GPT_6_2_THINKING.efforts.MEDIUM
         self.assertIsInstance(medium, EffortRef)
         self.assertEqual(medium.id, "standard")
-        self.assertEqual(ChatGPTModels.GPT_6_THINKING.select(medium).effort, medium)
+        self.assertEqual(ChatGPTModels.GPT_6_2_THINKING.select(medium).effort, medium)
 
         claude_ids = {model.id for model in ClaudeModels.list()}
         self.assertEqual(
