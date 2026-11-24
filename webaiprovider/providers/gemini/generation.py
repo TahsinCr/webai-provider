@@ -429,7 +429,7 @@ def generate(
     *,
     files=None,
     request_timeout=(15, 310),
-    total_timeout: float | None = None,
+    deadline: float | None = None,
 ) -> Iterator[dict | _StreamPause]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
@@ -448,8 +448,12 @@ def generate(
         "allow_redirects": False,
         "timeout": request_timeout,
     }
-    if total_timeout is not None and isinstance(client.transport, HTTPTransport):
-        stream_options["total_timeout"] = total_timeout
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GeminiStreamError("Gemini request exceeded the time limit before submission")
+        if isinstance(client.transport, HTTPTransport):
+            stream_options["total_timeout"] = remaining
     try:
         with _message_stream(
             client.transport,
@@ -489,7 +493,7 @@ def response_events(
     request_timeout,
     media,
     remember,
-    total_timeout: float | None = None,
+    deadline: float | None = None,
 ) -> Iterator[ProviderStreamEvent]:
     client, request, metadata, context, action_files = prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
@@ -500,7 +504,7 @@ def response_events(
         context,
         files=action_files,
         request_timeout=request_timeout,
-        total_timeout=total_timeout,
+        deadline=deadline,
     ):
         if chunk is _STREAM_PAUSED:
             yield chunk

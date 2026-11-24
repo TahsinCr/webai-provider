@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from tests.fixtures import notebook
 from tests.provider_fakes import provider_account
 from webaiprovider.errors import AccountPaused, WebAIProviderError
-from webaiprovider.providers.gemini import AsyncGeminiWebAIProvider
+from webaiprovider.providers.gemini import AsyncGeminiWebAIProvider, GeminiWebAIProvider
 from webaiprovider.providers.gemini.async_client import (
     AsyncGeminiClient as GeminiSession,
 )
@@ -34,13 +34,14 @@ from webaiprovider.providers.gemini.async_client import (
 )
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
 from webaiprovider.providers.gemini.client import GeminiClient
+from webaiprovider.providers.gemini.errors import GeminiStreamError
 from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.notebooks import project_from_native
 from webaiprovider.providers.gemini.rpc import decode_rpc_response
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import EffortOption, Model
-from webaiprovider.transport import AsyncHTTPTransport
+from webaiprovider.transport import AsyncHTTPTransport, HTTPTransport
 
 
 # Session, catalog, streaming, and optimization contracts
@@ -72,6 +73,35 @@ def _enable_streaming_requests(client):
 
     client.request = request
     return client
+
+
+class BlockingGeminiTests(unittest.TestCase):
+    def test_generation_uses_only_the_time_left_after_preparation(self):
+        provider = GeminiWebAIProvider(provider_account("gemini", Path("unused"), "test"))
+        provider.stream_total_timeout = 10
+        client = SimpleNamespace(transport=Mock(spec=HTTPTransport), params=dict)
+        request = ProviderRequest("question")
+        module = "webaiprovider.providers.gemini.generation"
+
+        for prepared_at, expected_error in ((106, "stream opened"), (110, "before submission")):
+            with (
+                self.subTest(prepared_at=prepared_at),
+                patch(f"{module}.time.monotonic", side_effect=[100, prepared_at]),
+                patch.object(
+                    provider, "_prepare_send_context", return_value=(client, request, [], None, [])
+                ),
+                patch(f"{module}.generation_request", return_value=({}, b"")),
+                patch(
+                    f"{module}._message_stream", side_effect=GeminiStreamError("stream opened")
+                ) as stream,
+                self.assertRaisesRegex(GeminiStreamError, expected_error),
+            ):
+                next(provider._stream_provider_events(request))
+
+            if prepared_at < 110:
+                self.assertEqual(stream.call_args.kwargs["total_timeout"], 4)
+            else:
+                stream.assert_not_called()
 
 
 class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
