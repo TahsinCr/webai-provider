@@ -30,7 +30,11 @@ jobs:
       - run: python run_tests.py
       - name: Run Sentinel C99 tests (ASan + UBSan)
         if: runner.os == 'Linux' && matrix.python == '3.13'
-        run: make -C webaiprovider/providers/chatgpt/sentinel test-san
+        run: |
+          BIN="$(mktemp)"
+          cc -Iwebaiprovider/providers/chatgpt/sentinel -DSENTINEL_STATIC -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined webaiprovider/providers/chatgpt/sentinel/base64.c webaiprovider/providers/chatgpt/sentinel/clock.c webaiprovider/providers/chatgpt/sentinel/fnv1a.c webaiprovider/providers/chatgpt/sentinel/pow.c webaiprovider/providers/chatgpt/sentinel/xor.c tests/test_sentinel.c -o "$BIN"
+          "$BIN"
+          rm -f "$BIN"
       - name: Run Pyright type contract check
         if: runner.os == 'Linux' && matrix.python == '3.13'
         run: npx --yes pyright tests/typing_contracts.py

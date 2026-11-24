@@ -8,5 +8,5 @@ recursive-include docs *.md
 include run_benchmarks.py
 recursive-include benchmarks *.py README.md
 prune benchmarks/results
-recursive-include webaiprovider/providers/chatgpt/sentinel *.h *.c Makefile
+recursive-include webaiprovider/providers/chatgpt/sentinel *.h *.c
 include tests/test_sentinel.c
