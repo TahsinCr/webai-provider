@@ -7,165 +7,69 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Added
 
 - Add bilingual documentation (`docs/en/` and `docs/tr/`) covering installation, streaming, models, projects, events, transport, error handling, and a reference for common API calls.
-- Expose ordered thinking and visible response blocks through the local `response.parts` collection, materializing `response.parts` at `GenerationEnd` across all providers.
-- Expose generation end, remote verification, resolved content and terminal stream events, and let `wait_for` resume after a specific event.
-- Add explicit sync and async `chat.prepare()` to warm provider continuation state under the existing chat lock.
-- Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
-- Expose the blocking Gemini notebook reader as `GeminiNotebooks` from the Gemini package.
-- Attach local files such as PDFs to Gemini notebooks through project attachments and remove them with the existing source deletion operation. Multi-file selections register each file in order.
-- Emit one `collection.read.completed` batch per successful remote read and a `collection.changed` event after a confirmed remote write. Both carry scoped, normalized identities for consumers.
-- Add an offline pyperf suite for history, pagination, bounded workers, HTTP buffering, the blocking transport, and SSE/JSPB framing. Install it with the optional `benchmark` extra.
-- Add `chats.get_with_responses(id, limit=...)` to both APIs. Opening an existing chat with its recent responses uses one history load. The response limit is applied locally.
-- Add `chats.get(id, metadata_only=True)` to the blocking and async APIs. Grok uses its existing conversation metadata response without loading message history. Providers without a separate lookup retain the existing `get()` behavior.
-- Expose provider lifecycle state, native FlowEvent event buses, and operation hooks. Creating a local chat draft emits `chat.prepared`. Binding the draft to a remote conversation emits `chat.created`.
-- Expose normalized stream events for answer text, thinking updates, sources, and artifacts. Message operations support incremental consumption, cancellation, and waiting for the completed response.
-- Expose the origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
-- Add an optional C extension for parts of ChatGPT's Sentinel runtime. The Python implementation remains available when the extension cannot be loaded, and the public provider API stays the same.
-- Add tag-triggered PyPI Trusted Publishing. The wheel workflow builds for CPython 3.10–3.14 on Linux and macOS (x86-64 and ARM64) and Windows (x86-64), and checks that the native extension loads from the installed wheel. The source distribution includes the C sources for local builds.
+- Expose ordered thinking and visible response blocks through `response.parts`, materializing `response.parts` at `GenerationEnd` across all providers.
+- Expose normalized stream events for answer text, thinking updates, sources, artifacts, generation end, remote verification, resolved content, and terminal outcomes, supporting incremental `operation.stream()`, cancellation, `operation.wait()`, and `wait_for` resumption after a specific event.
+- Add explicit sync and async `chat.prepare()` to warm provider continuation state under the chat lock.
+- Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root, and expose the blocking Gemini notebook reader as `GeminiNotebooks` from the Gemini package.
+- Attach local files such as PDFs to Gemini notebooks through project attachments in selection order and remove them with the existing source deletion operation.
+- Expose provider lifecycle state, native FlowEvent event buses, and operation hooks, emitting `chat.prepared`, `chat.created`, `collection.read.completed`, and `collection.changed` with scoped, normalized identities.
+- Add `chats.get_with_responses(id, limit=...)` and `chats.get(id, metadata_only=True)` to both APIs, allowing Grok to read metadata without loading message history and letting callers open recent responses in one history load.
+- Expose origin-scoped `provider.transport` for advanced HTTP requests and streams, with custom transport injection for supported configurations.
+- Add an optional C extension for parts of ChatGPT's Sentinel runtime, keeping the pure-Python implementation available as fallback.
+- Add an offline `pyperf` benchmark suite (via the `benchmark` optional extra) for history, pagination, bounded workers, HTTP buffering, blocking transport, and SSE/JSPB framing.
+- Add tag-triggered PyPI Trusted Publishing and wheel builds for CPython 3.10–3.14 on Linux and macOS (x86-64 and ARM64) and Windows (x86-64), including sdist C sources and post-install extension smoke checks.
 
 ### Changed
 
-- Update `ChatGPTModels` static catalog for GPT-6.2 (`GPT_6_2_AUTO`, `GPT_6_2_INSTANT`, `GPT_6_2_THINKING`, `GPT_5_6_THINKING_MINI`) and remove unlisted `GPT_6_AUTO` / `GPT_6_MINI` entries.
-- Rename core public classes to explicit `WebAI*` names (`WebAIAccount`, `BaseWebAIProvider`, `WebAIProvider`, `AsyncWebAIProvider`, `WebAIProviderType`, `WebAIProviderError`, and provider-specific `*WebAIProvider` facades).
-- Migrate to `flowevent` 2.0 (`flowevent`), `flowpipeline`, and `flowcoord`, and replace external state-machine and versioned-cache dependencies with minimal self-contained `StateMachine` and `BoundedCache` implementations in `webaiprovider.core`.
-- Count Gemini send preparation against the synchronous stream deadline and use the remaining time for blocking curl reads.
-- Unify session model catalog caching (`ModelsCollection` and `AsyncModelsCollection`) with provider catalog TTLs (`MODEL_CATALOG_TTL`), reuse verified per-account session/bootstrap snapshots across `open()` calls until credentials change, expire, pause, or are forgotten, and optimize Gemini long-history source/media extraction.
-- Select stream milestones with `OperationEvent` in `wait_for()`. Register persistent stream and send hooks on `chat.hooks`.
-- Use stable snapshots for local collections and publish response parts and text together. Updating a message attachment replaces the item in the collection.
-- Keep the chat lock through terminal publication, reject same-thread mutations of paused sends, and lock only the chat during moves. Publish confirmed project attachment changes under the project lock.
-- Standardize bounded continuation caches across providers. ChatGPT keeps only the active node, model and project for normal follow-up sends. Persisted attachment downloads read conversation data for ownership verification on demand.
-- Use the lightweight Claude conversation read when preparing a chat, and reuse the cached continuation on the next normal send.
-- Group provider output blocks from the same turn into one historical response. Use `response.text` for visible text and `response.parts` for individual blocks.
-- Resolve synchronous model ID lookups from the loaded catalog on the calling thread.
-- Move response operation classes and streaming events to `webaiprovider.resources.response.operation`. Top-level imports remain available.
-- Use `New Chat` as the default title for new conversations.
-- Keep provider fallback chat titles and shared action labels in English.
-- Construct chat response collections directly across providers.
-- Reduce history decoding work across ChatGPT, Claude, Gemini, and Grok. Reuse message visibility and action checks, skip empty citation scans, and select the latest Grok branch in one pass.
-- List and resolve models from the loaded catalog directly on the calling thread in the synchronous API.
-- Read the synchronous provider session status on the calling thread without starting an event loop.
-- Provide a calling-thread `HttpSession` for saved-account HTTP requests and streams. The asynchronous counterpart is `AsyncHttpSession`.
-- Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.
-- Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.
-- Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
-- Use a bounded local cache for continuation state and FlowCoord to combine overlapping reads.
-- Assign, transfer, or detach ChatGPT chats with `chat.move_to(project)` or `chat.move_to(None)`. The operation uses the conversation's send lock and applies the destination selected by hooks consistently.
-- Keep browser authentication in ChatGPT's auth module. Construct `BrowserSession` directly with a credential store or path.
-- Preserve concrete provider and resource types in IDEs, including collection queries and context managers. Construct chat and project resources through their typed collections.
-- Use curl_cffi for local browser debugging WebSockets and remove the separate websocket-client dependency. Require curl_cffi 0.17 or later for blocking WebSocket timeouts and message limits.
-- Define the shared `BaseWebAIProvider` as an abstract class with typed chat, project, and model collections.
-- Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by their remote file IDs before reporting success.
-- Preserve explicit Claude draft titles when the remote chat is created, so an interrupted first send leaves an identifiable chat.
-- Reduce project rename and instruction readbacks on Claude and Grok by validating changed fields independently of source lists.
-- Keep local project options responsive while another operation is generating a response.
-- Request smaller project chat pages on ChatGPT and Grok and reduce repeated prefixes in unbounded Gemini chat listings.
-- Normalize only the selected active Claude message during retry and edit preparation.
-- Reduce memory allocations for Grok file reads and retained streaming events across providers.
-- Report native stream DNS, connection, TLS, first-byte timing, and connection reuse when send diagnostics are enabled.
-- Use smaller first pages for short chat lists and expand subsequent reads when filtering or duplicate records leave too few results.
-- Reuse complete ChatGPT project creation responses and fetch project details only when the server response lacks the saved settings or permissions.
-- Read ChatGPT project options independently of active message generation.
-- Read only the latest Gemini turns for a retry or edit when the server confirms the known active turn and its parent.
-- Resolve Claude retry and edit targets by their active native message identity when stream and history block indexes differ.
-- Reduce history normalization work across providers and parse only the selected Gemini turn when preparing a retry or edit.
-- Use concrete provider types consistently for chats, projects, messages, responses, sources, artifacts, and project attachments across the blocking and async APIs.
-- Standardize provider project editors and reuse the current project snapshot through the shared mutation path.
-- Define browser-cookie selection, validation, and persistence rules once per provider, including known alternate session cookies.
-- Share local file version checks during upload, keep provider file preflight off the event loop, and simplify Gemini session and RPC parsing.
-- Rename the Python import package from `webai_provider` to `webaiprovider`. The PyPI distribution remains `webai-provider`. Ship inline typing metadata and use `webaiprovider.__version__` as the package version source.
-- Replace the v1.3 `ProviderClient` API with account-scoped `WebAIProvider(account)` and `AsyncWebAIProvider(account)`. Open and close a provider explicitly or use `with` and `async with`. Both constructors select the concrete provider from the account or an explicit `WebAIProviderType`. Use a provider-specific class for service-specific features, such as `ChatGPTWebAIProvider` or `AsyncChatGPTWebAIProvider`. Blocking calls run natively on the calling thread without starting a background event loop.
-- Send and read through `chat.responses`. Create a chat with `provider.chats.create()` or find an existing one with `provider.chats.get(id)`. Then `chat.responses.create(prompt)` prepares an operation, `operation.stream()` yields events, and `operation.wait()` returns the completed response. Both API variants also offer `chat.ask()` and `chat.stream()` shortcuts.
-- Read previous prompts and answers together with `chat.responses.list()`. A `Response` exposes the associated user `message` when available, along with answer text, sources, artifacts, and timing for live sends. Use `response.message.edit()` or `response.retry()` where supported. Both return an operation with the same streaming and waiting interface as a new send.
-- Manage project files and text sources with `project.attachments.create()`, `list()`, and `delete()`. Message attachments use a local `Attachments` collection with `create()`, metadata-only `update()`, and `delete()`. ChatGPT project creation accepts `memory_share=False` for project-only memory. Chat moves and branches remain available on the provider-specific chat types that support them.
-- Share query behavior across local and remote collections in the blocking and async APIs. Remote collections read on demand and follow provider pagination. Keep explicit `refresh()` on the session model catalog.
-- Use one `model=` argument for model and effort selection. Pass a typed model reference for its default effort or a choice from `model_ref.efforts` for a specific effort. These references carry provider IDs directly. String queries and selection policies resolve against the account catalog, which `provider.models.list()` caches and `provider.models.refresh()` reloads.
-- Use curl_cffi for the shared HTTP request and streaming transports. Reuse provider connections and share incremental SSE decoding across ChatGPT, Claude, and Grok and JSPB decoding with Gemini under `webaiprovider.transport.frames`.
-- Overlap general and project chat pagination within the existing concurrency limit. Reuse a fixed set of async workers for bounded reads and uploads, and skip constructing chat objects excluded by scope.
-- Share overlapping reads of the same chat's response collection. Use `responses.list(fresh=True)` to request an independent read, and an older result cannot replace a newer applied history.
-- Reduce history reconstruction work for single-part text and turns without sources or artifacts.
-- Build only the requested recent responses when opening a chat with a limit, keeping the original prompt for responses that share a turn.
-- Reduce allocation during chat listing by creating hook tables on registration and reusing one ordered index when merging project chats.
-- Reduce repeated Gemini listing work by creating chat records only for the requested page and using larger follow-up pages for bounded lists. Repeated project chat IDs no longer consume the per-project limit.
-- Reuse the account model catalog loaded at session opening for the first model query. Explicit catalog refresh still requests up-to-date options.
-- Request larger Grok chat pages when listing many chats, preserving the continuation token and the caller's result limit.
-- Reduce buffering overhead in the shared sync and async transports.
-- Speed up JSPB frame decoding by counting UTF-16 units in bounded blocks while validating surrogate boundaries.
-- Run offline and live API tests separately. The live runner supports `async` (default), `sync`, and `all` API modes across providers, paces account requests, and reports cleanup and rate-limit skips separately from failures.
-
-### Fixed
-
-- Guard Sentinel proof-of-work buffer sizing and final nonce boundaries, avoid null-pointer arithmetic for empty prefixes, and initialize Windows performance-counter frequency safely across concurrent calls. Reuse stack storage for the nonce suffix when only the larger scratch buffer needs heap allocation.
+- Rename the Python import package from `webai_provider` to `webaiprovider` (PyPI distribution remains `webai-provider`), ship inline `py.typed` metadata, and use `webaiprovider.__version__` (`2.0.0`) as the package version source.
+- Rename core public classes to explicit `WebAI*` names (`WebAIAccount`, `BaseWebAIProvider`, `WebAIProvider`, `AsyncWebAIProvider`, `WebAIProviderType`, `WebAIProviderError`, and provider-specific `*WebAIProvider` facades), defining `BaseWebAIProvider` as an abstract class with typed chat, project, and model collections.
+- Replace the v1.3 `ProviderClient` API with account-scoped `WebAIProvider(account)` and `AsyncWebAIProvider(account)`, supporting `open()`/`close()`, `with`/`async with`, and native calling-thread execution across all four synchronous providers without starting a background event loop.
+- Replace `chat.messages` with `chat.responses` (`create()`, `list()`, `chat.ask()`, `chat.stream()`), `response.message.edit()`, and `response.retry()`, grouping provider output blocks from a turn into one `Response` (`response.text` and `response.parts`).
+- Manage project files and text sources with `project.attachments.create()`, `list()`, and `delete()`, manage message attachments with a local `Attachments` collection (`create()`, metadata-only `update()`, `delete()`), move chats with `chat.move_to(project | None)`, and accept `memory_share=False` on ChatGPT project creation.
+- Preserve concrete provider and resource types across blocking and async collections, queries, and context managers, and move response operation and stream event classes to `webaiprovider.resources.response.operation` while keeping top-level exports.
+- Update `ChatGPTModels` static catalog for GPT-6.2 (`GPT_6_2_AUTO`, `GPT_6_2_INSTANT`, `GPT_6_2_THINKING`, `GPT_5_6_THINKING_MINI`) and remove unlisted `GPT_6_AUTO` and `GPT_6_MINI` entries.
+- Use a single `model=` argument for model and effort selection (`ModelRef`, `model_ref.efforts`, string queries, and selection policies), resolving synchronous lookups directly from the loaded catalog on the calling thread.
+- Unify session model catalog caching (`ModelsCollection` and `AsyncModelsCollection`) with `MODEL_CATALOG_TTL`, reuse the catalog loaded at session opening for initial queries, and reuse verified per-account session/bootstrap snapshots across `open()` calls until credentials change, expire, pause, or are forgotten.
+- Keep browser authentication in ChatGPT's auth module (`BrowserSession` constructed directly with a credential store or path), and define browser-cookie selection, validation, and persistence rules once per provider including known alternate session cookies.
+- Standardize default English conversation titles (`New Chat`) and shared action labels across providers.
+- Migrate to `flowevent` 2.0, `flowpipeline`, and `flowcoord`, and replace external state-machine and versioned-cache dependencies with minimal self-contained `StateMachine` and `BoundedCache` implementations in `webaiprovider.core`.
+- Use `curl_cffi` (`>=0.17`) for `HttpSession`, `AsyncHttpSession`, and local browser debugging WebSockets, running default blocking HTTP requests, bounded incremental streams, and session status checks natively on the calling thread.
+- Share incremental SSE and JSPB frame decoding under `webaiprovider.transport.frames`, speed up JSPB UTF-16 length counting in bounded surrogate-validated blocks, and report native DNS, connect, TLS, first-byte, and connection reuse timings when send diagnostics are enabled.
+- Select stream milestones with `OperationEvent` in `wait_for()`, register persistent send/stream hooks on `chat.hooks` with shared `OperationHooks` / `AsyncOperationHooks` registration, and combine overlapping response reads via FlowCoord (`responses.list(fresh=True)` requests an independent read).
+- Use stable snapshots for local collections, keep chat locks through terminal publication, reject same-thread mutations of paused sends, lock only the chat during moves, and publish confirmed project attachment changes under the project lock.
+- Standardize bounded continuation caches across providers (keeping ChatGPT active node, model, and project and using lightweight Claude reads when preparing chats), read persisted attachment download ownership on demand, and run local file version checks and preflight off the event loop.
+- Overlap general and project chat pagination within bounded concurrency, use smaller initial or project chat pages where appropriate, skip excluded records, reuse fixed async read/upload workers, and optimize unbounded Gemini and large Grok page queries.
+- Optimize history decoding and memory usage across providers: skip redundant citation/single-part work, select the latest Grok branch in one pass, build only requested recent responses in bounded opens, reuse complete ChatGPT project creation responses, reduce Claude/Grok project edit readbacks, keep project options responsive during generation, normalize only selected turns for Gemini/Claude retry and edit, extract Gemini long-history media/sources faster, and preserve explicit Claude draft titles on interrupted first sends.
+- Cancel unfinished ChatGPT project uploads on batch failure and verify attachments by remote file IDs; count Gemini send preparation against the synchronous stream deadline.
+- Separate offline (`run_tests.py`) and live (`run_live_tests.py`) test suites, supporting `async` (default), `sync`, and `all` API modes, account request pacing, and distinct cleanup/rate-limit skip reporting.
 
 ### Removed
 
-- Make provider coordination helpers internal. Use the provider event bus and operation hooks as the public interfaces.
+- Remove the legacy `webai_provider` namespace, its compatibility layer, the former `ProviderClient` adapter API, `chat.messages`, and the top-level `Page` export.
+- Drop the `httpx` and `websocket-client` runtime dependencies and use `flowevent` for event delivery.
+- Remove the shared sync/async event-loop bridge, compatibility wrappers, unused `ThreadedTransport` adapter, and legacy thread dispatch for synchronous hooks and events.
+- Remove `ProviderTelemetry` (replaced by provider lifecycle events and `Response.timing`) and make internal coordination helpers private behind the event bus and operation hooks.
 - Remove unused JSON serialization and duplicate cleanup journal routing from the live test runner.
 
-- Run all four synchronous providers on native blocking clients in the calling thread. Remove the shared event loop and compatibility wrappers.
-
-- Remove the unused `ThreadedTransport` adapter and legacy thread dispatch for synchronous hooks and events.
-- Remove `ProviderTelemetry`. Use the provider's lifecycle events for outcomes and `Response.timing` for per-response latency.
-
 ### Fixed
 
-- Publish provider opening events before session preparation and reject transport requests after failed cleanup until the provider is closed.
-- Delete local conversation turns by their stable IDs when passed a copied message or response.
-- Honor blocking message stage deadlines during native curl polling and resume the same request after a stage timeout. Apply the stage deadline to conversation lock acquisition and reject NaN timeouts.
-- Return from blocking stage waits as soon as the requested event is available. Publish one cancellation outcome when a send is cancelled or its driving iterator is closed.
-- Keep a stable snapshot for warm synchronous model reads during catalog invalidation. Refresh blocking Gemini credentials when due on the next request.
-
-- Isolate Gemini's file uploads from account cookies while keeping their connection pool available for subsequent uploads.
-- Keep artifact link rules scoped to each provider. Ignore malformed Grok attachment metadata, infer generated image formats from their names, and deduplicate file references as the stream arrives.
-- Preserve Claude web search sources across live output and saved history.
-
-- Persist refreshed live-test browser cookies only after the provider accepts the new session.
-
-- Report a Gemini sign-in redirect as an account authentication failure without following it or exposing redirect parameters.
-
-- Use the asynchronous credential loader for every asynchronous HTTP session connection.
-- Retain Gemini browser cookies used for session continuity and read escaped bootstrap fields.
-- Match ChatGPT's project move contract in the live suite and skip a redundant session open when a browser cookie refresh returns identical credentials.
-
-- Preserve the blocking transport response type for raw HTTP sends. Match the provider utility methods and ChatGPT authentication options across both API variants.
-
-- Lock the current source and selected destination during chat moves, including when the caller holds an older chat snapshot.
-- Invalidate the loaded model catalog after reauthentication.
-- Drain asynchronous HTTP requests and streams before closing their clients. Finish an in-progress client shutdown when its caller is cancelled, and reject attempts to await shutdown from inside the active stream.
-- Deliver synchronous events emitted during a blocking call on that call's thread.
-
-- Let blocking HTTP requests and streams finish before closing their client. Keep a client in use by another request alive during timeout recovery.
-- Release the synchronous call scheduler when it rejects an awaitable bound to another event loop.
-- Initialize the blocking HTTP client once during concurrent first access and keep network requests outside the initialization lock.
-
-- Wait for active raw HTTP requests and streams before closing a synchronous provider. Closing its shared transport uses the same shutdown path.
-- Allow independent synchronous calls to return while another caller is delivering an event.
-
-- Return synchronous chat and message resources from `WebAIProvider.ask()` across all four providers.
-
-- Keep synchronous providers available for a cleanup retry after a failed close. Resolve races between the first open and close.
-- Require project mutation confirmations to match the target project and requested change.
-- Run live API scenarios on Python 3.10 with isolated sessions and reuse a shared session on Python 3.11 and later.
-
-- Preserve the triggering user message across visible assistant segments in conversation history and keep tool or system records out of response turns. Prefer ChatGPT's active branch when a history payload contains both a branch map and a flat list.
-- Report Gemini server-side generation rejections distinctly from transport errors. Use the model's default effort in live availability probes and report safe HTTP status codes for known session failures.
-
-- Verify sent responses by remote history identity and edits by the revised prompt and its persisted answer in the live suite. Report partial coverage separately and avoid repeat model setup and account-wide searches during project moves.
-
-- Cancel and drain the sibling listing when either top-level chat or project listing fails during `include_projects=True` queries.
-- Serialize sends within a conversation and coordinate project mutations. Apply only changed project fields and confirm incomplete server replies through readback without replaying the mutation.
-- Keep accepted provider work tracked during shutdown, close nested streams and upload workers during cancellation, and preserve the original stream error if cleanup also fails. Async providers retain the cleanup scope after a failed close so callers can retry.
-- Preserve local drafts during history refresh, reconcile sent messages with their remote IDs, and exclude internal retry and edit records from refreshed history.
-- Resolve exact model and effort IDs before display-name matches. Normalize provider stream errors and rate-limit responses, and retain per-account cooldowns when the provider supplies a retry delay.
-- Reduce redundant network and file work by reusing continuation metadata, bounding parallel attachment uploads, and batching routine credential writes while persisting important session changes promptly.
-
-### Removed
-
-- Remove the legacy `webai_provider` namespace and its compatibility layer. Built-in providers implement the shared async provider contract directly. The former adapter API, `chat.messages`, and top-level `Page` export are no longer available.
-- Drop the HTTPX runtime dependency and use FlowEvent for event delivery.
+- Guard Sentinel proof-of-work buffer sizing and final nonce boundaries, avoid null-pointer arithmetic for empty prefixes, initialize Windows performance-counter frequency safely across concurrent calls, and reuse stack storage for nonce suffixes.
+- Drain active sync and async HTTP requests and streams before closing their clients, keep clients in use by another request alive during timeout recovery, finish in-progress async shutdowns when cancelled, reject awaiting shutdown from inside an active stream, and retain cleanup scopes after a failed close so callers can retry.
+- Initialize the blocking HTTP client once during concurrent first access outside the initialization lock, release the synchronous call scheduler when rejecting foreign-loop awaitables, and wait for active raw HTTP requests and streams when closing a synchronous provider or its shared transport.
+- Honor blocking stage deadlines during native curl polling and conversation lock acquisition, reject NaN timeouts, return immediately from `wait_for` when the requested event is already available, and publish one cancellation outcome when a send or driving iterator is cancelled.
+- Publish provider opening events before session preparation, reject transport requests after failed cleanup until closed, deliver synchronous events on the calling thread without blocking independent callers, and return concrete chat and message resources from `WebAIProvider.ask()`.
+- Keep a stable snapshot for warm synchronous model reads during catalog invalidation, invalidate the loaded model catalog after reauthentication, and resolve exact model and effort IDs before display-name matches.
+- Serialize per-conversation sends, lock current source and selected destination snapshots during chat moves, coordinate project mutations with targeted readbacks without replaying incomplete updates, and cancel/drain sibling listings when a top-level or project listing fails under `include_projects=True`.
+- Preserve triggering user messages, local drafts, and reconciled remote IDs in history, prefer ChatGPT's active branch when both branch maps and flat lists exist, exclude internal retry, edit, tool, and system records from response turns, and delete local turns by stable IDs when passed a copied message or response.
+- Preserve Claude web search sources across live output and saved history, and resolve Claude retry and edit targets by active native message identity when stream and history block indexes differ.
+- Report Gemini sign-in redirects as authentication failures without following them or exposing redirect parameters, distinguish server-side generation rejections from transport errors, isolate Gemini file uploads from account cookies, retain continuity cookies and escaped bootstrap fields, and refresh blocking Gemini credentials when due.
+- Ignore malformed Grok attachment metadata, infer `.webp` and generated image formats from filenames (including on Windows Python 3.10), and deduplicate file references as the stream arrives.
+- Normalize provider stream errors and rate-limit responses with per-account `Retry-After` cooldowns, bound parallel attachment uploads, and batch routine credential writes while persisting critical session changes promptly.
+- Run live API tests with isolated sessions on Python 3.10 (reusing shared sessions on 3.11+), persist refreshed live-test cookies only after session acceptance, verify sent/edited responses by remote identity, and run `test_core` / `test_runners` cleanly in isolated wheel/sdist test directories.
 
 ### Security
 
-- Disable ambient proxy configuration by default for internal HTTP clients, enforce fixed origins and redirect restrictions, and validate and pin public addresses for provider downloads. Bound response bodies and sanitize download and upload failures to keep signed URL parameters out of errors.
+- Disable ambient proxy configuration by default for internal HTTP clients, enforce fixed origins and redirect restrictions, validate and pin public addresses for provider downloads, bound response bodies, and sanitize download and upload errors to keep signed URL parameters out of exceptions.
 - Isolate signed uploads from account credentials, validate local files before use, and serialize credential file access across threads and processes.
 
 ## [1.3-beta] - 2026-11-06
