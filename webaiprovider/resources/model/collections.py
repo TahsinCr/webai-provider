@@ -139,7 +139,7 @@ class AsyncModelsCollection(AsyncCollection[ModelRef]):
         self,
         target: Models | EffortRef | ModelRef | ModelSelection | str,
     ) -> ModelSelection:
-        return _resolve_model_selection(target, await self.list())
+        return _resolve_model_selection(target, await self._load_items())
 
 
 class ModelsCollection(RemoteCollection[ModelRef]):
@@ -252,4 +252,4 @@ class ModelsCollection(RemoteCollection[ModelRef]):
     def resolve(
         self, target: Models | EffortRef | ModelRef | ModelSelection | str
     ) -> ModelSelection:
-        return _resolve_model_selection(target, self.list())
+        return _resolve_model_selection(target, self._load_items())

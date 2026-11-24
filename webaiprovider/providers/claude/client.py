@@ -46,9 +46,11 @@ class ClaudeClient(BaseClaudeClient):
         self._discovery_lock = threading.Lock()
 
     def _discover(self):
-        data = self.http.request("GET", "/api/bootstrap")
-        values = read_session(self.path)
-        organization = self._resolve_organization(data, values)
+        organization = self.organization
+        if not organization:
+            data = self.http.request("GET", "/api/bootstrap")
+            values = read_session(self.path)
+            organization = self._resolve_organization(data, values)
         selected = self.http.request(
             "GET", "/api/organizations/" + organization + "/model_selector/chat"
         )

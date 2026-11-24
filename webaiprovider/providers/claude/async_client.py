@@ -48,11 +48,13 @@ class AsyncClaudeClient(BaseClaudeClient):
         self._discovery = AsyncSingleFlight()
 
     async def _discover(self):
-        data, values = await asyncio.gather(
-            self.http.request("GET", "/api/bootstrap"),
-            async_read_session(self.path),
-        )
-        organization = self._resolve_organization(data, values)
+        organization = self.organization
+        if not organization:
+            data, values = await asyncio.gather(
+                self.http.request("GET", "/api/bootstrap"),
+                async_read_session(self.path),
+            )
+            organization = self._resolve_organization(data, values)
         selected = await self.http.request(
             "GET", "/api/organizations/" + organization + "/model_selector/chat"
         )

@@ -80,6 +80,7 @@ class AsyncGrokWebAIProvider(
         )
         self.editor = AsyncGrokProjectEditor(self.client)
         self._gate = asyncio.Lock()
+        self._model_gate = asyncio.Lock()
         self._catalog: ModelCatalog | None = None
         self._catalog_at = 0.0
         self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
@@ -121,7 +122,7 @@ class AsyncGrokWebAIProvider(
     async def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
         if not force and self._catalog and time.monotonic() - self._catalog_at < _CATALOG_TTL:
             return self._catalog
-        async with self._gate:
+        async with self._model_gate:
             if not force and self._catalog and time.monotonic() - self._catalog_at < _CATALOG_TTL:
                 return self._catalog
             data, details = await asyncio.gather(

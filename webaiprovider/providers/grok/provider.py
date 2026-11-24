@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from ...accounts import delete_session
@@ -77,6 +78,7 @@ class GrokWebAIProvider(
         )
         self.editor = GrokProjectEditor(self.client)
         self._gate = threading.Lock()
+        self._model_gate = threading.Lock()
         self._catalog: ModelCatalog | None = None
         self._catalog_at = 0.0
         self._continuations = ContinuationCache[str](ttl=_CONTINUATION_TTL)
@@ -116,11 +118,18 @@ class GrokWebAIProvider(
     def _load_catalog(self, *, force: bool = False) -> ModelCatalog:
         if not force and self._catalog and time.monotonic() - self._catalog_at < _CATALOG_TTL:
             return self._catalog
-        with self._gate:
+        with self._model_gate:
             if not force and self._catalog and time.monotonic() - self._catalog_at < _CATALOG_TTL:
                 return self._catalog
-            data = self.client.request("POST", "/rest/modes", json={"locale": "en"})
-            details = self.client.request("POST", "/rest/models", json={"locale": "en"})
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                modes_req = pool.submit(
+                    self.client.request, "POST", "/rest/modes", json={"locale": "en"}
+                )
+                models_req = pool.submit(
+                    self.client.request, "POST", "/rest/models", json={"locale": "en"}
+                )
+                data = modes_req.result()
+                details = models_req.result()
             self._catalog = parse_model_catalog(data, details)
             self._catalog_at = time.monotonic()
             return self._catalog

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -176,8 +177,11 @@ class GeminiClient(BaseGeminiClient):
         self._confirm_rename(response.text, conversation_id, cleaned)
 
     def discover_models(self):
-        response = self._graphql_post({"querySignature": MODEL_CATALOG_SIGNATURE})
-        rpc_response = self.batch([RPCPayload("otAQ7b", "[]")])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            graphql = pool.submit(self._graphql_post, {"querySignature": MODEL_CATALOG_SIGNATURE})
+            rpc = pool.submit(self.batch, [RPCPayload("otAQ7b", "[]")])
+            response = graphql.result()
+            rpc_response = rpc.result()
         return self._parse_model_catalog_response(response.text, rpc_response.text)
 
     def persist(self, *, force: bool = True) -> None:
