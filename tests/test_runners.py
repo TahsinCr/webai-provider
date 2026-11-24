@@ -10,8 +10,15 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-import run_live_tests
-import run_tests
+try:
+    import run_live_tests
+    import run_tests
+except (
+    ModuleNotFoundError
+) as exc:  # pragma: no cover - isolated wheel/sdist test runs copy only tests/
+    raise unittest.SkipTest(
+        "Repository test runner scripts are unavailable outside the source tree"
+    ) from exc
 from tests.live.support.config import PROVIDERS
 
 

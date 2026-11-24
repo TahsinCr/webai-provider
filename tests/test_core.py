@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import webaiprovider
 from webaiprovider.core.cache import BoundedCache
 from webaiprovider.core.concurrency import gather_bounded
 from webaiprovider.core.hooks import OperationHooks
@@ -25,6 +26,7 @@ from webaiprovider.resources.operations import execute_with_hooks
 from webaiprovider.transport.frames import iter_bounded_lines
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_PACKAGE_ROOT = Path(webaiprovider.__file__).resolve().parent
 _NATIVE_SYNC_MODULES = (
     "webaiprovider/base.py",
     "webaiprovider/provider.py",
@@ -199,7 +201,7 @@ class CoreStateMachineTests(unittest.TestCase):
 class NativeSyncFoundationTests(unittest.TestCase):
     def test_native_sync_modules_do_not_import_asyncio(self) -> None:
         for rel_path in _NATIVE_SYNC_MODULES:
-            tree = ast.parse((_REPO_ROOT / rel_path).read_text(encoding="utf-8"))
+            tree = ast.parse((_PACKAGE_ROOT.parent / rel_path).read_text(encoding="utf-8"))
             imports = set()
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
@@ -210,9 +212,14 @@ class NativeSyncFoundationTests(unittest.TestCase):
 
     def test_no_legacy_sync_async_bridge_symbols_or_files_exist(self) -> None:
         for rel_path in _DELETED_LEGACY_MODULES:
-            self.assertFalse((_REPO_ROOT / rel_path).exists(), f"Legacy file remains: {rel_path}")
+            target = (
+                _PACKAGE_ROOT.parent / rel_path
+                if rel_path.startswith("webaiprovider/")
+                else _REPO_ROOT / rel_path
+            )
+            self.assertFalse(target.exists(), f"Legacy file remains: {rel_path}")
 
-        for py_file in (_REPO_ROOT / "webaiprovider").rglob("*.py"):
+        for py_file in _PACKAGE_ROOT.rglob("*.py"):
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
             found: set[str] = set()
             for node in ast.walk(tree):
@@ -226,7 +233,7 @@ class NativeSyncFoundationTests(unittest.TestCase):
             self.assertEqual(
                 found,
                 set(),
-                f"{py_file.relative_to(_REPO_ROOT)} still references legacy bridge symbols: {sorted(found)}",
+                f"{py_file.relative_to(_PACKAGE_ROOT.parent)} still references legacy bridge symbols: {sorted(found)}",
             )
 
     def test_all_four_providers_have_symmetric_base_sync_and_async_architecture(self) -> None:

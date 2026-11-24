@@ -61,6 +61,8 @@ def _assistant_files(
                 continue
             name = url.rsplit("/", 1)[-1].split("?", 1)[0].split("#", 1)[0] or "generated-image"
             media_type, _ = guess_type(name, strict=False)
+            if media_type is None and name.casefold().endswith(".webp"):
+                media_type = "image/webp"
             collected.append(dict(url=url, name=name, media_type=media_type))
     for key in _GROK_ATTACHMENT_KEYS:
         attachments = root.get(key)
