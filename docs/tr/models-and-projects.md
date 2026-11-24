@@ -37,7 +37,7 @@ with ChatGPTWebAIProvider(account) as provider:
         instruction="Yanıtları Türkçe ve madde işaretli ver.",
         memory_share=False,
     )
-    proje.attachments.create("v2 API native senkron çalışır.", "text", name="notlar.txt")
+    proje.attachments.create("v2.0.0 API native senkron çalışır.", "text", name="notlar.txt")
     proje.attachments.create("src/main.py")
 
     chat = provider.chats.create("Kod Analizi", project=proje)

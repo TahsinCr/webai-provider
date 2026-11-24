@@ -2,11 +2,12 @@
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-24
 
 ### Added
 
-- Expose ordered thinking and visible response blocks through the local `response.parts` collection.
+- Add bilingual documentation (`docs/en/` and `docs/tr/`) covering installation, streaming, models, projects, events, transport, error handling, and a reference for common API calls.
+- Expose ordered thinking and visible response blocks through the local `response.parts` collection, materializing `response.parts` at `GenerationEnd` across all providers.
 - Expose generation end, remote verification, resolved content and terminal stream events, and let `wait_for` resume after a specific event.
 - Add explicit sync and async `chat.prepare()` to warm provider continuation state under the existing chat lock.
 - Export `ClaudeChat`, `GeminiChat`, and `GrokChat` from the package root.
@@ -24,6 +25,10 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Update `ChatGPTModels` static catalog for GPT-6.2 (`GPT_6_2_AUTO`, `GPT_6_2_INSTANT`, `GPT_6_2_THINKING`, `GPT_5_6_THINKING_MINI`) and remove unlisted `GPT_6_AUTO` / `GPT_6_MINI` entries.
+- Rename core public classes to explicit `WebAI*` names (`WebAIAccount`, `BaseWebAIProvider`, `WebAIProvider`, `AsyncWebAIProvider`, `WebAIProviderType`, `WebAIProviderError`, and provider-specific `*WebAIProvider` facades).
+- Migrate to `flowevent` 2.0 (`flowevent`), `flowpipeline`, and `flowcoord`, and replace external state-machine and versioned-cache dependencies with minimal self-contained `StateMachine` and `BoundedCache` implementations in `webaiprovider.core`.
+- Count Gemini send preparation against the synchronous stream deadline and use the remaining time for blocking curl reads.
 - Unify session model catalog caching (`ModelsCollection` and `AsyncModelsCollection`) with provider catalog TTLs (`MODEL_CATALOG_TTL`), reuse verified per-account session/bootstrap snapshots across `open()` calls until credentials change, expire, pause, or are forgotten, and optimize Gemini long-history source/media extraction.
 - Select stream milestones with `OperationEvent` in `wait_for()`. Register persistent stream and send hooks on `chat.hooks`.
 - Use stable snapshots for local collections and publish response parts and text together. Updating a message attachment replaces the item in the collection.
@@ -43,7 +48,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 - Run the default blocking HTTP transport’s response streams on the calling thread with bounded incremental reads.
 - Run buffered requests on the default blocking HTTP transport in the caller's thread while enforcing the response size limit.
 - Use `OperationHooks` for synchronous registration and `AsyncOperationHooks` for asynchronous registration and dispatch. Both use the same registration implementation.
-- Use FlowEvent's cache and single-flight primitives for bounded continuation state and overlapping discovery reads.
+- Use a bounded local cache for continuation state and FlowCoord to combine overlapping reads.
 - Assign, transfer, or detach ChatGPT chats with `chat.move_to(project)` or `chat.move_to(None)`. The operation uses the conversation's send lock and applies the destination selected by hooks consistently.
 - Keep browser authentication in ChatGPT's auth module. Construct `BrowserSession` directly with a credential store or path.
 - Preserve concrete provider and resource types in IDEs, including collection queries and context managers. Construct chat and project resources through their typed collections.
@@ -156,7 +161,7 @@ The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/
 ### Removed
 
 - Remove the legacy `webai_provider` namespace and its compatibility layer. Built-in providers implement the shared async provider contract directly. The former adapter API, `chat.messages`, and top-level `Page` export are no longer available.
-- Drop the HTTPX runtime dependency and replace duplicate event and state machine wrappers with FlowEvent primitives.
+- Drop the HTTPX runtime dependency and use FlowEvent for event delivery.
 
 ### Security
 

@@ -1,17 +1,19 @@
-[![CI][ci-shield]](https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml)
-[![PyPI][pypi-shield]](https://pypi.org/project/webai-provider/)
-[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![GPL-3.0-only][license-shield]](LICENSE)
+[![CI][ci-shield]][ci-url]
+[![PyPI][pypi-shield]][pypi-url]
+[![Python 3.10+][python-shield]][python-url]
+[![GPL-3.0-only][license-shield]][license]
 
-[English](README.md) | **Türkçe** | [Русский](README-RU.md)
+[English][readme-en] | **Türkçe** | [Русский][readme-ru]
 
-# webai-provider
+# WebAI Provider
 
-ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. v2 API; eşdeğer asenkron ve senkron arayüzler, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri sunar.
+[Depo][repository] · [Değişiklik Günlüğü][changelog] · [Son Sürüm][releases] · [GPL-3.0 Lisansı][license]
 
-> [Türkçe belgeler](docs/tr/README.md) kurulum, sohbet akışı, model seçimi, proje yönetimi ve API başvuru bölümlerini içerir.
+ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. API; eşdeğer asenkron ve senkron arayüzler, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri sunar.
 
-> **Beta:** Sağlayıcıların web siteleri ve özel web protokolleri önceden haber verilmeksizin değişebilir. Bu proje bağımsızdır ve sağlayıcılarla bağlantılı değildir.
+> [Türkçe belgeler][docs] kurulum, sohbet akışı, model seçimi, proje yönetimi ve API başvuru bölümlerini içerir.
+
+> **Not:** Sağlayıcıların web siteleri ve özel web protokolleri önceden haber verilmeksizin değişebilir. Bu proje bağımsızdır ve sağlayıcılarla bağlantılı değildir.
 
 ## Kurulum
 
@@ -73,7 +75,7 @@ with ChatGPTWebAIProvider(account) as provider:
 - `chat.responses.create()`, `edit()` ve `retry()` mesaj işlemlerini hazırlar. Akış olayları için `operation.stream()`, tamamlanmış `Response` için `operation.wait()` kullanın. Yanıt; ilişkili kullanıcı mesajını, kaynakları, çıktıları ve canlı gönderim için süre bilgilerini içerir.
 - Bir sohbeti son yanıtlarıyla birlikte tek geçmiş okumasında açmak için `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)` kullanın. Senkron sağlayıcıda `await` kaldırılır. Limit, dönen yanıt sayısını belirler.
 - Projeye dosya veya metin eklemek için `project.attachments.create()`, ekleri görmek için `list()`, bir eki silmek için `delete()` kullanın.
-- Sağlayıcılar yaşam döngüsü, kaynak kilitleri, kancalar ve olayları doğrudan `WebAIProvider` ve `AsyncWebAIProvider` üzerinde `flowevent` altyapısıyla yönetir. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Yaşam döngüsü ve mesaj durumları doğrudan `flowevent.StateMachine` ile yönetilir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
+- Sağlayıcılar yaşam döngüsü, kaynak kilitleri, kancalar ve olayları doğrudan `WebAIProvider` ve `AsyncWebAIProvider` üzerinde `flowevent` altyapısıyla yönetir. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Sağlayıcı ve mesaj durumlarını kütüphane kendi içinde yönetir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Her başarılı uzak okumada kayıt kimliklerini topluca almak için `collection.read.completed` olayına abone olun. `collection.changed`, doğrulanan ekleme, güncelleme ve silmeleri bildirir. İki olayın da `event.metadata["payload"]` alanında bir `items` listesi bulunur. Olay zarfı hesabı ve iç içe koleksiyonlarda üst kaydın kimliğini taşır. Mesaj düzenlemeleri ve yeniden denemeler sohbet kapsamında bildirilir. Olay verisi mesaj metni, dosya içeriği veya oturum bilgisi içermez.
 - Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `WebAIProviderError` alt sınıflarıyla bildirilir.
 
@@ -144,7 +146,7 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
-Çevrimdışı performans ölçümleri için [benchmark kılavuzuna](benchmarks/README.md) bakın.
+Çevrimdışı performans ölçümleri için [benchmark kılavuzuna][benchmarks-guide] bakın.
 
 ## Tanılama
 
@@ -161,16 +163,38 @@ durations_ms, counters = timing.snapshot()
 
 `patch_project(project_id, name=...)` yalnızca verilen alanları değiştirir; talimatları temizlemek için `instructions=""` kullanın. Proje değişiklikleri yazmadan önce kilit altında sunucunun güncel durumunu okur. İşlem akışları tekrar okunabilmek için tüm olay geçmişini saklar; bellekte tutulan işlemlerin bellek kullanımı olay sayısıyla artar.
 
-## Bağlantılar
+## Bağımlılıklar
 
-- [Değişiklik günlüğü](CHANGELOG.md)
-- [Hata ve istek bildirimi](https://github.com/TahsinCr/webai-provider/issues)
-- [Depo](https://github.com/TahsinCr/webai-provider)
-- [SiopeChat](https://github.com/TahsinCr/chatgpt-web)
+- [flowevent][flowevent-repo] — Süreç içi senkron ve asenkron olay veriyolu
+- [flowpipeline][flowpipeline-repo] — Aşamalı istek hazırlama boru hatları
+- [flowcoord][flowcoord-repo] — Tekil uçuş (single-flight) ve yürütme eşgüdüm yapıları
+- [curl-cffi][curl-cffi-repo] — Tarayıcı taklitli HTTPS ve akış katmanı
+- [browser-cookie3][browser-cookie3-repo] — Yerel tarayıcı çerez okuma
+- [orjson][orjson-repo] — Hızlı JSON serileştirme ve çözme
+- [lz4][lz4-repo] — Tarayıcı oturum açma/çözümleme sıkıştırması
 
-GPL-3.0-only lisanslıdır. Ayrıntılar için [LICENSE](LICENSE) ve [COPYRIGHT](COPYRIGHT) dosyalarına bakın.
+GPL-3.0-only lisanslıdır. Ayrıntılar için [LICENSE][license] ve [COPYRIGHT][copyright] dosyalarına bakın.
 
 [ci-shield]: https://img.shields.io/github/actions/workflow/status/TahsinCr/webai-provider/ci.yml?branch=main&event=push&label=CI&style=for-the-badge&logo=github&logoColor=white
 [pypi-shield]: https://img.shields.io/pypi/v/webai-provider?label=PyPI&style=for-the-badge&logo=pypi&logoColor=white
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
+[ci-url]: https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml
+[pypi-url]: https://pypi.org/project/webai-provider/
+[python-url]: https://www.python.org/downloads/
+[readme-en]: README.md
+[readme-ru]: README-RU.md
+[docs]: docs/tr/README.md
+[benchmarks-guide]: benchmarks/README.md
+[repository]: https://github.com/TahsinCr/webai-provider
+[changelog]: CHANGELOG.md
+[releases]: https://github.com/TahsinCr/webai-provider/releases/latest
+[license]: LICENSE
+[copyright]: COPYRIGHT
+[flowevent-repo]: https://github.com/TahsinCr/python-flowevent
+[flowpipeline-repo]: https://github.com/TahsinCr/python-flowpipeline
+[flowcoord-repo]: https://github.com/TahsinCr/python-flowcoord
+[curl-cffi-repo]: https://github.com/lexiforest/curl_cffi
+[browser-cookie3-repo]: https://github.com/borisbabic/browser_cookie3
+[orjson-repo]: https://github.com/ijl/orjson
+[lz4-repo]: https://github.com/python-lz4/python-lz4

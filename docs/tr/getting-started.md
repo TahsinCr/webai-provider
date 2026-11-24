@@ -76,7 +76,7 @@ python -m pip install -e '.[dev]'
 python -m pip install -e '.[benchmark]'
 ```
 
-Rehberlerdeki örnekler bu deponun API’sini anlatır. Yayımlanmış pakette bir sınıf veya metot yoksa kurulu sürümü `python -m pip show webai-provider` ile kontrol et. Bu depodaki API’yi denemek için geliştirme kurulumunu kullan.
+Bu rehberler `webai-provider` **v2.0.0** API’sini anlatır. Kurulu sürümünü `python -m pip show webai-provider` ile kontrol edebilir, gerekirse `python -m pip install -U webai-provider` ile güncelleyebilirsin.
 
 **Tarayıcı çerezleri hakkında pratik notlar:**
 `WebAIAccount.from_browser()` kullanırken işletim sistemine bağlı bazı kısıtlarla karşılaşabilirsin:

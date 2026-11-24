@@ -1,17 +1,19 @@
-[![CI][ci-shield]](https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml)
-[![PyPI][pypi-shield]](https://pypi.org/project/webai-provider/)
-[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![GPL-3.0-only][license-shield]](LICENSE)
+[![CI][ci-shield]][ci-url]
+[![PyPI][pypi-shield]][pypi-url]
+[![Python 3.10+][python-shield]][python-url]
+[![GPL-3.0-only][license-shield]][license]
 
-[English](README.md) | [Türkçe](README-TR.md) | **Русский**
+[English][readme-en] | [Türkçe][readme-tr] | **Русский**
 
-# webai-provider
+# WebAI Provider
 
-Независимые Python-клиенты для веб-сессий ChatGPT, Gemini, Claude и Grok. API v2 предоставляет согласованные асинхронный и синхронный интерфейсы, типизированные ссылки на модели и потоковую обработку сообщений.
+[Репозиторий][repository] · [История изменений][changelog] · [Последний релиз][releases] · [Лицензия GPL-3.0][license]
 
-> [Документация на английском языке](docs/en/README.md) охватывает установку, потоковую передачу чата, выбор моделей, управление проектами и справочник API.
+Независимые Python-клиенты для веб-сессий ChatGPT, Gemini, Claude и Grok. API предоставляет согласованные асинхронный и синхронный интерфейсы, типизированные ссылки на модели и потоковую обработку сообщений.
 
-> **Бета-версия:** Веб-сайты и закрытые протоколы провайдеров могут меняться без предупреждения. Проект независимый и не связан с указанными провайдерами.
+> [Документация на английском языке][docs] охватывает установку, потоковую передачу чата, выбор моделей, управление проектами и справочник API.
+
+> **Примечание:** Веб-сайты и закрытые протоколы провайдеров могут меняться без предупреждения. Проект независимый и не связан с указанными провайдерами.
 
 ## Установка
 
@@ -73,7 +75,7 @@ with ChatGPTWebAIProvider(account) as provider:
 - Методы `chat.responses.create()`, `edit()` и `retry()` подготавливают операции с сообщениями. Используйте `operation.stream()` для потока событий или `operation.wait()` для получения готового `Response`. Ответ содержит связанное сообщение пользователя, источники, артефакты и данные о времени для текущей отправки.
 - Чтобы открыть чат вместе с последними ответами за одно чтение истории, используйте `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. В синхронном API вызов выполняется без `await`. Лимит определяет число возвращаемых ответов.
 - Добавляйте файлы и текст в проект через `project.attachments.create()`. Для просмотра вложений используйте `list()`, для удаления — `delete()`.
-- Провайдеры управляют жизненным циклом, блокировками, хуками и событиями непосредственно в `WebAIProvider` и `AsyncWebAIProvider` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Состояния жизненного цикла и сообщений используют непосредственно `flowevent.StateMachine`. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
+- Провайдеры управляют жизненным циклом, блокировками, хуками и событиями непосредственно в `WebAIProvider` и `AsyncWebAIProvider` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Библиотека самостоятельно управляет состояниями провайдеров и сообщений. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Событие `collection.read.completed` передаёт пакет идентификаторов после успешного удалённого чтения. `collection.changed` сообщает о подтверждённых добавлениях, обновлениях и удалениях. В обоих событиях список `items` доступен в `event.metadata["payload"]`. Метаданные содержат аккаунт и идентификатор родительского ресурса для вложенных коллекций. Изменения ответов относятся к соответствующему чату. События не содержат текст сообщений, содержимое файлов или учётные данные.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `WebAIProviderError`, например `FeatureUnavailable`.
 
@@ -144,7 +146,7 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
-Замеры производительности без сети описаны в [руководстве по бенчмаркам](benchmarks/README.md).
+Замеры производительности без сети описаны в [руководстве по бенчмаркам][benchmarks-guide].
 
 ## Диагностика
 
@@ -161,16 +163,38 @@ durations_ms, counters = timing.snapshot()
 
 `patch_project(project_id, name=...)` изменяет только переданные поля; для очистки инструкций используйте `instructions=""`. Перед записью изменений проекта текущее состояние сервера считывается под блокировкой. Потоки операций сохраняют всю историю событий для повторного чтения, поэтому потребление памяти сохранёнными операциями растёт с числом событий.
 
-## Ссылки
+## Зависимости
 
-- [История изменений](CHANGELOG.md)
-- [Сообщить об ошибке](https://github.com/TahsinCr/webai-provider/issues)
-- [Репозиторий](https://github.com/TahsinCr/webai-provider)
-- [SiopeChat](https://github.com/TahsinCr/chatgpt-web)
+- [flowevent][flowevent-repo] — Внутрипроцессная синхронная и асинхронная шина событий
+- [flowpipeline][flowpipeline-repo] — Поэтапные конвейеры подготовки запросов
+- [flowcoord][flowcoord-repo] — Примитивы single-flight и координации выполнения
+- [curl-cffi][curl-cffi-repo] — HTTPS- и потоковый транспорт с имитацией браузера
+- [browser-cookie3][browser-cookie3-repo] — Локальное извлечение cookies из браузера
+- [orjson][orjson-repo] — Быстрая сериализация и разбор JSON
+- [lz4][lz4-repo] — Распаковка данных сессий браузера
 
-Лицензия GPL-3.0-only. Подробности см. в файлах [LICENSE](LICENSE) и [COPYRIGHT](COPYRIGHT).
+Лицензия GPL-3.0-only. Подробности см. в файлах [LICENSE][license] и [COPYRIGHT][copyright].
 
 [ci-shield]: https://img.shields.io/github/actions/workflow/status/TahsinCr/webai-provider/ci.yml?branch=main&event=push&label=CI&style=for-the-badge&logo=github&logoColor=white
 [pypi-shield]: https://img.shields.io/pypi/v/webai-provider?label=PyPI&style=for-the-badge&logo=pypi&logoColor=white
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
+[ci-url]: https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml
+[pypi-url]: https://pypi.org/project/webai-provider/
+[python-url]: https://www.python.org/downloads/
+[readme-en]: README.md
+[readme-tr]: README-TR.md
+[docs]: docs/en/README.md
+[benchmarks-guide]: benchmarks/README.md
+[repository]: https://github.com/TahsinCr/webai-provider
+[changelog]: CHANGELOG.md
+[releases]: https://github.com/TahsinCr/webai-provider/releases/latest
+[license]: LICENSE
+[copyright]: COPYRIGHT
+[flowevent-repo]: https://github.com/TahsinCr/python-flowevent
+[flowpipeline-repo]: https://github.com/TahsinCr/python-flowpipeline
+[flowcoord-repo]: https://github.com/TahsinCr/python-flowcoord
+[curl-cffi-repo]: https://github.com/lexiforest/curl_cffi
+[browser-cookie3-repo]: https://github.com/borisbabic/browser_cookie3
+[orjson-repo]: https://github.com/ijl/orjson
+[lz4-repo]: https://github.com/python-lz4/python-lz4

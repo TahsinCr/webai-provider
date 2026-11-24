@@ -38,7 +38,7 @@ with ChatGPTWebAIProvider(account) as provider:
         memory_share=False,
     )
     project.attachments.create(
-        "The v2 API runs natively on the caller thread.", "text", name="notes.txt"
+        "The v2.0.0 API runs natively on the caller thread.", "text", name="notes.txt"
     )
     project.attachments.create("src/main.py")
 

@@ -76,7 +76,7 @@ python -m pip install -e '.[dev]'
 python -m pip install -e '.[benchmark]'
 ```
 
-These guides document the v2 API in this repository. If an example class or method is missing in a published release, check your installed version with `python -m pip show webai-provider` and use an editable checkout of this repository to try the v2 API.
+These guides document the `webai-provider` **v2.0.0** API. Check your installed version with `python -m pip show webai-provider` and upgrade with `python -m pip install -U webai-provider` if needed.
 
 **Practical notes on browser cookie import:**
 When calling `WebAIAccount.from_browser()`, keep OS-level browser storage rules in mind:

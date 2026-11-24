@@ -1,17 +1,19 @@
-[![CI][ci-shield]](https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml)
-[![PyPI][pypi-shield]](https://pypi.org/project/webai-provider/)
-[![Python 3.10+][python-shield]](https://www.python.org/downloads/)
-[![GPL-3.0-only][license-shield]](LICENSE)
+[![CI][ci-shield]][ci-url]
+[![PyPI][pypi-shield]][pypi-url]
+[![Python 3.10+][python-shield]][python-url]
+[![GPL-3.0-only][license-shield]][license]
 
-**English** | [Türkçe](README-TR.md) | [Русский](README-RU.md)
+**English** | [Türkçe][readme-tr] | [Русский][readme-ru]
 
-# webai-provider
+# WebAI Provider
 
-Independent Python clients for ChatGPT, Gemini, Claude, and Grok web sessions. The v2 API provides matching asynchronous and blocking interfaces, typed model references, and streaming message operations.
+[Repository][repository] · [Changelog][changelog] · [Latest release][releases] · [GPL-3.0 License][license]
 
-> [English documentation](docs/en/README.md) covers installation, chat streaming, model selection, project management, and the API reference.
+Independent Python clients for ChatGPT, Gemini, Claude, and Grok web sessions. The API provides matching asynchronous and blocking interfaces, typed model references, and streaming message operations.
 
-> **Beta:** Provider websites and private web protocols can change without notice. This project is independent and is not affiliated with the providers.
+> [English documentation][docs] covers installation, chat streaming, model selection, project management, and the API reference.
+
+> **Note:** Provider websites and private web protocols can change without notice. This project is independent and is not affiliated with the providers.
 
 ## Install
 
@@ -78,7 +80,7 @@ with ChatGPTWebAIProvider(account) as provider:
 
 - To open a chat with its recent responses in a single history read, use `chat, responses = await provider.chats.get_with_responses(chat_id, limit=25)`. Omit `await` with the blocking provider. The limit controls returned responses.
 - Use `project.attachments.create()` to add a file or text, `list()` to inspect project attachments, and `delete()` to remove one.
-- Providers manage lifecycle, locks, hooks, and events directly on `WebAIProvider` and `AsyncWebAIProvider`, backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. Lifecycle and message states use `flowevent.StateMachine` directly. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
+- Providers manage lifecycle, locks, hooks, and events directly on `WebAIProvider` and `AsyncWebAIProvider`, backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. The library manages provider and message states internally. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Subscribe to `collection.read.completed` for one batch of item identities per successful remote read and to `collection.changed` for confirmed creates, updates, and deletes. Both events put an `items` list in `event.metadata["payload"]`. The envelope carries the account and, for nested collections, the parent resource ID. Message revisions use the chat scope. Payloads omit message text, file bodies, and credentials. Local collections use stable snapshots without publishing provider events.
 - Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `WebAIProviderError` such as `FeatureUnavailable`.
 
@@ -149,7 +151,7 @@ python -m build --sdist --wheel
 twine check dist/*
 ```
 
-For offline performance measurements, see the [benchmark guide](benchmarks/README.md).
+For offline performance measurements, see the [benchmark guide][benchmarks-guide].
 
 ## Diagnostics
 
@@ -166,16 +168,38 @@ durations_ms, counters = timing.snapshot()
 
 `patch_project(project_id, name=...)` changes only the supplied fields; use `instructions=""` to clear instructions. Project mutations read current server state under their lock before writing. Operation streams retain their complete event history for replay, so retained operations use memory proportional to their event count.
 
-## Links
+## Dependencies
 
-- [Changelog](CHANGELOG.md)
-- [Issue tracker](https://github.com/TahsinCr/webai-provider/issues)
-- [Repository](https://github.com/TahsinCr/webai-provider)
-- [SiopeChat](https://github.com/TahsinCr/chatgpt-web)
+- [flowevent][flowevent-repo] — In-process sync and async event bus
+- [flowpipeline][flowpipeline-repo] — Staged request preparation pipelines
+- [flowcoord][flowcoord-repo] — Single-flight and execution coordination primitives
+- [curl-cffi][curl-cffi-repo] — Browser-impersonating HTTPS and streaming transport
+- [browser-cookie3][browser-cookie3-repo] — Local browser cookie extraction
+- [orjson][orjson-repo] — Fast JSON serialization and decoding
+- [lz4][lz4-repo] — Browser session decompression
 
-Licensed under GPL-3.0-only. See [LICENSE](LICENSE) and [COPYRIGHT](COPYRIGHT).
+Licensed under GPL-3.0-only. See [LICENSE][license] and [COPYRIGHT][copyright].
 
 [ci-shield]: https://img.shields.io/github/actions/workflow/status/TahsinCr/webai-provider/ci.yml?branch=main&event=push&label=CI&style=for-the-badge&logo=github&logoColor=white
 [pypi-shield]: https://img.shields.io/pypi/v/webai-provider?label=PyPI&style=for-the-badge&logo=pypi&logoColor=white
 [python-shield]: https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white
 [license-shield]: https://img.shields.io/badge/license-GPL--3.0--only-blue.svg?style=for-the-badge
+[ci-url]: https://github.com/TahsinCr/webai-provider/actions/workflows/ci.yml
+[pypi-url]: https://pypi.org/project/webai-provider/
+[python-url]: https://www.python.org/downloads/
+[readme-tr]: README-TR.md
+[readme-ru]: README-RU.md
+[docs]: docs/en/README.md
+[benchmarks-guide]: benchmarks/README.md
+[repository]: https://github.com/TahsinCr/webai-provider
+[changelog]: CHANGELOG.md
+[releases]: https://github.com/TahsinCr/webai-provider/releases/latest
+[license]: LICENSE
+[copyright]: COPYRIGHT
+[flowevent-repo]: https://github.com/TahsinCr/python-flowevent
+[flowpipeline-repo]: https://github.com/TahsinCr/python-flowpipeline
+[flowcoord-repo]: https://github.com/TahsinCr/python-flowcoord
+[curl-cffi-repo]: https://github.com/lexiforest/curl_cffi
+[browser-cookie3-repo]: https://github.com/borisbabic/browser_cookie3
+[orjson-repo]: https://github.com/ijl/orjson
+[lz4-repo]: https://github.com/python-lz4/python-lz4
