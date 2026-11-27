@@ -17,8 +17,7 @@ from ...core.file_stat import same_file_version
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, RateLimited, WebAIProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
-from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
-from ...transport.frames import JSPBFrameDecoder
+from ...transport import AsyncHTTPTransport, AsyncTransport, Transport, TransportConfig
 from .base import (
     BASE,
     COOKIE_REFRESH_INTERVAL,
@@ -32,10 +31,8 @@ from .base import (
 )
 from .errors import GeminiError, GeminiStreamError
 from .generation import (
-    _GeminiFrameProcessor,
     _GeminiResponseProcessor,
     _prepare_upload_specs,
-    generation_request,
 )
 from .notebooks import (
     notebook_id,
@@ -44,6 +41,19 @@ from .notebooks import (
     parse_notebook_list,
 )
 from .rpc import RPCPayload, decode_rpc_response, resolve_notebook_rpc_read
+from .webchannel import (
+    PROCESS_SESSION_PATH,
+    WEBCHANNEL_ORIGIN,
+    ProcessSessionFrameProcessor,
+    WebChannelFrameDecoder,
+    WebChannelSessionState,
+    build_process_session_headers,
+    build_process_session_turn_data,
+    extract_handshake_sid,
+    initial_rid,
+    iter_protobuf_packets,
+    new_gsessionid,
+)
 
 __all__ = [
     "AsyncGeminiClient",
@@ -78,6 +88,11 @@ class AsyncGeminiClient(BaseGeminiClient):
             "https://content-push.googleapis.com",
             config=TransportConfig(timeout=(10.0, 35.0)),
         )
+        self.webchannel_transport = AsyncHTTPTransport(
+            WEBCHANNEL_ORIGIN,
+            client_getter=lambda: self.http,
+            config=TransportConfig(timeout=(10.0, 35.0)),
+        )
         self.refresh_task = None
         self._save_lock = asyncio.Lock()
         self._activity_lock = asyncio.Lock()
@@ -86,6 +101,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         from curl_cffi.requests import AsyncSession
 
         cookies = self._extract_cookies(await async_read_session(self.credential_file))
+        self._cookies = dict(cookies)
         if self.http_factory is not None:
             self.http = self.http_factory(
                 cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
@@ -244,11 +260,15 @@ class AsyncGeminiClient(BaseGeminiClient):
                     self.verified = False
                     await http.close()
         finally:
+            self._webchannel_session = None
             try:
-                await self.upload_transport.close()
+                await self.webchannel_transport.close()
             finally:
-                if self._provided_transport is not None:
-                    await self._provided_transport.close()
+                try:
+                    await self.upload_transport.close()
+                finally:
+                    if self._provided_transport is not None:
+                        await self._provided_transport.close()
 
 
 class AsyncGeminiRPC:
@@ -408,26 +428,107 @@ class AsyncGeminiProjectEditor(BaseGeminiProjectEditor):
         return self._finalize_remove_source(values.get("current"), resource, result)
 
 
+async def _async_ensure_webchannel_session(client: Any, *, temporary: bool = False) -> Any:
+    state = getattr(client, "_webchannel_session", None)
+    if state is not None:
+        return state
+    transport = getattr(client, "webchannel_transport", None) or client.transport
+    gsessionid = new_gsessionid()
+    rid = initial_rid()
+    headers = build_process_session_headers(
+        getattr(client, "_cookies", {}),
+        temporary=temporary,
+        gsessionid=gsessionid,
+    )
+    resp = await transport.send(
+        "POST",
+        PROCESS_SESSION_PATH,
+        params={"VER": "8", "RID": str(rid), "CVER": "22", "X-HTTP-Session-Id": gsessionid},
+        headers=headers,
+        data="",
+        allow_redirects=False,
+    )
+    Transport.check(resp)
+    decoder = WebChannelFrameDecoder()
+    frames = decoder.feed(resp.content or resp.text.encode("utf-8"), final=True)
+    sid = extract_handshake_sid(frames)
+    if not sid:
+        raise GeminiStreamError("Gemini processSession handshake did not return a session ID")
+    state = WebChannelSessionState(gsessionid=gsessionid, sid=sid, rid=rid)
+    client._webchannel_session = state
+    return state
+
+
 async def async_generate(
-    client, request, metadata, notebook=None, *, files=None, request_timeout=(15, 310)
+    client,
+    request,
+    metadata,
+    notebook=None,
+    *,
+    files=None,
+    request_timeout=(15, 310),
+    tool_fields=None,
+    raw_override_fields=None,
 ) -> AsyncGenerator[dict, None]:
     from curl_cffi.const import CurlECode
     from curl_cffi.requests.exceptions import RequestException
 
     if files is None:
         files = await async_upload_files(client, request.attachments)
-    headers, data = generation_request(client, request, metadata, files, notebook)
-    frames = JSPBFrameDecoder(prefix=")]}'", length_includes_separator=True)
+    headers, form = build_process_session_turn_data(
+        client,
+        request,
+        metadata,
+        files,
+        notebook,
+        tool_fields=tool_fields,
+        raw_override_fields=raw_override_fields,
+    )
+    transport = getattr(client, "webchannel_transport", None) or client.transport
+    decoder = WebChannelFrameDecoder()
     timing = current_send_timing()
     sse_connect_started = time.perf_counter_ns() if timing is not None else None
-    processor = _GeminiFrameProcessor(request, metadata, timing)
+    processor = ProcessSessionFrameProcessor(request, metadata, timing)
     try:
-        async with client.transport.stream(
-            "POST",
-            "/" + (BASE + "assistant.lamda.BardFrontendService/StreamGenerate").split("/", 3)[3],
-            params=client.params(),
+        for attempt in range(2):
+            wc_state = await _async_ensure_webchannel_session(client, temporary=request.temporary)
+            submit_params = {
+                "VER": "8",
+                "gsessionid": wc_state.gsessionid,
+                "SID": wc_state.sid,
+                "RID": str(wc_state.next_rid()),
+                "AID": str(wc_state.aid),
+                "t": "1",
+            }
+            submit_resp = await transport.send(
+                "POST",
+                PROCESS_SESSION_PATH,
+                params=submit_params,
+                headers=headers,
+                data=form,
+                allow_redirects=False,
+                timeout=request_timeout,
+            )
+            if submit_resp.status_code in (400, 404, 410) and attempt == 0:
+                client._webchannel_session = None
+                continue
+            Transport.check(submit_resp)
+            break
+
+        stream_params = {
+            "gsessionid": wc_state.gsessionid,
+            "VER": "8",
+            "RID": "rpc",
+            "SID": wc_state.sid,
+            "AID": str(wc_state.aid),
+            "CI": "0",
+            "TYPE": "xmlhttp",
+        }
+        async with transport.stream(
+            "GET",
+            PROCESS_SESSION_PATH,
+            params=stream_params,
             headers=headers,
-            data=data,
             allow_redirects=False,
             timeout=request_timeout,
         ) as response:
@@ -435,13 +536,15 @@ async def async_generate(
             if sse_connect_started is not None and processor.response_opened is not None:
                 timing.record("sse_connect_ms", processor.response_opened - sse_connect_started)
             async for chunk in response.aiter_bytes():
-                for packet in frames.feed(chunk):
-                    for frame in packet if isinstance(packet, list) else (packet,):
-                        for item in processor.feed_frame(frame):
+                for batch in decoder.feed(chunk):
+                    wc_state.next_aid()
+                    for packet in iter_protobuf_packets(batch):
+                        for item in processor.feed_packet(packet):
                             yield item
-            for packet in frames.feed(b"", final=True):
-                for frame in packet if isinstance(packet, list) else (packet,):
-                    for item in processor.feed_frame(frame):
+            for batch in decoder.feed(b"", final=True):
+                wc_state.next_aid()
+                for packet in iter_protobuf_packets(batch):
+                    for item in processor.feed_packet(packet):
                         yield item
     except RequestException as error:
         if error.code != CurlECode.OPERATION_TIMEDOUT:

@@ -87,6 +87,8 @@ class BaseGeminiClient:
         self.persistence_warning: str | None = None
         self._last_persisted_at: float | None = None
         self._dirty = False
+        self._cookies: dict[str, Any] = {}
+        self._webchannel_session: Any = None
 
     @staticmethod
     def _extract_cookies(saved: dict[str, Any]) -> dict[str, Any]:

@@ -25,6 +25,7 @@ from .base import (
 )
 from .generation import upload_file_references
 from .rpc import RPCPayload
+from .webchannel import WEBCHANNEL_ORIGIN
 
 __all__ = [
     "GeminiClient",
@@ -53,6 +54,11 @@ class GeminiClient(BaseGeminiClient):
             "https://content-push.googleapis.com",
             config=TransportConfig(timeout=(10.0, 35.0)),
         )
+        self.webchannel_transport = HTTPTransport(
+            WEBCHANNEL_ORIGIN,
+            client_getter=lambda: self.http,
+            config=TransportConfig(timeout=(10.0, 35.0)),
+        )
         self._save_lock = threading.Lock()
         self._activity_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
@@ -62,6 +68,7 @@ class GeminiClient(BaseGeminiClient):
         from curl_cffi.requests import Session
 
         cookies = self._extract_cookies(read_session(self.credential_file))
+        self._cookies = dict(cookies)
         if self.http_factory is not None:
             self.http = self.http_factory(
                 cookies=cookies, impersonate="chrome", timeout=(10.0, 35.0)
@@ -202,6 +209,7 @@ class GeminiClient(BaseGeminiClient):
             if self._provided_transport is not None:
                 stack.callback(self._provided_transport.close)
             stack.callback(self.upload_transport.close)
+            stack.callback(self.webchannel_transport.close)
             http = self.http
             if http is not None:
                 stack.callback(http.close)
@@ -214,6 +222,7 @@ class GeminiClient(BaseGeminiClient):
                 finally:
                     self.http = None
                     self.verified = False
+                    self._webchannel_session = None
 
 
 class GeminiProjectEditor(BaseGeminiProjectEditor):

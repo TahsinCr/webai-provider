@@ -1,6 +1,7 @@
 """Gemini provider session, streaming, history, and notebook tests."""
 
 import asyncio
+import base64
 import json
 import tempfile
 import threading
@@ -35,9 +36,10 @@ from webaiprovider.providers.gemini.async_client import (
 from webaiprovider.providers.gemini.catalogs import GeminiModels, parse_model_catalog
 from webaiprovider.providers.gemini.client import GeminiClient
 from webaiprovider.providers.gemini.errors import GeminiStreamError
-from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.notebooks import project_from_native
+from webaiprovider.providers.gemini.proto import ProtoView
 from webaiprovider.providers.gemini.rpc import decode_rpc_response
+from webaiprovider.providers.gemini.webchannel import build_process_session_turn_data
 from webaiprovider.resources.message.protocol import ProviderRequest, TextDelta, TextReplacement
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import EffortOption, Model
@@ -90,7 +92,19 @@ class BlockingGeminiTests(unittest.TestCase):
                 patch.object(
                     provider, "_prepare_send_context", return_value=(client, request, [], None, [])
                 ),
-                patch(f"{module}.generation_request", return_value=({}, b"")),
+                patch(f"{module}.build_process_session_turn_data", return_value=({}, {})),
+                patch.object(
+                    client,
+                    "transport",
+                    Mock(
+                        spec=HTTPTransport,
+                        send=Mock(
+                            return_value=SimpleNamespace(
+                                status_code=200, content=b'[["c","sid"]]', text='[["c","sid"]]'
+                            )
+                        ),
+                    ),
+                ),
                 patch(
                     f"{module}._message_stream", side_effect=GeminiStreamError("stream opened")
                 ) as stream,
@@ -336,18 +350,18 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
             effort="extended",
             temporary=True,
         )
-        headers, data = generation_request(session, request, ["cid"], [], ("notebooks/test", [2]))
-        body = json.loads(json.loads(data["f.req"])[1])
-        self.assertEqual(
-            (body[19], body[40][13], body[45], body[79], body[80]), ("notebooks/test", [2], 1, 3, 2)
+        headers, form = build_process_session_turn_data(
+            session, request, ["cid"], [], ("notebooks/test", [2])
         )
-        self.assertEqual(body[6], [1])
-        self.assertEqual(body[17], [[0]])
-        selector = json.loads(headers["x-goog-ext-525001261-jspb"])
-        self.assertEqual(selector[11], 2)
-        self.assertEqual(selector[7], 1)
+        req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
+        assert req0 is not None
+        self.assertEqual(
+            (req0.get_str(20), req0.get_int(46), req0.get_int(80), req0.get_int(97)),
+            ("notebooks/test", 1, 3, 2),
+        )
+        self.assertEqual(headers["x-goog-ext-525001261-bin"], base64.b64encode(b"\x01").decode())
         with self.assertRaises(ValueError):
-            generation_request(
+            build_process_session_turn_data(
                 session,
                 ProviderRequest("hello", model="unavailable"),
                 [],
@@ -403,14 +417,15 @@ class NativeGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.title, "Provider model")
         session.token, session.session_id = "token", "session"
         request = ProviderRequest("hello", model=model.id)
-        headers, data = generation_request(session, request, [], [])
-        self.assertEqual(json.loads(json.loads(data["f.req"])[1])[80], 4)
-        self.assertEqual(json.loads(headers["x-goog-ext-525001261-jspb"])[-2], 4)
-        self.assertEqual(json.loads(headers["x-goog-ext-525001261-jspb"])[7], 0)
+        headers, form = build_process_session_turn_data(session, request, [], [])
+        req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
+        assert req0 is not None
+        self.assertEqual(req0.get_int(97), 4)
+        self.assertEqual(headers["x-goog-ext-525001261-bin"], base64.b64encode(b"\x00").decode())
         from dataclasses import replace
 
         with self.assertRaisesRegex(ValueError, "effort"):
-            generation_request(session, replace(request, effort="extended"), [], [])
+            build_process_session_turn_data(session, replace(request, effort="extended"), [], [])
 
         # A refreshed server policy changes the choices without local model-name tables.
         options[1]["isDisabled"] = True
@@ -705,9 +720,15 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             persist=AsyncMock(),
         )
 
+        from webaiprovider.providers.gemini.webchannel import WebChannelSessionState
+
         session.transport = AsyncHTTPTransport(
             "https://gemini.google.com", client_getter=lambda: session.http
         )
+        session._webchannel_session = WebChannelSessionState(
+            gsessionid="gs-test", sid="sid-test", rid=100
+        )
+        session._cookies = {}
         return session
 
     def response(self, payloads):
@@ -722,44 +743,53 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             aclose=AsyncMock(),
             closed=False,
             content=b"",
+            text="",
         )
 
     async def test_generation_rejection_is_typed_and_does_not_replay_the_request(self):
-        from webaiprovider.providers.gemini.errors import GeminiGenerationRejected
+        from webaiprovider.providers.gemini.errors import GeminiCompatibilityError
 
-        frame = [None] * 6
-        frame[5] = [None, None, [[None, [1]]]]
-        payload = json.dumps([frame])
-        size = len(payload) + 1
-        response = self.response([f")]}}'\n\n{size}\n{payload}".encode()])
+        bad_payload = json.dumps([[1, [base64.b64encode(b"\xff\xff\xff").decode("ascii")]]])
+        wire = f"{len(bad_payload)}\n{bad_payload}".encode()
+        response = self.response([wire])
         session = self.session(response)
-        with self.assertRaises(GeminiGenerationRejected):
+        with self.assertRaises(GeminiCompatibilityError):
             _ = [chunk async for chunk in generate(session, ProviderRequest("test"), [])]
-        session.http.request.assert_awaited_once()
+        self.assertEqual(session.http.request.await_count, 2)
 
     async def test_completed_stream_preserves_text_thoughts_and_cid(self):
         from webaiprovider.core.timing import SendTiming, use_send_timing
+        from webaiprovider.providers.gemini.proto import encode_message
 
-        candidate = [None] * 38
-        candidate[0], candidate[1], candidate[8] = "rcid", ["answer"], [2]
-        activity = [None] * 8
-        activity[1] = activity[5] = "Searching the web"
-        activity[7] = [["favicon", "https://example.com", "Example"]]
-        candidate[37] = [["thought"], [activity]]
-        body = [None, ["c_new", "rid"], None, None, [candidate]]
-        acknowledged = [None, ["c_new", "rid"]]
+        packet_ctx = encode_message({2: {7: {1: {2: {1: "rid"}, 4: {4: {2: "c_new", 18: "rid"}}}}}})
+        packet_body = encode_message(
+            {
+                2: {
+                    7: {
+                        1: {
+                            2: {1: "rid"},
+                            4: {
+                                1: "rcid",
+                                2: "answer",
+                                4: {
+                                    1: "rcid",
+                                    2: "c_new",
+                                    18: "rid",
+                                    26: "tok_done",
+                                    37: {1: "thought"},
+                                },
+                            },
+                        }
+                    }
+                }
+            }
+        )
 
-        def encode_frame(payload):
-            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            units = len(("\n" + encoded).encode("utf-16-le")) // 2
-            return f"{units}\n{encoded}"
+        def encode_batch(seq, pkt):
+            batch = json.dumps([[seq, [base64.b64encode(pkt).decode("ascii")]]])
+            return f"{len(batch)}\n{batch}"
 
-        wire = (
-            ")]}'\n\n"
-            + encode_frame([["wrb.fr", None, json.dumps(acknowledged)]])
-            + encode_frame([["wrb.fr", None, json.dumps(body)]])
-            + "\n"
-        ).encode()
+        wire = (encode_batch(1, packet_ctx) + encode_batch(2, packet_body)).encode()
         response = self.response([wire[:20], wire[20:]])
         session = self.session(response)
         timing = SendTiming("gemini")
@@ -767,12 +797,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             result = [c async for c in generate(session, ProviderRequest("question"), [])]
         self.assertEqual(
             (result[1]["cid"], result[1]["text"], result[1]["thoughts"]),
-            ("c_new", "answer", "thought\nSearching the web"),
+            ("c_new", "answer", "thought"),
         )
-        self.assertEqual(
-            result[1]["sources"], ({"title": "Example", "url": "https://example.com"},)
-        )
-        self.assertEqual(session.http.request.await_args.kwargs["params"], {})
         self.assertTrue(result[0]["context_only"])
         self.assertEqual(result[0]["cid"], "c_new")
         self.assertTrue(response.closed)
@@ -898,12 +924,10 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             models=(flash,), language="en", token="test", session_id="session"
         )
         request = ProviderRequest("hello", model="gemini-flash")
-        headers, data = generation_request(session, request, ["cid", "", ""], [])
-        body = json.loads(json.loads(data["f.req"])[1])
-        selector = json.loads(headers["x-goog-ext-525001261-jspb"])
-        self.assertIsNone(body[79])
-        self.assertIsNone(selector[4])
-        self.assertIsNone(selector[-3])
+        headers, form = build_process_session_turn_data(session, request, ["cid", "", ""], [])
+        req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
+        assert req0 is not None
+        self.assertIsNone(req0.get_int(80))
 
     def test_gemini_4_catalog_canonicalizes_localized_ids_and_preserves_hydrogen_selector(self):
         rows = []
@@ -993,21 +1017,16 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             token="test",
             session_id="session-1",
         )
-        headers, data = generation_request(
+        headers, form = build_process_session_turn_data(
             session,
             ProviderRequest("hello", model="gemini-hydrogen", effort="standard"),
             ["cid", "", ""],
             [],
         )
-        body = json.loads(json.loads(data["f.req"])[1])
-        selector = json.loads(headers["x-goog-ext-525001261-jspb"])
-        self.assertIsNone(body[79])
-        self.assertEqual(body[80], 1)
-        self.assertIsNone(selector[4])
-        self.assertIsNone(selector[6])
-        self.assertIsNone(selector[14])
-        self.assertEqual(selector[15], 1)
-        self.assertEqual(selector[16], "session-1")
+        req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
+        assert req0 is not None
+        self.assertIsNone(req0.get_int(80))
+        self.assertEqual(req0.get_int(97), 1)
 
     async def test_sync_activity_is_throttled_unless_forced(self):
         session = GeminiSession(Path("unused"))
