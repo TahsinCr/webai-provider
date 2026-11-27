@@ -26,8 +26,9 @@ from ...resources.project.types import ProjectData
 from ...transport import Transport
 from .base import _CHAT_METADATA_TTL_SECONDS, ORIGIN, BaseGeminiWebAIProvider
 from .client import GeminiClient, GeminiProjectEditor
+from .deep_research import build_gemini_research_response
 from .errors import GeminiStreamError
-from .generation import _gemini_upload_spec, response_events
+from .generation import _gemini_upload_spec, response_events, start_and_poll_gemini_research
 from .history import parse_chat_page
 from .notebooks import GeminiNotebooks, notebook_id
 from .resources import (
@@ -368,3 +369,49 @@ class GeminiWebAIProvider(
                 else read_session(self.cookie_file)
             )
         return self._finalize_download_source(target, url, cookie_values)
+
+    def _start_research(
+        self, chat: Any, response: Any, state: Any, *, timeout: float | None = None
+    ) -> Any:
+        client = self._connect()
+        conv_id = state.conversation_id or state.session_id or getattr(chat, "remote_id", None)
+        if not conv_id:
+            raise GeminiStreamError("Gemini Deep Research requires a conversation ID")
+        result = start_and_poll_gemini_research(
+            client,
+            conv_id,
+            turn_token=state.metadata.get("turn_token"),
+            timeout=timeout or 900.0,
+            start_turn=True,
+        )
+        return build_gemini_research_response(
+            chat,
+            response,
+            state,
+            result,
+            artifact_type=self._artifact_type,
+            source_type=self._source_type,
+        )
+
+    def _wait_research(
+        self, chat: Any, response: Any, state: Any, *, timeout: float | None = None
+    ) -> Any:
+        client = self._connect()
+        conv_id = state.conversation_id or state.session_id or getattr(chat, "remote_id", None)
+        if not conv_id:
+            raise GeminiStreamError("Gemini Deep Research requires a conversation ID")
+        result = start_and_poll_gemini_research(
+            client,
+            conv_id,
+            turn_token=state.metadata.get("turn_token"),
+            timeout=timeout or 900.0,
+            start_turn=False,
+        )
+        return build_gemini_research_response(
+            chat,
+            response,
+            state,
+            result,
+            artifact_type=self._artifact_type,
+            source_type=self._source_type,
+        )

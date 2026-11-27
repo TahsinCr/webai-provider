@@ -563,6 +563,9 @@ class BaseGeminiWebAIProvider(BaseWebAIProvider):
             Capability.PROJECT_UPDATE,
             Capability.PROJECT_DELETE,
             Capability.RESOURCES,
+            Capability.WEB_SEARCH,
+            Capability.IMAGE_GENERATION,
+            Capability.DEEP_RESEARCH,
         }
     )
 

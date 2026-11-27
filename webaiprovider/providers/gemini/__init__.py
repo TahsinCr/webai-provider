@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     from .async_provider import AsyncGeminiWebAIProvider as AsyncGeminiWebAIProvider
     from .catalogs import GeminiModels as GeminiModels
     from .client import GeminiClient as GeminiClient
+    from .deep_research import DeepResearchSources as DeepResearchSources
+    from .deep_research import GeminiDeepResearchTool as GeminiDeepResearchTool
     from .errors import GeminiCompatibilityError as GeminiCompatibilityError
     from .errors import GeminiError as GeminiError
     from .errors import GeminiStreamError as GeminiStreamError
@@ -45,6 +47,8 @@ _EXPORTS = {
     "GeminiWebAIProvider": "provider",
     "AsyncGeminiWebAIProvider": "async_provider",
     "GeminiNotebooks": "notebooks",
+    "DeepResearchSources": "deep_research",
+    "GeminiDeepResearchTool": "deep_research",
 }
 __all__ = list(_EXPORTS)
 

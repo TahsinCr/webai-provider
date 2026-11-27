@@ -15,6 +15,7 @@ from ...core.json import json_loads
 from ...resources.message.protocol import ProviderRequest
 from ...resources.message.types import MessageAction
 from .errors import GeminiCompatibilityError, GeminiStreamError
+from .image import extract_proto_image_files
 from .proto import ProtoView, encode_message
 
 WEBCHANNEL_ORIGIN = "https://geminiweb-pa.clients6.google.com"
@@ -336,7 +337,7 @@ class ProcessSessionFrameProcessor:
         block = view.at(2, 7, 1, 4)
         text = ""
         thoughts = ""
-        files: list[dict[str, Any]] = []
+        files: list[dict[str, Any]] = extract_proto_image_files(view)
         sources: list[dict[str, Any]] = []
 
         if block is not None:

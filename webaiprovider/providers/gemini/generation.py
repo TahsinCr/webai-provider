@@ -18,18 +18,29 @@ from ...resources.message.protocol import (
     MessageMetadata,
     ProviderRequest,
     ProviderStreamEvent,
+    ResearchPlanReceived,
     ResponseComplete,
     TextDelta,
     TextReplacement,
 )
 from ...resources.response.artifact import files_from
+from ...resources.response.polling import poll_until
 from ...resources.response.source import sources_from
+from ...resources.tools.types import DeepResearchTool, ImageGenerationTool
 from ...transport.http import HTTPTransport, _message_stream, _wait_for_stream_head
+from .deep_research import (
+    build_start_research_fields,
+    gemini_tool_fields,
+    parse_gemini_research_hnvqhb,
+    parse_gemini_research_plan,
+)
 from .errors import (
     GeminiError,
     GeminiStreamError,
 )
+from .image import strip_image_placeholders
 from .media import GEMINI_FILE_RULE, resolve_image_links
+from .rpc import RPCPayload, decode_rpc_response
 from .webchannel import (
     PROCESS_SESSION_PATH,
     ProcessSessionFrameProcessor,
@@ -202,6 +213,7 @@ class _GeminiResponseProcessor:
                 self.raw_files.append(
                     {
                         "id": image["alias"],
+                        "kind": image.get("kind") or "image",
                         "name": image["name"],
                         "remote_url": image["url"],
                         "media_type": image.get("media_type"),
@@ -224,9 +236,14 @@ class _GeminiResponseProcessor:
                 elif item not in self.raw_sources:
                     self.raw_sources.append(item)
         self.visible = self.visible or bool(chunk["text"] or images)
+        final_text = resolve_image_links(chunk["text"], images)
+        if images or isinstance(self.request.tool, ImageGenerationTool):
+            cleaned = strip_image_placeholders(final_text)
+            if not cleaned:
+                final_text = ""
         for channel, content_text in (
             ("analysis", chunk["thoughts"]),
-            ("final", resolve_image_links(chunk["text"], images)),
+            ("final", final_text),
         ):
             rendered = self.rendered_by_channel[channel]
             if not content_text or content_text == rendered:
@@ -243,17 +260,29 @@ class _GeminiResponseProcessor:
     def finish(self):
         if not self.visible or not self.cid:
             raise GeminiStreamError("Gemini response did not complete; the request was not retried")
+        research_state = None
+        if isinstance(self.request.tool, DeepResearchTool):
+            turn_token = self.metadata[9] if len(self.metadata) > 9 else None
+            research_state = parse_gemini_research_plan(
+                self.rendered_by_channel.get("final", ""),
+                conversation_id=self.cid,
+                message_id=(self.final_rid + ":model") if self.final_rid else None,
+                turn_token=turn_token if isinstance(turn_token, str) else None,
+            )
+            if research_state.plan is not None:
+                yield ResearchPlanReceived(plan=research_state.plan, state=research_state)
         yield ResponseComplete()
-        if self.final_rid:
+        if self.final_rid or research_state is not None:
             yield MessageMetadata(
-                message_id=self.final_rid + ":model",
-                user_message_id=self.final_rid + ":user",
+                message_id=(self.final_rid + ":model") if self.final_rid else None,
+                user_message_id=(self.final_rid + ":user") if self.final_rid else None,
                 model=self.request.model,
                 effort=self.request.effort,
                 sources=sources_from({"sources": self.raw_sources}) if self.raw_sources else (),
                 files=files_from({"files": self.raw_files}, rule=GEMINI_FILE_RULE)
                 if self.raw_files
                 else (),
+                research=research_state,
             )
         self.remember(self.cid, self.metadata, temporary=self.request.temporary)
 
@@ -382,6 +411,9 @@ def response_events(
 ) -> Iterator[ProviderStreamEvent]:
     client, request, metadata, context, action_files = prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
+    active_tool_fields = (
+        tool_fields if tool_fields is not None else gemini_tool_fields(request.tool)
+    )
     for chunk in generate(
         client,
         request,
@@ -390,10 +422,33 @@ def response_events(
         files=action_files,
         request_timeout=request_timeout,
         deadline=deadline,
-        tool_fields=tool_fields,
+        tool_fields=active_tool_fields,
     ):
         if chunk is _STREAM_PAUSED:
             yield chunk
         else:
             yield from reducer.feed_chunk(chunk)
     yield from reducer.finish()
+
+
+def start_and_poll_gemini_research(
+    client: Any,
+    conversation_id: str,
+    *,
+    turn_token: str | None = None,
+    timeout: float = 900.0,
+    start_turn: bool = True,
+) -> dict[str, Any]:
+    """Trigger the Gemini Deep Research execution turn (if needed) and poll hNvQHb until complete."""
+    if start_turn:
+        fields = build_start_research_fields(conversation_id, turn_token)
+        req = ProviderRequest("Araştırmayı başlatın", conversation_id=conversation_id)
+        for _ in generate(client, req, [conversation_id], files=[], raw_override_fields=fields):
+            pass
+
+    def poll_step() -> dict[str, Any] | None:
+        resp = client.batch([RPCPayload("hNvQHb", f'["{conversation_id}", 10, null, 1]')])
+        parsed = decode_rpc_response(resp.text, "hNvQHb")
+        return parse_gemini_research_hnvqhb(parsed)
+
+    return poll_until(poll_step, timeout=timeout)

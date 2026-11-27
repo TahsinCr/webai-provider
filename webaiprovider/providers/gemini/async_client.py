@@ -17,6 +17,7 @@ from ...core.file_stat import same_file_version
 from ...core.timing import current_send_timing
 from ...errors import AccountPaused, RateLimited, WebAIProviderError
 from ...resources.message.protocol import ProviderRequest, ProviderStreamEvent
+from ...resources.response.async_polling import async_poll_until
 from ...transport import AsyncHTTPTransport, AsyncTransport, Transport, TransportConfig
 from .base import (
     BASE,
@@ -28,6 +29,11 @@ from .base import (
     ORIGIN,
     BaseGeminiClient,
     BaseGeminiProjectEditor,
+)
+from .deep_research import (
+    build_start_research_fields,
+    gemini_tool_fields,
+    parse_gemini_research_hnvqhb,
 )
 from .errors import GeminiError, GeminiStreamError
 from .generation import (
@@ -558,10 +564,13 @@ async def async_generate(
 
 
 async def async_response_events(
-    request: ProviderRequest, *, prepare, request_timeout, media, remember
+    request: ProviderRequest, *, prepare, request_timeout, media, remember, tool_fields=None
 ) -> AsyncGenerator[ProviderStreamEvent, None]:
     client, request, metadata, context, action_files = await prepare(request)
     reducer = _GeminiResponseProcessor(request, metadata, media, remember)
+    active_tool_fields = (
+        tool_fields if tool_fields is not None else gemini_tool_fields(request.tool)
+    )
     async for chunk in async_generate(
         client,
         request,
@@ -569,8 +578,34 @@ async def async_response_events(
         context,
         files=action_files,
         request_timeout=request_timeout,
+        tool_fields=active_tool_fields,
     ):
         for event in reducer.feed_chunk(chunk):
             yield event
     for event in reducer.finish():
         yield event
+
+
+async def async_start_and_poll_gemini_research(
+    client: Any,
+    conversation_id: str,
+    *,
+    turn_token: str | None = None,
+    timeout: float = 900.0,
+    start_turn: bool = True,
+) -> dict[str, Any]:
+    """Trigger the Gemini Deep Research execution turn (if needed) and poll hNvQHb until complete."""
+    if start_turn:
+        fields = build_start_research_fields(conversation_id, turn_token)
+        req = ProviderRequest("Araştırmayı başlatın", conversation_id=conversation_id)
+        async for _ in async_generate(
+            client, req, [conversation_id], files=[], raw_override_fields=fields
+        ):
+            pass
+
+    async def poll_step() -> dict[str, Any] | None:
+        resp = await client.batch([RPCPayload("hNvQHb", f'["{conversation_id}", 10, null, 1]')])
+        parsed = decode_rpc_response(resp.text, "hNvQHb")
+        return parse_gemini_research_hnvqhb(parsed)
+
+    return await async_poll_until(poll_step, timeout=timeout)
