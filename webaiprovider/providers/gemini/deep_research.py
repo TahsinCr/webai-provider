@@ -78,20 +78,38 @@ _STEP_LINE_RE = re.compile(r"^\s*(?:\(\d+\)|\d+\.|[-*])\s+(.+)$")
 def parse_gemini_research_plan(
     text: str,
     *,
+    raw_plan: Any = None,
     conversation_id: str | None = None,
     message_id: str | None = None,
     turn_token: str | None = None,
 ) -> ResearchState:
     """Build a ResearchState from Gemini's initial planning response."""
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     title = ""
     steps: list[str] = []
-    for line in lines:
-        match = _STEP_LINE_RE.match(line)
-        if match:
-            steps.append(match.group(1).strip())
-        elif not title and not line.endswith(":"):
-            title = line.lstrip("# ").strip()
+    if isinstance(raw_plan, list) and raw_plan:
+        if isinstance(raw_plan[0], str) and raw_plan[0].strip():
+            title = raw_plan[0].strip()
+        sections = raw_plan[1] if len(raw_plan) > 1 and isinstance(raw_plan[1], list) else ()
+        for section in sections:
+            if not isinstance(section, list) or len(section) < 3:
+                continue
+            body = section[2]
+            if not isinstance(body, str):
+                continue
+            for line in body.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                match = _STEP_LINE_RE.match(stripped)
+                steps.append(match.group(1).strip() if match else stripped)
+    if not steps:
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        for line in lines:
+            match = _STEP_LINE_RE.match(line)
+            if match:
+                steps.append(match.group(1).strip())
+            elif not title and not line.endswith(":"):
+                title = line.lstrip("# ").strip()
     plan = ResearchPlan(
         plan_id=conversation_id,
         title=title or "Deep Research Plan",

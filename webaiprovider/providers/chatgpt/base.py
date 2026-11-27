@@ -139,8 +139,10 @@ class _ChatGPTSSEProcessor:
         author = message.get("author")
         role = author.get("role") if isinstance(author, dict) else None
         content = message.get("content") or {}
+        meta = message.get("metadata") or {}
         is_tool_media = role == "tool" and content.get("content_type") == "multimodal_text"
-        if role != "assistant" and not is_tool_media:
+        is_tool_sdk = role == "tool" and isinstance(meta.get("chatgpt_sdk"), dict)
+        if role != "assistant" and not is_tool_media and not is_tool_sdk:
             return False, emitted
         identity = str(message.get("id") or message.get("channel") or "assistant")
         self.streamed_messages[identity] = message

@@ -523,7 +523,7 @@ async def async_start_and_poll_gemini_research(
 
     async def poll_step() -> dict[str, Any] | None:
         resp = await client.batch([RPCPayload("hNvQHb", f'["{conversation_id}", 10, null, 1]')])
-        parsed = decode_rpc_response(resp.text, "hNvQHb")
+        parsed = decode_rpc_response(resp, "hNvQHb", allow_empty=True)
         return parse_gemini_research_hnvqhb(parsed)
 
     return await async_poll_until(poll_step, timeout=timeout)

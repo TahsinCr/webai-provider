@@ -327,6 +327,8 @@ class _GeminiFrameProcessor:
             self.last_text = text or self.last_text
             activity = published_activity(candidate)
             self.last_thoughts = published_thoughts(candidate, activity[0], self.last_thoughts)
+            cand_12 = rpc_value(candidate, 12, 0)
+            research_plan = cand_12.get("56") if isinstance(cand_12, dict) else None
             yield {
                 "cid": cid,
                 "metadata": current,
@@ -334,6 +336,7 @@ class _GeminiFrameProcessor:
                 "thoughts": self.last_thoughts,
                 "files": candidate_files(candidate),
                 "sources": candidate_metadata(candidate, activity)["sources"],
+                "research_plan": research_plan,
             }
         if isinstance(context, str):
             self.metadata = [None] * 9 + [context]
@@ -378,11 +381,14 @@ class _GeminiResponseProcessor:
         self.seen_file_keys: set[tuple[str, str]] = set()
         self.raw_sources: list[dict] = []
         self.seen_source_keys: set[str] = set()
+        self.raw_research_plan: Any = None
         self.rendered_by_channel = {"analysis": "", "final": ""}
 
     def feed_chunk(self, chunk: dict[str, Any]):
         self.cid = chunk.get("cid") or self.cid
         self.metadata = chunk["metadata"]
+        if chunk.get("research_plan") is not None:
+            self.raw_research_plan = chunk["research_plan"]
         if self.cid and not self.bound and self.cid != self.request.conversation_id:
             yield ConversationBound(self.cid)
             self.bound = True
@@ -448,6 +454,7 @@ class _GeminiResponseProcessor:
             turn_token = self.metadata[9] if len(self.metadata) > 9 else None
             research_state = parse_gemini_research_plan(
                 self.rendered_by_channel.get("final", ""),
+                raw_plan=self.raw_research_plan,
                 conversation_id=self.cid,
                 message_id=(self.final_rid + ":model") if self.final_rid else None,
                 turn_token=turn_token if isinstance(turn_token, str) else None,
@@ -599,7 +606,7 @@ def start_and_poll_gemini_research(
 
     def poll_step() -> dict[str, Any] | None:
         resp = client.batch([RPCPayload("hNvQHb", f'["{conversation_id}", 10, null, 1]')])
-        parsed = decode_rpc_response(resp.text, "hNvQHb")
+        parsed = decode_rpc_response(resp, "hNvQHb", allow_empty=True)
         return parse_gemini_research_hnvqhb(parsed)
 
     return poll_until(poll_step, timeout=timeout)

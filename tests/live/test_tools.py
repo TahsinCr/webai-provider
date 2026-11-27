@@ -137,7 +137,10 @@ def _deep_research_steps(case):
         case.skipTest("Provider does not support DeepResearchTool")
 
     tool = DeepResearchTool()
-    entry, chat, marker = yield from _create_tool_chat_steps(case, label_prefix="dr")
+    allow_temporary = case.context.account.provider != "chatgpt"
+    entry, chat, marker = yield from _create_tool_chat_steps(
+        case, label_prefix="dr", allow_temporary=allow_temporary
+    )
     try:
         prompt = "Summarize the key syntax rules of PEP 8 using only peps.python.org in 3 short bullet points."
         if entry is not None:
@@ -152,7 +155,7 @@ def _deep_research_steps(case):
         assert response.research is not None
         case.assertIn(
             response.research.status,
-            (ResearchStatus.WAITING_FOR_APPROVAL, ResearchStatus.COMPLETED),
+            (ResearchStatus.WAITING_FOR_APPROVAL, ResearchStatus.RUNNING, ResearchStatus.COMPLETED),
         )
         if response.research.status is ResearchStatus.WAITING_FOR_APPROVAL:
             case.assertIsNotNone(
@@ -167,7 +170,14 @@ def _deep_research_steps(case):
                 return
             response = yield case.call_or_skip_rate_limit(
                 "tools.deep_research.execute",
-                lambda: response.start_research(timeout=300.0),
+                lambda: response.start_research(timeout=600.0),
+                entry=entry,
+                chat=chat,
+            )
+        elif response.research.status is ResearchStatus.RUNNING:
+            response = yield case.call_or_skip_rate_limit(
+                "tools.deep_research.wait",
+                lambda: response.wait_research(timeout=600.0),
                 entry=entry,
                 chat=chat,
             )
