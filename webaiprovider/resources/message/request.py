@@ -53,6 +53,8 @@ def _normalize_input(context: OperationContext) -> OperationContext:
     context.parameters["project_id"] = (
         (chat.project.remote_id or chat.project.id) if chat.project is not None else None
     )
+    context.parameters["tool"] = metadata.get("tool")
+    context.parameters["tool_timeout"] = metadata.get("tool_timeout")
     if context.prompt is None:
         context.prompt = message.content
     if context.model is None:
@@ -71,7 +73,13 @@ def _validate_request(
             raise UnsupportedOperationError("Unsupported message action")
         if not chat.remote_id or not message_id:
             raise UnsupportedOperationError("Message actions require remote message identities")
-    provider_account = getattr(getattr(chat, "provider", None), "account", None)
+    provider = getattr(chat, "provider", None)
+    if provider is not None:
+        provider._validate_tool(
+            context.parameters.get("tool"),
+            tool_timeout=context.parameters.get("tool_timeout"),
+        )
+    provider_account = getattr(provider, "account", None)
     if provider_account is not None and (
         provider_account.provider != provider_id or provider_account.id != account_id
     ):
@@ -137,6 +145,8 @@ def _prepare_attachments(context: OperationContext) -> OperationContext:
         conversation_id=context.parameters["conversation_id"],
         project_id=context.parameters["project_id"],
         draft_title=title if title != DEFAULT_CHAT_TITLE else None,
+        tool=context.parameters.get("tool"),
+        tool_timeout=context.parameters.get("tool_timeout"),
     )
     return context
 

@@ -109,6 +109,7 @@ from .resources.response.operation import (
 from .resources.response.parts import ResponsePart, ResponseParts, TextPart, ThinkingPart
 from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
+from .resources.tools import DeepResearchTool, ImageGenerationTool, Tool, WebSearchTool
 
 if TYPE_CHECKING:
     from .async_provider import AsyncWebAIProvider
@@ -257,4 +258,8 @@ __all__ = [
     "ProjectInstruction",
     "AsyncProjectInstruction",
     "Response",
+    "Tool",
+    "WebSearchTool",
+    "ImageGenerationTool",
+    "DeepResearchTool",
 ]

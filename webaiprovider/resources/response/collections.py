@@ -494,8 +494,27 @@ class _BaseResponsesCollection:
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         metadata: dict[str, Any],
     ) -> Any:
+        resolved_tool = (
+            tool
+            if tool is not None
+            else (message.metadata.get("tool") if not isinstance(message, str) else None)
+        )
+        resolved_timeout = (
+            tool_timeout
+            if tool_timeout is not None
+            else (message.metadata.get("tool_timeout") if not isinstance(message, str) else None)
+        )
+        provider = getattr(self.chat, "provider", None)
+        if provider is not None:
+            provider._validate_tool(resolved_tool, tool_timeout=resolved_timeout)
+        if resolved_tool is not None:
+            metadata = {**metadata, "tool": resolved_tool}
+        if resolved_timeout is not None:
+            metadata = {**metadata, "tool_timeout": resolved_timeout}
         if isinstance(message, str):
             msg = getattr(self.chat.provider, "_message_type", self._default_message_type)(
                 content=message,
@@ -516,6 +535,10 @@ class _BaseResponsesCollection:
             if attachments is not None:
                 for item in attachments:
                     msg.attachments.create(item)
+            if resolved_tool is not None:
+                msg.metadata["tool"] = resolved_tool
+            if resolved_timeout is not None:
+                msg.metadata["tool_timeout"] = resolved_timeout
         self._track_local_message(msg)
         return msg
 
@@ -719,10 +742,17 @@ class AsyncResponsesCollection(_BaseResponsesCollection, AsyncRemoteCollection[R
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> AsyncMessageOperation:
         msg = self._prepare_create_message(
-            message, model=model, attachments=attachments, metadata=metadata
+            message,
+            model=model,
+            attachments=attachments,
+            tool=tool,
+            tool_timeout=tool_timeout,
+            metadata=metadata,
         )
         return AsyncMessageOperation(self.chat, msg, executor=self._execute_send)
 
@@ -835,11 +865,18 @@ class ResponsesCollection(_BaseResponsesCollection, RemoteCollection[Response]):
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> MessageOperation:
         with self._history_lock:
             msg = self._prepare_create_message(
-                message, model=model, attachments=attachments, metadata=metadata
+                message,
+                model=model,
+                attachments=attachments,
+                tool=tool,
+                tool_timeout=tool_timeout,
+                metadata=metadata,
             )
         return MessageOperation(self.chat, msg, executor=self._execute_send)
 

@@ -9,6 +9,7 @@ from .types import MessageAction
 
 if TYPE_CHECKING:
     from ..response.parts import ResponsePart
+    from ..tools.types import Tool
 
 __all__ = [
     "ProviderRequest",
@@ -36,6 +37,10 @@ class ProviderRequest:
     action: MessageAction | None = None
     message_id: str | None = None
     draft_title: str | None = None
+    tool: Tool | None = None
+    tool_timeout: float | None = None
+    tool: Tool | None = None
+    tool_timeout: float | None = None
 
 
 @dataclass(frozen=True)

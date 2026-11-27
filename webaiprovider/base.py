@@ -69,6 +69,9 @@ class Capability(str, Enum):
     MESSAGE_EDIT = "message_edit"
     MESSAGE_RETRY = "message_retry"
     CHAT_BRANCH = "chat_branch"
+    WEB_SEARCH = "web_search"
+    IMAGE_GENERATION = "image_generation"
+    DEEP_RESEARCH = "deep_research"
 
 
 _ChatsT = TypeVar("_ChatsT", covariant=True)
@@ -81,6 +84,7 @@ class BaseWebAIProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
 
     provider_type: ClassVar[WebAIProviderType | None] = None
     _capabilities: ClassVar[frozenset[Capability]] = frozenset()
+    _constructed_via_generic: bool = False
     _chats: _ChatsT
     _projects: _ProjectsT
     models: _ModelsT
@@ -219,6 +223,39 @@ class BaseWebAIProvider(ABC, Generic[_ChatsT, _ProjectsT, _ModelsT]):
         from .resources.model.types import _model_refs_from_catalog
 
         self.models._prime(_model_refs_from_catalog(self.id, catalog))
+
+    def _validate_tool(self, tool: Any, *, tool_timeout: float | None = None) -> None:
+        import math
+
+        from .errors import FeatureUnavailable, UnsupportedOperationError
+        from .resources.tools.types import Tool
+
+        if tool_timeout is not None:
+            if (
+                isinstance(tool_timeout, bool)
+                or not isinstance(tool_timeout, (int, float))
+                or not math.isfinite(tool_timeout)
+                or tool_timeout <= 0
+            ):
+                raise ValueError("tool_timeout must be a positive finite number")
+        if tool is None:
+            return
+        if not isinstance(tool, Tool):
+            raise TypeError("tool must be a Tool instance or None")
+        provider_scope = getattr(tool, "provider_type", None)
+        if provider_scope is not None:
+            if self._constructed_via_generic:
+                raise UnsupportedOperationError(
+                    f"{type(tool).__name__} is not supported on generic WebAIProvider; "
+                    f"use the {provider_scope} provider directly"
+                )
+            if provider_scope != self.id:
+                raise UnsupportedOperationError(
+                    f"{type(tool).__name__} is only supported on {provider_scope} providers"
+                )
+        capability = getattr(tool, "capability", None)
+        if capability is not None and capability not in self.capabilities:
+            raise FeatureUnavailable(capability)
 
 
 class _StreamEventTranslator:
@@ -382,5 +419,7 @@ def _construct_provider(cls, base_cls, args, options, *, asynchronous: bool):
         account = args[0] if args else options["account"]
         requested = options.get("type")
         selected = WebAIProviderType.parse(account.provider if requested is None else requested)
-        return object.__new__(_provider_class(selected, asynchronous=asynchronous))
+        instance = object.__new__(_provider_class(selected, asynchronous=asynchronous))
+        instance._constructed_via_generic = True
+        return instance
     return object.__new__(cls)

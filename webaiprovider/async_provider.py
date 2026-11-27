@@ -674,7 +674,10 @@ class AsyncWebAIProvider(BaseWebAIProvider[_ChatsT, _ProjectsT, AsyncModelsColle
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Any = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
     ) -> Response:
+        self._validate_tool(tool, tool_timeout=tool_timeout)
         opened_here = False
         try:
             async with self._activity():
@@ -684,6 +687,8 @@ class AsyncWebAIProvider(BaseWebAIProvider[_ChatsT, _ProjectsT, AsyncModelsColle
                     prompt,
                     model=model,
                     attachments=attachments,
+                    tool=tool,
+                    tool_timeout=tool_timeout,
                 ).start()
         finally:
             if opened_here:

@@ -227,12 +227,16 @@ class AsyncChat(_BaseChat):
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> AsyncMessageOperation:
         return self.responses.create(
             prompt,
             model=model,
             attachments=attachments,
+            tool=tool,
+            tool_timeout=tool_timeout,
             **metadata,
         )
 
@@ -242,12 +246,16 @@ class AsyncChat(_BaseChat):
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> AsyncIterator[StreamEvent]:
         operation = self.responses.create(
             prompt,
             model=model,
             attachments=attachments,
+            tool=tool,
+            tool_timeout=tool_timeout,
             **metadata,
         )
         async for event in operation.stream():
@@ -407,12 +415,16 @@ class Chat(_BaseChat):
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> Response:
         return self.responses.create(
             prompt,
             model=model,
             attachments=attachments,
+            tool=tool,
+            tool_timeout=tool_timeout,
             **metadata,
         ).wait()
 
@@ -422,12 +434,16 @@ class Chat(_BaseChat):
         *,
         model: Models | EffortRef | ModelRef | ModelSelection | str | None = None,
         attachments: Iterable[Attachment] | Attachments | None = None,
+        tool: Any = None,
+        tool_timeout: float | None = None,
         **metadata: Any,
     ) -> Iterator[StreamEvent]:
         operation = self.responses.create(
             prompt,
             model=model,
             attachments=attachments,
+            tool=tool,
+            tool_timeout=tool_timeout,
             **metadata,
         )
         yield from operation.stream()
