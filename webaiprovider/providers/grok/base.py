@@ -443,6 +443,8 @@ class BaseGrokWebAIProvider(BaseWebAIProvider):
             Capability.RESOURCES,
             Capability.MESSAGE_RETRY,
             Capability.MESSAGE_EDIT,
+            Capability.WEB_SEARCH,
+            Capability.IMAGE_GENERATION,
         }
     )
 
@@ -594,6 +596,9 @@ class BaseGrokWebAIProvider(BaseWebAIProvider):
             body["modelName"] = model or selected_id
         if request.project_id:
             body["workspaceIds"] = [request.project_id]
+        from .image import apply_grok_tool_payload
+
+        apply_grok_tool_payload(body, request.tool)
         path = (
             "/rest/app-chat/conversations/new"
             if not request.conversation_id
