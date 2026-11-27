@@ -668,6 +668,26 @@ class AsyncWebAIProvider(BaseWebAIProvider[_ChatsT, _ProjectsT, AsyncModelsColle
                 url, conversation_id=conversation_id, message_id=message_id
             )
 
+    async def _start_research(
+        self, chat: Any, response: Response, state: Any, *, timeout: float | None = None
+    ) -> Response:
+        del chat, response, state, timeout
+        raise FeatureUnavailable(Capability.DEEP_RESEARCH, "not_implemented")
+
+    async def _pause_research(self, chat: Any, response: Response, state: Any) -> Response:
+        del chat, response, state
+        raise FeatureUnavailable(Capability.DEEP_RESEARCH, "not_implemented")
+
+    async def _cancel_research(self, chat: Any, response: Response, state: Any) -> Response:
+        del chat, response, state
+        raise FeatureUnavailable(Capability.DEEP_RESEARCH, "not_implemented")
+
+    async def _wait_research(
+        self, chat: Any, response: Response, state: Any, *, timeout: float | None = None
+    ) -> Response:
+        del chat, response, state, timeout
+        raise FeatureUnavailable(Capability.DEEP_RESEARCH, "not_implemented")
+
     async def ask(
         self,
         prompt: str,

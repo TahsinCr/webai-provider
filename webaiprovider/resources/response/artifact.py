@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import SplitResult, unquote, urlsplit
 
@@ -190,7 +191,32 @@ class Artifact:
     size: int | None = None
     download_url: str | None = None
     content: bytes | str | None = None
+    title: str | None = None
+    width: int | None = None
+    height: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def read_bytes(self) -> bytes:
+        """Return inline artifact bytes, encoding text as UTF-8 when needed."""
+        if isinstance(self.content, bytes):
+            return self.content
+        if isinstance(self.content, str):
+            return self.content.encode("utf-8")
+        raise ValueError("Artifact has no inline content; use chat.download(artifact)")
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        """Return inline artifact text, decoding bytes when needed."""
+        if isinstance(self.content, str):
+            return self.content
+        if isinstance(self.content, bytes):
+            return self.content.decode(encoding)
+        raise ValueError("Artifact has no inline content; use chat.download(artifact)")
+
+    def save(self, path: str | Path) -> Path:
+        """Write inline artifact bytes to disk."""
+        target = Path(path)
+        target.write_bytes(self.read_bytes())
+        return target
 
 
 class ArtifactsCollection(Collection[Artifact]):

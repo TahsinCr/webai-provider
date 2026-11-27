@@ -287,6 +287,8 @@ class _StreamEventTranslator:
         from .resources.message.protocol import (
             MessageMetadata,
             PartClosed,
+            ResearchPlanReceived,
+            ResearchProgress,
             ResponseComplete,
             ResponseVerifying,
             TextDelta,
@@ -299,6 +301,8 @@ class _StreamEventTranslator:
             OutputBegin,
             OutputDelta,
             OutputReplace,
+            ResearchPlanReady,
+            ResearchProgressEvent,
             ResponsePartsResolved,
             SourceDiscovered,
             ThinkingBegin,
@@ -316,6 +320,19 @@ class _StreamEventTranslator:
             return [*self.finish(), VerificationBegin()]
         if isinstance(event, PartClosed):
             return self._close(self._native_id(event.part_id, event.channel == "analysis"))
+        if isinstance(event, ResearchPlanReceived):
+            self._operation._research = event.state
+            return [ResearchPlanReady(plan=event.plan, state=event.state)]
+        if isinstance(event, ResearchProgress):
+            if event.state is not None:
+                self._operation._research = event.state
+            return [
+                ResearchProgressEvent(
+                    status=event.status,
+                    message=event.message,
+                    state=event.state,
+                )
+            ]
 
         emitted: list[StreamEvent] = []
         if isinstance(event, (TextDelta, TextReplacement, ThoughtDelta)):
@@ -375,6 +392,8 @@ class _StreamEventTranslator:
                 self._operation.message.remote_id = event.user_message_id
             if event.message_id:
                 self._operation._assistant_message_id = event.message_id
+            if event.research is not None:
+                self._operation._research = event.research
             if event.parts:
                 emitted.append(ResponsePartsResolved(event.parts))
             for source in _build_sources(event.sources, self._provider._source_type):

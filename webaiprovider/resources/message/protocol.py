@@ -9,6 +9,7 @@ from .types import MessageAction
 
 if TYPE_CHECKING:
     from ..response.parts import ResponsePart
+    from ..response.research import ResearchPlan, ResearchState, ResearchStatus
     from ..tools.types import Tool
 
 __all__ = [
@@ -22,6 +23,8 @@ __all__ = [
     "ResponseVerifying",
     "ConversationBound",
     "MessageMetadata",
+    "ResearchPlanReceived",
+    "ResearchProgress",
 ]
 
 
@@ -93,6 +96,20 @@ class MessageMetadata:
     sources: tuple[dict, ...] = ()
     files: tuple[dict, ...] = ()
     parts: tuple[ResponsePart, ...] = ()
+    research: ResearchState | None = None
+
+
+@dataclass(frozen=True)
+class ResearchPlanReceived:
+    plan: ResearchPlan
+    state: ResearchState
+
+
+@dataclass(frozen=True)
+class ResearchProgress:
+    status: ResearchStatus
+    message: str = ""
+    state: ResearchState | None = None
 
 
 ProviderStreamEvent = (
@@ -104,4 +121,6 @@ ProviderStreamEvent = (
     | ResponseVerifying
     | ConversationBound
     | MessageMetadata
+    | ResearchPlanReceived
+    | ResearchProgress
 )

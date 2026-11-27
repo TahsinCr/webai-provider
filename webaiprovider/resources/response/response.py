@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from ...errors import UnsupportedOperationError
 from .artifact import Artifact, ArtifactsCollection
 from .parts import ResponsePart, ResponseParts, TextPart
+from .research import ResearchState
 from .source import Source, SourcesCollection
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ class Response:
         model: Any = None,
         sources: SourcesCollection | Sequence[Source] | None = None,
         artifacts: ArtifactsCollection | Sequence[Artifact] | None = None,
+        research: ResearchState | None = None,
         metadata: Mapping[str, Any] | None = None,
         timing: TimingMetrics | None = None,
         chat: AsyncChat | Chat | None = None,
@@ -62,6 +64,7 @@ class Response:
             if isinstance(artifacts, ArtifactsCollection)
             else ArtifactsCollection(artifacts)
         )
+        self.research: ResearchState | None = research
         self.metadata: dict[str, Any] = dict(metadata) if metadata is not None else {}
         self.timing: TimingMetrics | None = timing
         self.chat: AsyncChat | Chat | None = (
@@ -111,6 +114,31 @@ class Response:
         if title is None:
             return branch_fn(target_id)
         return branch_fn(target_id, title=title)
+
+    def _require_research_provider(self) -> tuple[Any, ResearchState]:
+        if self.chat is None or getattr(self.chat, "provider", None) is None:
+            raise UnsupportedOperationError(
+                "Research lifecycle actions require a response attached to an open provider"
+            )
+        if self.research is None:
+            raise UnsupportedOperationError("This response has no associated deep research state")
+        return self.chat.provider, self.research
+
+    def start_research(self, *, timeout: float | None = None) -> Any:
+        provider, state = self._require_research_provider()
+        return provider._start_research(self.chat, self, state, timeout=timeout)
+
+    def pause_research(self) -> Any:
+        provider, state = self._require_research_provider()
+        return provider._pause_research(self.chat, self, state)
+
+    def cancel_research(self) -> Any:
+        provider, state = self._require_research_provider()
+        return provider._cancel_research(self.chat, self, state)
+
+    def wait_research(self, *, timeout: float | None = None) -> Any:
+        provider, state = self._require_research_provider()
+        return provider._wait_research(self.chat, self, state, timeout=timeout)
 
     def __repr__(self) -> str:
         preview = self.text[:60] + ("..." if len(self.text) > 60 else "")

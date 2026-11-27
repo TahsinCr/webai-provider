@@ -183,6 +183,7 @@ class Source:
     title: str = ""
     snippet: str = ""
     kind: str = "web"
+    cited: bool | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 

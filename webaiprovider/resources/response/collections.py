@@ -60,6 +60,7 @@ def _build_sources(raw_sources: Iterable[Any], source_type: type[Source]) -> tup
                     title=str(raw.get("title") or raw.get("name") or ""),
                     snippet=str(raw.get("description") or raw.get("snippet") or ""),
                     kind=str(raw.get("kind") or ("file" if raw.get("file_id") else "web")),
+                    cited=raw.get("cited") if isinstance(raw.get("cited"), bool) else None,
                     metadata=dict(raw),
                 )
             )
@@ -88,6 +89,9 @@ def _build_artifacts(
                 continue
             seen.add(key)
             size = entry.get("size_bytes", entry.get("size"))
+            width = entry.get("width")
+            height = entry.get("height")
+            title = entry.get("title")
             artifacts.append(
                 artifact_type(
                     id=aid,
@@ -101,6 +105,11 @@ def _build_artifacts(
                     size=size if isinstance(size, int) and not isinstance(size, bool) else None,
                     download_url=str(url) if url else None,
                     content=entry.get("content"),
+                    title=str(title) if isinstance(title, str) else None,
+                    width=width if isinstance(width, int) and not isinstance(width, bool) else None,
+                    height=(
+                        height if isinstance(height, int) and not isinstance(height, bool) else None
+                    ),
                     metadata=dict(entry),
                 )
             )
@@ -282,6 +291,7 @@ class _BaseResponsesCollection:
             existing.remote_id = response.remote_id
             existing.sources = response.sources
             existing.artifacts = response.artifacts
+            existing.research = response.research
             existing.timing = response.timing
             existing.metadata = dict(response.metadata)
             existing.chat = self.chat

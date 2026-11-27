@@ -96,6 +96,8 @@ from .resources.response.operation import (
     OutputDelta,
     OutputEnd,
     OutputReplace,
+    ResearchPlanReady,
+    ResearchProgressEvent,
     ResponsePartsResolved,
     SourceDiscovered,
     StreamEvent,
@@ -107,6 +109,7 @@ from .resources.response.operation import (
     VerificationBegin,
 )
 from .resources.response.parts import ResponsePart, ResponseParts, TextPart, ThinkingPart
+from .resources.response.research import ResearchPlan, ResearchState, ResearchStatus
 from .resources.response.response import Response, TimingMetrics
 from .resources.response.source import Source, SourcesCollection
 from .resources.tools import DeepResearchTool, ImageGenerationTool, Tool, WebSearchTool
@@ -258,6 +261,11 @@ __all__ = [
     "ProjectInstruction",
     "AsyncProjectInstruction",
     "Response",
+    "ResearchPlan",
+    "ResearchPlanReady",
+    "ResearchProgressEvent",
+    "ResearchState",
+    "ResearchStatus",
     "Tool",
     "WebSearchTool",
     "ImageGenerationTool",

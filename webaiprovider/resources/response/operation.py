@@ -24,6 +24,7 @@ from ...errors import OperationCancelledError, WebAIProviderError
 from ..message.message import AsyncMessage, Message
 from .artifact import Artifact, ArtifactsCollection
 from .parts import ResponsePart, TextPart, ThinkingPart
+from .research import ResearchPlan, ResearchState, ResearchStatus
 from .response import Response, TimingMetrics
 from .source import Source, SourcesCollection
 
@@ -84,6 +85,8 @@ class OperationEvent(str, Enum):
     RESPONSE_PARTS_RESOLVED = "response.parts.resolved"
     SOURCE_DISCOVERED = "source.discovered"
     ARTIFACT_DISCOVERED = "artifact.discovered"
+    RESEARCH_PLAN_READY = "research.plan.ready"
+    RESEARCH_PROGRESS = "research.progress"
     STATUS_TERMINAL = "status.terminal"
 
 
@@ -199,6 +202,23 @@ class ArtifactDiscovered(StreamEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchPlanReady(StreamEvent):
+    plan: ResearchPlan = field(default_factory=ResearchPlan)
+    state: ResearchState = field(
+        default_factory=lambda: ResearchState(status=ResearchStatus.WAITING_FOR_APPROVAL)
+    )
+    event: OperationEvent = field(init=False, default=OperationEvent.RESEARCH_PLAN_READY)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchProgressEvent(StreamEvent):
+    status: ResearchStatus = ResearchStatus.RUNNING
+    message: str = ""
+    state: ResearchState | None = None
+    event: OperationEvent = field(init=False, default=OperationEvent.RESEARCH_PROGRESS)
+
+
+@dataclass(frozen=True, slots=True)
 class TerminalStatus(StreamEvent):
     status: str = "completed"
     error: Any = None
@@ -215,6 +235,7 @@ class _StreamAccumulator:
         self.resolved_parts: tuple[ResponsePart, ...] = ()
         self.sources: list[Source] = []
         self.artifacts: list[Artifact] = []
+        self.research: ResearchState | None = None
 
     def record(self, event: StreamEvent) -> None:
         if isinstance(event, (ThinkingBegin, OutputBegin)):
@@ -238,6 +259,10 @@ class _StreamAccumulator:
             self.sources.append(event.source)
         elif isinstance(event, ArtifactDiscovered):
             self.artifacts.append(event.artifact)
+        elif isinstance(event, ResearchPlanReady):
+            self.research = event.state
+        elif isinstance(event, ResearchProgressEvent) and event.state is not None:
+            self.research = event.state
 
     def _build_timing(self) -> TimingMetrics:
         completed_at = time.perf_counter()
@@ -279,6 +304,7 @@ class _StreamAccumulator:
             existing.model = operation.message.model
             existing.sources = SourcesCollection(self.sources)
             existing.artifacts = ArtifactsCollection(self.artifacts)
+            existing.research = self.research if self.research is not None else operation._research
             existing.timing = timing
             existing.chat = operation.chat
             response = existing
@@ -291,6 +317,7 @@ class _StreamAccumulator:
                 model=operation.message.model,
                 sources=self.sources,
                 artifacts=self.artifacts,
+                research=self.research if self.research is not None else operation._research,
                 timing=timing,
                 chat=operation.chat,
             )
@@ -321,6 +348,7 @@ class _BaseMessageOperation:
         self._executor = executor
         self._response: Response | None = None
         self._assistant_message_id: str | None = None
+        self._research: ResearchState | None = None
         self._state_machine = StateMachine(
             initial=OperationState.PENDING,
             transitions=_OPERATION_TRANSITIONS,

@@ -262,6 +262,8 @@ class AsyncChat(_BaseChat):
             yield event
 
     async def download(self, target: Artifact | str) -> bytes:
+        if isinstance(target, Artifact) and target.content is not None and not target.download_url:
+            return target.read_bytes()
         url = self._prepare_download_url(target)
         source: DownloadSource | None = await self.provider._resolve_download_data(
             url,
@@ -449,6 +451,8 @@ class Chat(_BaseChat):
         yield from operation.stream()
 
     def download(self, target: Artifact | str) -> bytes:
+        if isinstance(target, Artifact) and target.content is not None and not target.download_url:
+            return target.read_bytes()
         url = self._prepare_download_url(target)
         source: DownloadSource | None = self.provider._resolve_download_data(
             url,
