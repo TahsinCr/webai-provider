@@ -3,6 +3,7 @@
 from typing_extensions import assert_type
 
 from webaiprovider import (
+    Artifact,
     AsyncChat,
     AsyncChatGPTChat,
     AsyncChatGPTWebAIProvider,
@@ -10,8 +11,13 @@ from webaiprovider import (
     Chat,
     ChatGPTChat,
     ChatGPTWebAIProvider,
+    DeepResearchTool,
+    ImageGenerationTool,
+    ResearchState,
+    Response,
     WebAIAccount,
     WebAIProvider,
+    WebSearchTool,
 )
 from webaiprovider.providers.chatgpt import AsyncChatGPTProject, ChatGPTProject
 from webaiprovider.providers.claude import (
@@ -23,7 +29,9 @@ from webaiprovider.providers.claude import (
 from webaiprovider.providers.gemini import (
     AsyncGeminiChat,
     AsyncGeminiWebAIProvider,
+    DeepResearchSources,
     GeminiChat,
+    GeminiDeepResearchTool,
     GeminiWebAIProvider,
 )
 from webaiprovider.providers.grok import (
@@ -76,3 +84,16 @@ async def check_shared_contract() -> None:
     assert_type(account.id, str)
     assert_type(use_provider(ChatGPTWebAIProvider(account)), Chat)
     assert_type(await use_async_provider(AsyncChatGPTWebAIProvider(account)), AsyncChat)
+    assert_type(
+        ChatGPTWebAIProvider(account).chats.create().ask("hi", tool=WebSearchTool()),
+        Response,
+    )
+    assert_type(
+        GeminiDeepResearchTool(sources=DeepResearchSources.WEB_AND_CHAT, auto_start=False),
+        GeminiDeepResearchTool,
+    )
+    _dr = DeepResearchTool(auto_start=True)
+    _img = ImageGenerationTool()
+    _state: ResearchState | None = Response("ok").research
+    _art: list[Artifact] = list(Response("ok").artifacts)
+    del _dr, _img, _state, _art

@@ -2,6 +2,19 @@
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Add explicit per-request tool contracts (`Tool`, `WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`) and `tool=` / `tool_timeout=` parameters across `ask()`, `stream()`, and `responses.create()` with pre-request capability validation (`Capability.WEB_SEARCH`, `Capability.IMAGE_GENERATION`, `Capability.DEEP_RESEARCH`).
+- Add Gemini-specific `GeminiDeepResearchTool` and `DeepResearchSources` (`WEB`, `CHAT`, `WEB_AND_CHAT`), enforcing rejection on generic `WebAIProvider` / `AsyncWebAIProvider` facades while defaulting generic `DeepResearchTool` on Gemini to `WEB_AND_CHAT`.
+- Support native generated image artifacts (`image/png` on ChatGPT via `image_asset_pointer`, `image/jpeg` on Gemini, `generatedImageUrls` on Grok) and Deep Research Markdown report artifacts (`text/markdown` with `Artifact.read_bytes()`, `read_text()`, and `save()`), allowing image-only responses with empty `parts`.
+- Add `ResearchPlan`, `ResearchState`, `ResearchStatus`, `OperationEvent.RESEARCH_PLAN_READY`, `OperationEvent.RESEARCH_PROGRESS`, `response.start_research()`, `pause_research()`, `cancel_research()`, and `wait_research()`, backed by adaptive sync/async polling (`poll_until` / `async_poll_until`).
+
+### Changed
+
+- Migrate Gemini message generation fully from legacy `BardFrontendService/StreamGenerate` to the `processSession` WebChannel + pure-Python Protobuf wire protocol (`proto.py`, `webchannel.py`), reusing `gsessionid`/`SID` across turns.
+
 ## [2.0.0] - 2026-11-24
 
 ### Added
