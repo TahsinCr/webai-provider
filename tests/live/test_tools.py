@@ -25,9 +25,9 @@ _IMAGE_MAGIC_PREFIXES = (
 )
 
 
-def _create_tool_chat_steps(case, *, label_prefix: str):
+def _create_tool_chat_steps(case, *, label_prefix: str, allow_temporary: bool = True):
     capabilities = case.context.session.capabilities
-    use_temporary = Capability.TEMPORARY in capabilities
+    use_temporary = allow_temporary and (Capability.TEMPORARY in capabilities)
     if Capability.CHAT not in capabilities or (
         not use_temporary and Capability.DELETE not in capabilities
     ):
@@ -88,7 +88,11 @@ def _image_generation_steps(case):
     if Capability.IMAGE_GENERATION not in capabilities:
         case.skipTest("Provider does not support ImageGenerationTool")
 
-    entry, chat, marker = yield from _create_tool_chat_steps(case, label_prefix="img")
+    # ChatGPT does not support AI image generation inside temporary chats.
+    allow_temporary = case.context.account.provider != "chatgpt"
+    entry, chat, marker = yield from _create_tool_chat_steps(
+        case, label_prefix="img", allow_temporary=allow_temporary
+    )
     try:
         prompt = "Generate a minimal flat red circle on a plain white background."
         if entry is not None:
