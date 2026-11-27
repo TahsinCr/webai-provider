@@ -438,6 +438,7 @@ class ChatGPTClient(BaseChatGPTClient):
         temporary: bool = False,
         action=None,
         message_id: str | None = None,
+        tool: Any = None,
     ) -> Iterator[tuple[str, Any]]:
         """Stream ChatGPT events directly on the caller thread and yield final snapshot."""
         self._validate_send_options(temporary, project_id)
@@ -466,6 +467,8 @@ class ChatGPTClient(BaseChatGPTClient):
             model=resolved_model,
             effort=effort,
             temporary=temporary,
+            tool=tool,
+            prompt=prompt,
         )
         headers.update(self.create_sentinel_headers())
 

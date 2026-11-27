@@ -432,6 +432,7 @@ class AsyncChatGPTClient(BaseChatGPTClient):
         temporary: bool = False,
         action=None,
         message_id: str | None = None,
+        tool: Any = None,
     ) -> tuple[str, dict[str, Any], set[str]]:
         self._validate_send_options(temporary, project_id)
         previous, previous_ids, is_pending_branch = await self._resolve_send_previous(
@@ -458,6 +459,7 @@ class AsyncChatGPTClient(BaseChatGPTClient):
                 effort,
                 **({"temporary": True} if temporary else {}),
                 **({"action": action, "message_id": message_id} if action else {}),
+                **({"tool": tool} if tool is not None else {}),
             )
         except Exception:
             if conversation_id and not temporary and not is_pending_branch:
@@ -603,6 +605,7 @@ class AsyncChatGPTClient(BaseChatGPTClient):
         temporary: bool = False,
         action=None,
         message_id: str | None = None,
+        tool: Any = None,
     ) -> tuple[str, str, dict[str, Any] | None, list[dict[str, Any]]]:
         await self.ensure_auth()
         conv_id, headers, body, submitted_message_id = self._prepare_send_payload(
@@ -620,6 +623,8 @@ class AsyncChatGPTClient(BaseChatGPTClient):
             model=model,
             effort=effort,
             temporary=temporary,
+            tool=tool,
+            prompt=prompt,
         )
         headers.update(await self.create_sentinel_headers())
         resolved_id, streamed_messages = await self._consume_chat_stream(

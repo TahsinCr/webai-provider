@@ -27,6 +27,7 @@ from ...resources.message.types import target_message
 from ...resources.model.model import ModelCatalog
 from ...resources.project.mutations import AsyncProjectMutationsMixin
 from ...resources.project.types import ProjectData, ProjectOptions
+from ...resources.response.async_polling import async_poll_until
 from ...transport import AsyncHTTPTransport, AsyncTransport, TransportConfig
 from ...transport.downloader import DownloadSource
 from .async_client import (
@@ -38,6 +39,12 @@ from .auth import BrowserSession
 from .base import BaseChatGPTClient, BaseChatGPTWebAIProvider
 from .collections import AsyncChatGPTProjectsCollection
 from .constants import DEFAULT_PAGE_SIZE
+from .deep_research import (
+    CALL_MCP_PATH,
+    build_chatgpt_research_response,
+    call_mcp_payload,
+    parse_deep_research_get_state,
+)
 from .errors import ChatGPTAuthenticationError, ChatGPTError
 from .formats import emit_post_send_events
 from .resources import (
@@ -481,6 +488,7 @@ class AsyncChatGPTWebAIProvider(
                             request.prompt,
                             on_event=event,
                             **self._build_send_kwargs(request, attachments),
+                            **({"tool": request.tool} if request.tool is not None else {}),
                         )
                     )
                     emit_post_send_events(
@@ -593,15 +601,18 @@ class AsyncChatGPTWebAIProvider(
         message_id: str | None = None,
     ) -> Any | None:
         parsed = urlsplit(url)
-        if parsed.scheme == "file-service":
+        if parsed.scheme in ("file-service", "sediment"):
             file_id = self._validate_file_service_id(parsed, conversation_id)
             assert conversation_id is not None
             async with self._client_scope() as client:
-                chat = await self._download_conversation_snapshot(
-                    client, conversation_id, lambda p: self._has_file_service_url(p, url)
-                )
-                if not self._has_file_service_url(chat, url):
-                    raise ValueError("File was not found in the conversation record or has expired")
+                if parsed.scheme == "file-service":
+                    chat = await self._download_conversation_snapshot(
+                        client, conversation_id, lambda p: self._has_file_service_url(p, url)
+                    )
+                    if not self._has_file_service_url(chat, url):
+                        raise ValueError(
+                            "File was not found in the conversation record or has expired"
+                        )
                 result = (
                     await maybe_await(
                         client.request(
@@ -653,3 +664,114 @@ class AsyncChatGPTWebAIProvider(
                 )
             ).json()
             return self._build_download_source(result, client, sandbox_path.rsplit("/", 1)[-1])
+
+    async def _call_research_mcp(
+        self, client: Any, action: str, state: Any, chat: Any
+    ) -> dict[str, Any]:
+        conv_id = state.conversation_id or getattr(chat, "remote_id", None) or ""
+        session_id = state.session_id
+        if not session_id:
+            raise ChatGPTError("Deep Research state has no session_id")
+        body = call_mcp_payload(
+            action,
+            session_id,
+            conversation_id=conv_id,
+            message_id=state.message_id,
+        )
+        resp = await maybe_await(
+            client.request("POST", "https://chatgpt.com" + CALL_MCP_PATH, json=body)
+        )
+        return resp.json() if hasattr(resp, "json") else {}
+
+    async def _start_research(
+        self, chat: Any, response: Any, state: Any, *, timeout: float | None = None
+    ) -> Any:
+        async with self._client_scope() as client:
+            await self._call_research_mcp(client, "skip_sleep", state, chat)
+
+            async def step() -> dict[str, Any] | None:
+                return parse_deep_research_get_state(
+                    await self._call_research_mcp(client, "get_state", state, chat)
+                )
+
+            result = await async_poll_until(step, timeout=timeout or 900.0)
+        return build_chatgpt_research_response(
+            chat,
+            response,
+            state,
+            result,
+            artifact_type=self._artifact_type,
+            source_type=self._source_type,
+        )
+
+    async def _pause_research(self, chat: Any, response: Any, state: Any) -> Any:
+        from ...resources.response.research import ResearchState, ResearchStatus
+        from ...resources.response.response import Response
+
+        async with self._client_scope() as client:
+            await self._call_research_mcp(client, "pause", state, chat)
+        paused = ResearchState(
+            status=ResearchStatus.PAUSED,
+            session_id=state.session_id,
+            plan=state.plan,
+            conversation_id=state.conversation_id,
+            message_id=state.message_id,
+            metadata=state.metadata,
+        )
+        return Response(
+            parts=response.parts,
+            message=response.message,
+            id=response.id,
+            remote_id=response.remote_id,
+            model=response.model,
+            sources=response.sources,
+            artifacts=response.artifacts,
+            research=paused,
+            chat=chat,
+        )
+
+    async def _cancel_research(self, chat: Any, response: Any, state: Any) -> Any:
+        from ...resources.response.research import ResearchState, ResearchStatus
+        from ...resources.response.response import Response
+
+        async with self._client_scope() as client:
+            await self._call_research_mcp(client, "stop", state, chat)
+        cancelled = ResearchState(
+            status=ResearchStatus.CANCELLED,
+            session_id=state.session_id,
+            plan=state.plan,
+            conversation_id=state.conversation_id,
+            message_id=state.message_id,
+            metadata=state.metadata,
+        )
+        return Response(
+            parts=response.parts,
+            message=response.message,
+            id=response.id,
+            remote_id=response.remote_id,
+            model=response.model,
+            sources=response.sources,
+            artifacts=response.artifacts,
+            research=cancelled,
+            chat=chat,
+        )
+
+    async def _wait_research(
+        self, chat: Any, response: Any, state: Any, *, timeout: float | None = None
+    ) -> Any:
+        async with self._client_scope() as client:
+
+            async def step() -> dict[str, Any] | None:
+                return parse_deep_research_get_state(
+                    await self._call_research_mcp(client, "get_state", state, chat)
+                )
+
+            result = await async_poll_until(step, timeout=timeout or 900.0)
+        return build_chatgpt_research_response(
+            chat,
+            response,
+            state,
+            result,
+            artifact_type=self._artifact_type,
+            source_type=self._source_type,
+        )

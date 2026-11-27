@@ -8,10 +8,13 @@ from ...resources.message.protocol import (
     ConversationBound,
     MessageMetadata,
     ProviderRequest,
+    ResearchPlanReceived,
 )
 from ...resources.response.artifact import FileTargetRule, files_from
 from ...resources.response.parts import ResponsePart, TextPart, ThinkingPart
 from ...resources.response.source import sources_from
+from .deep_research import parse_venus_plan_message
+from .image import extract_chatgpt_image_artifacts
 
 _FILE_SERVICE_RE = re.compile(r"file[-_][A-Za-z0-9_-]+")
 _CHATGPT_SANDBOX_RE = re.compile(r"\[([^\]\n]{1,200})\]\(((?:sandbox:)?/mnt/data/[^\s)]+)\)")
@@ -19,7 +22,7 @@ _CHATGPT_SANDBOX_RE = re.compile(r"\[([^\]\n]{1,200})\]\(((?:sandbox:)?/mnt/data
 CHATGPT_FILE_RULE = FileTargetRule(
     parse_target=lambda _target, parsed: (
         (
-            parsed.scheme == "file-service"
+            parsed.scheme in ("file-service", "sediment")
             and _FILE_SERVICE_RE.fullmatch(parsed.netloc) is not None
             and not parsed.path
         )
@@ -105,13 +108,21 @@ def emit_post_send_events(
     user = response_messages[turn_start - 1] if turn_start else {}
     final = None
     parts: list[ResponsePart] = []
+    tool_images: list[dict[str, Any]] = []
+    research_state = None
     for item in response_messages[turn_start:]:
+        if not item.get("id") or item["id"] in previous_ids:
+            continue
+        role = (item.get("author") or {}).get("role")
+        if role == "tool":
+            tool_images.extend(extract_chatgpt_image_artifacts(item))
+            if research_state is None:
+                research_state = parse_venus_plan_message(item, conversation_id=remote_id)
+            continue
         if (
-            not item.get("id")
-            or item["id"] in previous_ids
-            or item.get("recipient") not in (None, "all")
+            item.get("recipient") not in (None, "all")
             or (item.get("metadata") or {}).get("is_visually_hidden_from_conversation")
-            or (item.get("author") or {}).get("role") != "assistant"
+            or role != "assistant"
         ):
             continue
         content = item.get("content") or {}
@@ -126,19 +137,23 @@ def emit_post_send_events(
         if text:
             part_type = ThinkingPart if thinking else TextPart
             parts.append(part_type(f"{'thinking' if thinking else 'text'}:{item['id']}", text))
-    if final:
-        metadata = final.get("metadata") or {}
+    if research_state is not None and research_state.plan is not None:
+        publish(("event", ResearchPlanReceived(plan=research_state.plan, state=research_state)))
+    if final or tool_images or research_state is not None:
+        metadata = (final or {}).get("metadata") or {}
+        combined_files = tuple(tool_images) + message_files(*response_messages[turn_start:])
         publish(
             (
                 "event",
                 MessageMetadata(
-                    final.get("id"),
+                    (final or {}).get("id"),
                     user.get("id"),
                     metadata.get("model_slug") or request.model,
                     metadata.get("reasoning_effort") or request.effort,
-                    sources_from(final),
-                    files=message_files(*response_messages[turn_start:]),
+                    sources_from(final) if final else (),
+                    files=combined_files,
                     parts=tuple(parts),
+                    research=research_state,
                 ),
             )
         )

@@ -41,11 +41,13 @@ from ...transport.downloader import DownloadSource
 from ...transport.network import _is_ip_literal
 from ...transport.retry import parse_retry_after
 from .constants import CHATGPT_ORIGIN
+from .deep_research import apply_deep_research_payload
 from .discovery import page as parse_page
 from .discovery import project as parse_project
 from .discovery import project_id as extract_project_id
 from .errors import ChatGPTAuthenticationError, ChatGPTError, SentinelCompatibilityError
 from .formats import message_files, message_parts, text_from_parts
+from .image import apply_image_tool_payload
 from .sentinel import SentinelRuntime
 
 _CONTINUATION_CACHE_TTL_SECONDS = 60.0
@@ -1081,7 +1083,11 @@ class BaseChatGPTClient:
         model: str | None,
         effort: str | None,
         temporary: bool,
+        tool: Any = None,
+        prompt: str = "",
     ) -> dict[str, Any] | None:
+        from ...resources.tools.types import DeepResearchTool, ImageGenerationTool, WebSearchTool
+
         if model:
             body["model"] = model
             body.pop("thinking_effort", None)
@@ -1090,6 +1096,14 @@ class BaseChatGPTClient:
         if previous and extract_project_id(previous):
             body["gizmo_id"] = extract_project_id(previous)
         body["history_and_training_disabled"] = temporary
+        if isinstance(tool, WebSearchTool):
+            body["system_hints"] = ["search"]
+            if body.get("messages") and isinstance(body["messages"][0], dict):
+                body["messages"][0].setdefault("metadata", {})["system_hints"] = ["search"]
+        elif isinstance(tool, ImageGenerationTool):
+            apply_image_tool_payload(body)
+        elif isinstance(tool, DeepResearchTool):
+            apply_deep_research_payload(body, prompt)
         headers.pop("x-openai-web-sse-compression", None)
         headers["x-openai-target-path"] = "/backend-api/f/conversation"
         headers["x-openai-target-route"] = "/backend-api/f/conversation"
@@ -1441,6 +1455,9 @@ class BaseChatGPTWebAIProvider(BaseWebAIProvider):
             Capability.MESSAGE_EDIT,
             Capability.MESSAGE_RETRY,
             Capability.CHAT_BRANCH,
+            Capability.WEB_SEARCH,
+            Capability.IMAGE_GENERATION,
+            Capability.DEEP_RESEARCH,
         }
     )
 
