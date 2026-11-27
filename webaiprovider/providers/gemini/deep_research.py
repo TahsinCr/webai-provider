@@ -46,23 +46,9 @@ def gemini_tool_fields(tool: Tool | None) -> dict[int, Any] | None:
         return {49: 13}
     if isinstance(tool, ImageGenerationTool):
         return dict(GEMINI_IMAGE_TOOL_FIELDS)
-    if isinstance(tool, GeminiDeepResearchTool):
-        sources = tool.sources
-    elif isinstance(tool, DeepResearchTool):
-        sources = DeepResearchSources.WEB_AND_CHAT
-    else:
-        return None
-
-    fields: dict[int, Any] = {49: 1}
-    if sources is DeepResearchSources.WEB:
-        fields[54] = [[[1]]]
-        fields[55] = [1]
-    elif sources is DeepResearchSources.WEB_AND_CHAT:
-        fields[54] = [[[1, 7]]]
-        fields[55] = [1, 12]
-    elif sources is DeepResearchSources.CHAT:
-        fields[54] = [[[12]]]
-    return fields
+    if isinstance(tool, (DeepResearchTool, GeminiDeepResearchTool)):
+        return {49: 1}
+    return None
 
 
 def build_start_research_fields(

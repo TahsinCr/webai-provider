@@ -57,20 +57,19 @@ class GeminiToolsTests(unittest.TestCase):
         self.assertEqual(gemini_tool_fields(ImageGenerationTool()), GEMINI_IMAGE_TOOL_FIELDS)
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.WEB)),
-            {49: 1, 54: [[[1]]], 55: [1]},
+            {49: 1},
         )
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.CHAT)),
-            {49: 1, 54: [[[12]]]},
+            {49: 1},
         )
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.WEB_AND_CHAT)),
-            {49: 1, 54: [[[1, 7]]], 55: [1, 12]},
+            {49: 1},
         )
-        # Generic DeepResearchTool defaults to WEB_AND_CHAT on Gemini.
         self.assertEqual(
             gemini_tool_fields(DeepResearchTool()),
-            {49: 1, 54: [[[1, 7]]], 55: [1, 12]},
+            {49: 1},
         )
 
     def test_image_generation_turn_and_placeholder_stripping(self) -> None:

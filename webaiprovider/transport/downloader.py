@@ -6,7 +6,7 @@ import socket
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from .network import _format_resolve_entry, _has_ipv6_connectivity, _is_ip_literal
 
@@ -136,6 +136,15 @@ class _NativeDownloadResponse:
         return self.response.iter_content(chunk_size=chunk_size)
 
 
+def _shares_cookie_scope(origin_host: str, target_host: str) -> bool:
+    if not origin_host or not target_host:
+        return False
+    if origin_host == target_host:
+        return True
+    google_suffixes = (".google.com", ".googleusercontent.com")
+    return origin_host.endswith(google_suffixes) and target_host.endswith(google_suffixes)
+
+
 def download_source(
     source: DownloadSource | None, *, max_bytes: int = _MAX_DOWNLOAD_BYTES
 ) -> bytes:
@@ -155,22 +164,44 @@ def download_source(
         )
         if not isinstance(client, NativeDownloadClient):
             raise WebAIProviderError("Provider returned an unsupported download transport")
-        with (
-            client,
-            client.stream("GET", source.url, headers=dict(source.headers)) as response,
-        ):
-            if not 200 <= response.status_code < 300:
-                raise WebAIProviderError(f"File transfer failed with HTTP {response.status_code}")
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in response.iter_bytes():
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
-                    raise WebAIProviderError("Downloaded file exceeds size limit")
-                chunks.append(chunk)
-            return b"".join(chunks)
+        origin_host = urlsplit(source.url).hostname or ""
+        current_url = source.url
+        base_headers = dict(source.headers)
+        stripped_headers = {
+            k: v for k, v in base_headers.items() if k.lower() not in ("authorization", "cookie")
+        }
+        with client:
+            for _ in range(4):
+                target_host = urlsplit(current_url).hostname or ""
+                req_headers = (
+                    base_headers
+                    if _shares_cookie_scope(origin_host, target_host)
+                    else stripped_headers
+                )
+                with client.stream("GET", current_url, headers=req_headers) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            raise WebAIProviderError(
+                                f"File transfer failed with HTTP {response.status_code}"
+                            )
+                        current_url = urljoin(current_url, location)
+                        continue
+                    if not 200 <= response.status_code < 300:
+                        raise WebAIProviderError(
+                            f"File transfer failed with HTTP {response.status_code}"
+                        )
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in response.iter_bytes():
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise WebAIProviderError("Downloaded file exceeds size limit")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+            raise WebAIProviderError("File transfer exceeded redirect limit")
     except WebAIProviderError:
         raise
     except Exception:
