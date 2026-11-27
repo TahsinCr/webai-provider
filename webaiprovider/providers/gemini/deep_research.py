@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar
 
-from ...resources.response.artifact import Artifact
-from ...resources.response.parts import TextPart, ThinkingPart
-from ...resources.response.research import ResearchPlan, ResearchState, ResearchStatus
-from ...resources.response.response import Response
-from ...resources.response.source import Source
+from ...resources.response.research import (
+    ResearchPlan,
+    ResearchState,
+    ResearchStatus,
+    build_research_response,
+)
 from ...resources.tools.types import DeepResearchTool, ImageGenerationTool, Tool, WebSearchTool
 from .image import GEMINI_IMAGE_TOOL_FIELDS
 
@@ -185,55 +186,19 @@ def parse_gemini_research_hnvqhb(turns_payload: Any) -> dict[str, Any] | None:
 
 def build_gemini_research_response(
     chat: Any,
-    response: Response,
+    response: Any,
     state: ResearchState,
     result: dict[str, Any],
     *,
-    artifact_type: type[Artifact] = Artifact,
-    source_type: type[Source] = Source,
-) -> Response:
+    artifact_type: type[Any] | None = None,
+    source_type: type[Any] | None = None,
+) -> Any:
     """Build a completed Response containing the Gemini Deep Research Markdown artifact."""
-    title = str(result.get("title") or "Deep Research Report")
-    markdown = str(result.get("markdown") or "")
-    thoughts = str(result.get("thoughts") or "")
-    parts = []
-    if thoughts:
-        parts.append(ThinkingPart("research:thoughts", thoughts))
-    parts.append(TextPart("research:summary", title))
-    artifact = artifact_type(
-        id=f"research:{state.conversation_id or state.session_id or 'report'}",
-        kind="document",
-        name=f"{title}.md",
-        mime_type="text/markdown",
-        size=len(markdown.encode("utf-8")),
-        content=markdown,
-        title=title,
-    )
-    sources = tuple(
-        source_type(
-            id=item.get("url") or f"src-{idx}",
-            url=str(item.get("url") or ""),
-            title=str(item.get("title") or ""),
-            cited=item.get("cited"),
-        )
-        for idx, item in enumerate(result.get("sources") or ())
-    )
-    completed_state = ResearchState(
-        status=ResearchStatus.COMPLETED,
-        session_id=state.session_id,
-        plan=state.plan,
-        conversation_id=state.conversation_id,
-        message_id=state.message_id,
-        metadata=state.metadata,
-    )
-    return Response(
-        parts=parts,
-        message=response.message,
-        id=response.id,
-        remote_id=response.remote_id,
-        model=response.model,
-        sources=sources,
-        artifacts=[artifact],
-        research=completed_state,
-        chat=chat,
+    return build_research_response(
+        chat,
+        response,
+        state,
+        result,
+        artifact_type=artifact_type,
+        source_type=source_type,
     )

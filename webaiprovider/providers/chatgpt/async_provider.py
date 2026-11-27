@@ -705,56 +705,18 @@ class AsyncChatGPTWebAIProvider(
         )
 
     async def _pause_research(self, chat: Any, response: Any, state: Any) -> Any:
-        from ...resources.response.research import ResearchState, ResearchStatus
-        from ...resources.response.response import Response
+        from ...resources.response.research import ResearchStatus, with_research_status
 
         async with self._client_scope() as client:
             await self._call_research_mcp(client, "pause", state, chat)
-        paused = ResearchState(
-            status=ResearchStatus.PAUSED,
-            session_id=state.session_id,
-            plan=state.plan,
-            conversation_id=state.conversation_id,
-            message_id=state.message_id,
-            metadata=state.metadata,
-        )
-        return Response(
-            parts=response.parts,
-            message=response.message,
-            id=response.id,
-            remote_id=response.remote_id,
-            model=response.model,
-            sources=response.sources,
-            artifacts=response.artifacts,
-            research=paused,
-            chat=chat,
-        )
+        return with_research_status(chat, response, state, ResearchStatus.PAUSED)
 
     async def _cancel_research(self, chat: Any, response: Any, state: Any) -> Any:
-        from ...resources.response.research import ResearchState, ResearchStatus
-        from ...resources.response.response import Response
+        from ...resources.response.research import ResearchStatus, with_research_status
 
         async with self._client_scope() as client:
             await self._call_research_mcp(client, "stop", state, chat)
-        cancelled = ResearchState(
-            status=ResearchStatus.CANCELLED,
-            session_id=state.session_id,
-            plan=state.plan,
-            conversation_id=state.conversation_id,
-            message_id=state.message_id,
-            metadata=state.metadata,
-        )
-        return Response(
-            parts=response.parts,
-            message=response.message,
-            id=response.id,
-            remote_id=response.remote_id,
-            model=response.model,
-            sources=response.sources,
-            artifacts=response.artifacts,
-            research=cancelled,
-            chat=chat,
-        )
+        return with_research_status(chat, response, state, ResearchStatus.CANCELLED)
 
     async def _wait_research(
         self, chat: Any, response: Any, state: Any, *, timeout: float | None = None
