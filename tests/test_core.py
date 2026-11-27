@@ -50,8 +50,6 @@ _NATIVE_SYNC_MODULES = (
     "webaiprovider/providers/gemini/rpc.py",
     "webaiprovider/providers/gemini/notebooks.py",
     "webaiprovider/providers/gemini/generation.py",
-    "webaiprovider/providers/gemini/proto.py",
-    "webaiprovider/providers/gemini/webchannel.py",
     "webaiprovider/providers/gemini/image.py",
     "webaiprovider/providers/gemini/deep_research.py",
     "webaiprovider/providers/chatgpt/base.py",

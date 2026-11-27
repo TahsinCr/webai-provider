@@ -88,7 +88,6 @@ class BaseGeminiClient:
         self._last_persisted_at: float | None = None
         self._dirty = False
         self._cookies: dict[str, Any] = {}
-        self._webchannel_session: Any = None
 
     @staticmethod
     def _extract_cookies(saved: dict[str, Any]) -> dict[str, Any]:
@@ -316,6 +315,9 @@ class BaseGeminiClient:
             **HEADERS,
             "Accept": "application/json",
             "Content-Type": "application/json",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
             "X-Framework-XSRF-Token": self.token,
         }
         options = {"headers": headers, "data": json_dumps(payload), "allow_redirects": False}

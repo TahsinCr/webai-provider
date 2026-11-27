@@ -39,11 +39,11 @@ class GeminiDeepResearchTool(DeepResearchTool):
 
 
 def gemini_tool_fields(tool: Tool | None) -> dict[int, Any] | None:
-    """Map a validated Tool instance to Gemini processSession req0 1.8.5.1 protobuf fields."""
+    """Map a validated Tool instance to Gemini StreamGenerate JSPB body fields."""
     if tool is None:
         return None
     if isinstance(tool, WebSearchTool):
-        return {50: 13}
+        return {49: 13}
     if isinstance(tool, ImageGenerationTool):
         return dict(GEMINI_IMAGE_TOOL_FIELDS)
     if isinstance(tool, GeminiDeepResearchTool):
@@ -53,15 +53,15 @@ def gemini_tool_fields(tool: Tool | None) -> dict[int, Any] | None:
     else:
         return None
 
-    fields: dict[int, Any] = {50: 1}
+    fields: dict[int, Any] = {49: 1}
     if sources is DeepResearchSources.WEB:
+        fields[54] = [[[1]]]
         fields[55] = [1]
-        fields[56] = [1]
     elif sources is DeepResearchSources.WEB_AND_CHAT:
-        fields[55] = [1, 7]
-        fields[56] = [1, 12]
+        fields[54] = [[[1, 7]]]
+        fields[55] = [1, 12]
     elif sources is DeepResearchSources.CHAT:
-        fields[55] = [12]
+        fields[54] = [[[12]]]
     return fields
 
 
@@ -71,18 +71,18 @@ def build_start_research_fields(
     *,
     prompt: str = "Araştırmayı başlatın",
 ) -> dict[int, Any]:
-    """Build processSession req0 1.8.5.1 fields for starting a planned Gemini Deep Research."""
-    ctx: dict[int, Any] = {1: conversation_id}
+    """Build StreamGenerate JSPB body fields for starting a planned Gemini Deep Research."""
+    ctx: list[Any] = [conversation_id]
     if turn_token:
-        ctx[10] = turn_token
+        ctx.extend([None] * 8 + [turn_token])
     return {
-        1: prompt,
-        72: ctx,
-        80: 3,
-        81: 1,
-        92: 1,
-        98: bytes.fromhex("08001001"),
-        99: 1,
+        0: [prompt, 0, None, None, None, None, 0],
+        71: ctx,
+        79: 3,
+        80: 1,
+        91: 1,
+        97: [0, 1],
+        98: 1,
     }
 
 

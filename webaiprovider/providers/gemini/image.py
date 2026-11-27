@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .media import PLACEHOLDER, candidate_files, valid_media_url
-from .proto import ProtoView
 
 GEMINI_IMAGE_TOOL_FIELDS: dict[int, Any] = {
-    18: bytes.fromhex("0a020802"),
-    50: 0,
+    17: [[2]],
+    49: 0,
 }
-
-_GG_IMAGE_URL_RE = re.compile(r"https://lh3\.googleusercontent\.com/gg/[^\s\"'<>)\]]+")
 
 
 def strip_image_placeholders(text: str) -> str:
@@ -41,31 +37,3 @@ def extract_gemini_image_artifacts(candidate: Any) -> list[dict[str, Any]]:
             }
         )
     return artifacts
-
-
-def extract_proto_image_files(view: ProtoView) -> list[dict[str, Any]]:
-    """Extract generated image URLs from a processSession protobuf packet."""
-    seen: set[str] = set()
-    found: list[dict[str, Any]] = []
-
-    def scan_bytes(raw: bytes) -> None:
-        text = raw.decode("utf-8", errors="ignore")
-        for match in _GG_IMAGE_URL_RE.finditer(text):
-            url = match.group(0)
-            if url not in seen and valid_media_url(url):
-                seen.add(url)
-                idx = len(found) + 1
-                found.append(
-                    {
-                        "alias": f"gemini-image:{idx}",
-                        "name": f"image-{idx}.jpg",
-                        "url": url,
-                        "media_type": "image/jpeg",
-                        "kind": "image",
-                    }
-                )
-
-    block = view.at(2, 7, 1, 4)
-    if block is not None:
-        scan_bytes(block._raw)
-    return found

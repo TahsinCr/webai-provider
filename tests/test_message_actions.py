@@ -13,10 +13,9 @@ from webaiprovider.providers.chatgpt.async_client import AsyncChatGPTClient as C
 from webaiprovider.providers.chatgpt.formats import message_files
 from webaiprovider.providers.claude.async_client import AsyncClaudeClient as ClaudeClient
 from webaiprovider.providers.claude.records import presented_files
+from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.history import parse_chat_history
 from webaiprovider.providers.gemini.media import GEMINI_FILE_RULE
-from webaiprovider.providers.gemini.proto import ProtoView
-from webaiprovider.providers.gemini.webchannel import build_process_session_turn_data
 from webaiprovider.resources.message.protocol import ProviderRequest
 from webaiprovider.resources.message.types import MessageAction
 from webaiprovider.resources.model.model import Model
@@ -324,27 +323,19 @@ class GeminiActionsTests(unittest.TestCase):
             token="fixture",
             session_id="fixture",
         )
-        import base64
-
-        for action, action_code in ((MessageAction.EDIT, 2), (MessageAction.RETRY, 5)):
+        for action, action_code in ((MessageAction.EDIT, 2), (MessageAction.RETRY, 7)):
             request = ProviderRequest(
                 "Prompt",
                 "c_fixture",
                 action=action,
                 message_id="r_fixture:user",
             )
-            _, form = build_process_session_turn_data(
+            _, form = generation_request(
                 session, request, ["c_fixture", "r_parent", "rc_parent"], []
             )
-            req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
-            assert req0 is not None
-            ctx = req0.get_msg(3)
-            assert ctx is not None
-            self.assertEqual(
-                (ctx.get_str(1), ctx.get_str(2), ctx.get_str(3)),
-                ("c_fixture", "r_parent", "rc_parent"),
-            )
-            self.assertEqual((req0.get_int(33), req0.get_int(73)), (1, action_code))
+            body = json.loads(json.loads(form["f.req"])[1])
+            self.assertEqual(body[2], ["c_fixture", "r_parent", "rc_parent"])
+            self.assertEqual((body[32], body[72]), (1, action_code))
 
     def test_history_keeps_sources_separate_from_thoughts_and_retry_is_offered_for_all_answers(
         self,

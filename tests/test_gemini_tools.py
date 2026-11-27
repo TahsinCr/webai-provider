@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -23,13 +23,11 @@ from webaiprovider.providers.gemini.deep_research import (
     parse_gemini_research_hnvqhb,
     parse_gemini_research_plan,
 )
+from webaiprovider.providers.gemini.generation import generation_request
 from webaiprovider.providers.gemini.image import (
     GEMINI_IMAGE_TOOL_FIELDS,
-    extract_proto_image_files,
     strip_image_placeholders,
 )
-from webaiprovider.providers.gemini.proto import ProtoView, encode_message
-from webaiprovider.providers.gemini.webchannel import build_process_session_turn_data
 from webaiprovider.resources.message.protocol import ProviderRequest
 
 
@@ -54,25 +52,25 @@ class GeminiToolsTests(unittest.TestCase):
         concrete._validate_tool(ImageGenerationTool())
         concrete._validate_tool(WebSearchTool())
 
-    def test_tool_protobuf_field_mappings(self) -> None:
-        self.assertEqual(gemini_tool_fields(WebSearchTool()), {50: 13})
+    def test_tool_body_field_mappings(self) -> None:
+        self.assertEqual(gemini_tool_fields(WebSearchTool()), {49: 13})
         self.assertEqual(gemini_tool_fields(ImageGenerationTool()), GEMINI_IMAGE_TOOL_FIELDS)
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.WEB)),
-            {50: 1, 55: [1], 56: [1]},
+            {49: 1, 54: [[[1]]], 55: [1]},
         )
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.CHAT)),
-            {50: 1, 55: [12]},
+            {49: 1, 54: [[[12]]]},
         )
         self.assertEqual(
             gemini_tool_fields(GeminiDeepResearchTool(sources=DeepResearchSources.WEB_AND_CHAT)),
-            {50: 1, 55: [1, 7], 56: [1, 12]},
+            {49: 1, 54: [[[1, 7]]], 55: [1, 12]},
         )
         # Generic DeepResearchTool defaults to WEB_AND_CHAT on Gemini.
         self.assertEqual(
             gemini_tool_fields(DeepResearchTool()),
-            {50: 1, 55: [1, 7], 56: [1, 12]},
+            {49: 1, 54: [[[1, 7]]], 55: [1, 12]},
         )
 
     def test_image_generation_turn_and_placeholder_stripping(self) -> None:
@@ -80,31 +78,35 @@ class GeminiToolsTests(unittest.TestCase):
             id="gemini-neon",
             efforts=(SimpleNamespace(id="standard"),),
             default_effort="standard",
-            metadata={"model_id": "neon", "number": 3, "effort_values": {"standard": 1}},
+            metadata={
+                "model_id": "neon",
+                "number": 3,
+                "capacity": 2,
+                "capacity_slot": 12,
+                "effort_values": {"standard": 1},
+            },
         )
-        session = SimpleNamespace(models=(model,), _cookies={})
-        _, form = build_process_session_turn_data(
+        session = SimpleNamespace(
+            models=(model,),
+            language="en",
+            token="tok",
+            session_id="sid",
+        )
+        _, form = generation_request(
             session,
             ProviderRequest("draw a cat", tool=ImageGenerationTool()),
             [],
             [],
             tool_fields=gemini_tool_fields(ImageGenerationTool()),
         )
-        req0 = ProtoView(base64.b64decode(form["req0___data__"])).at(1, 8, 5, 1)
-        assert req0 is not None
-        self.assertEqual(req0.get_bytes(18), bytes.fromhex("0a020802"))
-        self.assertEqual(req0.get_int(50), 0)
+        body = json.loads(json.loads(form["f.req"])[1])
+        self.assertEqual(body[17], [[2]])
+        self.assertEqual(body[49], 0)
 
         self.assertEqual(
             strip_image_placeholders("http://googleusercontent.com/image_generation_content/0"),
             "",
         )
-        pkt = encode_message(
-            {2: {7: {1: {4: {2: "https://lh3.googleusercontent.com/gg/image123"}}}}}
-        )
-        files = extract_proto_image_files(ProtoView(pkt))
-        self.assertEqual(len(files), 1)
-        self.assertEqual(files[0]["media_type"], "image/jpeg")
 
     def test_deep_research_plan_start_turn_and_hnvqhb_parsing(self) -> None:
         plan_state = parse_gemini_research_plan(
@@ -117,9 +119,9 @@ class GeminiToolsTests(unittest.TestCase):
         self.assertEqual(plan_state.plan.steps, ("Gather papers", "Compare benchmarks"))
 
         fields = build_start_research_fields("c_dr", "tok_dr")
-        self.assertEqual(fields[1], "Araştırmayı başlatın")
-        self.assertEqual(fields[80], 3)
-        self.assertEqual(fields[98], bytes.fromhex("08001001"))
+        self.assertEqual(fields[0][0], "Araştırmayı başlatın")
+        self.assertEqual(fields[79], 3)
+        self.assertEqual(fields[97], [0, 1])
 
         turns = [
             [
