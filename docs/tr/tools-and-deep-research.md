@@ -92,6 +92,7 @@ with GeminiWebAIProvider(account) as provider:
 - Yalnızca görsel dönen yanıtlarda `response.parts` boş kalabilir, üretilen görsel `response.artifacts` içinde gelir.
 - **ChatGPT** üzerinde `temporary=True` geçici sohbetlerde yapay zekâ ile görsel üretimi desteklenmez; normal bir sohbet açıp işin bitince silebilirsin.
 - Satır içi (inline) içerik taşıyan çıktılar `artifact.read_bytes()`, `artifact.read_text(encoding="utf-8")` ve `artifact.save(path)` yardımcılarını sunar. Uzak indirme bağlantısı olanlar `chat.download(artifact)` ile indirilir.
+- **Gemini** üzerinde üretilen görsellerin yanı sıra satır içi Canvas belgeleri (`immersive_entry_chip`) ve kod yürütme çıktısı dosyalar (`contribution.usercontent.google.com`) da `response.artifacts` içinde sunulur ve `chat.download(artifact)` ya da `artifact.read_text()` ile okunup indirilebilir *(v2.1.1)*.
 
 [Yukarı dön](#konu-dizini)
 

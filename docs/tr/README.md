@@ -1,4 +1,4 @@
-# WebAI Provider Türkçe Belgeleri (v2.1.0)
+# WebAI Provider Türkçe Belgeleri (v2.1.1)
 
 `webai-provider`, **ChatGPT**, **Claude**, **Gemini** ve **Grok** web oturumlarıyla Python üzerinden çalışmanı sağlayan bağımsız bir istemci kütüphanesidir. Aynı nesne modeli üzerinde hem doğrudan bloklayan (senkron) hem de `asyncio` tabanlı (asenkron) arayüz sunar.
 

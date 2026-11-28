@@ -1,4 +1,4 @@
-# WebAI Provider Documentation (v2.1.0)
+# WebAI Provider Documentation (v2.1.1)
 
 `webai-provider` is an independent Python client library for working with **ChatGPT**, **Claude**, **Gemini**, and **Grok** web sessions. It exposes both blocking synchronous and `asyncio`-native asynchronous interfaces over the same resource model.
 

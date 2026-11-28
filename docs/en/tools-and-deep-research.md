@@ -92,6 +92,7 @@ with GeminiWebAIProvider(account) as provider:
 - Image-only responses can return empty `response.parts` while still populating `response.artifacts`.
 - On **ChatGPT**, AI image generation is not supported inside `temporary=True` chats; use a regular chat and delete it afterward if disposable.
 - Inline artifacts expose `artifact.read_bytes()`, `artifact.read_text(encoding="utf-8")`, and `artifact.save(path)`. Remote download URLs use `chat.download(artifact)`.
+- On **Gemini**, generated images, inline Canvas documents (`immersive_entry_chip`), and code-execution generated files (`contribution.usercontent.google.com`) are also exposed in `response.artifacts` and downloadable via `chat.download(artifact)` or `artifact.read_text()` *(v2.1.1)*.
 
 [Back to top](#contents)
 
