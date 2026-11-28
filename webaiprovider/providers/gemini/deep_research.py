@@ -33,7 +33,7 @@ class GeminiDeepResearchTool(DeepResearchTool):
     provider_type: ClassVar[str | None] = "gemini"
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        DeepResearchTool.__post_init__(self)
         if not isinstance(self.sources, DeepResearchSources):
             raise TypeError("sources must be a DeepResearchSources enum value")
 
