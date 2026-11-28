@@ -54,11 +54,13 @@ class GrokAndClaudeToolsTests(unittest.TestCase):
         apply_grok_tool_payload(body, ImageGenerationTool())
         self.assertTrue(body["enableImageGeneration"])
 
-    def test_claude_rejects_unsupported_tools_before_network(self) -> None:
+    def test_claude_accepts_web_search_and_rejects_unsupported_tools_before_network(self) -> None:
         claude = ClaudeWebAIProvider(_account("claude"))
         generic_claude = WebAIProvider(_account("claude"))
+        self.assertIn(Capability.WEB_SEARCH, claude.capabilities)
         for target in (claude, generic_claude):
-            for tool in (WebSearchTool(), ImageGenerationTool(), DeepResearchTool()):
+            target._validate_tool(WebSearchTool())
+            for tool in (ImageGenerationTool(), DeepResearchTool()):
                 with self.assertRaises(FeatureUnavailable):
                     target.ask("hello", tool=tool)
             with self.assertRaises(UnsupportedOperationError):
@@ -75,7 +77,9 @@ class AsyncGrokAndClaudeToolsTests(unittest.IsolatedAsyncioTestCase):
 
         claude = AsyncClaudeWebAIProvider(_account("claude"))
         generic_claude = AsyncWebAIProvider(_account("claude"))
+        self.assertIn(Capability.WEB_SEARCH, claude.capabilities)
         for target in (claude, generic_claude):
+            target._validate_tool(WebSearchTool())
             with self.assertRaises(FeatureUnavailable):
                 await target.ask("draw", tool=ImageGenerationTool())
             with self.assertRaises(UnsupportedOperationError):

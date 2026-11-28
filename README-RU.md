@@ -11,7 +11,7 @@
 
 Независимые Python-клиенты для веб-сессий ChatGPT, Gemini, Claude и Grok. API предоставляет согласованные асинхронный и синхронный интерфейсы, типизированные ссылки на модели и потоковую обработку сообщений.
 
-> [Документация на английском языке][docs] охватывает установку, потоковую передачу чата, выбор моделей, управление проектами и справочник API.
+> [Документация на английском языке][docs] охватывает установку, потоковую передачу чата, выбор моделей, управление проектами, [инструменты и Deep Research][tools-docs], а также справочник API.
 
 > **Примечание:** Веб-сайты и закрытые протоколы провайдеров могут меняться без предупреждения. Проект независимый и не связан с указанными провайдерами.
 
@@ -78,6 +78,7 @@ with ChatGPTWebAIProvider(account) as provider:
 - Провайдеры управляют жизненным циклом, блокировками, хуками и событиями непосредственно в `WebAIProvider` и `AsyncWebAIProvider` на базе `flowevent`. `provider.events` предоставляет штатный `AsyncEventBus` или `EventBus` и публикует события `EventEnvelope`; фильтровать их по имени можно через `EventFilter`. Библиотека самостоятельно управляет состояниями провайдеров и сообщений. Обработчики хуков доступны через `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), а `provider.lifecycle_state` возвращает `LifecycleState`.
 - Событие `collection.read.completed` передаёт пакет идентификаторов после успешного удалённого чтения. `collection.changed` сообщает о подтверждённых добавлениях, обновлениях и удалениях. В обоих событиях список `items` доступен в `event.metadata["payload"]`. Метаданные содержат аккаунт и идентификатор родительского ресурса для вложенных коллекций. Изменения ответов относятся к соответствующему чату. События не содержат текст сообщений, содержимое файлов или учётные данные.
 - Возможности проектов, вложений, повторной отправки, редактирования, ветвления и переноса чатов зависят от провайдера. Классы чатов конкретных провайдеров предоставляют только поддерживаемые операции; неподдерживаемые действия завершаются типизированными исключениями `WebAIProviderError`, например `FeatureUnavailable`.
+- Явные инструменты уровня запроса (`WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool` и `GeminiDeepResearchTool` для Gemini) передаются через параметры `tool=` и `tool_timeout=` в `ask()`, `stream()` и `responses.create()`. Режим Deep Research предоставляет `response.research`, методы управления (`start_research()`, `pause_research()`, `cancel_research()`, `wait_research()`) и события потока (`ResearchPlanReady`, `ResearchProgressEvent`), а `Artifact` добавляет `read_bytes()`, `read_text()` и `save()`. Подробнее см. в [руководстве по инструментам и Deep Research][tools-docs].
 
 Пакет предоставляет типизированные ссылки на модели и уровни усилий. Каталог, полученный от аккаунта, является источником доступных ему моделей и может различаться в зависимости от подписки и изменений на стороне провайдера.
 
@@ -185,6 +186,7 @@ durations_ms, counters = timing.snapshot()
 [readme-en]: README.md
 [readme-tr]: README-TR.md
 [docs]: docs/en/README.md
+[tools-docs]: docs/en/tools-and-deep-research.md
 [benchmarks-guide]: benchmarks/README.md
 [repository]: https://github.com/TahsinCr/webai-provider
 [changelog]: CHANGELOG.md

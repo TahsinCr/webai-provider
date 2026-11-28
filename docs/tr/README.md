@@ -1,4 +1,4 @@
-# WebAI Provider Türkçe Belgeleri (v2.0.0)
+# WebAI Provider Türkçe Belgeleri (v2.1.0)
 
 `webai-provider`, **ChatGPT**, **Claude**, **Gemini** ve **Grok** web oturumlarıyla Python üzerinden çalışmanı sağlayan bağımsız bir istemci kütüphanesidir. Aynı nesne modeli üzerinde hem doğrudan bloklayan (senkron) hem de `asyncio` tabanlı (asenkron) arayüz sunar.
 
@@ -20,6 +20,7 @@
 - İlk bağlantıyı kurmak için [Başlangıç ve hesaplar](getting-started.md) rehberini izle. Tarayıcı oturumunu bağlayıp ilk mesajı gönderirsin.
 - Bir uygulamaya akış ekliyorsan [Sohbetler, yanıtlar ve akış](chats-and-streaming.md) rehberinde metin güncellemelerini, üretim sonunu ve kesin işlem sonucunu nasıl izleyeceğini bulabilirsin.
 - Bir metot imzası veya dönüş tipi arıyorsan [API başvurusuna](api-reference.md) geç. Sağlayıcılar arasındaki farklar için [sağlayıcı rehberlerine](provider-guides.md) bak.
+- Web araması, görsel üretimi veya çok adımlı derin araştırma kullanmak için [Araçlar ve Derin Araştırma](tools-and-deep-research.md) rehberine geç.
 
 [Yukarı dön](#konu-dizini)
 
@@ -35,6 +36,7 @@
 | **[04 · Sağlayıcı Rehberleri](provider-guides.md)** | ChatGPT (`memory_share`, `move_to(None)`, `BrowserSession`), Claude (organizasyon keşfi, web search), Gemini (`OSID` çerezleri, `GeminiNotebooks`, yükleme izolasyonu) ve Grok (`assets.grok.com`, `RateLimited`). |
 | **[05 · Olaylar, Transport ve Hatalar](events-transport-and-errors.md)** | `EventBus` abonelikleri, `provider.transport` (`HTTPTransport`, `HttpSession`, `TransportConfig`), SSE/JSPB frame çözücüler, hata hiyerarşisi ve `SendTiming`. |
 | **[06 · API Başvuru Kartı](api-reference.md)** | Sık kullanılan imzalar, dönüş tipleri, akış olayları ve istisnalar. |
+| **[07 · Araçlar ve Derin Araştırma](tools-and-deep-research.md)** | `WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`, `GeminiDeepResearchTool`, `response.research` yaşam döngüsü ve `Artifact` yardımcıları. |
 
 [Yukarı dön](#konu-dizini)
 
@@ -54,6 +56,9 @@
 | Projeler ve proje dosya/metin ekleri | Evet | Evet | Evet *(Notebook)* | Evet *(Workspace)* |
 | Sohbeti projeye taşıma (`chat.move_to(project)`) | Evet | Evet | Hayır | Evet |
 | Sohbeti projeden çıkarma (`chat.move_to(None)`) | Evet | Hayır | Hayır | Hayır |
+| Web araması (`Capability.WEB_SEARCH`) | Evet | Evet | Evet | Evet |
+| Görsel üretimi (`Capability.IMAGE_GENERATION`) | Evet | Hayır | Evet | Evet |
+| Derin araştırma (`Capability.DEEP_RESEARCH`) | Evet | Hayır | Evet | Hayır |
 | İstem/sohbet dosya sınırı | 10 dosya · 512 MiB *(görsel 20 MiB, tablo 50 MiB)* | 20 dosya (sohbet) · 30 MiB *(belirli uzantılar)* | 10 dosya · 100 MiB *(video 2 GiB)* | 10 dosya · 3 MiB *(toplam 10 MiB, belge/kod)* |
 
 [Yukarı dön](#konu-dizini)

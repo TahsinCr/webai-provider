@@ -1,4 +1,4 @@
-[← Önceki: 05 · Olaylar, Transport ve Hatalar](events-transport-and-errors.md) · [Belge Haritası](README.md)
+[← Önceki: 05 · Olaylar, Transport ve Hatalar](events-transport-and-errors.md) · [Belge Haritası](README.md) · [Sonraki: 07 · Araçlar ve Derin Araştırma →](tools-and-deep-research.md)
 
 # 06 · Hızlı API Başvuru Kartı
 
@@ -12,6 +12,7 @@ Günlük kullanımda başvurulan kurucular, koleksiyon işlemleri, akış olayla
 - [Sağlayıcılar ve Yaşam Döngüsü](#sağlayıcılar-ve-yaşam-döngüsü)
 - [Sohbetler ve Koleksiyon Sorguları](#sohbetler-ve-koleksiyon-sorguları)
 - [Mesajlar, Ekler ve Yanıtlar](#mesajlar-ekler-ve-yanıtlar)
+- [Araçlar ve Derin Araştırma](#araçlar-ve-derin-araştırma)
 - [Akış Operasyonları, Olaylar ve Kancalar](#akış-operasyonları-olaylar-ve-kancalar)
 - [Modeller ve Efor Seçimi](#modeller-ve-efor-seçimi)
 - [Projeler ve Proje Ekleri](#projeler-ve-proje-ekleri)
@@ -92,8 +93,8 @@ Uzak koleksiyonlar sağlayıcıdan kayıt getirir. Yanıtın `parts`, `sources` 
 - `update(chat, *, title=None)` · `delete(chat) -> None`
 
 **`Chat` / `AsyncChat`:**
-- `ask(prompt, *, model=None, attachments=None, **metadata)` *(Sync: `Response`, Async: `AsyncMessageOperation`)*
-- `stream(prompt, *, model=None, attachments=None, **metadata)`
+- `ask(prompt, *, model=None, attachments=None, tool=None, tool_timeout=None, **metadata)` *(Sync: `Response`, Async: `AsyncMessageOperation`)*
+- `stream(prompt, *, model=None, attachments=None, tool=None, tool_timeout=None, **metadata)`
 - `prepare() -> None` · `get(item_id) -> Response` · `rename(title)` · `delete()` · `download(target) -> bytes`
 - `branch(message_id, *, title=None)` *(`ChatGPTChat`, `GeminiChat`)*
 - `move_to(project)` *(`ChatGPTChat`: `Project | str | None`; `ClaudeChat`, `GrokChat`: `Project | str`)*
@@ -108,11 +109,23 @@ Uzak koleksiyonlar sağlayıcıdan kayıt getirir. Yanıtın `parts`, `sources` 
 - **`AttachmentPolicy`** (`webaiprovider.resources.message.attachment`) dosya ekleme sınırlarını temsil eder. Sağlayıcının genel API’sindeki `attachment_policy()` sözlük veya `None` döndürür.
 - **`Attachments`:** `create(item, *, name=None, mime_type=None)`, `update(target, *, name=None, mime_type=None)`, `delete(target) -> bool`, `total_size -> int`
 - **`Message` / `AsyncMessage`:** `(content="", *, role="user", id=None, remote_id=None, attachments=None, model=None, metadata=None, chat=None, response=None)` · `text`, `response`, `sources`, `artifacts`, `edit(new_content, *, model=None)`
-- **`Response`:** `id`, `remote_id`, `text`, `parts -> ResponseParts` (`ThinkingPart`, `TextPart`), `message`, `model`, `sources`, `artifacts`, `timing`, `metadata`, `chat`, `retry(*, model=None, **options)`, `branch(*, title=None)`
-- **`Source`:** `(id, url, title="", snippet="", kind="web", metadata={})`
-- **`Artifact`:** `(id, kind, name, mime_type="application/octet-stream", size=None, download_url=None, content=None, metadata={})`
+- **`Response`:** `id`, `remote_id`, `text`, `parts -> ResponseParts` (`ThinkingPart`, `TextPart`), `message`, `model`, `sources`, `artifacts`, `research -> ResearchState | None`, `timing`, `metadata`, `chat`, `retry(*, model=None, **options)`, `branch(*, title=None)`, `start_research(*, timeout=None)`, `pause_research()`, `cancel_research()`, `wait_research(*, timeout=None)`
+- **`Source`:** `(id, url, title="", snippet="", kind="web", cited=None, metadata={})`
+- **`Artifact`:** `(id, kind, name, mime_type="application/octet-stream", size=None, download_url=None, content=None, metadata={})`, `read_bytes() -> bytes`, `read_text(encoding="utf-8") -> str`, `save(path) -> Path`, `files_from`
 - **`TimingMetrics`:** `(started_at=0.0, first_token_at=None, completed_at=None, first_token_ms=None, duration_ms=0.0, metrics={})`
-- **`ResponsesCollection` / `AsyncResponsesCollection`:** `create(message, *, model=None, attachments=None, **metadata)`, `edit(target, new_content, *, model=None, **options)`, `update(target, *, content=None, model=None, **options)`, `retry(target, *, model=None, **options)`, `list(predicate=None, *, limit=50, fresh=False)`, `delete(target)` *(yalnız yerel taslak)*
+- **`ResponsesCollection` / `AsyncResponsesCollection`:** `create(message, *, model=None, attachments=None, tool=None, tool_timeout=None, **metadata)`, `edit(target, new_content, *, model=None, **options)`, `update(target, *, content=None, model=None, **options)`, `retry(target, *, model=None, **options)`, `list(predicate=None, *, limit=50, fresh=False)`, `delete(target)` *(yalnız yerel taslak)*
+
+[Yukarı dön](#konu-dizini)
+
+---
+
+## Araçlar ve Derin Araştırma
+
+Yetenek matrisi ve kullanım örnekleri için [07 · Araçlar ve Derin Araştırma](tools-and-deep-research.md) rehberine bak.
+
+- **Araçlar (`from webaiprovider import ...`):** `Tool`, `WebSearchTool()`, `ImageGenerationTool()`, `DeepResearchTool(auto_start=False)`
+- **Gemini Aracı (`from webaiprovider.providers.gemini import ...`):** `GeminiDeepResearchTool(auto_start=False, sources=DeepResearchSources.WEB)`, `DeepResearchSources` (`WEB`, `CHAT`, `WEB_AND_CHAT`)
+- **Araştırma Modelleri (`from webaiprovider import ...`):** `ResearchStatus` (`PLANNING`, `WAITING_FOR_APPROVAL`, `RUNNING`, `PAUSED`, `COMPLETED`, `CANCELLED`, `FAILED`), `ResearchPlan(plan_id=None, title="", steps=(), countdown_seconds=None)`, `ResearchState(status, session_id=None, plan=None, conversation_id=None, message_id=None, metadata={})`
 
 [Yukarı dön](#konu-dizini)
 
@@ -136,6 +149,8 @@ Uzak koleksiyonlar sağlayıcıdan kayıt getirir. Yanıtın `parts`, `sources` 
   - `RESPONSE_PARTS_RESOLVED` → `ResponsePartsResolved(parts=())`
   - `SOURCE_DISCOVERED` → `SourceDiscovered(source=...)`
   - `ARTIFACT_DISCOVERED` → `ArtifactDiscovered(artifact=...)`
+  - `RESEARCH_PLAN_READY` → `ResearchPlanReady(plan=..., state=...)`
+  - `RESEARCH_PROGRESS` → `ResearchProgressEvent(status=..., message="", state=None)`
   - `STATUS_TERMINAL` → `TerminalStatus(status="completed", error=None)`
 - **`OperationHooks` / `AsyncOperationHooks`:** `on(event_name, handler=None)`, `add(...)`, `before(...)`, `on_success(...)`, `on_error(...)`, `on_cancelled(...)`, `on_finally(...)`
 - **`EventBus` / `AsyncEventBus`:** `subscribe(callback, *, event_filter=None, event_type=None, predicate=None, routing_key=None, once=False, times=None, replay=0)` · `EventFilter(event_type=None, predicate=None)` · `EventEnvelope`
@@ -194,4 +209,4 @@ Uzak koleksiyonlar sağlayıcıdan kayıt getirir. Yanıtın `parts`, `sources` 
 
 ---
 
-[← Önceki: 05 · Olaylar, Transport ve Hatalar](events-transport-and-errors.md) · [Belge Haritası](README.md)
+[← Önceki: 05 · Olaylar, Transport ve Hatalar](events-transport-and-errors.md) · [Belge Haritası](README.md) · [Sonraki: 07 · Araçlar ve Derin Araştırma →](tools-and-deep-research.md)

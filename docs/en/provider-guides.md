@@ -25,7 +25,7 @@
 | **Gemini** | `https://gemini.google.com` | `branch()`, `GeminiNotebooks` | No `move_to()`; requires `OSID` + `__Secure-OSID` + `__Secure-1PSID`; never follows login redirects (`GeminiSignInRequired`). |
 | **Grok** | `https://grok.com` | `move_to(project)` *(no unassign)*, `assets.grok.com` | No `branch()`; strict chat limits (3 MiB per file, 10 MiB total); raises `RateLimited` on quota exhaustion. |
 
-If your application connects to multiple providers, `WebAIProvider(account)` is all you need. Import a concrete class directly when you want IDE type checking for platform-specific options such as ChatGPT's `memory_share=False`.
+If your application connects to multiple providers, `WebAIProvider(account)` is all you need. Import a concrete class directly when you want IDE type checking for platform-specific options such as ChatGPT's `memory_share=False` or Gemini's `GeminiDeepResearchTool`. For tool capability matrices (`WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`), see [07 · Tools and Deep Research](tools-and-deep-research.md).
 
 [Back to top](#contents)
 

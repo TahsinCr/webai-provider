@@ -1,4 +1,4 @@
-# WebAI Provider Documentation (v2.0.0)
+# WebAI Provider Documentation (v2.1.0)
 
 `webai-provider` is an independent Python client library for working with **ChatGPT**, **Claude**, **Gemini**, and **Grok** web sessions. It exposes both blocking synchronous and `asyncio`-native asynchronous interfaces over the same resource model.
 
@@ -20,6 +20,7 @@
 - To make your first connection, start with [Getting Started and Accounts](getting-started.md). You will connect a browser session and send your first prompt.
 - If you are wiring live streaming into an application, see [Chats, Responses, and Streaming](chats-and-streaming.md) to track incremental text updates, generation completion, and the final verified result.
 - If you already know the concept and just need a signature or return type, jump straight to the [API Reference](api-reference.md). For platform-specific quirks, check the [Provider Guides](provider-guides.md).
+- To use web search, image generation, or multi-step deep research, see [Tools and Deep Research](tools-and-deep-research.md).
 
 [Back to top](#contents)
 
@@ -35,6 +36,7 @@
 | **[04 · Provider Guides](provider-guides.md)** | ChatGPT (`memory_share`, `move_to(None)`, `BrowserSession`), Claude (organization discovery, web search), Gemini (`OSID` cookies, `GeminiNotebooks`, upload isolation), and Grok (`assets.grok.com`, `RateLimited`). |
 | **[05 · Events, Transport, and Errors](events-transport-and-errors.md)** | `EventBus` subscriptions, `provider.transport` (`HTTPTransport`, `HttpSession`, `TransportConfig`), SSE/JSPB frame decoders, error hierarchy, and `SendTiming`. |
 | **[06 · Quick API Reference](api-reference.md)** | Everyday constructors, collection methods, stream events, transport types, and exceptions. |
+| **[07 · Tools and Deep Research](tools-and-deep-research.md)** | `WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`, `GeminiDeepResearchTool`, `response.research` lifecycle, and `Artifact` helpers. |
 
 [Back to top](#contents)
 
@@ -54,6 +56,9 @@ At runtime, you can inspect supported capabilities on an open or closed provider
 | Projects and project file/text resources | Yes | Yes | Yes *(Notebook)* | Yes *(Workspace)* |
 | Moving chats into a project (`chat.move_to(project)`) | Yes | Yes | No | Yes |
 | Removing chats from a project (`chat.move_to(None)`) | Yes | No | No | No |
+| Web search (`Capability.WEB_SEARCH`) | Yes | Yes | Yes | Yes |
+| Image generation (`Capability.IMAGE_GENERATION`) | Yes | No | Yes | Yes |
+| Deep research (`Capability.DEEP_RESEARCH`) | Yes | No | Yes | No |
 | Prompt/chat file limits | 10 files · 512 MiB *(images 20 MiB, spreadsheets 50 MiB)* | 20 files per chat · 30 MiB *(allowed extensions only)* | 10 files · 100 MiB *(video 2 GiB)* | 10 files · 3 MiB *(10 MiB total, docs/code only)* |
 
 [Back to top](#contents)

@@ -25,7 +25,7 @@ Ortak `WebAIProvider` / `AsyncWebAIProvider` sınıfı dört platformu tek aray�
 | **Gemini** | `https://gemini.google.com` | `branch()`, `GeminiNotebooks` | `move_to()` yok; `OSID` + `__Secure-OSID` + `__Secure-1PSID` gerekir; login yönlendirmesini takip etmez (`GeminiSignInRequired`). |
 | **Grok** | `https://grok.com` | `move_to(project)` *(çıkarma yok)*, `assets.grok.com` | `branch()` yok; sohbet dosyası sınırı katı (3 MiB, toplam 10 MiB); kota aşımında `RateLimited`. |
 
-Uygulaman birden fazla sağlayıcıya bağlanıyorsa `WebAIProvider(account)` kullanman yeterlidir. Yalnızca tek bir platformun özel parametrelerini (ör. ChatGPT'de `memory_share=False`) IDE tip denetimiyle kullanmak istediğinde somut sınıfı doğrudan içe aktarabilirsin.
+Uygulaman birden fazla sağlayıcıya bağlanıyorsa `WebAIProvider(account)` kullanman yeterlidir. Yalnızca tek bir platformun özel parametrelerini (ör. ChatGPT'de `memory_share=False` veya Gemini'de `GeminiDeepResearchTool`) IDE tip denetimiyle kullanmak istediğinde somut sınıfı doğrudan içe aktarabilirsin. Araç yetenek matrisi (`WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`) için [07 · Araçlar ve Derin Araştırma](tools-and-deep-research.md) rehberine bak.
 
 [Yukarı dön](#konu-dizini)
 

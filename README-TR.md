@@ -11,7 +11,7 @@
 
 ChatGPT, Gemini, Claude ve Grok web oturumları için bağımsız Python istemcileri. API; eşdeğer asenkron ve senkron arayüzler, tipli model başvuruları ve akış üzerinden çalışan mesaj işlemleri sunar.
 
-> [Türkçe belgeler][docs] kurulum, sohbet akışı, model seçimi, proje yönetimi ve API başvuru bölümlerini içerir.
+> [Türkçe belgeler][docs] kurulum, sohbet akışı, model seçimi, proje yönetimi, [araçlar ve derin araştırma][tools-docs] ile API başvuru bölümlerini içerir.
 
 > **Not:** Sağlayıcıların web siteleri ve özel web protokolleri önceden haber verilmeksizin değişebilir. Bu proje bağımsızdır ve sağlayıcılarla bağlantılı değildir.
 
@@ -78,6 +78,7 @@ with ChatGPTWebAIProvider(account) as provider:
 - Sağlayıcılar yaşam döngüsü, kaynak kilitleri, kancalar ve olayları doğrudan `WebAIProvider` ve `AsyncWebAIProvider` üzerinde `flowevent` altyapısıyla yönetir. `provider.events`, yerel `AsyncEventBus` veya `EventBus` nesnesini sunar ve `EventEnvelope` olayları yayınlar; olay adına göre `EventFilter` ile filtreleyebilirsiniz. Sağlayıcı ve mesaj durumlarını kütüphane kendi içinde yönetir. `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`) kancaları, `provider.lifecycle_state` ise `LifecycleState` değerini sunar.
 - Her başarılı uzak okumada kayıt kimliklerini topluca almak için `collection.read.completed` olayına abone olun. `collection.changed`, doğrulanan ekleme, güncelleme ve silmeleri bildirir. İki olayın da `event.metadata["payload"]` alanında bir `items` listesi bulunur. Olay zarfı hesabı ve iç içe koleksiyonlarda üst kaydın kimliğini taşır. Mesaj düzenlemeleri ve yeniden denemeler sohbet kapsamında bildirilir. Olay verisi mesaj metni, dosya içeriği veya oturum bilgisi içermez.
 - Proje, ek, yeniden deneme, düzenleme, dallandırma ve sohbet taşıma özellikleri sağlayıcıya göre değişir. Sağlayıcıya özel sohbet sınıfları yalnızca desteklenen işlemleri sunar; desteklenmeyen işlemler `FeatureUnavailable` gibi tipli `WebAIProviderError` alt sınıflarıyla bildirilir.
+- İstek bazlı araç sözleşmeleri (`WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool` ve Gemini için `GeminiDeepResearchTool`), `ask()`, `stream()` ve `responses.create()` çağrılarına `tool=` ve `tool_timeout=` ile verilir. Derin Araştırma akışı `response.research`, yaşam döngüsü metotları (`start_research()`, `pause_research()`, `cancel_research()`, `wait_research()`) ve `ResearchPlanReady` / `ResearchProgressEvent` akış olaylarını sunar; `Artifact` ise `read_bytes()`, `read_text()` ve `save()` yardımcılarını sağlar. Ayrıntılar için [Araçlar ve Derin Araştırma][tools-docs] rehberine bakın.
 
 Paket, tip denetimli kullanım için model başvuruları ve efor seçenekleri sunar. Hesaptan keşfedilen modeller, o hesap için yetkili kaynaktır; aboneliğe ve sağlayıcı değişikliklerine göre farklılık gösterebilir.
 
@@ -185,6 +186,7 @@ GPL-3.0-only lisanslıdır. Ayrıntılar için [LICENSE][license] ve [COPYRIGHT]
 [readme-en]: README.md
 [readme-ru]: README-RU.md
 [docs]: docs/tr/README.md
+[tools-docs]: docs/tr/tools-and-deep-research.md
 [benchmarks-guide]: benchmarks/README.md
 [repository]: https://github.com/TahsinCr/webai-provider
 [changelog]: CHANGELOG.md

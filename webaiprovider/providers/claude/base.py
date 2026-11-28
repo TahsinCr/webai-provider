@@ -838,6 +838,7 @@ class BaseClaudeWebAIProvider(BaseWebAIProvider):
             Capability.ATTACHMENTS,
             Capability.MESSAGE_EDIT,
             Capability.MESSAGE_RETRY,
+            Capability.WEB_SEARCH,
         }
     )
 

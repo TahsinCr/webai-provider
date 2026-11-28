@@ -2,18 +2,31 @@
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-28
 
 ### Added
 
-- Add explicit per-request tool contracts (`Tool`, `WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`) and `tool=` / `tool_timeout=` parameters across `ask()`, `stream()`, and `responses.create()` with pre-request capability validation (`Capability.WEB_SEARCH`, `Capability.IMAGE_GENERATION`, `Capability.DEEP_RESEARCH`).
+- Add explicit per-request tool contracts (`Tool`, `WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`) and `tool=` / `tool_timeout=` parameters across `ask()`, `stream()`, and `responses.create()` with pre-request capability validation (`Capability.WEB_SEARCH`, `Capability.IMAGE_GENERATION`, `Capability.DEEP_RESEARCH`), raising `FeatureUnavailable` or `UnsupportedOperationError` on invalid combinations.
 - Add Gemini-specific `GeminiDeepResearchTool` and `DeepResearchSources` (`WEB`, `CHAT`, `WEB_AND_CHAT`), enforcing rejection on generic `WebAIProvider` / `AsyncWebAIProvider` facades while defaulting generic `DeepResearchTool` on Gemini to `WEB_AND_CHAT`.
-- Support native generated image artifacts (`image/png` on ChatGPT via `image_asset_pointer`, `image/jpeg` on Gemini, `generatedImageUrls` on Grok) and Deep Research Markdown report artifacts (`text/markdown` with `Artifact.read_bytes()`, `read_text()`, and `save()`), allowing image-only responses with empty `parts`.
-- Add `ResearchPlan`, `ResearchState`, `ResearchStatus`, `OperationEvent.RESEARCH_PLAN_READY`, `OperationEvent.RESEARCH_PROGRESS`, `response.start_research()`, `pause_research()`, `cancel_research()`, and `wait_research()`, backed by adaptive sync/async polling (`poll_until` / `async_poll_until`).
+- Add `Response.research` (`ResearchState`), `ResearchPlan`, `ResearchStatus`, `OperationEvent.RESEARCH_PLAN_READY` (`ResearchPlanReady`), `OperationEvent.RESEARCH_PROGRESS` (`ResearchProgressEvent`), and `response.start_research()`, `pause_research()`, `cancel_research()`, and `wait_research()`, backed by adaptive sync/async polling (`poll_until` / `async_poll_until`).
+- Add `Source.cited`, inline `Artifact` helpers (`read_bytes()`, `read_text()`, `save()`, `files_from`), generated image artifacts (`image/png` on ChatGPT via `image_asset_pointer`, `image/jpeg` on Gemini, `generatedImageUrls` on Grok), and Deep Research Markdown report artifacts (`text/markdown`), allowing image-only responses with empty `parts`.
+- Add `WebSearchTool`, `ImageGenerationTool`, and `DeepResearchTool` support on ChatGPT (with MCP polling) and Gemini, `WebSearchTool` and `ImageGenerationTool` support on Grok, and `Capability.WEB_SEARCH` support on Claude (treating `WebSearchTool()` as a no-op since `web_search_v0` is enabled by default).
+- Add bilingual `07 · Tools and Deep Research` guides (`docs/en/tools-and-deep-research.md`, `docs/tr/tools-and-deep-research.md`), update `docs/{en,tr}/` cross-references and `README*.md`, and expand offline tool/typing/AST tests alongside `tests/live/test_tools.py`.
 
 ### Changed
 
-- Migrate Gemini message generation fully from legacy `BardFrontendService/StreamGenerate` to the `processSession` WebChannel + pure-Python Protobuf wire protocol (`proto.py`, `webchannel.py`), reusing `gsessionid`/`SID` across turns.
+- Deduplicate shared research response builders (`with_research_status`, `build_research_response`) across providers (`webaiprovider/resources/response/research.py`).
+- Restore `BardFrontendService/StreamGenerate` for Gemini generation without BotGuard and remove the experimental `processSession` WebChannel modules (`proto.py`, `webchannel.py`).
+
+### Fixed
+
+- Add `Sec-Fetch-*` headers for Gemini requests and allow empty `hNvQHb` RPC responses (`decode_rpc_response(..., allow_empty=True)`).
+- Parse Gemini Deep Research plan metadata and steps from `cand[12][0]["56"]`.
+- Handle ChatGPT SSE `role == "tool"` frames for `multimodal_text` (`image_asset_pointer`) image generation responses and `chatgpt_sdk` (`venus_plan`) Deep Research frames, and run ChatGPT live image generation tests in non-temporary chats.
+
+### Security
+
+- Support SSRF-safe 302 redirect resolution for Google media downloads (`googleusercontent.com` / `lh3.google.com`) in `webaiprovider/transport/downloader.py`, applying public-network validation and DNS pinning to each redirect hop.
 
 ## [2.0.0] - 2026-11-24
 

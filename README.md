@@ -11,7 +11,7 @@
 
 Independent Python clients for ChatGPT, Gemini, Claude, and Grok web sessions. The API provides matching asynchronous and blocking interfaces, typed model references, and streaming message operations.
 
-> [English documentation][docs] covers installation, chat streaming, model selection, project management, and the API reference.
+> [English documentation][docs] covers installation, chat streaming, model selection, project management, [tools & deep research][tools-docs], and the API reference.
 
 > **Note:** Provider websites and private web protocols can change without notice. This project is independent and is not affiliated with the providers.
 
@@ -83,6 +83,7 @@ with ChatGPTWebAIProvider(account) as provider:
 - Providers manage lifecycle, locks, hooks, and events directly on `WebAIProvider` and `AsyncWebAIProvider`, backed by `flowevent`. `provider.events` exposes its native `AsyncEventBus` or `EventBus` and emits `EventEnvelope` values; filter by event name with `EventFilter`. The library manages provider and message states internally. Hooks remain available through `provider.hooks` (`OperationHooks` / `AsyncOperationHooks`), and `provider.lifecycle_state` exposes `LifecycleState`.
 - Subscribe to `collection.read.completed` for one batch of item identities per successful remote read and to `collection.changed` for confirmed creates, updates, and deletes. Both events put an `items` list in `event.metadata["payload"]`. The envelope carries the account and, for nested collections, the parent resource ID. Message revisions use the chat scope. Payloads omit message text, file bodies, and credentials. Local collections use stable snapshots without publishing provider events.
 - Project, attachment, retry, edit, branching, and chat-move capabilities vary by provider. Provider-specific chat classes expose only their supported operations; unsupported actions raise a typed `WebAIProviderError` such as `FeatureUnavailable`.
+- Explicit per-request tools (`WebSearchTool`, `ImageGenerationTool`, `DeepResearchTool`, and Gemini's `GeminiDeepResearchTool`) pass via `tool=` and `tool_timeout=` on `ask()`, `stream()`, and `responses.create()`. Deep Research exposes `response.research`, lifecycle controls (`start_research()`, `pause_research()`, `cancel_research()`, `wait_research()`), and stream events (`ResearchPlanReady`, `ResearchProgressEvent`), while `Artifact` provides `read_bytes()`, `read_text()`, and `save()`. See [Tools and Deep Research][tools-docs].
 
 The package exports model references and effort choices for typed use. Account-discovered models remain authoritative for the account and may differ by subscription or provider changes.
 
@@ -190,6 +191,7 @@ Licensed under GPL-3.0-only. See [LICENSE][license] and [COPYRIGHT][copyright].
 [readme-tr]: README-TR.md
 [readme-ru]: README-RU.md
 [docs]: docs/en/README.md
+[tools-docs]: docs/en/tools-and-deep-research.md
 [benchmarks-guide]: benchmarks/README.md
 [repository]: https://github.com/TahsinCr/webai-provider
 [changelog]: CHANGELOG.md
