@@ -97,6 +97,9 @@ class ChatGPTToolsTests(unittest.TestCase):
                 ],
             },
         }
+        from webaiprovider.providers.chatgpt.formats import text_from_parts
+
+        self.assertEqual(text_from_parts(tool_msg["content"]["parts"]), "")
         images = extract_chatgpt_image_artifacts(tool_msg)
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0]["media_type"], "image/png")

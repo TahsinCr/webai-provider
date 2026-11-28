@@ -2,6 +2,17 @@
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Extract inline Gemini Canvas (`immersive_entry_chip` / `cand[30]`) and code-execution generated file (`[file-tag: code-generated-file-...]` / `cand[12]["59"]`) artifacts across live `StreamGenerate` and `hNvQHb` history, stripping chip and file-tag placeholders from visible text.
+
+### Fixed
+
+- Skip `image_asset_pointer` media dicts in ChatGPT `text_from_parts()` so raw asset JSON is not emitted into `TextPart` text.
+- Allow `contribution.usercontent.google.com` in Gemini `valid_media_url()`, attach `(__Secure-1PSID, __Secure-1PSIDTS)` cookies (omitting `OSID`) for generated file downloads, and deduplicate Gemini history `Attachment` and `metadata["files"]` artifact IDs.
+
 ## [2.1.0] - 2026-11-28
 
 ### Added

@@ -72,6 +72,115 @@ class GeminiToolsTests(unittest.TestCase):
             {49: 1},
         )
 
+    def test_canvas_artifact_extraction_and_chip_stripping(self) -> None:
+        from webaiprovider.providers.gemini.media import (
+            candidate_canvas_artifacts,
+            strip_immersive_chips,
+        )
+
+        cand: list[object] = [None] * 31
+        cand[0] = "rc_123"
+        cand[1] = [
+            "Created hello.txt.\n\nhttp://googleusercontent.com/immersive_entry_chip/0\n\nDone."
+        ]
+        rich: list[object] = [None] * 57
+        rich[56] = [
+            "\n3http://googleusercontent.com/immersive_entry_chip/0",
+            "c_abc_hello.txt",
+            None,
+            "hello.txt",
+        ]
+        cand[12] = rich
+        cand[30] = [
+            "c_abc_hello.txt",
+            None,
+            "hello.txt",
+            None,
+            "hello world",
+            None,
+            None,
+            None,
+            None,
+            "hello.txt",
+            1,
+            None,
+            None,
+            ["hello world", None, None, None, "markdown"],
+        ]
+        artifacts = candidate_canvas_artifacts(cand)
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["id"], "c_abc_hello.txt")
+        self.assertEqual(artifacts[0]["name"], "hello.txt")
+        self.assertEqual(artifacts[0]["media_type"], "text/plain")
+        self.assertEqual(artifacts[0]["content"], "hello world")
+        self.assertEqual(artifacts[0]["size_bytes"], 11)
+        self.assertEqual(
+            strip_immersive_chips(cand[1][0]),
+            "Created hello.txt.\n\nDone.",
+        )
+
+    def test_generated_file_tag_extraction_and_download_cookies(self) -> None:
+        from webaiprovider.providers.gemini import GeminiWebAIProvider
+        from webaiprovider.providers.gemini.media import (
+            candidate_generated_files,
+            strip_immersive_chips,
+            valid_media_url,
+        )
+
+        download_url = (
+            "https://contribution.usercontent.google.com/download?c=token&filename=game.py"
+        )
+        self.assertTrue(valid_media_url(download_url))
+        self.assertTrue(GeminiWebAIProvider._download_needs_cookies(None, download_url))
+        source = GeminiWebAIProvider._finalize_download_source(
+            None,
+            download_url,
+            {"__Secure-1PSID": "psid", "__Secure-1PSIDTS": "psidts", "OSID": "skip"},
+        )
+        self.assertIn("__Secure-1PSID=psid", source.headers["Cookie"])
+        self.assertNotIn("OSID", source.headers["Cookie"])
+
+        cand: list[object] = [None] * 13
+        cand[12] = [
+            {
+                "59": [
+                    [
+                        [
+                            "[file-tag: code-generated-file-123]",
+                            None,
+                            [
+                                None,
+                                3,
+                                "game.py",
+                                None,
+                                None,
+                                "$tok",
+                                None,
+                                [
+                                    "https://drive.google.com/viewer/thumb?ds=x",
+                                    download_url,
+                                ],
+                                None,
+                                None,
+                                None,
+                                "text/x-python-script",
+                            ],
+                        ]
+                    ]
+                ]
+            }
+        ]
+        files = candidate_generated_files(cand)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["id"], "code-generated-file-123")
+        self.assertEqual(files[0]["name"], "game.py")
+        self.assertEqual(files[0]["media_type"], "text/x-python-script")
+        self.assertEqual(files[0]["url"], download_url)
+        self.assertEqual(
+            strip_immersive_chips("Python dosyanız hazır. [file-tag: code-generated-file-123]"),
+            "Python dosyanız hazır.",
+        )
+
     def test_image_generation_turn_and_placeholder_stripping(self) -> None:
         model = SimpleNamespace(
             id="gemini-neon",

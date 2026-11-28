@@ -15,7 +15,14 @@ from ...resources.message.types import (
 from ...resources.project.types import ProjectData
 from ...resources.response.source import normalize_sources
 from .errors import GeminiCompatibilityError, GeminiError
-from .media import _field, candidate_files, resolve_image_links
+from .media import (
+    _field,
+    candidate_canvas_artifacts,
+    candidate_files,
+    candidate_generated_files,
+    resolve_image_links,
+    strip_immersive_chips,
+)
 
 _CITATION_MARKER = re.compile(r"\[cite:\s*([\d,\s]+)\]")
 _CITATION_NUMBER = re.compile(r"\d+")
@@ -196,8 +203,13 @@ def _turn_messages(turn, rid):
             metadata={"turn_id": rid, "published_activity": bool(steps)},
         )
     images = candidate_files(candidate)
+    generated_files = candidate_generated_files(candidate)
+    all_remote_files = [*images, *generated_files]
+    canvas_artifacts = candidate_canvas_artifacts(candidate)
     text = resolve_image_links(text if isinstance(text, str) else "", images)
-    if text or images:
+    if canvas_artifacts or generated_files:
+        text = strip_immersive_chips(text)
+    if text or all_remote_files or canvas_artifacts:
         yield MessageData(
             rid + ":model",
             "assistant",
@@ -206,24 +218,31 @@ def _turn_messages(turn, rid):
                 Content(
                     "resource",
                     resource=Attachment(
-                        image["alias"], image["name"], image.get("media_type"), image["url"]
+                        item.get("id") or item["alias"],
+                        item["name"],
+                        item.get("media_type"),
+                        item["url"],
                     ),
                 )
-                for image in images
+                for item in all_remote_files
             ),
             metadata={
                 "native_candidate": candidate,
                 "turn_id": rid,
                 "candidate_id": history_value(candidate, 0),
                 **candidate_metadata(candidate, activity),
-                "files": tuple(
-                    {
-                        "id": image["alias"],
-                        "name": image["name"],
-                        "remote_url": image["url"],
-                        "media_type": image.get("media_type"),
-                    }
-                    for image in images
+                "files": (
+                    *(
+                        {
+                            "id": item.get("id") or item["alias"],
+                            "kind": item.get("kind") or "image",
+                            "name": item["name"],
+                            "remote_url": item["url"],
+                            "media_type": item.get("media_type"),
+                        }
+                        for item in all_remote_files
+                    ),
+                    *canvas_artifacts,
                 ),
             },
             actions=actions_for("assistant", branch=True),

@@ -1,11 +1,14 @@
 """Resolve image placeholders using provider media records rather than invented URLs."""
 
+import mimetypes
 import re
 from urllib.parse import urlsplit
 
 from ...resources.response.artifact import FileTargetRule
 
 PLACEHOLDER = re.compile(r"https?://googleusercontent\.com/image_generation_content/[^\s)\]<>]+")
+CHIP_PLACEHOLDER = re.compile(r"https?://googleusercontent\.com/immersive_entry_chip/[^\s)\]<>]+")
+FILE_TAG_PLACEHOLDER = re.compile(r"\[file-tag:\s*[^\]]+\]")
 _GEMINI_IDENTITY_PREFIXES = (
     "gemini-media:",
     "http://googleusercontent.com/image_generation_content/",
@@ -35,7 +38,7 @@ def valid_media_url(url):
         and not parsed.password
         and (
             host.endswith((".googleusercontent.com", ".googlevideo.com"))
-            or host == "storage.googleapis.com"
+            or host in ("storage.googleapis.com", "contribution.usercontent.google.com")
         )
     )
 
@@ -138,3 +141,103 @@ def resolve_image_links(text, images):
         return f"[Image]({image['url']})"
 
     return PLACEHOLDER.sub(replace, text or "")
+
+
+def strip_immersive_chips(text: str) -> str:
+    """Remove Gemini immersive_entry_chip and file-tag placeholders from visible text."""
+    if not text:
+        return ""
+    cleaned = CHIP_PLACEHOLDER.sub("", text)
+    cleaned = FILE_TAG_PLACEHOLDER.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def candidate_generated_files(candidate) -> list[dict]:
+    """Extract downloadable code-execution generated files from rich[58] (field 59)."""
+    rich = _nested_value(candidate, [12])
+    raw_groups = _field(rich, 58) if isinstance(rich, list) else None
+    if not isinstance(raw_groups, list):
+        return []
+    entries = (
+        raw_groups[0]
+        if raw_groups
+        and isinstance(raw_groups[0], list)
+        and raw_groups[0]
+        and isinstance(raw_groups[0][0], list)
+        else raw_groups
+    )
+    found: list[dict] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, list) or len(entry) < 3:
+            continue
+        tag = entry[0] if isinstance(entry[0], str) else ""
+        meta = entry[2]
+        if not isinstance(meta, list):
+            continue
+        filename = _field(meta, 2)
+        urls = _field(meta, 7)
+        if not isinstance(urls, list):
+            continue
+        download_url = next((u for u in urls if isinstance(u, str) and valid_media_url(u)), None)
+        if not download_url:
+            continue
+        name = (filename.strip() if isinstance(filename, str) else "") or f"file-{index + 1}"
+        mime_type = _field(meta, 11)
+        if not isinstance(mime_type, str) or not mime_type:
+            mime_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        tag_id = tag.removeprefix("[file-tag:").removesuffix("]").strip()
+        found.append(
+            {
+                "id": tag_id or f"gemini-file-{index}",
+                "kind": "file",
+                "name": name,
+                "media_type": mime_type,
+                "url": download_url,
+                "alias": tag or download_url,
+            }
+        )
+    return found
+
+
+def candidate_canvas_artifacts(candidate) -> list[dict]:
+    """Extract inline Gemini Canvas / immersive_entry_chip document artifacts."""
+    canvas = _field(candidate, 30)
+    if not isinstance(canvas, list) or not canvas:
+        return []
+    rich = _nested_value(candidate, [12])
+    chip = _field(rich, 56) if isinstance(rich, list) else None
+    entries = canvas if isinstance(canvas[0], list) else [canvas]
+    artifacts: list[dict] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, list):
+            continue
+        artifact_id = _field(entry, 0)
+        if not isinstance(artifact_id, str) and isinstance(chip, list):
+            artifact_id = _field(chip, 1)
+        name = _field(entry, 2) or _field(entry, 9)
+        if not isinstance(name, str) and isinstance(chip, list):
+            name = _field(chip, 3)
+        nested = _field(entry, 13)
+        content = _field(entry, 4)
+        if not isinstance(content, str) and isinstance(nested, list):
+            content = _field(nested, 0)
+        if not isinstance(content, str):
+            continue
+        filename = (name.strip() if isinstance(name, str) else "") or (f"artifact-{index + 1}.txt")
+        doc_format = _field(nested, 4) if isinstance(nested, list) else None
+        guessed = mimetypes.guess_type(filename)[0]
+        media_type = guessed or ("text/markdown" if doc_format == "markdown" else "text/plain")
+        artifacts.append(
+            {
+                "id": artifact_id
+                if isinstance(artifact_id, str) and artifact_id
+                else f"gemini-canvas-{index}",
+                "kind": "document",
+                "name": filename,
+                "media_type": media_type,
+                "content": content,
+                "size_bytes": len(content.encode("utf-8")),
+            }
+        )
+    return artifacts

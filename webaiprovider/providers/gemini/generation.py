@@ -48,7 +48,14 @@ from .errors import (
 )
 from .history import candidate_metadata, published_activity, published_thoughts
 from .image import strip_image_placeholders
-from .media import GEMINI_FILE_RULE, candidate_files, resolve_image_links
+from .media import (
+    GEMINI_FILE_RULE,
+    candidate_canvas_artifacts,
+    candidate_files,
+    candidate_generated_files,
+    resolve_image_links,
+    strip_immersive_chips,
+)
 from .rpc import RPCPayload, decode_rpc_response, rpc_value
 
 
@@ -334,7 +341,8 @@ class _GeminiFrameProcessor:
                 "metadata": current,
                 "text": self.last_text,
                 "thoughts": self.last_thoughts,
-                "files": candidate_files(candidate),
+                "files": [*candidate_files(candidate), *candidate_generated_files(candidate)],
+                "artifacts": candidate_canvas_artifacts(candidate),
                 "sources": candidate_metadata(candidate, activity)["sources"],
                 "research_plan": research_plan,
             }
@@ -379,6 +387,7 @@ class _GeminiResponseProcessor:
         self.final_rid: str | None = None
         self.raw_files: list[dict] = []
         self.seen_file_keys: set[tuple[str, str]] = set()
+        self.raw_artifacts: dict[str, dict] = {}
         self.raw_sources: list[dict] = []
         self.seen_source_keys: set[str] = set()
         self.raw_research_plan: Any = None
@@ -394,6 +403,8 @@ class _GeminiResponseProcessor:
             self.bound = True
         if chunk.get("context_only"):
             return
+        for artifact in chunk.get("artifacts") or ():
+            self.raw_artifacts[str(artifact["id"])] = artifact
         images = chunk["files"]
         for image in images:
             key = (str(image["alias"]), str(image["url"]))
@@ -424,8 +435,10 @@ class _GeminiResponseProcessor:
                         self.raw_sources.append(item)
                 elif item not in self.raw_sources:
                     self.raw_sources.append(item)
-        self.visible = self.visible or bool(chunk["text"] or images)
+        self.visible = self.visible or bool(chunk["text"] or images or self.raw_artifacts)
         final_text = resolve_image_links(chunk["text"], images)
+        if self.raw_artifacts or any(item.get("kind") == "file" for item in images):
+            final_text = strip_immersive_chips(final_text)
         if images or isinstance(self.request.tool, ImageGenerationTool):
             cleaned = strip_image_placeholders(final_text)
             if not cleaned:
@@ -463,15 +476,18 @@ class _GeminiResponseProcessor:
                 yield ResearchPlanReceived(plan=research_state.plan, state=research_state)
         yield ResponseComplete()
         if self.final_rid or research_state is not None:
+            url_files = (
+                files_from({"files": self.raw_files}, rule=GEMINI_FILE_RULE)
+                if self.raw_files
+                else ()
+            )
             yield MessageMetadata(
                 message_id=(self.final_rid + ":model") if self.final_rid else None,
                 user_message_id=(self.final_rid + ":user") if self.final_rid else None,
                 model=self.request.model,
                 effort=self.request.effort,
                 sources=sources_from({"sources": self.raw_sources}) if self.raw_sources else (),
-                files=files_from({"files": self.raw_files}, rule=GEMINI_FILE_RULE)
-                if self.raw_files
-                else (),
+                files=(*url_files, *self.raw_artifacts.values()),
                 research=research_state,
             )
         self.remember(self.cid, self.metadata, temporary=self.request.temporary)

@@ -642,7 +642,12 @@ class BaseGeminiWebAIProvider(BaseWebAIProvider):
         headers = {"Referer": "https://gemini.google.com/"}
         host = urlsplit(target["url"]).hostname
         if (
-            host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}
+            host
+            in {
+                "lh3.googleusercontent.com",
+                "lh3-gg.googleusercontent.com",
+                "contribution.usercontent.google.com",
+            }
             and cookie_values is not None
         ):
             headers["Cookie"] = cookie_header(cookie_values, ("__Secure-1PSID", "__Secure-1PSIDTS"))
@@ -794,7 +799,11 @@ class BaseGeminiWebAIProvider(BaseWebAIProvider):
     @staticmethod
     def _download_needs_cookies(target: dict[str, Any] | None, url: str) -> bool:
         host = urlsplit(target["url"] if target else url).hostname
-        return host in {"lh3.googleusercontent.com", "lh3-gg.googleusercontent.com"}
+        return host in {
+            "lh3.googleusercontent.com",
+            "lh3-gg.googleusercontent.com",
+            "contribution.usercontent.google.com",
+        }
 
     @staticmethod
     def _deferred_upload_record(

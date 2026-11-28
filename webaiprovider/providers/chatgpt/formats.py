@@ -78,6 +78,10 @@ def text_from_parts(parts: Iterable[Any]) -> str:
         if isinstance(part, str):
             rendered.append(part)
         elif isinstance(part, dict):
+            if part.get("content_type") == "image_asset_pointer" or isinstance(
+                part.get("asset_pointer"), str
+            ):
+                continue
             text = part.get("text")
             if isinstance(text, str):
                 rendered.append(text)
